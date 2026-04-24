@@ -13,3 +13,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: err.message || 'Authentication failed' }, { status: 401 });
   }
 }
+
+export async function GET() {
+  const token = process.env.TASTYTRADE_SESSION_TOKEN;
+  
+  // Test the token directly against TastyTrade
+  const testRes = await fetch('https://api.tastytrade.com/market-metrics?symbols=MU', {
+    headers: { Authorization: token ?? '' },
+  });
+  
+  const testData = await testRes.json();
+  
+  return NextResponse.json({
+    tokenExists: !!token,
+    tokenPrefix: token?.substring(0, 20),
+    apiStatus: testRes.status,
+    apiResponse: testData,
+  });
+}
