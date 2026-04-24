@@ -40,7 +40,7 @@ export async function authenticate(username: string, password: string): Promise<
 export async function getMarketMetrics(symbols: string[], token: string): Promise<MarketMetrics[]> {
   const symbolList = symbols.join(',');
   const res = await fetch(`${BASE_URL}/market-metrics?symbols=${symbolList}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: token },
   });
 
   if (!res.ok) throw new Error(`Failed to fetch market metrics: ${res.statusText}`);
@@ -65,7 +65,7 @@ export async function getOptionsChain(
 ): Promise<{ expirations: string[]; chains: Record<string, OptionChainItem[]> }> {
   const res = await fetch(
     `${BASE_URL}/option-chains/${symbol}/nested`,
-    { headers: { Authorization: `Bearer ${token}` }, }
+    { headers: { Authorization: token }, }
   );
 
   if (!res.ok) throw new Error(`Failed to fetch chain for ${symbol}: ${res.statusText}`);
