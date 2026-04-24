@@ -1,4 +1,4 @@
-const BASE_URL = 'https://api.tastyworks.com';
+const BASE_URL = 'https://api.tastytrade.com';
 
 export interface TTSession {
   token: string;
