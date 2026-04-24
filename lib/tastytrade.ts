@@ -27,27 +27,15 @@ export interface MarketMetrics {
 
 // Authenticate with TastyTrade and return session token
 export async function authenticate(username: string, password: string): Promise<TTSession> {
-  const res = await fetch(`${BASE_URL}/sessions`, {
-    method: 'POST',
-    headers: { 
-  'Content-Type': 'application/json',
-  'User-Agent': 'options-screener/1.0',
-},
-    body: JSON.stringify({ login: username, password, 'remember-me': false }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`TastyTrade auth failed: ${err?.error?.message || res.statusText}`);
+  const token = process.env.TASTYTRADE_SESSION_TOKEN;
+  if (!token) {
+    throw new Error('No session token configured');
   }
-
-  const data = await res.json();
   return {
-    token: data.data['session-token'],
-    expiresAt: data.data['session-expiration'],
+    token,
+    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   };
 }
-
 // Fetch IV Rank and earnings date for a list of symbols
 export async function getMarketMetrics(symbols: string[], token: string): Promise<MarketMetrics[]> {
   const symbolList = symbols.join(',');
