@@ -29,7 +29,10 @@ export interface MarketMetrics {
 export async function authenticate(username: string, password: string): Promise<TTSession> {
   const res = await fetch(`${BASE_URL}/sessions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+  'Content-Type': 'application/json',
+  'User-Agent': 'options-screener/1.0',
+},
     body: JSON.stringify({ login: username, password, 'remember-me': false }),
   });
 
