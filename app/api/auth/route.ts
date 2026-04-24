@@ -17,17 +17,20 @@ export async function POST(req: NextRequest) {
 export async function GET() {
   const token = process.env.TASTYTRADE_SESSION_TOKEN;
   
-  // Test the token directly against TastyTrade
-  const testRes = await fetch('https://api.tastytrade.com/market-metrics?symbols=MU', {
-    headers: { Authorization: token ?? '' },
-  });
-  
-  const testData = await testRes.json();
-  
-  return NextResponse.json({
-    tokenExists: !!token,
-    tokenPrefix: token?.substring(0, 20),
-    apiStatus: testRes.status,
-    apiResponse: testData,
-  });
+  try {
+    const testRes = await fetch('https://api.tastytrade.com/market-metrics?symbols=MU', {
+      headers: { Authorization: token ?? '' },
+    });
+    
+    const text = await testRes.text();
+    
+    return NextResponse.json({
+      tokenExists: !!token,
+      tokenPrefix: token?.substring(0, 20),
+      apiStatus: testRes.status,
+      apiResponse: text.substring(0, 500),
+    });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message });
+  }
 }
