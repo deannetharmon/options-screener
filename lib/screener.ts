@@ -130,7 +130,6 @@ export function runChecklist(
     : ivrValue >= RULES.IVR_MIN
     ? { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Above minimum' }
     : { status: 'fail', value: `${ivrValue.toFixed(1)}%`, reason: `Below ${RULES.IVR_MIN}%` };
-
   if (ivrCheck.status === 'fail') failReasons.push(`IVR ${ivrCheck.value}`);
 
   const ivxValue = metrics.impliedVolatility;
@@ -139,7 +138,6 @@ export function runChecklist(
     : ivxValue >= RULES.IVX_MIN
     ? { status: 'pass', value: `${ivxValue.toFixed(1)}%`, reason: 'Sufficient premium' }
     : { status: 'fail', value: `${ivxValue.toFixed(1)}%`, reason: `Below ${RULES.IVX_MIN}%` };
-
   if (ivxCheck.status === 'fail') failReasons.push(`IVx ${ivxCheck.value}`);
 
   const earningsDate = metrics.earningsExpectedDate;
@@ -196,14 +194,8 @@ export function runChecklist(
     }
   }
 
-  const qualified = 
-    ivrCheck.status === 'pass' &&
-    ivxCheck.status === 'pass' &&
-    earningsCheck.status === 'pass' &&
-    oiCheck.status === 'pass' &&
-    deltaCheck.status === 'pass' &&
-    creditCheck.status === 'pass' &&
-    bestCandidate !== null;
+  const qualified = ivrCheck.status === 'pass' && ivxCheck.status === 'pass' && earningsCheck.status === 'pass' &&
+    oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && bestCandidate !== null;
 
   return {
     symbol,
