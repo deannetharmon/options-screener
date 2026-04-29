@@ -9,71 +9,71 @@ export async function POST(req: NextRequest) {
     if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
       return NextResponse.json({ error: 'symbols array required' }, { status: 400 });
     }
-
-    // MOCK MODE DETECTION
-    const isMock = token === 'mock-token-for-testing';
-
-    let results: any[] = [];
-
-    if (isMock) {
-      // Return realistic mock results for testing
-      results = symbols.map((symbol: string) => ({
-        symbol,
-        price: 120 + Math.random() * 100,
-        checks: {
-          ivr: { status: 'pass' as const, value: '42%', reason: 'Good' },
-          ivx: { status: 'pass' as const, value: '38%', reason: 'Good' },
-          earnings: { status: 'pass' as const, value: 'Safe', reason: 'No earnings' },
-          oi: { status: 'pass' as const, value: '1200/800', reason: 'OK' },
-          delta: { status: 'pass' as const, value: '0.18', reason: 'In range' },
-          credit: { status: 'pass' as const, value: '$1.45', reason: '38% of width' },
-        },
-        qualified: true,
-        bestCandidate: {
-          strategy: Math.random() > 0.5 ? 'BPS' : 'BCS' as const,
-          expiration: '2026-05-29',
-          dte: 30,
-          shortStrike: 115,
-          longStrike: 110,
-          shortDelta: 0.18,
-          shortOI: 1200,
-          longOI: 800,
-          credit: 1.45,
-          spreadWidth: 5,
-          creditRatio: 0.29,
-          pop: 72,
-        },
-        failReasons: [],
-        strategy: Math.random() > 0.5 ? 'BPS' : 'BCS' as const,
-      }));
-    } else {
-      // Real TastyTrade path
-      const metrics = await getMarketMetrics(symbols, token);
-      const metricsMap = Object.fromEntries(metrics.map((m: any) => [m.symbol, m]));
-
-      const apiResults = await Promise.allSettled(
-        symbols.map(async (symbol: string) => {
-          const symbolMetrics = metricsMap[symbol] || { symbol, ivRank: null, impliedVolatility: null, earningsExpectedDate: null };
-          const chainData = await getOptionsChain(symbol, token);
-          const trend: Trend = trends?.[symbol] || null;
-          return runChecklist(symbol, symbolMetrics, chainData, trend, null);
-        })
-      );
-
-      results = apiResults.map((r, i) => r.status === 'fulfilled' ? r.value : {
-        symbol: symbols[i],
-        price: null,
-        checks: { ivr: {status:'fail' as const, value:'Error', reason:'API'}, ...{} as any },
-        qualified: false,
-        bestCandidate: null,
-        failReasons: ['API error'],
-        strategy: 'UNKNOWN' as const,
-      });
+    if (!token || token.length < 10) {
+      return NextResponse.json({ error: 'Valid token required' }, { status: 400 });
     }
 
-    return NextResponse.json({ results });
+    console.log(`Screening ${symbols.length} symbols with real token`);
+
+    const metrics = await getMarketMetrics(symbols, token);
+    console.log('Market metrics received:', metrics.length);
+
+    const metricsMap = Object.fromEntries(metrics.map((m: any) => [m.symbol, m]));
+
+    const results = await Promise.allSettled(
+      symbols.map(async (symbol: string) => {
+        try {
+          const symbolMetrics = metricsMap[symbol] || {
+            symbol,
+            ivRank: null,
+            impliedVolatility: null,
+            earningsExpectedDate: null,
+          };
+
+          const chainData = await getOptionsChain(symbol, token);
+          const trend: Trend = trends?.[symbol] || null;
+
+          return runChecklist(symbol, symbolMetrics, chainData, trend, null);
+        } catch (err: any) {
+          console.error(`Error processing ${symbol}:`, err.message);
+          return {
+            symbol,
+            price: null,
+            checks: {
+              ivr: { status: 'fail' as const, value: 'Error', reason: err.message },
+              ivx: { status: 'fail' as const, value: 'Error', reason: '' },
+              earnings: { status: 'fail' as const, value: 'Error', reason: '' },
+              oi: { status: 'fail' as const, value: 'Error', reason: '' },
+              delta: { status: 'fail' as const, value: 'Error', reason: '' },
+              credit: { status: 'fail' as const, value: 'Error', reason: '' },
+            },
+            qualified: false,
+            bestCandidate: null,
+            failReasons: [err.message],
+            strategy: 'UNKNOWN' as const,
+          };
+        }
+      })
+    );
+
+    const screenResults = results.map((r, i) => 
+      r.status === 'fulfilled' ? r.value : {
+        symbol: symbols[i],
+        price: null,
+        checks: { ivr: {status:'fail' as const, value:'Error', reason:'Promise failed'}, ...{} as any },
+        qualified: false,
+        bestCandidate: null,
+        failReasons: ['Promise failed'],
+        strategy: 'UNKNOWN' as const,
+      }
+    );
+
+    return NextResponse.json({ results: screenResults });
   } catch (err: any) {
-    console.error(err);
-    return NextResponse.json({ error: err.message || 'Screening failed' }, { status: 500 });
+    console.error('Screen route error:', err);
+    return NextResponse.json({ 
+      error: err.message || 'Screening failed',
+      details: err.stack 
+    }, { status: 500 });
   }
 }
