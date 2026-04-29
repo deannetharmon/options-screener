@@ -7,22 +7,18 @@ export const RULES = {
   OI_MIN: 500,
   CREDIT_RATIO: 1 / 3,
   DELTA_MIN: 0.15,
-  DELTA_MAX: 0.30,
+  DELTA_MAX: 0.22,
   DTE_MIN: 21,
   DTE_MAX: 45,
-  EARNINGS_BUFFER: 21,
-  BID_ASK_MAX: 0.10,
-  MIN_PRICE: 50,
-  MIN_VOLUME: 2000000,     // Your new 2M minimum
-  MIN_ROC: 25,
-  MIN_POP: 65,
+  EARNINGS_BUFFER_DAYS: 21,
+  SPREAD_WIDTH: 5,      // $5 wide spreads
 };
 
 export type Strategy = 'BPS' | 'BCS' | 'IC' | 'UNKNOWN';
-export type Trend = 'uptrend' | 'downtrend' | 'sideways' | null;
+export type CheckStatus = 'pass' | 'fail' | 'warn' | 'pending';
 
 export interface CheckResult {
-  status: 'pass' | 'fail' | 'warn' | 'pending';
+  status: CheckStatus;
   value: string;
   reason: string;
 }
@@ -39,8 +35,7 @@ export interface SpreadCandidate {
   credit: number;
   spreadWidth: number;
   creditRatio: number;
-  roc: number;
-  pop: number;
+  pop: number | null;
 }
 
 export interface ScreenResult {
@@ -50,7 +45,6 @@ export interface ScreenResult {
     ivr: CheckResult;
     ivx: CheckResult;
     earnings: CheckResult;
-    volume: CheckResult;
     oi: CheckResult;
     delta: CheckResult;
     credit: CheckResult;
@@ -77,33 +71,35 @@ function findBestSpread(
   expDate: string
 ): SpreadCandidate | null {
   const optionType = strategy === 'BPS' ? 'P' : 'C';
-  const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
+  const legs = chain.filter(
+    (o) => o.expirationDate === expDate && o.optionType === optionType
+  );
+
+  if (legs.length === 0) return null;
 
   const sorted = strategy === 'BPS'
     ? legs.sort((a, b) => b.strikePrice - a.strikePrice)
     : legs.sort((a, b) => a.strikePrice - b.strikePrice);
 
-  const spreadWidth = 5;
-
   for (const shortLeg of sorted) {
     const delta = shortLeg.delta;
     if (delta == null) continue;
+
     const absDelta = Math.abs(delta);
     if (absDelta < RULES.DELTA_MIN || absDelta > RULES.DELTA_MAX) continue;
     if (shortLeg.openInterest < RULES.OI_MIN) continue;
 
     const longStrike = strategy === 'BPS'
-      ? shortLeg.strikePrice - spreadWidth
-      : shortLeg.strikePrice + spreadWidth;
+      ? shortLeg.strikePrice - RULES.SPREAD_WIDTH
+      : shortLeg.strikePrice + RULES.SPREAD_WIDTH;
 
-    const longLeg = legs.find(o => o.strikePrice === longStrike);
+    const longLeg = legs.find((o) => o.strikePrice === longStrike);
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
 
     const credit = shortLeg.mid - longLeg.mid;
-    const creditRatio = credit / spreadWidth;
-    if (creditRatio < RULES.CREDIT_RATIO) continue;
+    const creditRatio = credit / RULES.SPREAD_WIDTH;
 
-    const roc = (credit / (spreadWidth - credit)) * 100;
+    if (creditRatio < RULES.CREDIT_RATIO) continue;
 
     return {
       strategy,
@@ -115,10 +111,9 @@ function findBestSpread(
       shortOI: shortLeg.openInterest,
       longOI: longLeg.openInterest,
       credit,
-      spreadWidth,
+      spreadWidth: RULES.SPREAD_WIDTH,
       creditRatio,
-      roc,
-      pop: Math.round(100 - absDelta * 100),
+      pop: null,
     };
   }
   return null;
@@ -128,56 +123,67 @@ export function runChecklist(
   symbol: string,
   metrics: MarketMetrics,
   chainData: { expirations: string[]; chains: Record<string, OptionChainItem[]> },
-  chartTrend: Trend,
-  currentPrice: number | null,
-  avgVolume: number = 0
+  chartTrend: 'uptrend' | 'downtrend' | 'sideways' | null = null,
+  currentPrice: number | null = null
 ): ScreenResult {
   const failReasons: string[] = [];
 
   // IVR
-  const ivrCheck: CheckResult = metrics.ivRank && metrics.ivRank >= RULES.IVR_MIN
-    ? { status: 'pass', value: `${metrics.ivRank.toFixed(1)}%`, reason: 'OK' }
-    : { status: 'fail', value: metrics.ivRank ? `${metrics.ivRank.toFixed(1)}%` : 'N/A', reason: 'Below minimum' };
+  const ivrValue = metrics.ivRank;
+  const ivrCheck: CheckResult = ivrValue == null
+    ? { status: 'warn', value: 'N/A', reason: 'IV Rank not available' }
+    : ivrValue >= RULES.IVR_MIN
+    ? { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Above minimum' }
+    : { status: 'fail', value: `${ivrValue.toFixed(1)}%`, reason: `Below ${RULES.IVR_MIN}%` };
+  if (ivrCheck.status === 'fail') failReasons.push(`IVR ${ivrCheck.value}`);
 
   // IVx
-  const ivxCheck: CheckResult = metrics.impliedVolatility && metrics.impliedVolatility >= RULES.IVX_MIN
-    ? { status: 'pass', value: `${metrics.impliedVolatility.toFixed(1)}%`, reason: 'OK' }
-    : { status: 'fail', value: metrics.impliedVolatility ? `${metrics.impliedVolatility.toFixed(1)}%` : 'N/A', reason: 'Below minimum' };
+  const ivxValue = metrics.impliedVolatility;
+  const ivxCheck: CheckResult = ivxValue == null
+    ? { status: 'warn', value: 'N/A', reason: 'IVx not available' }
+    : ivxValue >= RULES.IVX_MIN
+    ? { status: 'pass', value: `${ivxValue.toFixed(1)}%`, reason: 'Sufficient premium' }
+    : { status: 'fail', value: `${ivxValue.toFixed(1)}%`, reason: `Below ${RULES.IVX_MIN}%` };
+  if (ivxCheck.status === 'fail') failReasons.push(`IVx ${ivxCheck.value}`);
 
   // Earnings
+  const earningsDate = metrics.earningsExpectedDate;
   let earningsCheck: CheckResult;
-  if (!metrics.earningsExpectedDate) {
-    earningsCheck = { status: 'pass', value: 'None', reason: 'Clear' };
+  if (!earningsDate) {
+    earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe' };
   } else {
-    const days = daysUntil(metrics.earningsExpectedDate);
-    earningsCheck = days > RULES.EARNINGS_BUFFER
-      ? { status: 'pass', value: `${days}d away`, reason: 'Safe' }
-      : { status: 'fail', value: `${days}d away`, reason: 'Too close' };
+    const daysAway = daysUntil(earningsDate);
+    if (daysAway < 0) {
+      earningsCheck = { status: 'pass', value: `${daysAway}d (past)`, reason: 'Already reported' };
+    } else if (daysAway <= RULES.EARNINGS_BUFFER_DAYS) {
+      earningsCheck = { status: 'fail', value: `${daysAway}d`, reason: 'Too close' };
+      failReasons.push(`Earnings in ${daysAway} days`);
+    } else {
+      earningsCheck = { status: 'pass', value: `${daysAway}d`, reason: 'Safe' };
+    }
   }
 
-  // Volume
-  const volumeCheck: CheckResult = avgVolume >= RULES.MIN_VOLUME
-    ? { status: 'pass', value: `${(avgVolume/1000000).toFixed(1)}M`, reason: 'Liquid' }
-    : { status: 'fail', value: `${(avgVolume/1000000).toFixed(1)}M`, reason: 'Below 2M' };
-
-  // Strategy
   let strategy: Strategy = 'UNKNOWN';
   if (chartTrend === 'uptrend') strategy = 'BPS';
   else if (chartTrend === 'downtrend') strategy = 'BCS';
-  else if (chartTrend === 'sideways') strategy = 'IC';
+
+  const validExpirations = chainData.expirations.filter((exp) => {
+    const dte = getDTE(exp);
+    if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false;
+    if (earningsDate) {
+      const earningsDTE = daysUntil(earningsDate);
+      if (earningsDTE >= 0 && earningsDTE <= dte) return false;
+    }
+    return true;
+  });
 
   let bestCandidate: SpreadCandidate | null = null;
-  let oiCheck: CheckResult = { status: 'pending', value: '—', reason: 'Waiting' };
-  let deltaCheck: CheckResult = { status: 'pending', value: '—', reason: 'Waiting' };
-  let creditCheck: CheckResult = { status: 'pending', value: '—', reason: 'Waiting' };
+  let oiCheck: CheckResult = { status: 'pending', value: '—', reason: 'Awaiting chain' };
+  let deltaCheck: CheckResult = { status: 'pending', value: '—', reason: 'Awaiting chain' };
+  let creditCheck: CheckResult = { status: 'pending', value: '—', reason: 'Awaiting chain' };
 
-  if (strategy !== 'UNKNOWN') {
-    const validExps = chainData.expirations.filter(exp => {
-      const dte = getDTE(exp);
-      return dte >= RULES.DTE_MIN && dte <= RULES.DTE_MAX;
-    });
-
-    for (const exp of validExps) {
+  if (strategy !== 'UNKNOWN' && validExpirations.length > 0) {
+    for (const exp of validExpirations) {
       const candidate = findBestSpread(chainData.chains[exp] || [], strategy as 'BPS' | 'BCS', exp);
       if (candidate) {
         bestCandidate = candidate;
@@ -186,27 +192,28 @@ export function runChecklist(
     }
 
     if (bestCandidate) {
-      oiCheck = { status: 'pass', value: 'OK', reason: '≥500 both legs' };
-      deltaCheck = { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'In range' };
-      creditCheck = { status: 'pass', value: `$${bestCandidate.credit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio*100).toFixed(0)}% of width` };
+      oiCheck = { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: 'OK' };
+      deltaCheck = { status: 'pass', value: `${bestCandidate.shortDelta.toFixed(2)}`, reason: 'In range' };
+      creditCheck = { status: 'pass', value: `$${bestCandidate.credit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` };
     } else {
-      oiCheck = { status: 'fail', value: 'No', reason: 'No valid spread' };
+      // fallback failure reasons...
+      deltaCheck = { status: 'fail', value: 'None', reason: 'No delta match' };
+      failReasons.push('No suitable delta/OI/credit');
     }
   }
 
   const qualified = ivrCheck.status === 'pass' &&
-                    ivxCheck.status === 'pass' &&
-                    earningsCheck.status === 'pass' &&
-                    volumeCheck.status === 'pass' &&
-                    oiCheck.status === 'pass' &&
-                    deltaCheck.status === 'pass' &&
-                    creditCheck.status === 'pass' &&
-                    bestCandidate !== null;
+    ivxCheck.status === 'pass' &&
+    earningsCheck.status === 'pass' &&
+    oiCheck.status === 'pass' &&
+    deltaCheck.status === 'pass' &&
+    creditCheck.status === 'pass' &&
+    bestCandidate !== null;
 
   return {
     symbol,
     price: currentPrice,
-    checks: { ivr: ivrCheck, ivx: ivxCheck, earnings: earningsCheck, volume: volumeCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck },
+    checks: { ivr: ivrCheck, ivx: ivxCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck },
     qualified,
     bestCandidate,
     failReasons,
