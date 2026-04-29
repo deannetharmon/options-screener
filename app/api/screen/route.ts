@@ -2,40 +2,45 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
   try {
-    const { symbols } = await req.json();
+    const { symbols, username, password } = await req.json();
 
+    if (!username || !password) {
+      return NextResponse.json({ error: 'Username and password required' }, { status: 400 });
+    }
+
+    // Login to TastyTrade to get fresh token
+    const loginRes = await fetch('https://api.tastytrade.com/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ login: username, password, rememberMe: true }),
+    });
+
+    const loginData = await loginRes.json();
+    const token = loginData.session?.access_token || loginData.access_token;
+
+    if (!token) {
+      console.error("Login failed", loginData);
+      return NextResponse.json({ error: 'Login failed - check credentials' }, { status: 401 });
+    }
+
+    console.log("✅ Got fresh token");
+
+    // Now use the token for real calls...
     const results = symbols.map((symbol: string) => ({
       symbol,
-      price: 150,
-      checks: {
-        ivr: { status: 'pass', value: '45%', reason: 'Good' },
-        ivx: { status: 'pass', value: '38%', reason: 'Good' },
-        earnings: { status: 'pass', value: 'Safe', reason: 'No earnings' },
-        oi: { status: 'pass', value: 'OK', reason: 'Good' },
-        delta: { status: 'pass', value: '0.18', reason: 'In range' },
-        credit: { status: 'pass', value: '$1.35', reason: 'Good' },
-      },
+      strategy: 'BPS',
       qualified: true,
       bestCandidate: {
         strategy: 'BPS',
-        expiration: '2026-05-29',
-        dte: 30,
-        shortStrike: 145,
-        longStrike: 140,
-        shortDelta: 0.18,
-        shortOI: 800,
-        longOI: 600,
-        credit: 1.35,
-        spreadWidth: 5,
-        creditRatio: 0.27,
-        pop: 75,
-      },
-      failReasons: [],
-      strategy: 'BPS',
+        credit: 1.45,
+        pop: 72,
+      }
     }));
 
-    return NextResponse.json({ results });
-  } catch (err) {
-    return NextResponse.json({ error: 'Failed' }, { status: 500 });
+    return NextResponse.json({ results, token });
+
+  } catch (err: any) {
+    console.error(err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
