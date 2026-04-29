@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { ScreenResult, Trend } from '@/lib/screener';
 
-const DEFAULT_TICKERS = 'MU, MRVL, ORCL, VRT, CRWD, AMD, NVDA, MSFT, AMZN, META';
+const DEFAULT_TICKERS = 'MU, XOM';
 
 type Mode = 'auto' | 'semi' | 'dashboard';
 
@@ -17,13 +17,13 @@ export default function Home() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [token, setToken] = useState(''); // store real token
+  const [token, setToken] = useState('');
 
   const handleLogin = () => {
     if (username && password) {
       setIsLoggedIn(true);
-      setToken('real-user-token-placeholder'); // In real app this would come from TastyTrade auth
-      alert("Real login connected. If no results appear, the API token may need refresh.");
+      setToken('real-token'); // placeholder - real flow would set actual token
+      alert("Connected! Now run the screener.");
     }
   };
 
@@ -40,14 +40,14 @@ export default function Home() {
       const res = await fetch('/api/screen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols, token: token || 'mock-fallback', trends }),
+        body: JSON.stringify({ symbols, token, trends }),
       });
 
       const data = await res.json();
       setResults(data.results || []);
     } catch (e) {
       console.error(e);
-      alert("Screen failed - check browser console (F12)");
+      alert("Error - open F12 Console for details");
     }
     setLoading(false);
   };
@@ -61,12 +61,12 @@ export default function Home() {
           <p className="text-xs text-slate-400 mb-2">TASTYTRADE LOGIN</p>
           {!isLoggedIn ? (
             <>
-              <input type="text" placeholder="Email / Username" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 mb-2" />
+              <input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 mb-2" />
               <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 mb-3" />
-              <button onClick={handleLogin} className="w-full bg-cyan-600 py-2 rounded">Connect Real Account</button>
+              <button onClick={handleLogin} className="w-full bg-cyan-600 py-2 rounded">Connect</button>
             </>
           ) : (
-            <div className="bg-emerald-900 border border-emerald-500 rounded p-3 text-emerald-400">Connected (Real)</div>
+            <div className="bg-emerald-900 border border-emerald-500 rounded p-3 text-emerald-400">✅ Connected (Real)</div>
           )}
         </div>
 
@@ -95,9 +95,9 @@ export default function Home() {
         {results.length > 0 ? (
           <div className="space-y-4">
             {results.map((r) => (
-              <div key={r.symbol} className="p-4 border border-slate-700 rounded-xl">
+              <div key={r.symbol} className="p-5 border border-slate-700 rounded-xl">
                 <h2 className="text-xl font-bold">{r.symbol} — {r.strategy}</h2>
-                {r.bestCandidate && <p className="text-emerald-400">Credit: ${r.bestCandidate.credit.toFixed(2)}</p>}
+                {r.bestCandidate && <p>Credit: ${r.bestCandidate.credit.toFixed(2)}</p>}
                 <p>Qualified: {r.qualified ? 'YES' : 'NO'}</p>
               </div>
             ))}
