@@ -1,24 +1,20 @@
 'use client';
 
 import { useState } from 'react';
-import { ScreenResult, Trend } from '@/lib/screener';
+import { ScreenResult } from '@/lib/screener';
 
 const DEFAULT_TICKERS = 'MU, XOM';
 
-type Mode = 'auto' | 'semi' | 'dashboard';
-
 export default function Home() {
-  const [mode, setMode] = useState<Mode>('semi');
   const [tickersInput, setTickersInput] = useState(DEFAULT_TICKERS);
-  const [trends, setTrends] = useState<Record<string, Trend>>({});
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [loading, setLoading] = useState(false);
-  
-  const [apiToken, setApiToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
 
   const runScreen = async () => {
-    if (!apiToken) {
-      alert("Please paste your TastyTrade token first");
+    if (!username || !password) {
+      alert("Please enter your TastyTrade username and password");
       return;
     }
 
@@ -29,11 +25,15 @@ export default function Home() {
       const res = await fetch('/api/screen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols, token: apiToken, trends }),
+        body: JSON.stringify({ symbols, username, password }),
       });
 
       const data = await res.json();
-      setResults(data.results || []);
+      if (data.error) {
+        alert(data.error);
+      } else {
+        setResults(data.results || []);
+      }
     } catch (e) {
       console.error(e);
       alert("Error - check console");
@@ -47,15 +47,21 @@ export default function Home() {
         <h1 className="text-2xl font-bold mb-6">OPTIONS SCREENER</h1>
 
         <div className="mb-6">
-          <p className="text-xs text-slate-400 mb-2">TASTYTRADE API TOKEN</p>
+          <p className="text-xs text-slate-400 mb-2">TASTYTRADE LOGIN</p>
           <input 
             type="text" 
-            placeholder="Paste your full Bearer token here" 
-            value={apiToken}
-            onChange={(e) => setApiToken(e.target.value)}
+            placeholder="Username / Email" 
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
             className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-3" 
           />
-          <p className="text-[10px] text-slate-500">Get from Network tab → Headers → Authorization</p>
+          <input 
+            type="password" 
+            placeholder="Password" 
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-3" 
+          />
         </div>
 
         <div className="mb-6">
@@ -74,8 +80,12 @@ export default function Home() {
           <div>No earnings in window</div>
         </div>
 
-        <button onClick={runScreen} disabled={loading || !apiToken} className="w-full bg-emerald-600 py-3 rounded font-medium disabled:opacity-50">
-          {loading ? 'RUNNING...' : 'RUN SCREENER'}
+        <button 
+          onClick={runScreen} 
+          disabled={loading || !username || !password}
+          className="w-full bg-emerald-600 py-3 rounded font-medium disabled:opacity-50"
+        >
+          {loading ? 'LOGGING IN + RUNNING...' : 'RUN SCREENER'}
         </button>
       </div>
 
@@ -91,7 +101,7 @@ export default function Home() {
             ))}
           </div>
         ) : (
-          <div className="h-full flex items-center justify-center text-slate-500">Paste token + click RUN SCREENER</div>
+          <div className="h-full flex items-center justify-center text-slate-500">Enter login + tickers and click RUN SCREENER</div>
         )}
       </div>
     </div>
