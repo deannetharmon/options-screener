@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getMarketMetrics, getOptionsChain } from '@/lib/tastytrade';
 import { runChecklist, Trend } from '@/lib/screener';
 
 export async function POST(req: NextRequest) {
@@ -6,52 +7,48 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    console.log("Received body:", JSON.stringify(body, null, 2));
+    console.log("Full body received:", JSON.stringify(body, null, 2));
 
-    const { symbols } = body;
+    const { symbols, token, trends } = body;
 
     if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
-      console.error("No symbols received");
+      console.error("No symbols");
       return NextResponse.json({ error: 'symbols array required' }, { status: 400 });
     }
+    if (!token) {
+      console.error("No token");
+      return NextResponse.json({ error: 'token required' }, { status: 400 });
+    }
 
-    // Always return mock results so the UI works
-    const results = symbols.map((symbol: string) => ({
-      symbol,
-      price: 150,
-      checks: {
-        ivr: { status: 'pass' as const, value: '45%', reason: 'Good' },
-        ivx: { status: 'pass' as const, value: '38%', reason: 'Good' },
-        earnings: { status: 'pass' as const, value: 'Safe', reason: 'No earnings' },
-        oi: { status: 'pass' as const, value: 'OK', reason: 'Good' },
-        delta: { status: 'pass' as const, value: '0.18', reason: 'In range' },
-        credit: { status: 'pass' as const, value: '$1.35', reason: 'Good' },
-      },
-      qualified: true,
-      bestCandidate: {
-        strategy: 'BPS' as const,
-        expiration: '2026-05-29',
-        dte: 30,
-        shortStrike: 145,
-        longStrike: 140,
-        shortDelta: 0.18,
-        shortOI: 800,
-        longOI: 600,
-        credit: 1.35,
-        spreadWidth: 5,
-        creditRatio: 0.27,
-        pop: 75,
-      },
-      failReasons: [],
-      strategy: 'BPS' as const,
-    }));
+    console.log(`Scanning ${symbols.length} symbols with real token (length ${token.length})`);
 
-    console.log("=== RETURNING", results.length, "RESULTS ===");
-    return NextResponse.json({ results });
+    // Real API calls
+    const metrics = await getMarketMetrics(symbols, token);
+    console.log(`getMarketMetrics SUCCESS - ${metrics.length} symbols`);
+
+    const metricsMap = Object.fromEntries(metrics.map((m: any) => [m.symbol, m]));
+
+    const results = await Promise.allSettled(
+      symbols.map(async (symbol: string) => {
+        console.log(`Processing ${symbol}`);
+        const symbolMetrics = metricsMap[symbol] || { symbol, ivRank: null, impliedVolatility: null, earningsExpectedDate: null };
+
+        const chainData = await getOptionsChain(symbol, token);
+        console.log(`Chain fetched for ${symbol}`);
+
+        const trend: Trend = trends?.[symbol] || null;
+        const result = runChecklist(symbol, symbolMetrics, chainData, trend, null);
+        console.log(`runChecklist done for ${symbol} | Qualified: ${result.qualified}`);
+        return result;
+      })
+    );
+
+    console.log("=== SCREEN COMPLETE - RETURNING REAL RESULTS ===");
+    return NextResponse.json({ results: results.map(r => r.status === 'fulfilled' ? r.value : r.reason) });
 
   } catch (err: any) {
-    console.error("=== CRITICAL ERROR IN ROUTE ===", err.message);
+    console.error("=== CRITICAL ERROR ===", err.message);
     console.error(err.stack);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message || 'Screening failed' }, { status: 500 });
   }
 }
