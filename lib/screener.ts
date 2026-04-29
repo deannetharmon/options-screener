@@ -66,11 +66,7 @@ function getDTE(expirationDate: string): number {
   return daysUntil(expirationDate);
 }
 
-function findBestSpread(
-  chain: OptionChainItem[],
-  strategy: 'BPS' | 'BCS',
-  expDate: string
-): SpreadCandidate | null {
+function findBestSpread(chain: OptionChainItem[], strategy: 'BPS' | 'BCS', expDate: string): SpreadCandidate | null {
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter((o) => o.expirationDate === expDate && o.optionType === optionType);
   if (legs.length === 0) return null;
@@ -86,10 +82,7 @@ function findBestSpread(
     if (absDelta < RULES.DELTA_MIN || absDelta > RULES.DELTA_MAX) continue;
     if (shortLeg.openInterest < RULES.OI_MIN) continue;
 
-    const longStrike = strategy === 'BPS'
-      ? shortLeg.strikePrice - RULES.SPREAD_WIDTH
-      : shortLeg.strikePrice + RULES.SPREAD_WIDTH;
-
+    const longStrike = strategy === 'BPS' ? shortLeg.strikePrice - RULES.SPREAD_WIDTH : shortLeg.strikePrice + RULES.SPREAD_WIDTH;
     const longLeg = legs.find((o) => o.strikePrice === longStrike);
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
 
@@ -98,21 +91,22 @@ function findBestSpread(
     if (creditRatio < RULES.CREDIT_RATIO) continue;
 
     return {
-      strategy,
-      expiration: expDate,
-      dte: getDTE(expDate),
-      shortStrike: shortLeg.strikePrice,
-      longStrike,
-      shortDelta: absDelta,
-      shortOI: shortLeg.openInterest,
-      longOI: longLeg.openInterest,
-      credit,
-      spreadWidth: RULES.SPREAD_WIDTH,
-      creditRatio,
-      pop: null,
+      strategy, expiration: expDate, dte: getDTE(expDate),
+      shortStrike: shortLeg.strikePrice, longStrike,
+      shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest,
+      credit, spreadWidth: RULES.SPREAD_WIDTH, creditRatio, pop: null
     };
   }
   return null;
 }
 
-export function runChecklist(...) { /* keep your full runChecklist function from before */ }
+export function runChecklist(
+  symbol: string,
+  metrics: MarketMetrics,
+  chainData: { expirations: string[]; chains: Record<string, OptionChainItem[]> },
+  chartTrend: Trend | null = null,
+  currentPrice: number | null = null
+): ScreenResult {
+  // (Keep your existing full runChecklist function here — copy from your local version if needed)
+  // ... paste the full body you had before
+}
