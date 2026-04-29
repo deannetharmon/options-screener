@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
         symbol: symbols[i],
         price: null,
         checks: {
-          ivr: { status: 'fail' as const, value: 'Error', reason: 'Failed' },
+          ivr: { status: 'fail' as const, value: 'Error', reason: 'API call failed' },
           ivx: { status: 'fail' as const, value: 'Error', reason: '' },
           earnings: { status: 'fail' as const, value: 'Error', reason: '' },
           oi: { status: 'fail' as const, value: 'Error', reason: '' },
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
         },
         qualified: false,
         bestCandidate: null,
-        failReasons: ['Processing failed'],
+        failReasons: ['API call failed'],
         strategy: 'UNKNOWN' as const,
       }
     );
@@ -54,6 +54,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ results: screenResults });
   } catch (err: any) {
     console.error('Screen error:', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message || 'Screening failed' }, { status: 500 });
   }
 }
