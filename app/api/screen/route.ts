@@ -5,11 +5,12 @@ export async function POST(req: NextRequest) {
   console.log("=== SCREEN API CALLED ===");
 
   try {
-    const { symbols } = await req.json();
+    const { symbols, token, trends } = await req.json();
 
-    console.log("Symbols received:", symbols);
+    console.log("Symbols:", symbols);
+    console.log("Token present:", !!token);
 
-    // Return mock results so the UI works while we debug real API
+    // Return consistent mock results so the UI works reliably while we debug real API later
     const results = symbols.map((symbol: string) => ({
       symbol,
       price: 150,
@@ -44,8 +45,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ results });
 
   } catch (err: any) {
-    console.error("CRITICAL ERROR:", err.message);
-    console.error(err.stack);
+    console.error("ERROR in route:", err.message);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
