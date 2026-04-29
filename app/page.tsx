@@ -13,48 +13,49 @@ export default function Home() {
   const [trends, setTrends] = useState<Record<string, Trend>>({});
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [loading, setLoading] = useState(false);
-  
+
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [apiToken, setApiToken] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const handleLogin = () => {
-    if (username && password) {
+    if (apiToken) {
       setIsLoggedIn(true);
-      console.log("Login successful - username:", username);
+      console.log("Using manual API token");
+    } else if (username && password) {
+      setIsLoggedIn(true);
+      console.log("Using username/password login");
     }
   };
 
   const runScreen = async () => {
     console.log("RUN SCREENER CLICKED");
     if (!isLoggedIn) {
-      console.error("Not logged in");
       alert("Please login first");
       return;
     }
 
     setLoading(true);
-    console.log("Starting fetch to /api/screen with tickers:", tickersInput);
-
     try {
       const symbols = tickersInput.split(/[, ]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-      console.log("Parsed symbols:", symbols);
 
       const res = await fetch('/api/screen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols, token: 'real-token-placeholder', trends }),
+        body: JSON.stringify({ 
+          symbols, 
+          token: apiToken || 'real-token-placeholder', 
+          trends 
+        }),
       });
 
-      console.log("Fetch status:", res.status);
       const data = await res.json();
       console.log("Response data:", data);
-
       setResults(data.results || []);
-      console.log("Results set in state:", data.results?.length || 0);
     } catch (e) {
       console.error("Fetch error:", e);
-      alert("Fetch error - check console");
+      alert("Error - check console");
     }
     setLoading(false);
   };
@@ -66,15 +67,20 @@ export default function Home() {
 
         <div className="mb-6">
           <p className="text-xs text-slate-400 mb-2">TASTYTRADE LOGIN</p>
-          {!isLoggedIn ? (
-            <>
-              <input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 mb-2" />
-              <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 mb-3" />
-              <button onClick={handleLogin} className="w-full bg-cyan-600 py-2 rounded">Connect</button>
-            </>
-          ) : (
-            <div className="bg-emerald-900 border border-emerald-500 rounded p-3 text-emerald-400">✅ Connected (Real)</div>
-          )}
+          <input 
+            type="text" 
+            placeholder="API Token (paste here)" 
+            value={apiToken}
+            onChange={(e) => setApiToken(e.target.value)}
+            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-3" 
+          />
+          <button 
+            onClick={handleLogin}
+            disabled={!apiToken}
+            className="w-full bg-cyan-600 hover:bg-cyan-500 py-2 rounded text-sm font-medium disabled:opacity-50"
+          >
+            Connect with Token
+          </button>
         </div>
 
         <div className="mb-6">
@@ -104,7 +110,7 @@ export default function Home() {
             {results.map((r) => (
               <div key={r.symbol} className="p-5 border border-slate-700 rounded-xl">
                 <h2 className="text-xl font-bold">{r.symbol} — {r.strategy}</h2>
-                {r.bestCandidate && <p>Credit: ${r.bestCandidate.credit.toFixed(2)}</p>}
+                {r.bestCandidate && <p className="text-emerald-400">Credit: ${r.bestCandidate.credit.toFixed(2)}</p>}
                 <p>Qualified: {r.qualified ? 'YES' : 'NO'}</p>
               </div>
             ))}
