@@ -66,7 +66,11 @@ function getDTE(expirationDate: string): number {
   return daysUntil(expirationDate);
 }
 
-function findBestSpread(chain: OptionChainItem[], strategy: 'BPS' | 'BCS', expDate: string): SpreadCandidate | null {
+function findBestSpread(
+  chain: OptionChainItem[],
+  strategy: 'BPS' | 'BCS',
+  expDate: string
+): SpreadCandidate | null {
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter((o) => o.expirationDate === expDate && o.optionType === optionType);
   if (legs.length === 0) return null;
@@ -82,7 +86,10 @@ function findBestSpread(chain: OptionChainItem[], strategy: 'BPS' | 'BCS', expDa
     if (absDelta < RULES.DELTA_MIN || absDelta > RULES.DELTA_MAX) continue;
     if (shortLeg.openInterest < RULES.OI_MIN) continue;
 
-    const longStrike = strategy === 'BPS' ? shortLeg.strikePrice - RULES.SPREAD_WIDTH : shortLeg.strikePrice + RULES.SPREAD_WIDTH;
+    const longStrike = strategy === 'BPS'
+      ? shortLeg.strikePrice - RULES.SPREAD_WIDTH
+      : shortLeg.strikePrice + RULES.SPREAD_WIDTH;
+
     const longLeg = legs.find((o) => o.strikePrice === longStrike);
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
 
@@ -91,10 +98,18 @@ function findBestSpread(chain: OptionChainItem[], strategy: 'BPS' | 'BCS', expDa
     if (creditRatio < RULES.CREDIT_RATIO) continue;
 
     return {
-      strategy, expiration: expDate, dte: getDTE(expDate),
-      shortStrike: shortLeg.strikePrice, longStrike,
-      shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest,
-      credit, spreadWidth: RULES.SPREAD_WIDTH, creditRatio, pop: null
+      strategy,
+      expiration: expDate,
+      dte: getDTE(expDate),
+      shortStrike: shortLeg.strikePrice,
+      longStrike,
+      shortDelta: absDelta,
+      shortOI: shortLeg.openInterest,
+      longOI: longLeg.openInterest,
+      credit,
+      spreadWidth: RULES.SPREAD_WIDTH,
+      creditRatio,
+      pop: null,
     };
   }
   return null;
@@ -107,6 +122,96 @@ export function runChecklist(
   chartTrend: Trend | null = null,
   currentPrice: number | null = null
 ): ScreenResult {
-  // (Keep your existing full runChecklist function here — copy from your local version if needed)
-  // ... paste the full body you had before
+  const failReasons: string[] = [];
+
+  const ivrValue = metrics.ivRank;
+  const ivrCheck: CheckResult = ivrValue == null
+    ? { status: 'warn', value: 'N/A', reason: 'IV Rank not available' }
+    : ivrValue >= RULES.IVR_MIN
+    ? { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Above minimum' }
+    : { status: 'fail', value: `${ivrValue.toFixed(1)}%`, reason: `Below ${RULES.IVR_MIN}%` };
+
+  if (ivrCheck.status === 'fail') failReasons.push(`IVR ${ivrCheck.value}`);
+
+  const ivxValue = metrics.impliedVolatility;
+  const ivxCheck: CheckResult = ivxValue == null
+    ? { status: 'warn', value: 'N/A', reason: 'IVx not available' }
+    : ivxValue >= RULES.IVX_MIN
+    ? { status: 'pass', value: `${ivxValue.toFixed(1)}%`, reason: 'Sufficient premium' }
+    : { status: 'fail', value: `${ivxValue.toFixed(1)}%`, reason: `Below ${RULES.IVX_MIN}%` };
+
+  if (ivxCheck.status === 'fail') failReasons.push(`IVx ${ivxCheck.value}`);
+
+  const earningsDate = metrics.earningsExpectedDate;
+  let earningsCheck: CheckResult;
+  if (!earningsDate) {
+    earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe' };
+  } else {
+    const daysAway = daysUntil(earningsDate);
+    if (daysAway < 0) {
+      earningsCheck = { status: 'pass', value: `${daysAway}d (past)`, reason: 'Already reported' };
+    } else if (daysAway <= RULES.EARNINGS_BUFFER_DAYS) {
+      earningsCheck = { status: 'fail', value: `${daysAway}d`, reason: 'Too close' };
+      failReasons.push(`Earnings in ${daysAway} days`);
+    } else {
+      earningsCheck = { status: 'pass', value: `${daysAway}d`, reason: 'Safe' };
+    }
+  }
+
+  let strategy: Strategy = 'UNKNOWN';
+  if (chartTrend === 'uptrend') strategy = 'BPS';
+  else if (chartTrend === 'downtrend') strategy = 'BCS';
+
+  const validExpirations = chainData.expirations.filter((exp) => {
+    const dte = getDTE(exp);
+    if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false;
+    if (earningsDate) {
+      const earningsDTE = daysUntil(earningsDate);
+      if (earningsDTE >= 0 && earningsDTE <= dte) return false;
+    }
+    return true;
+  });
+
+  let bestCandidate: SpreadCandidate | null = null;
+  let oiCheck: CheckResult = { status: 'pending', value: '—', reason: 'Awaiting chain' };
+  let deltaCheck: CheckResult = { status: 'pending', value: '—', reason: 'Awaiting chain' };
+  let creditCheck: CheckResult = { status: 'pending', value: '—', reason: 'Awaiting chain' };
+
+  if (strategy !== 'UNKNOWN' && validExpirations.length > 0) {
+    for (const exp of validExpirations) {
+      const candidate = findBestSpread(chainData.chains[exp] || [], strategy as 'BPS' | 'BCS', exp);
+      if (candidate) {
+        bestCandidate = candidate;
+        break;
+      }
+    }
+
+    if (bestCandidate) {
+      oiCheck = { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: 'OK' };
+      deltaCheck = { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'In range' };
+      creditCheck = { status: 'pass', value: `$${bestCandidate.credit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` };
+    } else {
+      deltaCheck = { status: 'fail', value: 'None', reason: 'No suitable strike' };
+      failReasons.push('No suitable delta/OI/credit found');
+    }
+  }
+
+  const qualified = 
+    ivrCheck.status === 'pass' &&
+    ivxCheck.status === 'pass' &&
+    earningsCheck.status === 'pass' &&
+    oiCheck.status === 'pass' &&
+    deltaCheck.status === 'pass' &&
+    creditCheck.status === 'pass' &&
+    bestCandidate !== null;
+
+  return {
+    symbol,
+    price: currentPrice,
+    checks: { ivr: ivrCheck, ivx: ivxCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck },
+    qualified,
+    bestCandidate,
+    failReasons,
+    strategy,
+  };
 }
