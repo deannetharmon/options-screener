@@ -3,39 +3,51 @@ import { getMarketMetrics, getOptionsChain } from '@/lib/tastytrade';
 import { runChecklist, Trend } from '@/lib/screener';
 
 export async function POST(req: NextRequest) {
+  const startTime = Date.now();
+  console.log("=== SCREEN REQUEST STARTED ===");
+
   try {
-    const { symbols, token, trends } = await req.json();
+    const body = await req.json();
+    const { symbols, token, trends } = body;
+
+    console.log(`Symbols: ${symbols}`);
+    console.log(`Token length: ${token?.length || 0}`);
 
     if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
       return NextResponse.json({ error: 'symbols array required' }, { status: 400 });
     }
-    if (!token || token.length < 10) {
-      return NextResponse.json({ error: 'Valid token required' }, { status: 400 });
+    if (!token) {
+      return NextResponse.json({ error: 'token required' }, { status: 400 });
     }
 
-    console.log(`Screening ${symbols.length} symbols with real token`);
-
-    const metrics = await getMarketMetrics(symbols, token);
-    console.log('Market metrics received:', metrics.length);
+    // Try to fetch market metrics
+    let metrics = [];
+    try {
+      console.log("Fetching market metrics...");
+      metrics = await getMarketMetrics(symbols, token);
+      console.log(`Received metrics for ${metrics.length} symbols`);
+    } catch (e: any) {
+      console.error("Market metrics failed:", e.message);
+      return NextResponse.json({ error: `Market metrics failed: ${e.message}` }, { status: 500 });
+    }
 
     const metricsMap = Object.fromEntries(metrics.map((m: any) => [m.symbol, m]));
 
     const results = await Promise.allSettled(
       symbols.map(async (symbol: string) => {
         try {
-          const symbolMetrics = metricsMap[symbol] || {
-            symbol,
-            ivRank: null,
-            impliedVolatility: null,
-            earningsExpectedDate: null,
-          };
+          console.log(`Processing ${symbol}...`);
+          const symbolMetrics = metricsMap[symbol] || { symbol, ivRank: null, impliedVolatility: null, earningsExpectedDate: null };
 
           const chainData = await getOptionsChain(symbol, token);
-          const trend: Trend = trends?.[symbol] || null;
+          console.log(`Chain data received for ${symbol}`);
 
-          return runChecklist(symbol, symbolMetrics, chainData, trend, null);
+          const trend: Trend = trends?.[symbol] || null;
+          const result = runChecklist(symbol, symbolMetrics, chainData, trend, null);
+          console.log(`Checklist complete for ${symbol}: qualified=${result.qualified}`);
+          return result;
         } catch (err: any) {
-          console.error(`Error processing ${symbol}:`, err.message);
+          console.error(`Error on ${symbol}:`, err.message);
           return {
             symbol,
             price: null,
@@ -56,24 +68,16 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    const screenResults = results.map((r, i) => 
-      r.status === 'fulfilled' ? r.value : {
-        symbol: symbols[i],
-        price: null,
-        checks: { ivr: {status:'fail' as const, value:'Error', reason:'Promise failed'}, ...{} as any },
-        qualified: false,
-        bestCandidate: null,
-        failReasons: ['Promise failed'],
-        strategy: 'UNKNOWN' as const,
-      }
-    );
+    const screenResults = results.map((r, i) => r.status === 'fulfilled' ? r.value : { symbol: symbols[i], ...{} as any });
 
+    console.log(`=== SCREEN COMPLETE in ${Date.now() - startTime}ms ===`);
     return NextResponse.json({ results: screenResults });
+
   } catch (err: any) {
-    console.error('Screen route error:', err);
+    console.error("CRITICAL SCREEN ERROR:", err);
     return NextResponse.json({ 
-      error: err.message || 'Screening failed',
-      details: err.stack 
+      error: err.message || 'Unknown error',
+      stack: err.stack 
     }, { status: 500 });
   }
 }
