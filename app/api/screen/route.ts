@@ -7,7 +7,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    console.log("Full body received:", JSON.stringify(body, null, 2));
+    console.log("Body received:", JSON.stringify(body, null, 2));
 
     const { symbols, token, trends } = body;
 
@@ -20,11 +20,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'token required' }, { status: 400 });
     }
 
-    console.log(`Scanning ${symbols.length} symbols with real token (length ${token.length})`);
+    console.log(`Token length: ${token.length}`);
 
-    // Real API calls
-    const metrics = await getMarketMetrics(symbols, token);
-    console.log(`getMarketMetrics SUCCESS - ${metrics.length} symbols`);
+    let metrics = [];
+    try {
+      console.log("Calling getMarketMetrics with real token...");
+      metrics = await getMarketMetrics(symbols, token);
+      console.log(`getMarketMetrics SUCCESS - ${metrics.length} symbols`);
+    } catch (e: any) {
+      console.error("getMarketMetrics FAILED:", e.message);
+      return NextResponse.json({ error: `Market metrics failed: ${e.message}` }, { status: 500 });
+    }
 
     const metricsMap = Object.fromEntries(metrics.map((m: any) => [m.symbol, m]));
 
@@ -38,12 +44,12 @@ export async function POST(req: NextRequest) {
 
         const trend: Trend = trends?.[symbol] || null;
         const result = runChecklist(symbol, symbolMetrics, chainData, trend, null);
-        console.log(`runChecklist done for ${symbol} | Qualified: ${result.qualified}`);
+        console.log(`Checklist done for ${symbol} | Qualified: ${result.qualified}`);
         return result;
       })
     );
 
-    console.log("=== SCREEN COMPLETE - RETURNING REAL RESULTS ===");
+    console.log("=== SCREEN COMPLETE ===");
     return NextResponse.json({ results: results.map(r => r.status === 'fulfilled' ? r.value : r.reason) });
 
   } catch (err: any) {
