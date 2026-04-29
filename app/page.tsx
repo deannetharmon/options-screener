@@ -13,29 +13,9 @@ export default function Home() {
   const [trends, setTrends] = useState<Record<string, Trend>>({});
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [loading, setLoading] = useState(false);
-
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [apiToken, setApiToken] = useState('');
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-
-  const handleLogin = () => {
-    if (apiToken) {
-      setIsLoggedIn(true);
-      console.log("Using manual API token");
-    } else if (username && password) {
-      setIsLoggedIn(true);
-      console.log("Using username/password login");
-    }
-  };
+  const [isLoggedIn, setIsLoggedIn] = useState(true); // auto "logged in" for testing
 
   const runScreen = async () => {
-    console.log("RUN SCREENER CLICKED");
-    if (!isLoggedIn) {
-      alert("Please login first");
-      return;
-    }
-
     setLoading(true);
     try {
       const symbols = tickersInput.split(/[, ]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -43,18 +23,13 @@ export default function Home() {
       const res = await fetch('/api/screen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          symbols, 
-          token: apiToken || 'real-token-placeholder', 
-          trends 
-        }),
+        body: JSON.stringify({ symbols, token: 'mock', trends }),
       });
 
       const data = await res.json();
-      console.log("Response data:", data);
       setResults(data.results || []);
     } catch (e) {
-      console.error("Fetch error:", e);
+      console.error(e);
       alert("Error - check console");
     }
     setLoading(false);
@@ -65,27 +40,17 @@ export default function Home() {
       <div className="w-80 border-r border-slate-800 p-4 overflow-auto">
         <h1 className="text-2xl font-bold mb-6">OPTIONS SCREENER</h1>
 
-        <div className="mb-6">
-          <p className="text-xs text-slate-400 mb-2">TASTYTRADE LOGIN</p>
-          <input 
-            type="text" 
-            placeholder="API Token (paste here)" 
-            value={apiToken}
-            onChange={(e) => setApiToken(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-3" 
-          />
-          <button 
-            onClick={handleLogin}
-            disabled={!apiToken}
-            className="w-full bg-cyan-600 hover:bg-cyan-500 py-2 rounded text-sm font-medium disabled:opacity-50"
-          >
-            Connect with Token
-          </button>
+        <div className="mb-6 bg-emerald-900 border border-emerald-500 rounded p-3 text-emerald-400">
+          ✅ Connected (Mock Mode - Real data coming soon)
         </div>
 
         <div className="mb-6">
-          <p className="text-xs text-slate-400 mb-2">TICKERS</p>
-          <textarea value={tickersInput} onChange={(e) => setTickersInput(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-3 h-28 font-mono" />
+          <p className="text-xs text-slate-400 mb-2">TICKERS (comma separated)</p>
+          <textarea 
+            value={tickersInput} 
+            onChange={(e) => setTickersInput(e.target.value)}
+            className="w-full bg-slate-900 border border-slate-700 rounded p-3 text-sm h-28 font-mono"
+          />
         </div>
 
         <div className="mb-6 text-[10px] space-y-1 text-slate-300">
@@ -99,7 +64,11 @@ export default function Home() {
           <div>No earnings in window</div>
         </div>
 
-        <button onClick={runScreen} disabled={loading || !isLoggedIn} className="w-full bg-emerald-600 py-3 rounded font-medium disabled:opacity-50">
+        <button 
+          onClick={runScreen}
+          disabled={loading}
+          className="w-full bg-emerald-600 hover:bg-emerald-500 py-3 rounded font-medium disabled:opacity-50"
+        >
           {loading ? 'RUNNING...' : 'RUN SCREENER'}
         </button>
       </div>
@@ -116,7 +85,9 @@ export default function Home() {
             ))}
           </div>
         ) : (
-          <div className="h-full flex items-center justify-center text-slate-500">Run the screener to see results</div>
+          <div className="h-full flex items-center justify-center text-slate-500 text-lg">
+            Enter tickers and click RUN SCREENER
+          </div>
         )}
       </div>
     </div>
