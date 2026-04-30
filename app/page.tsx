@@ -147,7 +147,7 @@ async function getMarketMetrics(symbols: string[], token: string) {
 
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
-    const data = await ttFetch(`/market-data/quotes?symbols=${symbol}`, token);
+    onst data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
     const item = data.data?.items?.[0];
     if (!item) return null;
     const last = item.last != null ? parseFloat(item.last) : null;
@@ -229,7 +229,7 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
 
 function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const width = price == null ? RULES.SPREAD_WIDTH : price >= 500 ? 50 : price >= 200 ? 20 : price >= 100 ? 10 : RULES.SPREAD_WIDTH;
-  const bidAskMax = price == null ? RULES.BID_ASK_MAX : price >= 500 ? 3.00 : price >= 200 ? 1.00 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX;
+  const bidAskMax = price == null ? 1.50 : price >= 500 ? 3.00 : price >= 200 ? 1.00 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX;
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
   const sorted = strategy === 'BPS'
@@ -279,7 +279,7 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
 
 function findBestIC(chain: any[], expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const width = price == null ? RULES.SPREAD_WIDTH : price >= 500 ? 50 : price >= 200 ? 20 : price >= 100 ? 10 : RULES.SPREAD_WIDTH;
-  const bidAskMax = price == null ? RULES.BID_ASK_MAX : price >= 500 ? 3.00 : price >= 200 ? 1.00 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX;
+  const bidAskMax = price == null ? 1.50 : price >= 500 ? 3.00 : price >= 200 ? 1.00 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX;
   const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P')
     .sort((a: any, b: any) => b.strikePrice - a.strikePrice);
   const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C')
