@@ -145,7 +145,6 @@ async function getChain(symbol: string, token: string) {
   const expirations: string[] = [];
   const chains: Record<string, any[]> = {};
   const expirationGroups = nested?.data?.items?.[0]?.expirations ?? [];
-
   const allOCCSymbols: string[] = [];
   const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
 
@@ -154,7 +153,6 @@ async function getChain(symbol: string, token: string) {
     if (!expDate) continue;
     const dte = daysUntil(expDate);
     if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
-
     for (const strike of expGroup.strikes ?? []) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
       const callSym: string = strike['call'];
@@ -175,15 +173,17 @@ async function getChain(symbol: string, token: string) {
   const chunkSize = 100;
   for (let i = 0; i < allOCCSymbols.length; i += chunkSize) {
     const chunk = allOCCSymbols.slice(i, i + chunkSize);
-    const encoded = chunk.map(s => encodeURIComponent(s)).join(',');
+    const qs = chunk.map(s => `equity-option=${encodeURIComponent(s)}`).join('&');
     let greeksData: any;
     try {
-      greeksData = await ttFetch(`/market-data/options?symbols=${encoded}`, token);
+      greeksData = await ttFetch(`/market-data/by-type?${qs}`, token);
+      if (i === 0) console.log('BY-TYPE SAMPLE:', JSON.stringify(greeksData?.data, null, 2).slice(0, 1000));
     } catch (e) {
       console.warn('Greeks fetch failed for chunk', i, e);
       continue;
     }
-    for (const item of greeksData?.data?.items ?? []) {
+    const items = greeksData?.data?.items ?? greeksData?.data?.['equity-options'] ?? [];
+    for (const item of items) {
       const occSym: string = item.symbol;
       const meta = symbolMeta[occSym];
       if (!meta) continue;
