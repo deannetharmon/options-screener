@@ -221,46 +221,40 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string):
     ? legs.sort((a: any, b: any) => b.strikePrice - a.strikePrice)
     : legs.sort((a: any, b: any) => a.strikePrice - b.strikePrice);
 
+  let rejections: Record<string, number> = {};
+
   for (const shortLeg of sorted) {
     const delta = shortLeg.delta;
-    if (delta == null) continue;
+    if (delta == null) { rejections['null delta'] = (rejections['null delta'] || 0) + 1; continue; }
     const absDelta = Math.abs(delta);
-    if (absDelta < RULES.SPREAD_DELTA_MIN || absDelta > RULES.SPREAD_DELTA_MAX) continue;
-    if (shortLeg.openInterest < RULES.OI_MIN) continue;
-    if (shortLeg.ask - shortLeg.bid > RULES.BID_ASK_MAX) continue;
+    if (absDelta < RULES.SPREAD_DELTA_MIN || absDelta > RULES.SPREAD_DELTA_MAX) { rejections['delta out of range'] = (rejections['delta out of range'] || 0) + 1; continue; }
+    if (shortLeg.openInterest < RULES.OI_MIN) { rejections['OI too low'] = (rejections['OI too low'] || 0) + 1; continue; }
+    if (shortLeg.ask - shortLeg.bid > RULES.BID_ASK_MAX) { rejections['bid-ask too wide'] = (rejections['bid-ask too wide'] || 0) + 1; continue; }
 
     const longStrike = strategy === 'BPS'
       ? shortLeg.strikePrice - RULES.SPREAD_WIDTH
       : shortLeg.strikePrice + RULES.SPREAD_WIDTH;
-
     const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
-    if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
-    if (longLeg.ask - longLeg.bid > RULES.BID_ASK_MAX) continue;
+    if (!longLeg || longLeg.openInterest < RULES.OI_MIN) { rejections['long leg OI'] = (rejections['long leg OI'] || 0) + 1; continue; }
+    if (longLeg.ask - longLeg.bid > RULES.BID_ASK_MAX) { rejections['long bid-ask too wide'] = (rejections['long bid-ask too wide'] || 0) + 1; continue; }
 
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2));
-    if (credit <= 0) continue;
+    if (credit <= 0) { rejections['no credit'] = (rejections['no credit'] || 0) + 1; continue; }
     const creditRatio = credit / RULES.SPREAD_WIDTH;
-    if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
+    if (creditRatio < RULES.CREDIT_RATIO_MIN) { rejections['credit ratio'] = (rejections['credit ratio'] || 0) + 1; continue; }
     const maxLoss = RULES.SPREAD_WIDTH - credit;
     const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
-    if (roc < RULES.ROC_MIN_SPREAD) continue;
+    if (roc < RULES.ROC_MIN_SPREAD) { rejections['ROC too low'] = (rejections['ROC too low'] || 0) + 1; continue; }
 
     return {
-      strategy,
-      expiration: expDate,
-      dte: daysUntil(expDate),
-      shortStrike: shortLeg.strikePrice,
-      longStrike,
-      shortDelta: absDelta,
-      shortOI: shortLeg.openInterest,
-      longOI: longLeg.openInterest,
-      credit,
-      spreadWidth: RULES.SPREAD_WIDTH,
-      creditRatio,
-      roc,
+      strategy, expiration: expDate, dte: daysUntil(expDate),
+      shortStrike: shortLeg.strikePrice, longStrike,
+      shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest,
+      credit, spreadWidth: RULES.SPREAD_WIDTH, creditRatio, roc,
       pop: (1 - absDelta) * 100,
     };
   }
+  console.log(`${strategy} ${expDate} rejections:`, rejections);
   return null;
 }
 
