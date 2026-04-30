@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
       ic: string[];
     };
 
-    const allSymbols = [...new Set([...bps, ...bcs, ...ic])];
+const allSymbols = Array.from(new Set([...bps, ...bcs, ...ic]));
     if (allSymbols.length === 0) {
       return NextResponse.json({ error: 'No symbols provided' }, { status: 400 });
     }
