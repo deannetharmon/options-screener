@@ -237,8 +237,8 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
   const sorted = strategy === 'BPS'
     ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice)
     : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
-
   const rejections: Record<string, number> = {};
+  console.log(`${strategy} ${expDate} total legs to check:`, sorted.length, 'strikes:', sorted.map(o => o.strikePrice));
 
   for (const shortLeg of sorted) {
     const delta = shortLeg.delta;
