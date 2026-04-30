@@ -508,18 +508,18 @@ function runChecklist(
 
 // ── UI Components ──────────────────────────────────────────────────────────
 const statusColor = (s: string) =>
-  s === 'pass' ? 'text-emerald-400' : s === 'fail' ? 'text-red-400' : s === 'warn' ? 'text-yellow-400' : 'text-slate-500';
+  s === 'pass' ? 'text-emerald-400' : s === 'fail' ? 'text-red-400' : s === 'warn' ? 'text-yellow-400' : 'text-slate-400';
 const statusIcon = (s: string) =>
   s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
 
 function StrikesDisplay({ c }: { c: SpreadCandidate }) {
   const widthTag = (w: number) => (
-    <span className="text-slate-600 mx-0.5">·${w}·</span>
+    <span className="text-slate-400 mx-0.5">·${w}·</span>
   );
   if (c.strategy === 'IC' && c.shortCallStrike != null && c.longCallStrike != null) {
     return (
       <div className="text-xs shrink-0">
-        <span className="text-slate-500">Strikes </span>
+        <span className="text-slate-400">Strikes </span>
         <span className="text-white">{c.shortStrike}/{c.longStrike}</span>
         {widthTag(c.spreadWidth)}
         <span className="text-white">{c.shortCallStrike}/{c.longCallStrike}</span>
@@ -529,7 +529,7 @@ function StrikesDisplay({ c }: { c: SpreadCandidate }) {
   }
   return (
     <div className="text-xs shrink-0">
-      <span className="text-slate-500">Strikes </span>
+      <span className="text-slate-400">Strikes </span>
       <span className="text-white">{c.shortStrike}/{c.longStrike}</span>
       {widthTag(c.spreadWidth)}
     </div>
@@ -553,7 +553,7 @@ function ResultCard({ result }: { result: ScreenResult }) {
       <div className="px-4 py-3 flex items-center gap-4 flex-wrap">
         <div className="w-16 shrink-0">
           <p className="font-bold text-white">{result.symbol}</p>
-          {result.price && <p className="text-[10px] text-slate-500">${result.price.toFixed(2)}</p>}
+          {result.price && <p className="text-[10px] text-slate-400">${result.price.toFixed(2)}</p>}
         </div>
         <span className={`text-[10px] px-2 py-0.5 border rounded shrink-0 ${stratBg}`}>{result.strategy}</span>
         <div className="text-xs text-slate-400 shrink-0">
@@ -563,35 +563,35 @@ function ResultCard({ result }: { result: ScreenResult }) {
         </div>
         {c && <>
           <div className="text-xs shrink-0">
-            <span className="text-slate-500">Exp </span>
+            <span className="text-slate-400">Exp </span>
             <span className="text-white">{c.expiration}</span>
-            <span className="text-slate-600 ml-1">({c.dte}d)</span>
+            <span className="text-slate-400 ml-1">({c.dte}d)</span>
           </div>
           <StrikesDisplay c={c} />
           <div className="text-xs shrink-0">
-            <span className="text-slate-500">Credit </span>
+            <span className="text-slate-400">Credit </span>
             <span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span>
           </div>
           <div className="text-xs shrink-0">
-            <span className="text-slate-500">ROC </span>
+            <span className="text-slate-400">ROC </span>
             <span className="text-white">{c.roc.toFixed(0)}%</span>
           </div>
           {c.pop != null && (
             <div className="text-xs shrink-0">
-              <span className="text-slate-500">POP </span>
+              <span className="text-slate-400">POP </span>
               <span className="text-white">{c.pop.toFixed(0)}%</span>
             </div>
           )}
           <div className="text-xs shrink-0">
-            <span className="text-slate-500">δ </span>
+            <span className="text-slate-400">δ </span>
             <span className="text-white">{c.shortDelta.toFixed(2)}</span>
           </div>
-          <span className="text-[9px] text-slate-600 border border-slate-700/50 rounded px-1 py-0.5 shrink-0">opt</span>
+          <span className="text-[9px] text-slate-400 border border-slate-700/50 rounded px-1 py-0.5 shrink-0">opt</span>
         </>}
         {!result.qualified && result.failReasons.length > 0 && (
           <div className="text-[10px] text-red-400 ml-auto">{result.failReasons.slice(0, 2).join(' · ')}</div>
         )}
-        <div className="ml-auto text-slate-600 text-xs shrink-0">{expanded ? '▲' : '▼'}</div>
+        <div className="ml-auto text-slate-400 text-xs shrink-0">{expanded ? '▲' : '▼'}</div>
       </div>
 
       {expanded && (
@@ -600,15 +600,15 @@ function ResultCard({ result }: { result: ScreenResult }) {
             <div key={key} className="flex items-start gap-2">
               <span className={`text-xs mt-0.5 ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase tracking-wider">{key}</p>
+                <p className="text-[10px] text-slate-400 uppercase tracking-wider">{key}</p>
                 <p className="text-xs text-white">{check.value}</p>
-                <p className="text-[10px] text-slate-500">{check.reason}</p>
+                <p className="text-[10px] text-slate-400">{check.reason}</p>
               </div>
             </div>
           ))}
           {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
             <div className="col-span-2 md:col-span-3 mt-1 pt-2 border-t border-slate-800">
-              <p className="text-[10px] text-slate-500">
+              <p className="text-[10px] text-slate-400">
                 Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth} (each optimized for best ROC)
               </p>
             </div>
@@ -744,7 +744,7 @@ export default function Home() {
     <div className="min-h-screen bg-[#080c14] text-slate-100 font-mono">
       <div className="border-b border-slate-800 px-6 py-4">
         <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
-        <p className="text-[10px] text-slate-500 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
+        <p className="text-[10px] text-slate-400 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
       </div>
 
       <div className="flex h-[calc(100vh-57px)]">
@@ -776,18 +776,18 @@ export default function Home() {
           </div>
 
           {/* Active Rules — live from runtimeRules */}
-          <div className="text-[9px] text-slate-600 space-y-1 border-t border-slate-800 pt-3">
-            <p className="text-slate-500 mb-1.5 tracking-widest text-[9px]">ACTIVE RULES</p>
-            <div className="flex justify-between"><span>IVR</span><span className="text-slate-500">≥ {runtimeRules.IVR_MIN}%</span></div>
-            <div className="flex justify-between"><span>DTE</span><span className="text-slate-500">{runtimeRules.DTE_MIN}–{runtimeRules.DTE_MAX} days</span></div>
-            <div className="flex justify-between"><span>BPS/BCS delta</span><span className="text-slate-500">{runtimeRules.SPREAD_DELTA_MIN}–{runtimeRules.SPREAD_DELTA_MAX}</span></div>
-            <div className="flex justify-between"><span>IC delta</span><span className="text-slate-500">{runtimeRules.IC_DELTA_MIN}–{runtimeRules.IC_DELTA_MAX}</span></div>
-            <div className="flex justify-between"><span>Credit ratio</span><span className="text-slate-500">≥ {(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%</span></div>
-            <div className="flex justify-between"><span>OI per leg</span><span className="text-slate-500">≥ {runtimeRules.OI_MIN}</span></div>
-            <div className="flex justify-between"><span>Bid-Ask</span><span className="text-slate-500">≤ ${runtimeRules.BID_ASK_MAX}</span></div>
-            <div className="flex justify-between"><span>Max width</span><span className="text-slate-500">${runtimeRules.MAX_SPREAD_WIDTH} (opt)</span></div>
-            <div className="flex justify-between"><span>Min ROC spread</span><span className="text-slate-500">{runtimeRules.ROC_MIN_SPREAD}%</span></div>
-            <div className="flex justify-between"><span>Min ROC IC</span><span className="text-slate-500">{runtimeRules.ROC_MIN_IC}%</span></div>
+          <div className="text-[9px] text-slate-400 space-y-1 border-t border-slate-800 pt-3">
+            <p className="text-slate-400 mb-1.5 tracking-widest text-[9px]">ACTIVE RULES</p>
+            <div className="flex justify-between"><span>IVR</span><span className="text-slate-400">≥ {runtimeRules.IVR_MIN}%</span></div>
+            <div className="flex justify-between"><span>DTE</span><span className="text-slate-400">{runtimeRules.DTE_MIN}–{runtimeRules.DTE_MAX} days</span></div>
+            <div className="flex justify-between"><span>BPS/BCS delta</span><span className="text-slate-400">{runtimeRules.SPREAD_DELTA_MIN}–{runtimeRules.SPREAD_DELTA_MAX}</span></div>
+            <div className="flex justify-between"><span>IC delta</span><span className="text-slate-400">{runtimeRules.IC_DELTA_MIN}–{runtimeRules.IC_DELTA_MAX}</span></div>
+            <div className="flex justify-between"><span>Credit ratio</span><span className="text-slate-400">≥ {(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%</span></div>
+            <div className="flex justify-between"><span>OI per leg</span><span className="text-slate-400">≥ {runtimeRules.OI_MIN}</span></div>
+            <div className="flex justify-between"><span>Bid-Ask</span><span className="text-slate-400">≤ ${runtimeRules.BID_ASK_MAX}</span></div>
+            <div className="flex justify-between"><span>Max width</span><span className="text-slate-400">${runtimeRules.MAX_SPREAD_WIDTH} (opt)</span></div>
+            <div className="flex justify-between"><span>Min ROC spread</span><span className="text-slate-400">{runtimeRules.ROC_MIN_SPREAD}%</span></div>
+            <div className="flex justify-between"><span>Min ROC IC</span><span className="text-slate-400">{runtimeRules.ROC_MIN_IC}%</span></div>
           </div>
 
           {error && (
@@ -806,14 +806,14 @@ export default function Home() {
         {/* Main content */}
         <div className="flex-1 overflow-auto p-5">
           {results.length === 0 && !loading && (
-            <div className="h-full flex flex-col items-center justify-center text-slate-700">
+            <div className="h-full flex flex-col items-center justify-center text-slate-400">
               <div className="text-4xl mb-3 opacity-30">◈</div>
               <p className="text-[10px] tracking-widest">ADD TICKERS AND RUN SCREENER</p>
             </div>
           )}
           {loading && (
             <div className="h-full flex flex-col items-center justify-center gap-2">
-              <div className="text-[10px] tracking-widest text-slate-500 animate-pulse">{status || 'SCANNING...'}</div>
+              <div className="text-[10px] tracking-widest text-slate-400 animate-pulse">{status || 'SCANNING...'}</div>
             </div>
           )}
           {results.length > 0 && (
@@ -821,8 +821,8 @@ export default function Home() {
               <div className="flex items-center justify-between">
                 <div className="flex gap-4 text-[10px] tracking-wider">
                   <span className="text-emerald-400">{qualified.length} QUALIFIED</span>
-                  <span className="text-slate-600">{disqualified.length} DISQUALIFIED</span>
-                  <span className="text-slate-600">{results.length} SCANNED</span>
+                  <span className="text-slate-400">{disqualified.length} DISQUALIFIED</span>
+                  <span className="text-slate-400">{results.length} SCANNED</span>
                 </div>
                 <button onClick={downloadCSV} className="text-[10px] px-3 py-1.5 border border-slate-700 rounded hover:border-slate-500 transition-colors tracking-wider">↓ CSV</button>
               </div>
@@ -834,7 +834,7 @@ export default function Home() {
               )}
               {disqualified.length > 0 && (
                 <div>
-                  <p className="text-[9px] text-slate-700 tracking-widest mb-2">DISQUALIFIED</p>
+                  <p className="text-[9px] text-slate-400 tracking-widest mb-2">DISQUALIFIED</p>
                   <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} />)}</div>
                 </div>
               )}
@@ -848,7 +848,7 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 w-[500px] max-h-[80vh] overflow-auto">
             <h2 className="text-xs font-bold tracking-widest text-white mb-1">SCREENING RULES</h2>
-            <p className="text-[9px] text-slate-500 mb-4 tracking-wider">
+            <p className="text-[9px] text-slate-400 mb-4 tracking-wider">
               Width optimizer tries $5 → ${runtimeRules.MAX_SPREAD_WIDTH} in $5 steps and returns best ROC. IC sides optimized independently.
             </p>
             <div className="grid grid-cols-2 gap-3 mb-6">
@@ -862,9 +862,9 @@ export default function Home() {
                 'ROC_MIN_SPREAD', 'ROC_MIN_IC',
               ] as (keyof RulesType)[]).map(key => (
                 <div key={key}>
-                  <p className="text-[9px] text-slate-500 tracking-wider mb-1">
+                  <p className="text-[9px] text-slate-400 tracking-wider mb-1">
                     {RULE_LABELS[key] ?? key}
-                    {key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-600 ml-1">(optimizer cap)</span>}
+                    {key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-400 ml-1">(optimizer cap)</span>}
                   </p>
                   <input
                     type="number"
