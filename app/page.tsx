@@ -147,7 +147,7 @@ async function getMarketMetrics(symbols: string[], token: string) {
 
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
-    onst data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
+    const data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
     const item = data.data?.items?.[0];
     if (!item) return null;
     const last = item.last != null ? parseFloat(item.last) : null;
