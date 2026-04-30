@@ -271,7 +271,7 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
       pop: (1 - absDelta) * 100,
     };
   }
-  console.log(`${strategy} ${expDate} summary: ${sorted.length} total strikes checked`);
+  console.log(`${strategy} ${expDate} summary: ${sorted.length} total strikes checked, optionType: ${optionType}, legs found: ${legs.length}`);
   for (const [reason, count] of Object.entries(rejections)) {
     console.log(`  ✗ ${reason}: ${count} strike${count > 1 ? 's' : ''}`);
   }
