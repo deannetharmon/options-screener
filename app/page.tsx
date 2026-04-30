@@ -271,7 +271,7 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
       pop: (1 - absDelta) * 100,
     };
   }
-  console.log(`${strategy} ${expDate} summary: ${sorted.length} total strikes checked, optionType: ${optionType}, legs found: ${legs.length}`);
+console.log(`${strategy} ${expDate} summary: ${sorted.length} total strikes checked, optionType: ${optionType}, legs found: ${legs.length}`);   try {
   for (const [reason, count] of Object.entries(rejections)) {
     console.log(`  ✗ ${reason}: ${count} strike${count > 1 ? 's' : ''}`);
   }
@@ -286,6 +286,7 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
     sorted.filter(o => o.delta != null && Math.abs(o.delta) >= RULES.SPREAD_DELTA_MIN && Math.abs(o.delta) <= RULES.SPREAD_DELTA_MAX)
     .map(o => ({ strike: o.strikePrice, delta: o.delta, spread: (o.ask - o.bid).toFixed(2), bidAskMax }))
   );
+  } catch(e) { console.error(`${strategy} ${expDate} ERROR:`, e); }
   return null;
 }
 
