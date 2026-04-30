@@ -222,8 +222,8 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
   }
 
   expirations.sort();
-  console.log('CHAIN DEBUG:', symbol, 'expirations:', expirations, 'total options:', Object.values(chains).flat().length);
-  return { expirations, chains };
+console.log('CHAIN DEBUG:', symbol, 'expirations:', expirations, 'total options:', Object.values(chains).flat().length);
+  console.log('CHAIN PER EXP:', Object.fromEntries(Object.entries(chains).map(([k, v]) => [k, v.length])));  return { expirations, chains };
 }
 
 // ── Screener Logic ─────────────────────────────────────────────────────────
