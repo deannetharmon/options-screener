@@ -680,7 +680,15 @@ export default function Home() {
             <h2 className="text-xs font-bold tracking-widest text-white mb-1">SCREENING RULES</h2>
             <p className="text-[9px] text-slate-500 mb-4 tracking-wider">Adjust for this run only. Defaults reload next time.</p>
             <div className="grid grid-cols-2 gap-3 mb-6">
-              {(Object.keys(DEFAULT_RULES) as (keyof RulesType)[]).map(key => (
+              {([
+                'IVR_MIN', 'IVR_IC_MAX',
+                'DTE_MIN', 'DTE_MAX',
+                'SPREAD_DELTA_MIN', 'SPREAD_DELTA_MAX',
+                'IC_DELTA_MIN', 'IC_DELTA_MAX',
+                'OI_MIN', 'BID_ASK_MAX',
+                'CREDIT_RATIO_MIN', 'SPREAD_WIDTH',
+                'ROC_MIN_SPREAD', 'ROC_MIN_IC',
+              ] as (keyof RulesType)[]).map(key => (
                 <div key={key}>
                   <p className="text-[9px] text-slate-500 tracking-wider mb-1">{RULE_LABELS[key] ?? key}</p>
                   <input
