@@ -50,14 +50,12 @@ interface ScreenResult {
 
 // ── Rules ──────────────────────────────────────────────────────────────────
 
-const RULES = {
+const DEFAULT_RULES = {
   IVR_MIN: 30,
   IVR_IC_MAX: 70,
-  //OI_MIN: 500,
-  OI_MIN: 10,
-  //BID_ASK_MAX: 0.10,
-  BID_ASK_MAX: 0.50,
-  CREDIT_RATIO_MIN: 1 / 3,
+  OI_MIN: 0,
+  BID_ASK_MAX: 0.10,
+  CREDIT_RATIO_MIN: 0.333,
   SPREAD_DELTA_MIN: 0.20,
   SPREAD_DELTA_MAX: 0.30,
   IC_DELTA_MIN: 0.16,
@@ -65,9 +63,27 @@ const RULES = {
   DTE_MIN: 30,
   DTE_MAX: 45,
   SPREAD_WIDTH: 5,
-  //ROC_MIN_SPREAD: 20,
   ROC_MIN_SPREAD: 30,
   ROC_MIN_IC: 30,
+};
+
+type RulesType = typeof DEFAULT_RULES;
+
+const RULE_LABELS: Record<string, string> = {
+  IVR_MIN: 'IVR Min %',
+  IVR_IC_MAX: 'IVR IC Max %',
+  OI_MIN: 'Min Open Interest',
+  BID_ASK_MAX: 'Max Bid-Ask $',
+  CREDIT_RATIO_MIN: 'Min Credit Ratio',
+  SPREAD_DELTA_MIN: 'Spread Delta Min',
+  SPREAD_DELTA_MAX: 'Spread Delta Max',
+  IC_DELTA_MIN: 'IC Delta Min',
+  IC_DELTA_MAX: 'IC Delta Max',
+  DTE_MIN: 'DTE Min',
+  DTE_MAX: 'DTE Max',
+  SPREAD_WIDTH: 'Spread Width $',
+  ROC_MIN_SPREAD: 'Min ROC Spread %',
+  ROC_MIN_IC: 'Min ROC IC %',
 };
 
 function daysUntil(dateStr: string): number {
@@ -76,7 +92,7 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-// ── TastyTrade API (all called from browser) ───────────────────────────────
+// ── TastyTrade API ─────────────────────────────────────────────────────────
 
 const BASE = 'https://api.tastytrade.com';
 
@@ -143,7 +159,7 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
   }
 }
 
-async function getChain(symbol: string, token: string) {
+async function getChain(symbol: string, token: string, RULES: RulesType) {
   const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
   const expirations: string[] = [];
   const chains: Record<string, any[]> = {};
@@ -180,7 +196,6 @@ async function getChain(symbol: string, token: string) {
     let greeksData: any;
     try {
       greeksData = await ttFetch(`/market-data/by-type?${qs}`, token);
-      if (i === 0) console.log('BY-TYPE SAMPLE:', JSON.stringify(greeksData?.data, null, 2).slice(0, 1000));
     } catch (e) {
       console.warn('Greeks fetch failed for chunk', i, e);
       continue;
@@ -207,28 +222,21 @@ async function getChain(symbol: string, token: string) {
   }
 
   expirations.sort();
-  const firstExp = expirations[0];
-  if (firstExp) {
-    console.log('GREEKS SAMPLE:', JSON.stringify(chains[firstExp]?.[0], null, 2));
-    console.log('Total options with Greeks:', Object.values(chains).flat().length);
-  }
   return { expirations, chains };
 }
 
 // ── Screener Logic ─────────────────────────────────────────────────────────
 
-function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null): SpreadCandidate | null {
-  const width = price == null ? 5 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
-  const bidAskMax = price == null ? 0.10 : price >= 200 ? 0.40 : price >= 100 ? 0.20 : 0.10;
+function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
+  const width = price == null ? RULES.SPREAD_WIDTH : price >= 500 ? 50 : price >= 200 ? 20 : price >= 100 ? 10 : RULES.SPREAD_WIDTH;
+  const bidAskMax = price == null ? RULES.BID_ASK_MAX : price >= 500 ? 3.00 : price >= 200 ? 1.00 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX;
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
-  const inRangeLegs = legs.filter(o => o.delta != null && Math.abs(o.delta) >= 0.15 && Math.abs(o.delta) <= 0.35);
-  console.log(`${strategy} ${expDate} in-range legs:`, JSON.stringify(inRangeLegs.map(o => ({ strike: o.strikePrice, delta: o.delta, oi: o.openInterest, bid: o.bid, ask: o.ask }))));
   const sorted = strategy === 'BPS'
-    ? legs.sort((a: any, b: any) => b.strikePrice - a.strikePrice)
-    : legs.sort((a: any, b: any) => a.strikePrice - b.strikePrice);
+    ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice)
+    : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
 
-  let rejections: Record<string, number> = {};
+  const rejections: Record<string, number> = {};
 
   for (const shortLeg of sorted) {
     const delta = shortLeg.delta;
@@ -265,9 +273,9 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
   return null;
 }
 
-function findBestIC(chain: any[], expDate: string, price: number | null): SpreadCandidate | null {
-  const width = price == null ? 5 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
-  const bidAskMax = price == null ? 0.10 : price >= 200 ? 0.40 : price >= 100 ? 0.20 : 0.10;
+function findBestIC(chain: any[], expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
+  const width = price == null ? RULES.SPREAD_WIDTH : price >= 500 ? 50 : price >= 200 ? 20 : price >= 100 ? 10 : RULES.SPREAD_WIDTH;
+  const bidAskMax = price == null ? RULES.BID_ASK_MAX : price >= 500 ? 3.00 : price >= 200 ? 1.00 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX;
   const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P')
     .sort((a: any, b: any) => b.strikePrice - a.strikePrice);
   const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C')
@@ -312,23 +320,12 @@ function findBestIC(chain: any[], expDate: string, price: number | null): Spread
       if (roc < RULES.ROC_MIN_IC) continue;
 
       return {
-        strategy: 'IC',
-        expiration: expDate,
-        dte: daysUntil(expDate),
-        shortStrike: shortPut.strikePrice,
-        longStrike: longPutStrike,
-        shortDelta: absPutDelta,
-        shortOI: shortPut.openInterest,
-        longOI: longPut.openInterest,
-        credit: putCredit,
-        spreadWidth: width,
-        creditRatio: putCredit / width,
-        roc,
+        strategy: 'IC', expiration: expDate, dte: daysUntil(expDate),
+        shortStrike: shortPut.strikePrice, longStrike: longPutStrike,
+        shortDelta: absPutDelta, shortOI: shortPut.openInterest, longOI: longPut.openInterest,
+        credit: putCredit, spreadWidth: width, creditRatio: putCredit / width, roc,
         pop: (1 - absPutDelta - absCallDelta) * 100,
-        shortCallStrike: shortCall.strikePrice,
-        longCallStrike,
-        callCredit,
-        totalCredit,
+        shortCallStrike: shortCall.strikePrice, longCallStrike, callCredit, totalCredit,
       };
     }
   }
@@ -340,7 +337,8 @@ function runChecklist(
   strategy: 'BPS' | 'BCS' | 'IC',
   metrics: any,
   chainData: { expirations: string[]; chains: Record<string, any[]> },
-  price: number | null
+  price: number | null,
+  RULES: RulesType
 ): ScreenResult {
   const failReasons: string[] = [];
   const ivrValue = metrics.ivRank;
@@ -349,7 +347,7 @@ function runChecklist(
   const ivrCheck: CheckResult = ivrValue == null
     ? { status: 'warn', value: 'N/A', reason: 'Not available' }
     : ivrValue < RULES.IVR_MIN
-    ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < 30%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: 'Below 30% minimum' }; })()
+    ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${RULES.IVR_MIN}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${RULES.IVR_MIN}% minimum` }; })()
     : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Above minimum' };
 
   let earningsCheck: CheckResult;
@@ -359,9 +357,7 @@ function runChecklist(
     const daysAway = daysUntil(earningsDate);
     if (daysAway < 0) {
       earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
-    //} else if (daysAway <= RULES.DTE_MAX) {
-      } else if (daysAway < 30) {
-
+    } else if (daysAway < 30) {
       failReasons.push(`Earnings in ${daysAway}d`);
       earningsCheck = { status: 'fail', value: `${daysAway}d (${earningsDate})`, reason: 'Within expiry window' };
     } else {
@@ -384,8 +380,8 @@ function runChecklist(
     for (const exp of validExpirations) {
       const chainItems = chainData.chains[exp] || [];
       bestCandidate = strategy === 'IC'
-        ? findBestIC(chainItems, exp, price)
-        : findBestSpread(chainItems, strategy, exp, price);
+        ? findBestIC(chainItems, exp, price, RULES)
+        : findBestSpread(chainItems, strategy, exp, price, RULES);
       if (bestCandidate) break;
     }
   }
@@ -397,7 +393,7 @@ function runChecklist(
   }
 
   const oiCheck: CheckResult = bestCandidate
-    ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: 'Both legs ≥ 500' }
+    ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: `Both legs ≥ ${RULES.OI_MIN}` }
     : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
 
   const deltaCheck: CheckResult = bestCandidate
@@ -489,7 +485,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
-  const [runtimeRules, setRuntimeRules] = useState({ ...RULES });
+  const [runtimeRules, setRuntimeRules] = useState<RulesType>({ ...DEFAULT_RULES });
 
   const parseTickers = (input: string) =>
     input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -509,7 +505,7 @@ export default function Home() {
     a.click();
   };
 
-  const runScreen = async () => {
+  const runScreen = async (rules: RulesType) => {
     setError('');
     setResults([]);
 
@@ -527,7 +523,6 @@ export default function Home() {
     try {
       setStatus('Getting access token...');
       const token = await getAccessToken();
-
       const allSymbols = Array.from(new Set([...bps, ...bcs, ...ic]));
 
       setStatus('Fetching market metrics...');
@@ -547,10 +542,10 @@ export default function Home() {
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const [chainData, price] = await Promise.all([
-              getChain(symbol, token),
+              getChain(symbol, token, rules),
               getQuote(symbol, token),
             ]);
-            const result = runChecklist(symbol, strategy, metrics, chainData, price);
+            const result = runChecklist(symbol, strategy, metrics, chainData, price, rules);
             screenResults.push(result);
           } catch (e: any) {
             screenResults.push({
@@ -621,17 +616,21 @@ export default function Home() {
           </div>
           <div className="text-[9px] text-slate-600 space-y-1 border-t border-slate-800 pt-3">
             <p className="text-slate-500 mb-1.5 tracking-widest text-[9px]">ACTIVE RULES</p>
-            <div className="flex justify-between"><span>IVR</span><span className="text-slate-500">≥ 30%</span></div>
-            <div className="flex justify-between"><span>DTE</span><span className="text-slate-500">30–45 days</span></div>
-            <div className="flex justify-between"><span>BPS/BCS delta</span><span className="text-slate-500">0.20–0.30</span></div>
-            <div className="flex justify-between"><span>IC delta</span><span className="text-slate-500">0.16–0.20</span></div>
+            <div className="flex justify-between"><span>IVR</span><span className="text-slate-500">≥ {DEFAULT_RULES.IVR_MIN}%</span></div>
+            <div className="flex justify-between"><span>DTE</span><span className="text-slate-500">{DEFAULT_RULES.DTE_MIN}–{DEFAULT_RULES.DTE_MAX} days</span></div>
+            <div className="flex justify-between"><span>BPS/BCS delta</span><span className="text-slate-500">{DEFAULT_RULES.SPREAD_DELTA_MIN}–{DEFAULT_RULES.SPREAD_DELTA_MAX}</span></div>
+            <div className="flex justify-between"><span>IC delta</span><span className="text-slate-500">{DEFAULT_RULES.IC_DELTA_MIN}–{DEFAULT_RULES.IC_DELTA_MAX}</span></div>
             <div className="flex justify-between"><span>Credit</span><span className="text-slate-500">≥ ⅓ width</span></div>
-            <div className="flex justify-between"><span>OI per leg</span><span className="text-slate-500">≥ 500</span></div>
-            <div className="flex justify-between"><span>Bid-Ask</span><span className="text-slate-500">≤ $0.10</span></div>
-            <div className="flex justify-between"><span>Width</span><span className="text-slate-500">$5</span></div>
+            <div className="flex justify-between"><span>OI per leg</span><span className="text-slate-500">≥ {DEFAULT_RULES.OI_MIN}</span></div>
+            <div className="flex justify-between"><span>Bid-Ask</span><span className="text-slate-500">≤ ${DEFAULT_RULES.BID_ASK_MAX}</span></div>
+            <div className="flex justify-between"><span>Width</span><span className="text-slate-500">${DEFAULT_RULES.SPREAD_WIDTH}</span></div>
           </div>
           {error && <div className="text-[10px] text-red-400 bg-red-900/20 border border-red-800/60 rounded p-2 leading-relaxed">{error}</div>}
-          <button onClick={() => setShowRulesModal(true)} disabled={loading} className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto">
+          <button
+            onClick={() => { setRuntimeRules({ ...DEFAULT_RULES }); setShowRulesModal(true); }}
+            disabled={loading}
+            className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto"
+          >
             {loading ? 'SCANNING...' : 'RUN SCREENER'}
           </button>
         </div>
@@ -674,34 +673,35 @@ export default function Home() {
           )}
         </div>
       </div>
-    // TO:
+
       {showRulesModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 w-[480px] max-h-[80vh] overflow-auto">
-            <h2 className="text-xs font-bold tracking-widest text-white mb-4">SCREENING RULES</h2>
+          <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 w-[500px] max-h-[80vh] overflow-auto">
+            <h2 className="text-xs font-bold tracking-widest text-white mb-1">SCREENING RULES</h2>
+            <p className="text-[9px] text-slate-500 mb-4 tracking-wider">Adjust for this run only. Defaults reload next time.</p>
             <div className="grid grid-cols-2 gap-3 mb-6">
-              {Object.entries(runtimeRules).map(([key, value]) => (
+              {(Object.keys(DEFAULT_RULES) as (keyof RulesType)[]).map(key => (
                 <div key={key}>
-                  <p className="text-[9px] text-slate-500 tracking-wider mb-1">{key.replace(/_/g, ' ')}</p>
+                  <p className="text-[9px] text-slate-500 tracking-wider mb-1">{RULE_LABELS[key] ?? key}</p>
                   <input
                     type="number"
                     step="any"
-                    value={value}
+                    value={runtimeRules[key]}
                     onChange={e => setRuntimeRules(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-slate-500"
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-slate-500"
                   />
                 </div>
               ))}
             </div>
             <div className="flex gap-3">
               <button
-                onClick={() => { setShowRulesModal(false); setRuntimeRules({ ...RULES }); }}
+                onClick={() => setShowRulesModal(false)}
                 className="flex-1 border border-slate-700 text-slate-400 py-2 rounded text-xs tracking-widest hover:border-slate-500"
               >
                 CANCEL
               </button>
               <button
-                onClick={() => { setShowRulesModal(false); runScreen(); }}
+                onClick={() => { setShowRulesModal(false); runScreen(runtimeRules); }}
                 className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200"
               >
                 RUN
