@@ -216,7 +216,9 @@ async function getChain(symbol: string, token: string) {
 
 // ── Screener Logic ─────────────────────────────────────────────────────────
 
-function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string): SpreadCandidate | null {
+function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null): SpreadCandidate | null {
+  const width = price == null ? 5 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
+  const bidAskMax = price == null ? 0.10 : price >= 200 ? 0.40 : price >= 100 ? 0.20 : 0.10;
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
   const inRangeLegs = legs.filter(o => o.delta != null && Math.abs(o.delta) >= 0.15 && Math.abs(o.delta) <= 0.35);
@@ -233,20 +235,20 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string):
     const absDelta = Math.abs(delta);
     if (absDelta < RULES.SPREAD_DELTA_MIN || absDelta > RULES.SPREAD_DELTA_MAX) { rejections['delta out of range'] = (rejections['delta out of range'] || 0) + 1; continue; }
     if (shortLeg.openInterest < RULES.OI_MIN) { rejections['OI too low'] = (rejections['OI too low'] || 0) + 1; continue; }
-    if (shortLeg.ask - shortLeg.bid > RULES.BID_ASK_MAX) { rejections['bid-ask too wide'] = (rejections['bid-ask too wide'] || 0) + 1; continue; }
+    if (shortLeg.ask - shortLeg.bid > bidAskMax) { rejections['bid-ask too wide'] = (rejections['bid-ask too wide'] || 0) + 1; continue; }
 
     const longStrike = strategy === 'BPS'
-      ? shortLeg.strikePrice - RULES.SPREAD_WIDTH
-      : shortLeg.strikePrice + RULES.SPREAD_WIDTH;
+      ? shortLeg.strikePrice - width
+      : shortLeg.strikePrice + width;
     const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN) { rejections['long leg OI'] = (rejections['long leg OI'] || 0) + 1; continue; }
-    if (longLeg.ask - longLeg.bid > RULES.BID_ASK_MAX) { rejections['long bid-ask too wide'] = (rejections['long bid-ask too wide'] || 0) + 1; continue; }
+    if (longLeg.ask - longLeg.bid > bidAskMax) { rejections['long bid-ask too wide'] = (rejections['long bid-ask too wide'] || 0) + 1; continue; }
 
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2));
     if (credit <= 0) { rejections['no credit'] = (rejections['no credit'] || 0) + 1; continue; }
-    const creditRatio = credit / RULES.SPREAD_WIDTH;
+    const creditRatio = credit / width;
     if (creditRatio < RULES.CREDIT_RATIO_MIN) { rejections['credit ratio'] = (rejections['credit ratio'] || 0) + 1; continue; }
-    const maxLoss = RULES.SPREAD_WIDTH - credit;
+    const maxLoss = width - credit;
     const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
     if (roc < RULES.ROC_MIN_SPREAD) { rejections['ROC too low'] = (rejections['ROC too low'] || 0) + 1; continue; }
 
@@ -254,7 +256,7 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string):
       strategy, expiration: expDate, dte: daysUntil(expDate),
       shortStrike: shortLeg.strikePrice, longStrike,
       shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest,
-      credit, spreadWidth: RULES.SPREAD_WIDTH, creditRatio, roc,
+      credit, spreadWidth: width, creditRatio, roc,
       pop: (1 - absDelta) * 100,
     };
   }
@@ -274,15 +276,15 @@ function findBestIC(chain: any[], expDate: string): SpreadCandidate | null {
     const absPutDelta = Math.abs(putDelta);
     if (absPutDelta < RULES.IC_DELTA_MIN || absPutDelta > RULES.IC_DELTA_MAX) continue;
     if (shortPut.openInterest < RULES.OI_MIN) continue;
-    if (shortPut.ask - shortPut.bid > RULES.BID_ASK_MAX) continue;
+    if (shortPut.ask - shortPut.bid > bidAskMax) continue;
 
-    const longPutStrike = shortPut.strikePrice - RULES.SPREAD_WIDTH;
+    const longPutStrike = shortPut.strikePrice - width;
     const longPut = puts.find((o: any) => Math.abs(o.strikePrice - longPutStrike) < 0.01);
     if (!longPut || longPut.openInterest < RULES.OI_MIN) continue;
-    if (longPut.ask - longPut.bid > RULES.BID_ASK_MAX) continue;
+    if (longPut.ask - longPut.bid > bidAskMax) continue;
 
     const putCredit = parseFloat((shortPut.mid - longPut.mid).toFixed(2));
-    if (putCredit <= 0 || putCredit / RULES.SPREAD_WIDTH < RULES.CREDIT_RATIO_MIN) continue;
+    if (putCredit <= 0 || putCredit / width < RULES.CREDIT_RATIO_MIN) continue;
 
     for (const shortCall of calls) {
       if (shortCall.strikePrice <= shortPut.strikePrice) continue;
@@ -291,18 +293,18 @@ function findBestIC(chain: any[], expDate: string): SpreadCandidate | null {
       const absCallDelta = Math.abs(callDelta);
       if (absCallDelta < RULES.IC_DELTA_MIN || absCallDelta > RULES.IC_DELTA_MAX) continue;
       if (shortCall.openInterest < RULES.OI_MIN) continue;
-      if (shortCall.ask - shortCall.bid > RULES.BID_ASK_MAX) continue;
+      if (shortCall.ask - shortCall.bid > bidAskMax) continue;
 
-      const longCallStrike = shortCall.strikePrice + RULES.SPREAD_WIDTH;
+      const longCallStrike = shortCall.strikePrice + width;
       const longCall = calls.find((o: any) => Math.abs(o.strikePrice - longCallStrike) < 0.01);
       if (!longCall || longCall.openInterest < RULES.OI_MIN) continue;
-      if (longCall.ask - longCall.bid > RULES.BID_ASK_MAX) continue;
+      if (longCall.ask - longCall.bid > bidAskMax) continue;
 
       const callCredit = parseFloat((shortCall.mid - longCall.mid).toFixed(2));
-      if (callCredit <= 0 || callCredit / RULES.SPREAD_WIDTH < RULES.CREDIT_RATIO_MIN) continue;
+      if (callCredit <= 0 || callCredit / width < RULES.CREDIT_RATIO_MIN) continue;
 
       const totalCredit = parseFloat((putCredit + callCredit).toFixed(2));
-      const maxLoss = RULES.SPREAD_WIDTH - Math.max(putCredit, callCredit);
+      const maxLoss = width - Math.max(putCredit, callCredit);
       const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0;
       if (roc < RULES.ROC_MIN_IC) continue;
 
@@ -316,8 +318,8 @@ function findBestIC(chain: any[], expDate: string): SpreadCandidate | null {
         shortOI: shortPut.openInterest,
         longOI: longPut.openInterest,
         credit: putCredit,
-        spreadWidth: RULES.SPREAD_WIDTH,
-        creditRatio: putCredit / RULES.SPREAD_WIDTH,
+        spreadWidth: width,
+        creditRatio: putCredit / width,
         roc,
         pop: (1 - absPutDelta - absCallDelta) * 100,
         shortCallStrike: shortCall.strikePrice,
@@ -379,8 +381,8 @@ function runChecklist(
     for (const exp of validExpirations) {
       const chainItems = chainData.chains[exp] || [];
       bestCandidate = strategy === 'IC'
-        ? findBestIC(chainItems, exp)
-        : findBestSpread(chainItems, strategy, exp);
+        ? findBestIC(chainItems, exp, price)
+        : findBestSpread(chainItems, strategy, exp, price);
       if (bestCandidate) break;
     }
   }
