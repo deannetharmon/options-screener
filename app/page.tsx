@@ -64,7 +64,8 @@ const RULES = {
   DTE_MIN: 30,
   DTE_MAX: 45,
   SPREAD_WIDTH: 5,
-  ROC_MIN_SPREAD: 20,
+  //ROC_MIN_SPREAD: 20,
+  ROC_MIN_SPREAD: 30,
   ROC_MIN_IC: 30,
 };
 
