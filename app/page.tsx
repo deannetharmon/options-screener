@@ -218,6 +218,8 @@ async function getChain(symbol: string, token: string) {
 function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string): SpreadCandidate | null {
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
+  const inRangeLegs = legs.filter(o => o.delta != null && Math.abs(o.delta) >= 0.15 && Math.abs(o.delta) <= 0.35);
+  console.log(`${strategy} ${expDate} in-range legs:`, JSON.stringify(inRangeLegs.map(o => ({ strike: o.strikePrice, delta: o.delta, oi: o.openInterest, bid: o.bid, ask: o.ask }))));
   const sorted = strategy === 'BPS'
     ? legs.sort((a: any, b: any) => b.strikePrice - a.strikePrice)
     : legs.sort((a: any, b: any) => a.strikePrice - b.strikePrice);
