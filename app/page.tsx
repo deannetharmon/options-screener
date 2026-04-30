@@ -119,6 +119,7 @@ async function getAccessToken(): Promise<string> {
 
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
+  console.log('METRICS RAW:', JSON.stringify(data?.data?.items?.[0]));
   return (data.data?.items || []).map((item: any) => ({
     symbol: item.symbol,
     ivRank: item['iv-rank'] != null ? parseFloat(item['iv-rank']) * 100 : null,
