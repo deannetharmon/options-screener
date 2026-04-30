@@ -128,7 +128,7 @@ async function getMarketMetrics(symbols: string[], token: string) {
 
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
-    const data = await ttFetch(`/market-data/quotes?symbols=${encodeURIComponent(symbol)}`, token);
+    const data = await ttFetch(`/market-data/quotes?symbols=${symbol}`, token);
     const item = data.data?.items?.[0];
     if (!item) return null;
     const last = item.last != null ? parseFloat(item.last) : null;
@@ -142,33 +142,59 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
 
 async function getChain(symbol: string, token: string) {
   const data = await ttFetch(`/option-chains/${symbol}/nested`, token);
-  console.log('CHAIN KEYS:', Object.keys(data.data?.items?.[0] || {}));
-  console.log('FIRST EXP:', JSON.stringify(data.data?.items?.[0]?.expirations?.[0]?.strikes?.[0]));
   const expirations: string[] = [];
   const chains: Record<string, any[]> = {};
 
   for (const exp of data.data?.items?.[0]?.expirations || []) {
     const expDate: string = exp['expiration-date'];
     expirations.push(expDate);
-    const items: any[] = [];
+
+    // Collect all option symbols for this expiration
+    const optionSymbols: string[] = [];
+    const strikeMap: Record<string, number> = {};
 
     for (const strike of exp.strikes || []) {
-      for (const type of ['call', 'put'] as const) {
-        const leg = strike[type];
-        if (!leg) continue;
-        const bid = parseFloat(leg.bid || '0');
-        const ask = parseFloat(leg.ask || '0');
-        items.push({
-          strikePrice: parseFloat(strike['strike-price']),
-          expirationDate: expDate,
-          optionType: type === 'call' ? 'C' : 'P',
-          delta: leg.delta != null ? parseFloat(leg.delta) : null,
-          openInterest: parseInt(leg['open-interest'] || '0', 10),
-          bid, ask,
-          mid: (bid + ask) / 2,
-        });
+      const strikePrice = parseFloat(strike['strike-price']);
+      if (strike.call) {
+        optionSymbols.push(strike.call);
+        strikeMap[strike.call] = strikePrice;
+      }
+      if (strike.put) {
+        optionSymbols.push(strike.put);
+        strikeMap[strike.put] = strikePrice;
       }
     }
+
+    if (optionSymbols.length === 0) continue;
+
+    // Fetch option data in batches of 50
+    const items: any[] = [];
+    for (let i = 0; i < optionSymbols.length; i += 50) {
+      const batch = optionSymbols.slice(i, i + 50);
+      try {
+        const chainData = await ttFetch(
+          `/option-chains/${symbol}/option-data?symbols=${batch.map(s => encodeURIComponent(s)).join(',')}`,
+          token
+        );
+        console.log('OPTION DATA SAMPLE:', JSON.stringify(chainData.data?.items?.[0]));
+        for (const opt of chainData.data?.items || []) {
+          const bid = parseFloat(opt.bid || '0');
+          const ask = parseFloat(opt.ask || '0');
+          items.push({
+            strikePrice: strikeMap[opt.symbol] || parseFloat(opt['strike-price'] || '0'),
+            expirationDate: expDate,
+            optionType: opt.symbol?.includes('C') ? 'C' : 'P',
+            delta: opt.delta != null ? parseFloat(opt.delta) : null,
+            openInterest: parseInt(opt['open-interest'] || '0', 10),
+            bid, ask,
+            mid: (bid + ask) / 2,
+          });
+        }
+      } catch (e) {
+        console.log('Batch fetch error:', e);
+      }
+    }
+
     chains[expDate] = items;
   }
   return { expirations, chains };
