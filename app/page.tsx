@@ -182,7 +182,7 @@ async function getChain(symbol: string, token: string) {
       console.warn('Greeks fetch failed for chunk', i, e);
       continue;
     }
-    const items = greeksData?.data?.items ?? greeksData?.data?.['equity-options'] ?? [];
+    const items = greeksData?.data?.items ?? [];
     for (const item of items) {
       const occSym: string = item.symbol;
       const meta = symbolMeta[occSym];
