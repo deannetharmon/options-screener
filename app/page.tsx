@@ -90,9 +90,10 @@ function daysUntil(dateStr: string): number {
 }
 
 // ── Width steps ────────────────────────────────────────────────────────────
-function getWidthSteps(maxWidth: number): number[] {
+function getWidthSteps(maxWidth: number, price: number | null): number[] {
+  const minWidth = price == null ? 5 : price >= 500 ? 50 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
   const steps: number[] = [];
-  for (let w = 5; w <= maxWidth; w += 5) steps.push(w);
+  for (let w = minWidth; w <= maxWidth; w += minWidth) steps.push(w);
   return steps;
 }
 
@@ -295,7 +296,7 @@ function findBestSpread(
 ): SpreadCandidate | null {
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
-  const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH);
+  const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
 
   console.log(`${strategy} ${expDate} optimizing across widths:`, widthSteps, 'legs available:', legs.length);
 
@@ -365,7 +366,7 @@ function findBestIC(
 ): SpreadCandidate | null {
   const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P');
   const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C');
-  const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH);
+  const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
 
   // Find best put side independently
   let bestPut: (ReturnType<typeof tryICSideAtWidth> & { width: number }) | null = null;
