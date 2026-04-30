@@ -141,14 +141,11 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
 }
 
 async function getChain(symbol: string, token: string) {
-  // Step 1: get nested chain to collect option symbols
   const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
   const expirations: string[] = [];
   const chains: Record<string, any[]> = {};
-
   const expirationGroups = nested?.data?.items?.[0]?.expirations ?? [];
 
-  // Collect all option symbols we need Greeks for
   const allOptionSymbols: string[] = [];
   const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
 
@@ -156,8 +153,7 @@ async function getChain(symbol: string, token: string) {
     const expDate: string = expGroup['expiration-date'];
     if (!expDate) continue;
     const dte = daysUntil(expDate);
-    if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue; // only fetch relevant expirations
-
+    if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
     for (const strike of expGroup.strikes ?? []) {
       for (const side of ['call', 'put']) {
         const opt = strike[side];
@@ -174,7 +170,6 @@ async function getChain(symbol: string, token: string) {
 
   if (allOptionSymbols.length === 0) return { expirations, chains };
 
-  // Step 2: batch-fetch Greeks in chunks of 200
   const chunkSize = 200;
   for (let i = 0; i < allOptionSymbols.length; i += chunkSize) {
     const chunk = allOptionSymbols.slice(i, i + chunkSize);
@@ -186,44 +181,9 @@ async function getChain(symbol: string, token: string) {
       console.warn('Greeks fetch failed for chunk', i, e);
       continue;
     }
-
     for (const item of greeksData?.data?.items ?? []) {
       const optSym: string = item.symbol;
-      const meta = symbolMeta[optSym];
-      if (!meta) continue;
-
-      const bid = parseFloat(item.bid ?? '0');
-      const ask = parseFloat(item.ask ?? '0');
-      const delta = item.delta != null ? parseFloat(item.delta) : null;
-      const oi = parseInt(item['open-interest'] ?? '0', 10);
-
-      if (!expirations.includes(meta.expDate)) expirations.push(meta.expDate);
-      if (!chains[meta.expDate]) chains[meta.expDate] = [];
-
-      chains[meta.expDate].push({
-        strikePrice: meta.strike,
-        expirationDate: meta.expDate,
-        optionType: meta.optionType,
-        delta,
-        openInterest: oi,
-        bid,
-        ask,
-        mid: (bid + ask) / 2,
-      });
-    }
-  }
-
-  expirations.sort();
-
-  // Debug: log one entry to verify Greeks are populated
-  const firstExp = expirations[0];
-  if (firstExp) {
-    console.log('GREEKS SAMPLE:', JSON.stringify(chains[firstExp]?.[0], null, 2));
-    console.log('Total options with Greeks:', Object.values(chains).flat().length);
-  }
-
-  return { expirations, chains };
-}
+      const meta = symbolMet
 
 // ── Screener Logic ─────────────────────────────────────────────────────────
 
