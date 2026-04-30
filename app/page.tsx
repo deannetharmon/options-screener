@@ -400,6 +400,7 @@ function runChecklist(
       bestCandidate = strategy === 'IC'
         ? findBestIC(chainItems, exp, price, RULES)
         : findBestSpread(chainItems, strategy, exp, price, RULES);
+      console.log(`${symbol} ${strategy} ${exp} result:`, bestCandidate ? `found: ${bestCandidate.shortStrike}/${bestCandidate.longStrike} roc=${bestCandidate.roc.toFixed(1)}%` : 'null');
       if (bestCandidate) break;
     }
   }
