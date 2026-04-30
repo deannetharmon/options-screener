@@ -653,7 +653,7 @@ export default function Home() {
           </div>
           {error && <div className="text-[10px] text-red-400 bg-red-900/20 border border-red-800/60 rounded p-2 leading-relaxed">{error}</div>}
           <button
-            onClick={() => { setRuntimeRules({ ...DEFAULT_RULES }); setShowRulesModal(true); }}
+            onClick={() => setShowRulesModal(true)}
             disabled={loading}
             className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto"
           >
