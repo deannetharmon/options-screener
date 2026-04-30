@@ -21,13 +21,19 @@ interface SpreadCandidate {
   pop: number | null;
   shortOI: number;
   longOI: number;
-  // IC specific
   shortCallStrike?: number;
   longCallStrike?: number;
   callCredit?: number;
   callWidth?: number;
   totalCredit?: number;
   optimized?: boolean;
+}
+interface TrendResult {
+  trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
+  strategy: 'BPS' | 'BCS' | 'IC';
+  ma20: number;
+  ma50: number;
+  reason: string;
 }
 interface ScreenResult {
   symbol: string;
@@ -37,6 +43,7 @@ interface ScreenResult {
   qualified: boolean;
   bestCandidate: SpreadCandidate | null;
   failReasons: string[];
+  trendResult?: TrendResult;
   checks: {
     ivr: CheckResult;
     earnings: CheckResult;
@@ -83,10 +90,16 @@ const RULE_LABELS: Record<string, string> = {
   ROC_MIN_IC: 'Min ROC IC %',
 };
 
+const AUTO_TICKER_LIMIT = 5;
+
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr);
   const now = new Date();
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ── Width steps ────────────────────────────────────────────────────────────
@@ -103,6 +116,60 @@ function getBidAskMax(price: number | null): number {
   if (price >= 200) return 1.50;
   if (price >= 100) return 0.50;
   return 0.10;
+}
+
+// ── Polygon / Massive API ──────────────────────────────────────────────────
+async function getTrend(symbol: string): Promise<TrendResult> {
+  const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
+  if (!apiKey) throw new Error('NEXT_PUBLIC_POLYGON_API_KEY not set');
+
+  const to = new Date();
+  const from = new Date();
+  from.setMonth(from.getMonth() - 6);
+  const fromStr = from.toISOString().split('T')[0];
+  const toStr = to.toISOString().split('T')[0];
+
+  const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${fromStr}/${toStr}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
+  const data = await res.json();
+
+  const bars: { c: number }[] = data.results ?? [];
+  if (bars.length < 50) {
+    return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough price history' };
+  }
+
+  const closes = bars.map(b => b.c);
+  const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+  const currentPrice = closes[closes.length - 1];
+
+  const maDiff = (ma20 - ma50) / ma50; // positive = uptrend, negative = downtrend
+  const priceVsMa50 = (currentPrice - ma50) / ma50;
+  const ma50VsMa20Spread = Math.abs(maDiff);
+
+  let trend: TrendResult['trend'];
+  let strategy: TrendResult['strategy'];
+  let reason: string;
+
+  if (ma50VsMa20Spread < 0.03 && Math.abs(priceVsMa50) < 0.07) {
+    // MAs within 3% of each other, price within 7% of MA50 → sideways
+    trend = 'sideways';
+    strategy = 'IC';
+    reason = `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound`;
+  } else if (maDiff > 0 && currentPrice > ma50) {
+    // 20MA above 50MA, price above both → uptrend
+    trend = 'uptrend';
+    strategy = 'BPS';
+    reason = `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend`;
+  } else {
+    // 20MA below 50MA or price below → downtrend
+    trend = 'downtrend';
+    strategy = 'BCS';
+    reason = `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend`;
+  }
+
+  return { trend, strategy, ma20, ma50, reason };
 }
 
 // ── TastyTrade API ─────────────────────────────────────────────────────────
@@ -124,7 +191,7 @@ async function getAccessToken(): Promise<string> {
   const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
   const clientId = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
   if (!refreshToken || !clientSecret || !clientId) {
-    throw new Error('TastyTrade credentials not configured (NEXT_PUBLIC_ vars missing)');
+    throw new Error('TastyTrade credentials not configured');
   }
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
@@ -233,19 +300,13 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
 
   expirations.sort();
   console.log('CHAIN DEBUG:', symbol, 'expirations:', expirations, 'total options:', Object.values(chains).flat().length);
-  console.log('CHAIN PER EXP:', Object.fromEntries(Object.entries(chains).map(([k, v]) => [k, v.length])));
   return { expirations, chains };
 }
 
 // ── Screener Logic ─────────────────────────────────────────────────────────
-
 function trySpreadAtWidth(
-  legs: any[],
-  strategy: 'BPS' | 'BCS',
-  expDate: string,
-  width: number,
-  price: number | null,
-  RULES: RulesType
+  legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
+  width: number, price: number | null, RULES: RulesType
 ): SpreadCandidate | null {
   const bidAskMax = getBidAskMax(price);
   const sorted = strategy === 'BPS'
@@ -260,9 +321,7 @@ function trySpreadAtWidth(
     if (shortLeg.openInterest < RULES.OI_MIN) continue;
     if (shortLeg.ask - shortLeg.bid > bidAskMax) continue;
 
-    const longStrike = strategy === 'BPS'
-      ? shortLeg.strikePrice - width
-      : shortLeg.strikePrice + width;
+    const longStrike = strategy === 'BPS' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
     const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
     if (longLeg.ask - longLeg.bid > bidAskMax) continue;
@@ -280,50 +339,31 @@ function trySpreadAtWidth(
       shortStrike: shortLeg.strikePrice, longStrike,
       shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest,
       credit, spreadWidth: width, creditRatio, roc,
-      pop: (1 - absDelta) * 100,
-      optimized: true,
+      pop: (1 - absDelta) * 100, optimized: true,
     };
   }
   return null;
 }
 
 function findBestSpread(
-  chain: any[],
-  strategy: 'BPS' | 'BCS',
-  expDate: string,
-  price: number | null,
-  RULES: RulesType
+  chain: any[], strategy: 'BPS' | 'BCS', expDate: string,
+  price: number | null, RULES: RulesType
 ): SpreadCandidate | null {
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
   const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
 
-  console.log(`${strategy} ${expDate} optimizing across widths:`, widthSteps, 'legs available:', legs.length);
-
   let best: SpreadCandidate | null = null;
   for (const width of widthSteps) {
     const candidate = trySpreadAtWidth(legs, strategy, expDate, width, price, RULES);
-    if (candidate && (best === null || candidate.roc > best.roc)) {
-      best = candidate;
-    }
+    if (candidate && (best === null || candidate.roc > best.roc)) best = candidate;
   }
-
-  if (best) {
-    console.log(`${strategy} ${expDate} best: width=$${best.spreadWidth} roc=${best.roc.toFixed(1)}% strike=${best.shortStrike}/${best.longStrike}`);
-  } else {
-    console.log(`${strategy} ${expDate} no qualifying candidate found across all widths`);
-  }
-
   return best;
 }
 
 function tryICSideAtWidth(
-  legs: any[],
-  side: 'put' | 'call',
-  width: number,
-  price: number | null,
-  RULES: RulesType,
-  minCallStrike?: number
+  legs: any[], side: 'put' | 'call', width: number,
+  price: number | null, RULES: RulesType, minCallStrike?: number
 ): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number } | null {
   const bidAskMax = getBidAskMax(price);
   const sorted = side === 'put'
@@ -339,9 +379,7 @@ function tryICSideAtWidth(
     if (shortLeg.openInterest < RULES.OI_MIN) continue;
     if (shortLeg.ask - shortLeg.bid > bidAskMax) continue;
 
-    const longStrike = side === 'put'
-      ? shortLeg.strikePrice - width
-      : shortLeg.strikePrice + width;
+    const longStrike = side === 'put' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
     const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
     if (longLeg.ask - longLeg.bid > bidAskMax) continue;
@@ -359,67 +397,46 @@ function tryICSideAtWidth(
 }
 
 function findBestIC(
-  chain: any[],
-  expDate: string,
-  price: number | null,
-  RULES: RulesType
+  chain: any[], expDate: string, price: number | null, RULES: RulesType
 ): SpreadCandidate | null {
   const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P');
   const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C');
   const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
 
-  // Find best put side independently
   let bestPut: (ReturnType<typeof tryICSideAtWidth> & { width: number }) | null = null;
   for (const width of widthSteps) {
     const candidate = tryICSideAtWidth(puts, 'put', width, price, RULES);
-    if (candidate && (bestPut === null || candidate.roc > bestPut.roc)) {
-      bestPut = { ...candidate, width };
-    }
+    if (candidate && (bestPut === null || candidate.roc > bestPut.roc)) bestPut = { ...candidate, width };
   }
-  if (!bestPut) { console.log(`IC ${expDate} no qualifying put side`); return null; }
+  if (!bestPut) return null;
 
-  // Find best call side independently (must be above put short strike)
   let bestCall: (ReturnType<typeof tryICSideAtWidth> & { width: number }) | null = null;
   for (const width of widthSteps) {
     const candidate = tryICSideAtWidth(calls, 'call', width, price, RULES, bestPut.shortStrike);
-    if (candidate && (bestCall === null || candidate.roc > bestCall.roc)) {
-      bestCall = { ...candidate, width };
-    }
+    if (candidate && (bestCall === null || candidate.roc > bestCall.roc)) bestCall = { ...candidate, width };
   }
-  if (!bestCall) { console.log(`IC ${expDate} no qualifying call side`); return null; }
+  if (!bestCall) return null;
 
   const totalCredit = parseFloat((bestPut.credit + bestCall.credit).toFixed(2));
   const maxLoss = Math.max(bestPut.width - bestPut.credit, bestCall.width - bestCall.credit);
   const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0;
-
-  if (roc < RULES.ROC_MIN_IC) {
-    console.log(`IC ${expDate} combined ROC ${roc.toFixed(1)}% below min ${RULES.ROC_MIN_IC}%`);
-    return null;
-  }
-
-  console.log(`IC ${expDate} best: put ${bestPut.shortStrike}/${bestPut.longStrike} w=$${bestPut.width} · call ${bestCall.shortStrike}/${bestCall.longStrike} w=$${bestCall.width} ROC=${roc.toFixed(1)}%`);
+  if (roc < RULES.ROC_MIN_IC) return null;
 
   return {
     strategy: 'IC', expiration: expDate, dte: daysUntil(expDate),
     shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike,
     shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI,
-    credit: bestPut.credit, spreadWidth: bestPut.width,
-    creditRatio: bestPut.creditRatio, roc,
+    credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc,
     pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100,
     shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike,
-    callCredit: bestCall.credit, callWidth: bestCall.width,
-    totalCredit,
-    optimized: true,
+    callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true,
   };
 }
 
 function runChecklist(
-  symbol: string,
-  strategy: 'BPS' | 'BCS' | 'IC',
-  metrics: any,
+  symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any,
   chainData: { expirations: string[]; chains: Record<string, any[]> },
-  price: number | null,
-  RULES: RulesType
+  price: number | null, RULES: RulesType, trendResult?: TrendResult
 ): ScreenResult {
   const failReasons: string[] = [];
   const ivrValue = metrics.ivRank;
@@ -456,8 +473,6 @@ function runChecklist(
     return true;
   });
 
-  console.log(`${symbol} validExpirations:`, validExpirations);
-
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) {
     for (const exp of validExpirations) {
@@ -465,9 +480,6 @@ function runChecklist(
       bestCandidate = strategy === 'IC'
         ? findBestIC(chainItems, exp, price, RULES)
         : findBestSpread(chainItems, strategy, exp, price, RULES);
-      console.log(`${symbol} ${strategy} ${exp} result:`, bestCandidate
-        ? `found: ${bestCandidate.shortStrike}/${bestCandidate.longStrike} w=$${bestCandidate.spreadWidth} roc=${bestCandidate.roc.toFixed(1)}%`
-        : 'null');
       if (bestCandidate) break;
     }
   }
@@ -496,15 +508,11 @@ function runChecklist(
     : { status: 'pending', value: '—', reason: 'No candidate' };
 
   const qualified =
-    ivrCheck.status === 'pass' &&
-    earningsCheck.status === 'pass' &&
-    oiCheck.status === 'pass' &&
-    deltaCheck.status === 'pass' &&
-    creditCheck.status === 'pass' &&
-    rocCheck.status === 'pass' &&
-    bestCandidate !== null;
+    ivrCheck.status === 'pass' && earningsCheck.status === 'pass' &&
+    oiCheck.status === 'pass' && deltaCheck.status === 'pass' &&
+    creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
 
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck } };
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck } };
 }
 
 // ── UI Components ──────────────────────────────────────────────────────────
@@ -513,10 +521,13 @@ const statusColor = (s: string) =>
 const statusIcon = (s: string) =>
   s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
 
+const trendColor = (trend: string) =>
+  trend === 'uptrend' ? 'text-emerald-400' : trend === 'downtrend' ? 'text-red-400' : trend === 'sideways' ? 'text-blue-400' : 'text-slate-400';
+const trendIcon = (trend: string) =>
+  trend === 'uptrend' ? '↑' : trend === 'downtrend' ? '↓' : trend === 'sideways' ? '→' : '?';
+
 function StrikesDisplay({ c }: { c: SpreadCandidate }) {
-  const widthTag = (w: number) => (
-    <span className="text-slate-400 mx-0.5">·${w}·</span>
-  );
+  const widthTag = (w: number) => <span className="text-slate-400 mx-0.5">·${w}·</span>;
   if (c.strategy === 'IC' && c.shortCallStrike != null && c.longCallStrike != null) {
     return (
       <div className="text-xs shrink-0">
@@ -540,6 +551,7 @@ function StrikesDisplay({ c }: { c: SpreadCandidate }) {
 function ResultCard({ result }: { result: ScreenResult }) {
   const [expanded, setExpanded] = useState(false);
   const c = result.bestCandidate;
+  const t = result.trendResult;
   const stratBg = result.strategy === 'BPS'
     ? 'bg-emerald-900/30 border-emerald-800 text-emerald-400'
     : result.strategy === 'BCS'
@@ -557,6 +569,11 @@ function ResultCard({ result }: { result: ScreenResult }) {
           {result.price && <p className="text-[10px] text-slate-400">${result.price.toFixed(2)}</p>}
         </div>
         <span className={`text-[10px] px-2 py-0.5 border rounded shrink-0 ${stratBg}`}>{result.strategy}</span>
+        {t && (
+          <span className={`text-[10px] shrink-0 ${trendColor(t.trend)}`}>
+            {trendIcon(t.trend)} {t.trend}
+          </span>
+        )}
         <div className="text-xs text-slate-400 shrink-0">
           IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-400' : 'text-red-400'}>
             {result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}
@@ -596,26 +613,34 @@ function ResultCard({ result }: { result: ScreenResult }) {
       </div>
 
       {expanded && (
-        <div className="border-t border-slate-800 px-4 py-3 grid grid-cols-2 md:grid-cols-3 gap-3">
-          {Object.entries(result.checks).map(([key, check]) => (
-            <div key={key} className="flex items-start gap-2">
-              <span className={`text-xs mt-0.5 ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
-              <div>
-                <p className="text-[10px] text-slate-400 uppercase tracking-wider">{key}</p>
-                <p className="text-xs text-white">{check.value}</p>
-                <p className="text-[10px] text-slate-400">{check.reason}</p>
-              </div>
+        <div className="border-t border-slate-800 px-4 py-3 space-y-3">
+          {t && (
+            <div className="text-[10px] text-slate-400 pb-2 border-b border-slate-800">
+              <span className={`${trendColor(t.trend)} mr-2`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>
+              {t.reason}
             </div>
-          ))}
+          )}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {Object.entries(result.checks).map(([key, check]) => (
+              <div key={key} className="flex items-start gap-2">
+                <span className={`text-xs mt-0.5 ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
+                <div>
+                  <p className="text-[10px] text-slate-400 uppercase tracking-wider">{key}</p>
+                  <p className="text-xs text-white">{check.value}</p>
+                  <p className="text-[10px] text-slate-400">{check.reason}</p>
+                </div>
+              </div>
+            ))}
+          </div>
           {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
-            <div className="col-span-2 md:col-span-3 mt-1 pt-2 border-t border-slate-800">
+            <div className="pt-2 border-t border-slate-800">
               <p className="text-[10px] text-slate-400">
                 Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth} (each optimized for best ROC)
               </p>
             </div>
           )}
           {result.failReasons.length > 0 && (
-            <div className="col-span-2 md:col-span-3 mt-1 pt-2 border-t border-slate-800">
+            <div className="pt-2 border-t border-slate-800">
               <p className="text-[10px] text-red-400">{result.failReasons.join(' · ')}</p>
             </div>
           )}
@@ -627,6 +652,7 @@ function ResultCard({ result }: { result: ScreenResult }) {
 
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
+  const [autoTickers, setAutoTickers] = useState('');
   const [bpsTickers, setBpsTickers] = useState('');
   const [bcsTickers, setBcsTickers] = useState('');
   const [icTickers, setIcTickers] = useState('');
@@ -645,15 +671,19 @@ export default function Home() {
   const parseTickers = (input: string) =>
     input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
 
+  const autoTickerList = parseTickers(autoTickers);
+  const autoOverLimit = autoTickerList.length > AUTO_TICKER_LIMIT;
+
   const downloadCSV = () => {
-    const headers = ['Symbol','Strategy','Qualified','Price','IVR','Expiration','DTE',
+    const headers = ['Symbol','Strategy','Trend','Qualified','Price','IVR','Expiration','DTE',
       'Short Put Strike','Long Put Strike','Put Width',
       'Short Call Strike','Long Call Strike','Call Width',
       'Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Fail Reasons'];
     const rows = results.map(r => {
       const c = r.bestCandidate;
       return [
-        r.symbol, r.strategy, r.qualified ? 'YES' : 'NO',
+        r.symbol, r.strategy, r.trendResult?.trend || '',
+        r.qualified ? 'YES' : 'NO',
         r.price?.toFixed(2) || '', r.ivr?.toFixed(1) || '',
         c?.expiration || '', c?.dte || '',
         c?.shortStrike || '', c?.longStrike || '', c?.spreadWidth || '',
@@ -677,28 +707,81 @@ export default function Home() {
   const runScreen = async (rules: RulesType) => {
     setError('');
     setResults([]);
+
+    const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
     const bps = parseTickers(bpsTickers);
     const bcs = parseTickers(bcsTickers);
     const ic = parseTickers(icTickers);
-    if (!bps.length && !bcs.length && !ic.length) {
+
+    if (!autoList.length && !bps.length && !bcs.length && !ic.length) {
       setError('Enter at least one ticker.');
       return;
     }
+    if (autoOverLimit) {
+      setError(`AUTO box limited to ${AUTO_TICKER_LIMIT} tickers (free tier rate limit).`);
+      return;
+    }
+
     setLoading(true);
     try {
       setStatus('Getting access token...');
       const token = await getAccessToken();
-      const allSymbols = Array.from(new Set([...bps, ...bcs, ...ic]));
+
+      const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic]));
       setStatus('Fetching market metrics...');
       const metricsArray = await getMarketMetrics(allSymbols, token);
       const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
+
       const screenResults: ScreenResult[] = [];
-      const buckets = [
+
+      // ── AUTO tickers: fetch trend first, sequentially (rate limit) ──
+      for (let i = 0; i < autoList.length; i++) {
+        const symbol = autoList[i];
+        setStatus(`Fetching trend data: ${symbol} (${i + 1}/${autoList.length})...`);
+
+        let trendResult: TrendResult | undefined;
+        try {
+          trendResult = await getTrend(symbol);
+        } catch (e: any) {
+          console.warn(`Trend fetch failed for ${symbol}:`, e.message);
+        }
+
+        // Wait 12s between Polygon calls to stay under 5/min (skip after last)
+        if (i < autoList.length - 1) await sleep(12000);
+
+        setStatus(`Scanning ${symbol} (${i + 1}/${autoList.length})...`);
+        const strategy = trendResult?.strategy ?? 'BCS';
+        try {
+          const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
+          const [chainData, price] = await Promise.all([
+            getChain(symbol, token, rules),
+            getQuote(symbol, token),
+          ]);
+          const result = runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult);
+          screenResults.push(result);
+        } catch (e: any) {
+          screenResults.push({
+            symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+            failReasons: [e.message], trendResult,
+            checks: {
+              ivr: { status: 'fail', value: 'Error', reason: e.message },
+              earnings: { status: 'pending', value: '—', reason: '—' },
+              oi: { status: 'pending', value: '—', reason: '—' },
+              delta: { status: 'pending', value: '—', reason: '—' },
+              credit: { status: 'pending', value: '—', reason: '—' },
+              roc: { status: 'pending', value: '—', reason: '—' },
+            },
+          });
+        }
+      }
+
+      // ── Manual tickers: no Polygon call needed ──
+      const manualBuckets = [
         { symbols: bps, strategy: 'BPS' as const },
         { symbols: bcs, strategy: 'BCS' as const },
         { symbols: ic, strategy: 'IC' as const },
       ];
-      for (const { symbols, strategy } of buckets) {
+      for (const { symbols, strategy } of manualBuckets) {
         for (const symbol of symbols) {
           setStatus(`Scanning ${symbol}...`);
           try {
@@ -725,6 +808,7 @@ export default function Home() {
           }
         }
       }
+
       screenResults.sort((a, b) => {
         if (a.qualified && !b.qualified) return -1;
         if (!a.qualified && b.qualified) return 1;
@@ -751,44 +835,71 @@ export default function Home() {
       <div className="flex h-[calc(100vh-57px)]">
         {/* Sidebar */}
         <div className="w-64 border-r border-slate-800 p-4 overflow-auto flex flex-col gap-4 shrink-0">
+
+          {/* AUTO box */}
           <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-[9px] px-1.5 py-0.5 bg-emerald-900/40 text-emerald-400 border border-emerald-800/60 rounded tracking-wider">BULLISH</span>
-              <span className="text-[10px] text-slate-400 tracking-wider">BPS</span>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] px-1.5 py-0.5 bg-purple-900/40 text-purple-400 border border-purple-800/60 rounded tracking-wider">AUTO</span>
+                <span className="text-[10px] text-slate-400 tracking-wider">TREND DETECT</span>
+              </div>
+              <span className={`text-[9px] ${autoOverLimit ? 'text-red-400' : 'text-slate-500'}`}>
+                {autoTickerList.length}/{AUTO_TICKER_LIMIT}
+              </span>
             </div>
-            <textarea value={bpsTickers} onChange={e => setBpsTickers(e.target.value)} placeholder="AAPL, MSFT, XOM"
-              className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-16 resize-none focus:outline-none focus:border-emerald-700/60 placeholder-slate-700 leading-relaxed" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-[9px] px-1.5 py-0.5 bg-red-900/40 text-red-400 border border-red-800/60 rounded tracking-wider">BEARISH</span>
-              <span className="text-[10px] text-slate-400 tracking-wider">BCS</span>
-            </div>
-            <textarea value={bcsTickers} onChange={e => setBcsTickers(e.target.value)} placeholder="META, NVDA"
-              className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-16 resize-none focus:outline-none focus:border-red-700/60 placeholder-slate-700 leading-relaxed" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-[9px] px-1.5 py-0.5 bg-blue-900/40 text-blue-400 border border-blue-800/60 rounded tracking-wider">NEUTRAL</span>
-              <span className="text-[10px] text-slate-400 tracking-wider">IC</span>
-            </div>
-            <textarea value={icTickers} onChange={e => setIcTickers(e.target.value)} placeholder="SPY, QQQ"
-              className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-16 resize-none focus:outline-none focus:border-blue-700/60 placeholder-slate-700 leading-relaxed" />
+            <textarea
+              value={autoTickers}
+              onChange={e => setAutoTickers(e.target.value)}
+              placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC"
+              className={`w-full bg-slate-900/60 border rounded p-2 text-xs h-16 resize-none focus:outline-none placeholder-slate-700 leading-relaxed ${autoOverLimit ? 'border-red-700/60 focus:border-red-600' : 'border-slate-700/60 focus:border-purple-700/60'}`}
+            />
+            {autoOverLimit && (
+              <p className="text-[9px] text-red-400 mt-1">Max {AUTO_TICKER_LIMIT} tickers (free tier limit)</p>
+            )}
+            <p className="text-[9px] text-slate-600 mt-1">~{autoTickerList.length * 12}s scan time</p>
           </div>
 
-          {/* Active Rules — live from runtimeRules */}
+          <div className="border-t border-slate-800 pt-3 space-y-4">
+            <p className="text-[9px] text-slate-600 tracking-widest">MANUAL OVERRIDE</p>
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[9px] px-1.5 py-0.5 bg-emerald-900/40 text-emerald-400 border border-emerald-800/60 rounded tracking-wider">BULLISH</span>
+                <span className="text-[10px] text-slate-400 tracking-wider">BPS</span>
+              </div>
+              <textarea value={bpsTickers} onChange={e => setBpsTickers(e.target.value)} placeholder="AAPL, MSFT"
+                className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-14 resize-none focus:outline-none focus:border-emerald-700/60 placeholder-slate-700 leading-relaxed" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[9px] px-1.5 py-0.5 bg-red-900/40 text-red-400 border border-red-800/60 rounded tracking-wider">BEARISH</span>
+                <span className="text-[10px] text-slate-400 tracking-wider">BCS</span>
+              </div>
+              <textarea value={bcsTickers} onChange={e => setBcsTickers(e.target.value)} placeholder="META, NVDA"
+                className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-14 resize-none focus:outline-none focus:border-red-700/60 placeholder-slate-700 leading-relaxed" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[9px] px-1.5 py-0.5 bg-blue-900/40 text-blue-400 border border-blue-800/60 rounded tracking-wider">NEUTRAL</span>
+                <span className="text-[10px] text-slate-400 tracking-wider">IC</span>
+              </div>
+              <textarea value={icTickers} onChange={e => setIcTickers(e.target.value)} placeholder="SPY, QQQ"
+                className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-14 resize-none focus:outline-none focus:border-blue-700/60 placeholder-slate-700 leading-relaxed" />
+            </div>
+          </div>
+
+          {/* Active Rules */}
           <div className="text-[9px] text-slate-400 space-y-1 border-t border-slate-800 pt-3">
             <p className="text-slate-400 mb-1.5 tracking-widest text-[9px]">ACTIVE RULES</p>
-            <div className="flex justify-between"><span>IVR</span><span className="text-slate-400">≥ {runtimeRules.IVR_MIN}%</span></div>
-            <div className="flex justify-between"><span>DTE</span><span className="text-slate-400">{runtimeRules.DTE_MIN}–{runtimeRules.DTE_MAX} days</span></div>
-            <div className="flex justify-between"><span>BPS/BCS delta</span><span className="text-slate-400">{runtimeRules.SPREAD_DELTA_MIN}–{runtimeRules.SPREAD_DELTA_MAX}</span></div>
-            <div className="flex justify-between"><span>IC delta</span><span className="text-slate-400">{runtimeRules.IC_DELTA_MIN}–{runtimeRules.IC_DELTA_MAX}</span></div>
-            <div className="flex justify-between"><span>Credit ratio</span><span className="text-slate-400">≥ {(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%</span></div>
-            <div className="flex justify-between"><span>OI per leg</span><span className="text-slate-400">≥ {runtimeRules.OI_MIN}</span></div>
-            <div className="flex justify-between"><span>Bid-Ask</span><span className="text-slate-400">≤ ${runtimeRules.BID_ASK_MAX}</span></div>
-            <div className="flex justify-between"><span>Max width</span><span className="text-slate-400">${runtimeRules.MAX_SPREAD_WIDTH} (opt)</span></div>
-            <div className="flex justify-between"><span>Min ROC spread</span><span className="text-slate-400">{runtimeRules.ROC_MIN_SPREAD}%</span></div>
-            <div className="flex justify-between"><span>Min ROC IC</span><span className="text-slate-400">{runtimeRules.ROC_MIN_IC}%</span></div>
+            <div className="flex justify-between"><span>IVR</span><span>≥ {runtimeRules.IVR_MIN}%</span></div>
+            <div className="flex justify-between"><span>DTE</span><span>{runtimeRules.DTE_MIN}–{runtimeRules.DTE_MAX} days</span></div>
+            <div className="flex justify-between"><span>BPS/BCS delta</span><span>{runtimeRules.SPREAD_DELTA_MIN}–{runtimeRules.SPREAD_DELTA_MAX}</span></div>
+            <div className="flex justify-between"><span>IC delta</span><span>{runtimeRules.IC_DELTA_MIN}–{runtimeRules.IC_DELTA_MAX}</span></div>
+            <div className="flex justify-between"><span>Credit ratio</span><span>≥ {(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%</span></div>
+            <div className="flex justify-between"><span>OI per leg</span><span>≥ {runtimeRules.OI_MIN}</span></div>
+            <div className="flex justify-between"><span>Bid-Ask</span><span>≤ ${runtimeRules.BID_ASK_MAX}</span></div>
+            <div className="flex justify-between"><span>Max width</span><span>${runtimeRules.MAX_SPREAD_WIDTH} (opt)</span></div>
+            <div className="flex justify-between"><span>Min ROC spread</span><span>{runtimeRules.ROC_MIN_SPREAD}%</span></div>
+            <div className="flex justify-between"><span>Min ROC IC</span><span>{runtimeRules.ROC_MIN_IC}%</span></div>
           </div>
 
           {error && (
@@ -797,7 +908,7 @@ export default function Home() {
 
           <button
             onClick={() => setShowRulesModal(true)}
-            disabled={loading}
+            disabled={loading || autoOverLimit}
             className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto"
           >
             {loading ? 'SCANNING...' : 'RUN SCREENER'}
@@ -807,9 +918,10 @@ export default function Home() {
         {/* Main content */}
         <div className="flex-1 overflow-auto p-5">
           {results.length === 0 && !loading && (
-            <div className="h-full flex flex-col items-center justify-center text-slate-400">
+            <div className="h-full flex flex-col items-center justify-center text-slate-600">
               <div className="text-4xl mb-3 opacity-30">◈</div>
               <p className="text-[10px] tracking-widest">ADD TICKERS AND RUN SCREENER</p>
+              <p className="text-[9px] mt-2 text-slate-700">AUTO box detects trend · Manual boxes override strategy</p>
             </div>
           )}
           {loading && (
@@ -835,7 +947,7 @@ export default function Home() {
               )}
               {disqualified.length > 0 && (
                 <div>
-                  <p className="text-[9px] text-slate-400 tracking-widest mb-2">DISQUALIFIED</p>
+                  <p className="text-[9px] text-slate-500 tracking-widest mb-2">DISQUALIFIED</p>
                   <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} />)}</div>
                 </div>
               )}
@@ -850,7 +962,7 @@ export default function Home() {
           <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 w-[500px] max-h-[80vh] overflow-auto">
             <h2 className="text-xs font-bold tracking-widest text-white mb-1">SCREENING RULES</h2>
             <p className="text-[9px] text-slate-400 mb-4 tracking-wider">
-              Width optimizer tries $5 → ${runtimeRules.MAX_SPREAD_WIDTH} in $5 steps and returns best ROC. IC sides optimized independently.
+              Width optimizer tries $5 → ${runtimeRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.
             </p>
             <div className="grid grid-cols-2 gap-3 mb-6">
               {([
@@ -865,12 +977,10 @@ export default function Home() {
                 <div key={key}>
                   <p className="text-[9px] text-slate-400 tracking-wider mb-1">
                     {RULE_LABELS[key] ?? key}
-                    {key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-400 ml-1">(optimizer cap)</span>}
+                    {key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-500 ml-1">(optimizer cap)</span>}
                   </p>
                   <input
-                    type="number"
-                    step="any"
-                    value={runtimeRules[key]}
+                    type="number" step="any" value={runtimeRules[key]}
                     onChange={e => setRuntimeRules(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
                     className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-slate-500"
                   />
@@ -878,27 +988,21 @@ export default function Home() {
               ))}
             </div>
             <div className="flex gap-3">
-              <button
-                onClick={() => setRuntimeRules({ ...DEFAULT_RULES })}
-                className="flex-1 border border-slate-700 text-yellow-600 py-2 rounded text-xs tracking-widest hover:border-yellow-600"
-              >
+              <button onClick={() => setRuntimeRules({ ...DEFAULT_RULES })}
+                className="flex-1 border border-slate-700 text-yellow-600 py-2 rounded text-xs tracking-widest hover:border-yellow-600">
                 RESET
               </button>
-              <button
-                onClick={() => setShowRulesModal(false)}
-                className="flex-1 border border-slate-700 text-slate-400 py-2 rounded text-xs tracking-widest hover:border-slate-500"
-              >
+              <button onClick={() => setShowRulesModal(false)}
+                className="flex-1 border border-slate-700 text-slate-400 py-2 rounded text-xs tracking-widest hover:border-slate-500">
                 CANCEL
               </button>
               <button
                 onClick={() => {
                   setShowRulesModal(false);
                   localStorage.setItem('prosper-rules', JSON.stringify(runtimeRules));
-                  console.log('RUN clicked with rules:', runtimeRules);
                   runScreen(runtimeRules);
                 }}
-                className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200"
-              >
+                className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200">
                 RUN
               </button>
             </div>
