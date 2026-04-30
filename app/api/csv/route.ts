@@ -1,32 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { parseBarchartCSV, filterBarchartRows } from '@/lib/csvParser';
 
 export async function POST(req: NextRequest) {
-  try {
-    const formData = await req.formData();
-    const file = formData.get('file') as File | null;
+  const { results } = await req.json();
 
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided' }, { status: 400 });
-    }
+  const headers = [
+    'Symbol', 'Strategy', 'Qualified', 'Price', 'IVR',
+    'Expiration', 'DTE', 'Short Strike', 'Long Strike',
+    'Short Delta', 'Credit', 'ROC %', 'POP %', 'Short OI', 'Long OI',
+    'Short Call Strike', 'Long Call Strike', 'Call Credit', 'Total Credit',
+    'Fail Reasons'
+  ];
 
-    const text = await file.text();
-    const parsed = parseBarchartCSV(text);
+  const rows = results.map((r: any) => {
+    const c = r.bestCandidate;
+    return [
+      r.symbol,
+      r.strategy,
+      r.qualified ? 'YES' : 'NO',
+      r.price != null ? r.price.toFixed(2) : '',
+      r.ivr != null ? r.ivr.toFixed(1) : '',
+      c?.expiration || '',
+      c?.dte || '',
+      c?.shortStrike || '',
+      c?.longStrike || '',
+      c?.shortDelta?.toFixed(2) || '',
+      c?.credit?.toFixed(2) || '',
+      c?.roc?.toFixed(0) || '',
+      c?.pop != null ? c.pop.toFixed(0) : '',
+      c?.shortOI || '',
+      c?.longOI || '',
+      c?.shortCallStrike || '',
+      c?.longCallStrike || '',
+      c?.callCredit?.toFixed(2) || '',
+      c?.totalCredit?.toFixed(2) || '',
+      r.failReasons?.join('; ') || '',
+    ].map(v => `"${v}"`).join(',');
+  });
 
-    // Get filter params from form data
-    const minIVR = parseFloat(formData.get('minIVR') as string || '30');
-    const minIVx = parseFloat(formData.get('minIVx') as string || '35');
-    const minPrice = parseFloat(formData.get('minPrice') as string || '50');
-    const minOptVol = parseFloat(formData.get('minOptVol') as string || '10000');
+  const csv = [headers.join(','), ...rows].join('\n');
 
-    const filtered = filterBarchartRows(parsed, { minIVR, minIVx, minPrice, minOptVol });
-
-    return NextResponse.json({
-      total: parsed.length,
-      filtered: filtered.length,
-      rows: filtered,
-    });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Failed to parse CSV' }, { status: 500 });
-  }
+  return new NextResponse(csv, {
+    headers: {
+      'Content-Type': 'text/csv',
+      'Content-Disposition': `attachment; filename="prosper-screen-${new Date().toISOString().split('T')[0]}.csv"`,
+    },
+  });
 }

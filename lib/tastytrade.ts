@@ -1,10 +1,5 @@
 const BASE_URL = 'https://api.tastytrade.com';
 
-export interface TTSession {
-  token: string;
-  expiresAt: string;
-}
-
 export interface OptionChainItem {
   symbol: string;
   strikePrice: number;
@@ -25,25 +20,27 @@ export interface MarketMetrics {
   earningsExpectedDate: string | null;
 }
 
-// Authenticate with TastyTrade and return session token
-export async function authenticate(username: string, password: string): Promise<TTSession> {
-  const token = process.env.TASTYTRADE_SESSION_TOKEN;
-  if (!token) {
-    throw new Error('No session token configured');
-  }
-  return {
-    token,
-    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-  };
+export interface Quote {
+  symbol: string;
+  last: number | null;
+  bid: number | null;
+  ask: number | null;
 }
-// Fetch IV Rank and earnings date for a list of symbols
+
+function authHeader(token: string) {
+  return { Authorization: token };
+}
+
 export async function getMarketMetrics(symbols: string[], token: string): Promise<MarketMetrics[]> {
   const symbolList = symbols.join(',');
-  const res = await fetch(`${BASE_URL}/market-metrics?symbols=${symbolList}`, {
-    headers: { Authorization: token },
+  const res = await fetch(`${BASE_URL}/market-metrics?symbols=${encodeURIComponent(symbolList)}`, {
+    headers: authHeader(token),
   });
 
-  if (!res.ok) throw new Error(`Failed to fetch market metrics: ${res.statusText}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Market metrics failed (${res.status}): ${text}`);
+  }
 
   const data = await res.json();
   const items = data.data?.items || [];
@@ -58,17 +55,18 @@ export async function getMarketMetrics(symbols: string[], token: string): Promis
   }));
 }
 
-// Fetch options chain for a symbol and expiration
 export async function getOptionsChain(
   symbol: string,
   token: string
 ): Promise<{ expirations: string[]; chains: Record<string, OptionChainItem[]> }> {
-  const res = await fetch(
-    `${BASE_URL}/option-chains/${symbol}/nested`,
-    { headers: { Authorization: token }, }
-  );
+  const res = await fetch(`${BASE_URL}/option-chains/${symbol}/nested`, {
+    headers: authHeader(token),
+  });
 
-  if (!res.ok) throw new Error(`Failed to fetch chain for ${symbol}: ${res.statusText}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Option chain failed for ${symbol} (${res.status}): ${text}`);
+  }
 
   const data = await res.json();
   const expirations: string[] = [];
@@ -85,6 +83,10 @@ export async function getOptionsChain(
       for (const type of ['call', 'put'] as const) {
         const leg = strike[type];
         if (!leg) continue;
+
+        const bid = parseFloat(leg.bid || '0');
+        const ask = parseFloat(leg.ask || '0');
+
         items.push({
           symbol: leg.symbol,
           strikePrice: parseFloat(strike['strike-price']),
@@ -92,9 +94,9 @@ export async function getOptionsChain(
           optionType: type === 'call' ? 'C' : 'P',
           delta: leg.delta != null ? parseFloat(leg.delta) : null,
           openInterest: parseInt(leg['open-interest'] || '0', 10),
-          bid: parseFloat(leg.bid || '0'),
-          ask: parseFloat(leg.ask || '0'),
-          mid: (parseFloat(leg.bid || '0') + parseFloat(leg.ask || '0')) / 2,
+          bid,
+          ask,
+          mid: (bid + ask) / 2,
           impliedVolatility: leg['implied-volatility'] != null
             ? parseFloat(leg['implied-volatility']) * 100
             : null,
@@ -106,4 +108,44 @@ export async function getOptionsChain(
   }
 
   return { expirations, chains };
+}
+
+export async function getQuote(symbol: string, token: string): Promise<Quote> {
+  const res = await fetch(`${BASE_URL}/market-data/quotes?symbols=${symbol}`, {
+    headers: authHeader(token),
+  });
+
+  if (!res.ok) return { symbol, last: null, bid: null, ask: null };
+
+  const data = await res.json();
+  const item = data.data?.items?.[0];
+  if (!item) return { symbol, last: null, bid: null, ask: null };
+
+  return {
+    symbol,
+    last: item.last != null ? parseFloat(item.last) : null,
+    bid: item.bid != null ? parseFloat(item.bid) : null,
+    ask: item.ask != null ? parseFloat(item.ask) : null,
+  };
+}
+
+export async function refreshAccessToken(refreshToken: string): Promise<string> {
+  const res = await fetch(`${BASE_URL}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: process.env.TASTYTRADE_CLIENT_ID!,
+      client_secret: process.env.TASTYTRADE_CLIENT_SECRET!,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Token refresh failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json();
+  return data.access_token;
 }

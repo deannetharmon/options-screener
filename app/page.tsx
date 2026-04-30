@@ -1,108 +1,396 @@
 'use client';
 
 import { useState } from 'react';
-import { ScreenResult } from '@/lib/screener';
 
-const DEFAULT_TICKERS = 'MU, XOM';
+interface SpreadCandidate {
+  strategy: string;
+  expiration: string;
+  dte: number;
+  shortStrike: number;
+  longStrike: number;
+  shortDelta: number;
+  credit: number;
+  spreadWidth: number;
+  creditRatio: number;
+  roc: number;
+  pop: number | null;
+  shortOI: number;
+  longOI: number;
+}
+
+interface CheckResult {
+  status: 'pass' | 'fail' | 'warn' | 'pending';
+  value: string;
+  reason: string;
+}
+
+interface ScreenResult {
+  symbol: string;
+  strategy: string;
+  price: number | null;
+  ivr: number | null;
+  qualified: boolean;
+  bestCandidate: SpreadCandidate | null;
+  failReasons: string[];
+  checks: {
+    ivr: CheckResult;
+    earnings: CheckResult;
+    oi: CheckResult;
+    delta: CheckResult;
+    credit: CheckResult;
+    roc: CheckResult;
+  };
+}
+
+const statusColor = (s: string) => {
+  if (s === 'pass') return 'text-emerald-400';
+  if (s === 'fail') return 'text-red-400';
+  if (s === 'warn') return 'text-yellow-400';
+  return 'text-slate-500';
+};
+
+const statusIcon = (s: string) => {
+  if (s === 'pass') return '✓';
+  if (s === 'fail') return '✗';
+  if (s === 'warn') return '⚠';
+  return '—';
+};
+
+function ResultCard({ result }: { result: ScreenResult }) {
+  const [expanded, setExpanded] = useState(false);
+  const c = result.bestCandidate;
+  const stratBg = result.strategy === 'BPS'
+    ? 'bg-emerald-900/30 border-emerald-800 text-emerald-400'
+    : result.strategy === 'BCS'
+    ? 'bg-red-900/30 border-red-800 text-red-400'
+    : 'bg-blue-900/30 border-blue-800 text-blue-400';
+
+  return (
+    <div
+      className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? 'border-slate-700 bg-slate-900/40' : 'border-slate-800 bg-slate-900/20 opacity-70'}`}
+      onClick={() => setExpanded(!expanded)}
+    >
+      <div className="px-4 py-3 flex items-center gap-4 flex-wrap">
+        <div className="w-16 shrink-0">
+          <p className="font-bold text-white">{result.symbol}</p>
+          {result.price && <p className="text-[10px] text-slate-500">${result.price.toFixed(2)}</p>}
+        </div>
+
+        <span className={`text-[10px] px-2 py-0.5 border rounded shrink-0 ${stratBg}`}>
+          {result.strategy}
+        </span>
+
+        <div className="text-xs text-slate-400 shrink-0">
+          IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-400' : 'text-red-400'}>
+            {result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}
+          </span>
+        </div>
+
+        {c && (
+          <>
+            <div className="text-xs shrink-0">
+              <span className="text-slate-500">Exp </span>
+              <span className="text-white">{c.expiration}</span>
+              <span className="text-slate-600 ml-1">({c.dte}d)</span>
+            </div>
+            <div className="text-xs shrink-0">
+              <span className="text-slate-500">Strikes </span>
+              <span className="text-white">{c.shortStrike}/{c.longStrike}</span>
+            </div>
+            <div className="text-xs shrink-0">
+              <span className="text-slate-500">Credit </span>
+              <span className="text-emerald-400 font-bold">${c.credit.toFixed(2)}</span>
+            </div>
+            <div className="text-xs shrink-0">
+              <span className="text-slate-500">ROC </span>
+              <span className="text-white">{c.roc.toFixed(0)}%</span>
+            </div>
+            {c.pop != null && (
+              <div className="text-xs shrink-0">
+                <span className="text-slate-500">POP </span>
+                <span className="text-white">{c.pop.toFixed(0)}%</span>
+              </div>
+            )}
+            <div className="text-xs shrink-0">
+              <span className="text-slate-500">Delta </span>
+              <span className="text-white">{c.shortDelta.toFixed(2)}</span>
+            </div>
+          </>
+        )}
+
+        {!result.qualified && result.failReasons.length > 0 && (
+          <div className="text-[10px] text-red-400 ml-auto">
+            {result.failReasons.slice(0, 3).join(' · ')}
+          </div>
+        )}
+
+        <div className="ml-auto text-slate-600 text-xs shrink-0">{expanded ? '▲' : '▼'}</div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-slate-800 px-4 py-3 grid grid-cols-2 md:grid-cols-3 gap-3">
+          {Object.entries(result.checks).map(([key, check]) => (
+            <div key={key} className="flex items-start gap-2">
+              <span className={`text-xs mt-0.5 ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
+              <div>
+                <p className="text-[10px] text-slate-500 uppercase tracking-wider">{key}</p>
+                <p className="text-xs text-white">{check.value}</p>
+                <p className="text-[10px] text-slate-500">{check.reason}</p>
+              </div>
+            </div>
+          ))}
+          {result.failReasons.length > 0 && (
+            <div className="col-span-2 md:col-span-3 mt-1 pt-2 border-t border-slate-800">
+              <p className="text-[10px] text-red-400">{result.failReasons.join(' · ')}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Home() {
-  const [tickersInput, setTickersInput] = useState(DEFAULT_TICKERS);
+  const [bpsTickers, setBpsTickers] = useState('');
+  const [bcsTickers, setBcsTickers] = useState('');
+  const [icTickers, setIcTickers] = useState('');
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [loading, setLoading] = useState(false);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [authStatus, setAuthStatus] = useState<'unknown' | 'connected' | 'disconnected'>('unknown');
+  const [error, setError] = useState('');
+
+  const checkAuth = async () => {
+    try {
+      const res = await fetch('/api/auth/status');
+      const data = await res.json();
+      const connected = data.authenticated === true;
+      setAuthStatus(connected ? 'connected' : 'disconnected');
+      return connected;
+    } catch {
+      setAuthStatus('disconnected');
+      return false;
+    }
+  };
+
+  const handleConnect = () => {
+    window.location.href = '/api/auth/login';
+  };
+
+  const parseTickers = (input: string) =>
+    input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
 
   const runScreen = async () => {
-    if (!username || !password) {
-      alert("Please enter your TastyTrade username and password");
+    setError('');
+    const authenticated = await checkAuth();
+    if (!authenticated) {
+      setError('Not connected to TastyTrade. Click "Connect TastyTrade" first.');
+      return;
+    }
+
+    const bps = parseTickers(bpsTickers);
+    const bcs = parseTickers(bcsTickers);
+    const ic = parseTickers(icTickers);
+
+    if (bps.length === 0 && bcs.length === 0 && ic.length === 0) {
+      setError('Enter at least one ticker in any bucket.');
       return;
     }
 
     setLoading(true);
-    try {
-      const symbols = tickersInput.split(/[, ]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    setResults([]);
 
+    try {
       const res = await fetch('/api/screen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbols, username, password }),
+        body: JSON.stringify({ bps, bcs, ic }),
       });
 
       const data = await res.json();
       if (data.error) {
-        alert(data.error);
+        setError(data.error);
       } else {
         setResults(data.results || []);
       }
-    } catch (e) {
-      console.error(e);
-      alert("Error - check console");
+    } catch (e: any) {
+      setError(e.message);
     }
+
     setLoading(false);
   };
 
+  const downloadCSV = async () => {
+    const res = await fetch('/api/csv', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results }),
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
+
+  const qualified = results.filter(r => r.qualified);
+  const disqualified = results.filter(r => !r.qualified);
+
   return (
-    <div className="flex h-screen bg-[#0a0e1a] text-slate-200 overflow-hidden">
-      <div className="w-80 border-r border-slate-800 p-4 overflow-auto">
-        <h1 className="text-2xl font-bold mb-6">OPTIONS SCREENER</h1>
-
-        <div className="mb-6">
-          <p className="text-xs text-slate-400 mb-2">TASTYTRADE LOGIN</p>
-          <input 
-            type="text" 
-            placeholder="Username / Email" 
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-3" 
-          />
-          <input 
-            type="password" 
-            placeholder="Password" 
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-3" 
-          />
+    <div className="min-h-screen bg-[#080c14] text-slate-100 font-mono">
+      {/* Header */}
+      <div className="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
+          <p className="text-[10px] text-slate-500 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
         </div>
-
-        <div className="mb-6">
-          <p className="text-xs text-slate-400 mb-2">TICKERS</p>
-          <textarea value={tickersInput} onChange={(e) => setTickersInput(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded p-3 h-28 font-mono" />
+        <div className="flex items-center gap-3">
+          {authStatus === 'connected' && (
+            <span className="text-[10px] text-emerald-400 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
+              TASTYTRADE CONNECTED
+            </span>
+          )}
+          {authStatus === 'disconnected' && (
+            <span className="text-[10px] text-red-400 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block"></span>
+              NOT CONNECTED
+            </span>
+          )}
+          <button
+            onClick={handleConnect}
+            className="text-[10px] px-3 py-1.5 border border-slate-600 rounded hover:border-slate-400 transition-colors tracking-wider"
+          >
+            CONNECT TASTYTRADE
+          </button>
         </div>
-
-        <div className="mb-6 text-[10px] space-y-1 text-slate-300">
-          <p className="uppercase tracking-wider text-slate-400 mb-2">COURSE RULES</p>
-          <div>IVR ≥ 30%</div>
-          <div>IVx ≥ 35%</div>
-          <div>OI ≥ 500 both legs</div>
-          <div>Delta 0.15 – 0.22</div>
-          <div>Credit ≥ ⅓ width</div>
-          <div>DTE 21 – 45 days</div>
-          <div>No earnings in window</div>
-        </div>
-
-        <button 
-          onClick={runScreen} 
-          disabled={loading || !username || !password}
-          className="w-full bg-emerald-600 py-3 rounded font-medium disabled:opacity-50"
-        >
-          {loading ? 'LOGGING IN + RUNNING...' : 'RUN SCREENER'}
-        </button>
       </div>
 
-      <div className="flex-1 p-6 overflow-auto">
-        {results.length > 0 ? (
-          <div className="space-y-4">
-            {results.map((r) => (
-              <div key={r.symbol} className="p-5 border border-slate-700 rounded-xl">
-                <h2 className="text-xl font-bold">{r.symbol} — {r.strategy}</h2>
-                {r.bestCandidate && <p className="text-emerald-400">Credit: ${r.bestCandidate.credit.toFixed(2)}</p>}
-                <p>Qualified: {r.qualified ? 'YES' : 'NO'}</p>
-              </div>
-            ))}
+      <div className="flex h-[calc(100vh-57px)]">
+        {/* Sidebar */}
+        <div className="w-64 border-r border-slate-800 p-4 overflow-auto flex flex-col gap-4 shrink-0">
+
+          {/* BPS */}
+          <div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[9px] px-1.5 py-0.5 bg-emerald-900/40 text-emerald-400 border border-emerald-800/60 rounded tracking-wider">BULLISH</span>
+              <span className="text-[10px] text-slate-400 tracking-wider">BPS</span>
+            </div>
+            <textarea
+              value={bpsTickers}
+              onChange={e => setBpsTickers(e.target.value)}
+              placeholder="AAPL, MSFT, XOM"
+              className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-16 resize-none focus:outline-none focus:border-emerald-700/60 placeholder-slate-700 leading-relaxed"
+            />
           </div>
-        ) : (
-          <div className="h-full flex items-center justify-center text-slate-500">Enter login + tickers and click RUN SCREENER</div>
-        )}
+
+          {/* BCS */}
+          <div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[9px] px-1.5 py-0.5 bg-red-900/40 text-red-400 border border-red-800/60 rounded tracking-wider">BEARISH</span>
+              <span className="text-[10px] text-slate-400 tracking-wider">BCS</span>
+            </div>
+            <textarea
+              value={bcsTickers}
+              onChange={e => setBcsTickers(e.target.value)}
+              placeholder="META, NVDA"
+              className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-16 resize-none focus:outline-none focus:border-red-700/60 placeholder-slate-700 leading-relaxed"
+            />
+          </div>
+
+          {/* IC */}
+          <div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[9px] px-1.5 py-0.5 bg-blue-900/40 text-blue-400 border border-blue-800/60 rounded tracking-wider">NEUTRAL</span>
+              <span className="text-[10px] text-slate-400 tracking-wider">IC</span>
+            </div>
+            <textarea
+              value={icTickers}
+              onChange={e => setIcTickers(e.target.value)}
+              placeholder="SPY, QQQ"
+              className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-16 resize-none focus:outline-none focus:border-blue-700/60 placeholder-slate-700 leading-relaxed"
+            />
+          </div>
+
+          {/* Rules */}
+          <div className="text-[9px] text-slate-600 space-y-1 border-t border-slate-800 pt-3">
+            <p className="text-slate-500 mb-1.5 tracking-widest text-[9px]">ACTIVE RULES</p>
+            <div className="flex justify-between"><span>IVR</span><span className="text-slate-500">≥ 30%</span></div>
+            <div className="flex justify-between"><span>DTE</span><span className="text-slate-500">30–45 days</span></div>
+            <div className="flex justify-between"><span>BPS/BCS delta</span><span className="text-slate-500">0.20–0.30</span></div>
+            <div className="flex justify-between"><span>IC delta</span><span className="text-slate-500">0.16–0.20</span></div>
+            <div className="flex justify-between"><span>Credit</span><span className="text-slate-500">≥ ⅓ width</span></div>
+            <div className="flex justify-between"><span>OI per leg</span><span className="text-slate-500">≥ 500</span></div>
+            <div className="flex justify-between"><span>Bid-Ask</span><span className="text-slate-500">≤ $0.10</span></div>
+            <div className="flex justify-between"><span>Width</span><span className="text-slate-500">$5</span></div>
+          </div>
+
+          {error && (
+            <div className="text-[10px] text-red-400 bg-red-900/20 border border-red-800/60 rounded p-2 leading-relaxed">
+              {error}
+            </div>
+          )}
+
+          <button
+            onClick={runScreen}
+            disabled={loading}
+            className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto"
+          >
+            {loading ? 'SCANNING...' : 'RUN SCREENER'}
+          </button>
+        </div>
+
+        {/* Results panel */}
+        <div className="flex-1 overflow-auto p-5">
+          {results.length === 0 && !loading && (
+            <div className="h-full flex flex-col items-center justify-center text-slate-700">
+              <div className="text-4xl mb-3 opacity-30">◈</div>
+              <p className="text-[10px] tracking-widest">ADD TICKERS AND RUN SCREENER</p>
+            </div>
+          )}
+
+          {loading && (
+            <div className="h-full flex flex-col items-center justify-center gap-2">
+              <div className="text-[10px] tracking-widest text-slate-500 animate-pulse">FETCHING MARKET DATA...</div>
+            </div>
+          )}
+
+          {results.length > 0 && (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between">
+                <div className="flex gap-4 text-[10px] tracking-wider">
+                  <span className="text-emerald-400">{qualified.length} QUALIFIED</span>
+                  <span className="text-slate-600">{disqualified.length} DISQUALIFIED</span>
+                  <span className="text-slate-600">{results.length} SCANNED</span>
+                </div>
+                <button
+                  onClick={downloadCSV}
+                  className="text-[10px] px-3 py-1.5 border border-slate-700 rounded hover:border-slate-500 transition-colors tracking-wider"
+                >
+                  ↓ CSV
+                </button>
+              </div>
+
+              {qualified.length > 0 && (
+                <div>
+                  <p className="text-[9px] text-emerald-600 tracking-widest mb-2">QUALIFIED</p>
+                  <div className="space-y-2">
+                    {qualified.map(r => <ResultCard key={r.symbol} result={r} />)}
+                  </div>
+                </div>
+              )}
+
+              {disqualified.length > 0 && (
+                <div>
+                  <p className="text-[9px] text-slate-700 tracking-widest mb-2">DISQUALIFIED</p>
+                  <div className="space-y-2">
+                    {disqualified.map(r => <ResultCard key={r.symbol} result={r} />)}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

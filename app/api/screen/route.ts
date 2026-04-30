@@ -1,57 +1,104 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getMarketMetrics, getOptionsChain, getQuote, refreshAccessToken } from '@/lib/tastytrade';
+import { runChecklist, Strategy } from '@/lib/screener';
+import { getCachedAccessToken, saveAccessToken, getRefreshToken } from '@/lib/tokenStore';
+
+async function getValidToken(): Promise<string> {
+  // Try cached access token first
+  const cached = await getCachedAccessToken();
+  if (cached) return cached;
+
+  // Refresh using stored refresh token
+  const refreshToken = await getRefreshToken();
+  if (!refreshToken) throw new Error('Not authenticated. Please connect TastyTrade first.');
+
+  const newAccessToken = await refreshAccessToken(refreshToken);
+  await saveAccessToken(newAccessToken, 900);
+  return newAccessToken;
+}
 
 export async function POST(req: NextRequest) {
-  console.log("=== SCREEN API CALLED ===");
-
   try {
     const body = await req.json();
-    const { symbols, username, password } = body;
+    const { bps = [], bcs = [], ic = [] } = body as {
+      bps: string[];
+      bcs: string[];
+      ic: string[];
+    };
 
-    if (!symbols || !username || !password) {
-      return NextResponse.json({ error: 'Missing symbols, username or password' }, { status: 400 });
+    const allSymbols = [...new Set([...bps, ...bcs, ...ic])];
+    if (allSymbols.length === 0) {
+      return NextResponse.json({ error: 'No symbols provided' }, { status: 400 });
     }
 
-    console.log(`Logging in as ${username} for ${symbols.length} symbols`);
+    const token = await getValidToken();
 
-    // Login to get fresh token
-    const loginRes = await fetch('https://api.tastytrade.com/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        login: username, 
-        password: password,
-        rememberMe: true 
-      }),
+    // Fetch market metrics for all symbols in one call
+    const metricsArray = await getMarketMetrics(allSymbols, token);
+    const metricsMap = Object.fromEntries(metricsArray.map(m => [m.symbol, m]));
+
+    const results = [];
+
+    // Process each bucket
+    const buckets: Array<{ symbols: string[]; strategy: Strategy }> = [
+      { symbols: bps, strategy: 'BPS' },
+      { symbols: bcs, strategy: 'BCS' },
+      { symbols: ic, strategy: 'IC' },
+    ];
+
+    for (const { symbols, strategy } of buckets) {
+      for (const symbol of symbols) {
+        try {
+          const metrics = metricsMap[symbol] || {
+            symbol,
+            ivRank: null,
+            impliedVolatility: null,
+            earningsExpectedDate: null,
+          };
+
+          const [chainData, quote] = await Promise.all([
+            getOptionsChain(symbol, token),
+            getQuote(symbol, token),
+          ]);
+
+          const price = quote.last ?? (quote.bid && quote.ask ? (quote.bid + quote.ask) / 2 : null);
+
+          const result = runChecklist(symbol, strategy, metrics, chainData, price);
+          results.push(result);
+        } catch (symbolErr: any) {
+          // Don't fail entire screen if one symbol errors
+          results.push({
+            symbol,
+            strategy,
+            price: null,
+            ivr: null,
+            qualified: false,
+            bestCandidate: null,
+            failReasons: [`Error: ${symbolErr.message}`],
+            checks: {
+              ivr: { status: 'fail', value: 'Error', reason: symbolErr.message },
+              earnings: { status: 'pending', value: '—', reason: '—' },
+              oi: { status: 'pending', value: '—', reason: '—' },
+              delta: { status: 'pending', value: '—', reason: '—' },
+              credit: { status: 'pending', value: '—', reason: '—' },
+              roc: { status: 'pending', value: '—', reason: '—' },
+            },
+          });
+        }
+      }
+    }
+
+    // Sort: qualified first, then by IVR descending
+    results.sort((a, b) => {
+      if (a.qualified && !b.qualified) return -1;
+      if (!a.qualified && b.qualified) return 1;
+      return (b.ivr ?? 0) - (a.ivr ?? 0);
     });
 
-    const loginData = await loginRes.json();
-    const token = loginData.session?.access_token || loginData.access_token;
-
-    if (!token) {
-      console.error("Login failed:", loginData);
-      return NextResponse.json({ error: 'Login failed - wrong username or password' }, { status: 401 });
-    }
-
-    console.log("✅ Login successful - got token");
-
-    // Mock real results for now (we'll replace with real calls later)
-    const results = symbols.map((symbol: string) => ({
-      symbol: symbol.toUpperCase(),
-      strategy: 'BPS' as const,
-      qualified: true,
-      bestCandidate: {
-        strategy: 'BPS' as const,
-        credit: 1.45,
-        pop: 72,
-        shortStrike: 145,
-        longStrike: 140,
-      }
-    }));
-
-    return NextResponse.json({ results, token });
+    return NextResponse.json({ results });
 
   } catch (err: any) {
-    console.error("=== API ERROR ===", err.message);
+    console.error('Screen API error:', err.message);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
