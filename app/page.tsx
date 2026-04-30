@@ -2,6 +2,14 @@
 
 import { useState } from 'react';
 
+// ── Types ──────────────────────────────────────────────────────────────────
+
+interface CheckResult {
+  status: 'pass' | 'fail' | 'warn' | 'pending';
+  value: string;
+  reason: string;
+}
+
 interface SpreadCandidate {
   strategy: string;
   expiration: string;
@@ -22,12 +30,6 @@ interface SpreadCandidate {
   totalCredit?: number;
 }
 
-interface CheckResult {
-  status: 'pass' | 'fail' | 'warn' | 'pending';
-  value: string;
-  reason: string;
-}
-
 interface ScreenResult {
   symbol: string;
   strategy: string;
@@ -46,19 +48,342 @@ interface ScreenResult {
   };
 }
 
-const statusColor = (s: string) => {
-  if (s === 'pass') return 'text-emerald-400';
-  if (s === 'fail') return 'text-red-400';
-  if (s === 'warn') return 'text-yellow-400';
-  return 'text-slate-500';
+// ── Rules ──────────────────────────────────────────────────────────────────
+
+const RULES = {
+  IVR_MIN: 30,
+  IVR_IC_MAX: 70,
+  OI_MIN: 500,
+  BID_ASK_MAX: 0.10,
+  CREDIT_RATIO_MIN: 1 / 3,
+  SPREAD_DELTA_MIN: 0.20,
+  SPREAD_DELTA_MAX: 0.30,
+  IC_DELTA_MIN: 0.16,
+  IC_DELTA_MAX: 0.20,
+  DTE_MIN: 30,
+  DTE_MAX: 45,
+  SPREAD_WIDTH: 5,
+  ROC_MIN_SPREAD: 20,
+  ROC_MIN_IC: 30,
 };
 
-const statusIcon = (s: string) => {
-  if (s === 'pass') return '✓';
-  if (s === 'fail') return '✗';
-  if (s === 'warn') return '⚠';
-  return '—';
-};
+function daysUntil(dateStr: string): number {
+  const target = new Date(dateStr);
+  const now = new Date();
+  return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// ── TastyTrade API (all called from browser) ───────────────────────────────
+
+const BASE = 'https://api.tastytrade.com';
+
+async function ttFetch(path: string, token: string) {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { Authorization: token },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+async function getAccessToken(): Promise<string> {
+  const refreshToken = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
+  const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
+  const clientId = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
+
+  if (!refreshToken || !clientSecret || !clientId) {
+    throw new Error('TastyTrade credentials not configured (NEXT_PUBLIC_ vars missing)');
+  }
+
+  const res = await fetch(`${BASE}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken.trim(),
+      client_id: clientId.trim(),
+      client_secret: clientSecret.trim(),
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  return data.access_token;
+}
+
+async function getMarketMetrics(symbols: string[], token: string) {
+  const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
+  return (data.data?.items || []).map((item: any) => ({
+    symbol: item.symbol,
+    ivRank: item['iv-rank'] != null ? parseFloat(item['iv-rank']) * 100 : null,
+    earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
+  }));
+}
+
+async function getQuote(symbol: string, token: string): Promise<number | null> {
+  try {
+    const data = await ttFetch(`/market-data/quotes?symbols=${symbol}`, token);
+    const item = data.data?.items?.[0];
+    if (!item) return null;
+    const last = item.last != null ? parseFloat(item.last) : null;
+    const bid = item.bid != null ? parseFloat(item.bid) : null;
+    const ask = item.ask != null ? parseFloat(item.ask) : null;
+    return last ?? (bid && ask ? (bid + ask) / 2 : null);
+  } catch {
+    return null;
+  }
+}
+
+async function getChain(symbol: string, token: string) {
+  const data = await ttFetch(`/option-chains/${symbol}/nested`, token);
+  const expirations: string[] = [];
+  const chains: Record<string, any[]> = {};
+
+  for (const exp of data.data?.items?.[0]?.expirations || []) {
+    const expDate: string = exp['expiration-date'];
+    expirations.push(expDate);
+    const items: any[] = [];
+
+    for (const strike of exp.strikes || []) {
+      for (const type of ['call', 'put'] as const) {
+        const leg = strike[type];
+        if (!leg) continue;
+        const bid = parseFloat(leg.bid || '0');
+        const ask = parseFloat(leg.ask || '0');
+        items.push({
+          strikePrice: parseFloat(strike['strike-price']),
+          expirationDate: expDate,
+          optionType: type === 'call' ? 'C' : 'P',
+          delta: leg.delta != null ? parseFloat(leg.delta) : null,
+          openInterest: parseInt(leg['open-interest'] || '0', 10),
+          bid, ask,
+          mid: (bid + ask) / 2,
+        });
+      }
+    }
+    chains[expDate] = items;
+  }
+  return { expirations, chains };
+}
+
+// ── Screener Logic ─────────────────────────────────────────────────────────
+
+function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string): SpreadCandidate | null {
+  const optionType = strategy === 'BPS' ? 'P' : 'C';
+  const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
+  const sorted = strategy === 'BPS'
+    ? legs.sort((a: any, b: any) => b.strikePrice - a.strikePrice)
+    : legs.sort((a: any, b: any) => a.strikePrice - b.strikePrice);
+
+  for (const shortLeg of sorted) {
+    const delta = shortLeg.delta;
+    if (delta == null) continue;
+    const absDelta = Math.abs(delta);
+    if (absDelta < RULES.SPREAD_DELTA_MIN || absDelta > RULES.SPREAD_DELTA_MAX) continue;
+    if (shortLeg.openInterest < RULES.OI_MIN) continue;
+    if (shortLeg.ask - shortLeg.bid > RULES.BID_ASK_MAX) continue;
+
+    const longStrike = strategy === 'BPS'
+      ? shortLeg.strikePrice - RULES.SPREAD_WIDTH
+      : shortLeg.strikePrice + RULES.SPREAD_WIDTH;
+
+    const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
+    if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
+    if (longLeg.ask - longLeg.bid > RULES.BID_ASK_MAX) continue;
+
+    const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2));
+    if (credit <= 0) continue;
+    const creditRatio = credit / RULES.SPREAD_WIDTH;
+    if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
+    const maxLoss = RULES.SPREAD_WIDTH - credit;
+    const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
+    if (roc < RULES.ROC_MIN_SPREAD) continue;
+
+    return {
+      strategy,
+      expiration: expDate,
+      dte: daysUntil(expDate),
+      shortStrike: shortLeg.strikePrice,
+      longStrike,
+      shortDelta: absDelta,
+      shortOI: shortLeg.openInterest,
+      longOI: longLeg.openInterest,
+      credit,
+      spreadWidth: RULES.SPREAD_WIDTH,
+      creditRatio,
+      roc,
+      pop: (1 - absDelta) * 100,
+    };
+  }
+  return null;
+}
+
+function findBestIC(chain: any[], expDate: string): SpreadCandidate | null {
+  const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P')
+    .sort((a: any, b: any) => b.strikePrice - a.strikePrice);
+  const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C')
+    .sort((a: any, b: any) => a.strikePrice - b.strikePrice);
+
+  for (const shortPut of puts) {
+    const putDelta = shortPut.delta;
+    if (putDelta == null) continue;
+    const absPutDelta = Math.abs(putDelta);
+    if (absPutDelta < RULES.IC_DELTA_MIN || absPutDelta > RULES.IC_DELTA_MAX) continue;
+    if (shortPut.openInterest < RULES.OI_MIN) continue;
+    if (shortPut.ask - shortPut.bid > RULES.BID_ASK_MAX) continue;
+
+    const longPutStrike = shortPut.strikePrice - RULES.SPREAD_WIDTH;
+    const longPut = puts.find((o: any) => Math.abs(o.strikePrice - longPutStrike) < 0.01);
+    if (!longPut || longPut.openInterest < RULES.OI_MIN) continue;
+    if (longPut.ask - longPut.bid > RULES.BID_ASK_MAX) continue;
+
+    const putCredit = parseFloat((shortPut.mid - longPut.mid).toFixed(2));
+    if (putCredit <= 0 || putCredit / RULES.SPREAD_WIDTH < RULES.CREDIT_RATIO_MIN) continue;
+
+    for (const shortCall of calls) {
+      if (shortCall.strikePrice <= shortPut.strikePrice) continue;
+      const callDelta = shortCall.delta;
+      if (callDelta == null) continue;
+      const absCallDelta = Math.abs(callDelta);
+      if (absCallDelta < RULES.IC_DELTA_MIN || absCallDelta > RULES.IC_DELTA_MAX) continue;
+      if (shortCall.openInterest < RULES.OI_MIN) continue;
+      if (shortCall.ask - shortCall.bid > RULES.BID_ASK_MAX) continue;
+
+      const longCallStrike = shortCall.strikePrice + RULES.SPREAD_WIDTH;
+      const longCall = calls.find((o: any) => Math.abs(o.strikePrice - longCallStrike) < 0.01);
+      if (!longCall || longCall.openInterest < RULES.OI_MIN) continue;
+      if (longCall.ask - longCall.bid > RULES.BID_ASK_MAX) continue;
+
+      const callCredit = parseFloat((shortCall.mid - longCall.mid).toFixed(2));
+      if (callCredit <= 0 || callCredit / RULES.SPREAD_WIDTH < RULES.CREDIT_RATIO_MIN) continue;
+
+      const totalCredit = parseFloat((putCredit + callCredit).toFixed(2));
+      const maxLoss = RULES.SPREAD_WIDTH - Math.max(putCredit, callCredit);
+      const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0;
+      if (roc < RULES.ROC_MIN_IC) continue;
+
+      return {
+        strategy: 'IC',
+        expiration: expDate,
+        dte: daysUntil(expDate),
+        shortStrike: shortPut.strikePrice,
+        longStrike: longPutStrike,
+        shortDelta: absPutDelta,
+        shortOI: shortPut.openInterest,
+        longOI: longPut.openInterest,
+        credit: putCredit,
+        spreadWidth: RULES.SPREAD_WIDTH,
+        creditRatio: putCredit / RULES.SPREAD_WIDTH,
+        roc,
+        pop: (1 - absPutDelta - absCallDelta) * 100,
+        shortCallStrike: shortCall.strikePrice,
+        longCallStrike,
+        callCredit,
+        totalCredit,
+      };
+    }
+  }
+  return null;
+}
+
+function runChecklist(
+  symbol: string,
+  strategy: 'BPS' | 'BCS' | 'IC',
+  metrics: any,
+  chainData: { expirations: string[]; chains: Record<string, any[]> },
+  price: number | null
+): ScreenResult {
+  const failReasons: string[] = [];
+  const ivrValue = metrics.ivRank;
+  const earningsDate = metrics.earningsExpectedDate;
+
+  const ivrCheck: CheckResult = ivrValue == null
+    ? { status: 'warn', value: 'N/A', reason: 'Not available' }
+    : ivrValue < RULES.IVR_MIN
+    ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < 30%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: 'Below 30% minimum' }; })()
+    : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Above minimum' };
+
+  let earningsCheck: CheckResult;
+  if (!earningsDate) {
+    earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' };
+  } else {
+    const daysAway = daysUntil(earningsDate);
+    if (daysAway < 0) {
+      earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
+    } else if (daysAway <= RULES.DTE_MAX) {
+      failReasons.push(`Earnings in ${daysAway}d`);
+      earningsCheck = { status: 'fail', value: `${daysAway}d (${earningsDate})`, reason: 'Within expiry window' };
+    } else {
+      earningsCheck = { status: 'pass', value: `${daysAway}d (${earningsDate})`, reason: 'Outside expiry window' };
+    }
+  }
+
+  const validExpirations = chainData.expirations.filter(exp => {
+    const dte = daysUntil(exp);
+    if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false;
+    if (earningsDate) {
+      const ed = daysUntil(earningsDate);
+      if (ed >= 0 && ed <= dte) return false;
+    }
+    return true;
+  });
+
+  let bestCandidate: SpreadCandidate | null = null;
+  if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) {
+    for (const exp of validExpirations) {
+      const chainItems = chainData.chains[exp] || [];
+      bestCandidate = strategy === 'IC'
+        ? findBestIC(chainItems, exp)
+        : findBestSpread(chainItems, strategy, exp);
+      if (bestCandidate) break;
+    }
+  }
+
+  if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) {
+    failReasons.push('No 30-45 DTE expirations');
+  } else if (!bestCandidate && validExpirations.length > 0 && !failReasons.length) {
+    failReasons.push('No qualifying strikes found');
+  }
+
+  const oiCheck: CheckResult = bestCandidate
+    ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: 'Both legs ≥ 500' }
+    : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
+
+  const deltaCheck: CheckResult = bestCandidate
+    ? { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Within target range' }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  const creditCheck: CheckResult = bestCandidate
+    ? { status: 'pass', value: `$${(bestCandidate.totalCredit ?? bestCandidate.credit).toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  const rocMin = strategy === 'IC' ? RULES.ROC_MIN_IC : RULES.ROC_MIN_SPREAD;
+  const rocCheck: CheckResult = bestCandidate
+    ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  const qualified =
+    ivrCheck.status === 'pass' &&
+    earningsCheck.status === 'pass' &&
+    oiCheck.status === 'pass' &&
+    deltaCheck.status === 'pass' &&
+    creditCheck.status === 'pass' &&
+    rocCheck.status === 'pass' &&
+    bestCandidate !== null;
+
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck } };
+}
+
+// ── UI Components ──────────────────────────────────────────────────────────
+
+const statusColor = (s: string) => s === 'pass' ? 'text-emerald-400' : s === 'fail' ? 'text-red-400' : s === 'warn' ? 'text-yellow-400' : 'text-slate-500';
+const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
 
 function ResultCard({ result }: { result: ScreenResult }) {
   const [expanded, setExpanded] = useState(false);
@@ -70,34 +395,23 @@ function ResultCard({ result }: { result: ScreenResult }) {
     : 'bg-blue-900/30 border-blue-800 text-blue-400';
 
   return (
-    <div
-      className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? 'border-slate-700 bg-slate-900/40' : 'border-slate-800 bg-slate-900/20 opacity-70'}`}
-      onClick={() => setExpanded(!expanded)}
-    >
+    <div className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? 'border-slate-700 bg-slate-900/40' : 'border-slate-800 bg-slate-900/20 opacity-70'}`} onClick={() => setExpanded(!expanded)}>
       <div className="px-4 py-3 flex items-center gap-4 flex-wrap">
         <div className="w-16 shrink-0">
           <p className="font-bold text-white">{result.symbol}</p>
           {result.price && <p className="text-[10px] text-slate-500">${result.price.toFixed(2)}</p>}
         </div>
         <span className={`text-[10px] px-2 py-0.5 border rounded shrink-0 ${stratBg}`}>{result.strategy}</span>
-        <div className="text-xs text-slate-400 shrink-0">
-          IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-400' : 'text-red-400'}>
-            {result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}
-          </span>
-        </div>
-        {c && (
-          <>
-            <div className="text-xs shrink-0"><span className="text-slate-500">Exp </span><span className="text-white">{c.expiration}</span><span className="text-slate-600 ml-1">({c.dte}d)</span></div>
-            <div className="text-xs shrink-0"><span className="text-slate-500">Strikes </span><span className="text-white">{c.shortStrike}/{c.longStrike}</span></div>
-            <div className="text-xs shrink-0"><span className="text-slate-500">Credit </span><span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-            <div className="text-xs shrink-0"><span className="text-slate-500">ROC </span><span className="text-white">{c.roc.toFixed(0)}%</span></div>
-            {c.pop != null && <div className="text-xs shrink-0"><span className="text-slate-500">POP </span><span className="text-white">{c.pop.toFixed(0)}%</span></div>}
-            <div className="text-xs shrink-0"><span className="text-slate-500">δ </span><span className="text-white">{c.shortDelta.toFixed(2)}</span></div>
-          </>
-        )}
-        {!result.qualified && result.failReasons.length > 0 && (
-          <div className="text-[10px] text-red-400 ml-auto">{result.failReasons.slice(0, 2).join(' · ')}</div>
-        )}
+        <div className="text-xs text-slate-400 shrink-0">IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-400' : 'text-red-400'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
+        {c && <>
+          <div className="text-xs shrink-0"><span className="text-slate-500">Exp </span><span className="text-white">{c.expiration}</span><span className="text-slate-600 ml-1">({c.dte}d)</span></div>
+          <div className="text-xs shrink-0"><span className="text-slate-500">Strikes </span><span className="text-white">{c.shortStrike}/{c.longStrike}</span>{c.shortCallStrike && <span className="text-slate-500"> · {c.shortCallStrike}/{c.longCallStrike}</span>}</div>
+          <div className="text-xs shrink-0"><span className="text-slate-500">Credit </span><span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+          <div className="text-xs shrink-0"><span className="text-slate-500">ROC </span><span className="text-white">{c.roc.toFixed(0)}%</span></div>
+          {c.pop != null && <div className="text-xs shrink-0"><span className="text-slate-500">POP </span><span className="text-white">{c.pop.toFixed(0)}%</span></div>}
+          <div className="text-xs shrink-0"><span className="text-slate-500">δ </span><span className="text-white">{c.shortDelta.toFixed(2)}</span></div>
+        </>}
+        {!result.qualified && result.failReasons.length > 0 && <div className="text-[10px] text-red-400 ml-auto">{result.failReasons.slice(0, 2).join(' · ')}</div>}
         <div className="ml-auto text-slate-600 text-xs shrink-0">{expanded ? '▲' : '▼'}</div>
       </div>
       {expanded && (
@@ -112,16 +426,14 @@ function ResultCard({ result }: { result: ScreenResult }) {
               </div>
             </div>
           ))}
-          {result.failReasons.length > 0 && (
-            <div className="col-span-2 md:col-span-3 mt-1 pt-2 border-t border-slate-800">
-              <p className="text-[10px] text-red-400">{result.failReasons.join(' · ')}</p>
-            </div>
-          )}
+          {result.failReasons.length > 0 && <div className="col-span-2 md:col-span-3 mt-1 pt-2 border-t border-slate-800"><p className="text-[10px] text-red-400">{result.failReasons.join(' · ')}</p></div>}
         </div>
       )}
     </div>
   );
 }
+
+// ── Main App ───────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [bpsTickers, setBpsTickers] = useState('');
@@ -129,96 +441,100 @@ export default function Home() {
   const [icTickers, setIcTickers] = useState('');
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [loading, setLoading] = useState(false);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [tokenExpiry, setTokenExpiry] = useState<number>(0);
   const [error, setError] = useState('');
-
-  const clientId = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-  const isConnected = !!accessToken && Date.now() < tokenExpiry;
-
-  const refreshToken = async (): Promise<string> => {
-    const storedRefreshToken = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
-    const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
-
-    if (!storedRefreshToken || !clientSecret) {
-      throw new Error('TastyTrade credentials not configured.');
-    }
-
-    const res = await fetch('https://api.tastytrade.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grant_type: 'refresh_token',
-        refresh_token: storedRefreshToken,
-        client_id: clientId,
-        client_secret: clientSecret,
-      }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Token refresh failed: ${text}`);
-    }
-
-    const data = await res.json();
-    const expiry = Date.now() + ((data.expires_in || 900) * 1000);
-    setAccessToken(data.access_token);
-    setTokenExpiry(expiry);
-    return data.access_token;
-  };
-
-  const getToken = async (): Promise<string> => {
-    if (accessToken && Date.now() < tokenExpiry - 60000) return accessToken;
-    return refreshToken();
-  };
+  const [status, setStatus] = useState('');
 
   const parseTickers = (input: string) =>
     input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
 
-  const runScreen = async () => {
-    setError('');
-    const bps = parseTickers(bpsTickers);
-    const bcs = parseTickers(bcsTickers);
-    const ic = parseTickers(icTickers);
-
-    if (bps.length === 0 && bcs.length === 0 && ic.length === 0) {
-      setError('Enter at least one ticker.');
-      return;
-    }
-
-    setLoading(true);
-    setResults([]);
-
-    try {
-      const token = await getToken();
-      const res = await fetch('/api/screen', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bps, bcs, ic, accessToken: token }),
-      });
-
-      const data = await res.json();
-      if (data.error) setError(data.error);
-      else setResults(data.results || []);
-    } catch (e: any) {
-      setError(e.message);
-    }
-
-    setLoading(false);
-  };
-
-  const downloadCSV = async () => {
-    const res = await fetch('/api/csv', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ results }),
+  const downloadCSV = () => {
+    const headers = ['Symbol','Strategy','Qualified','Price','IVR','Expiration','DTE','Short Strike','Long Strike','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Short Call Strike','Long Call Strike','Call Credit','Total Credit','Fail Reasons'];
+    const rows = results.map(r => {
+      const c = r.bestCandidate;
+      return [r.symbol, r.strategy, r.qualified ? 'YES' : 'NO', r.price?.toFixed(2) || '', r.ivr?.toFixed(1) || '', c?.expiration || '', c?.dte || '', c?.shortStrike || '', c?.longStrike || '', c?.shortDelta?.toFixed(2) || '', c?.credit?.toFixed(2) || '', c?.roc?.toFixed(0) || '', c?.pop?.toFixed(0) || '', c?.shortOI || '', c?.longOI || '', c?.shortCallStrike || '', c?.longCallStrike || '', c?.callCredit?.toFixed(2) || '', c?.totalCredit?.toFixed(2) || '', r.failReasons.join('; ')].map(v => `"${v}"`).join(',');
     });
-    const blob = await res.blob();
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
+  };
+
+  const runScreen = async () => {
+    setError('');
+    setResults([]);
+
+    const bps = parseTickers(bpsTickers);
+    const bcs = parseTickers(bcsTickers);
+    const ic = parseTickers(icTickers);
+
+    if (!bps.length && !bcs.length && !ic.length) {
+      setError('Enter at least one ticker.');
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      setStatus('Getting access token...');
+      const token = await getAccessToken();
+
+      const allSymbols = Array.from(new Set([...bps, ...bcs, ...ic]));
+
+      setStatus('Fetching market metrics...');
+      const metricsArray = await getMarketMetrics(allSymbols, token);
+      const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
+
+      const screenResults: ScreenResult[] = [];
+      const buckets = [
+        { symbols: bps, strategy: 'BPS' as const },
+        { symbols: bcs, strategy: 'BCS' as const },
+        { symbols: ic, strategy: 'IC' as const },
+      ];
+
+      for (const { symbols, strategy } of buckets) {
+        for (const symbol of symbols) {
+          setStatus(`Scanning ${symbol}...`);
+          try {
+            const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
+            const [chainData, price] = await Promise.all([
+              getChain(symbol, token),
+              getQuote(symbol, token),
+            ]);
+            const result = runChecklist(symbol, strategy, metrics, chainData, price);
+            screenResults.push(result);
+          } catch (e: any) {
+            screenResults.push({
+              symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+              failReasons: [e.message],
+              checks: {
+                ivr: { status: 'fail', value: 'Error', reason: e.message },
+                earnings: { status: 'pending', value: '—', reason: '—' },
+                oi: { status: 'pending', value: '—', reason: '—' },
+                delta: { status: 'pending', value: '—', reason: '—' },
+                credit: { status: 'pending', value: '—', reason: '—' },
+                roc: { status: 'pending', value: '—', reason: '—' },
+              },
+            });
+          }
+        }
+      }
+
+      screenResults.sort((a, b) => {
+        if (a.qualified && !b.qualified) return -1;
+        if (!a.qualified && b.qualified) return 1;
+        return (b.ivr ?? 0) - (a.ivr ?? 0);
+      });
+
+      setResults(screenResults);
+    } catch (e: any) {
+      setError(e.message);
+    }
+
+    setStatus('');
+    setLoading(false);
   };
 
   const qualified = results.filter(r => r.qualified);
@@ -230,12 +546,6 @@ export default function Home() {
         <div>
           <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
           <p className="text-[10px] text-slate-500 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
-        </div>
-        <div className="flex items-center gap-3">
-          {isConnected
-            ? <span className="text-[10px] text-emerald-400 flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse"></span>TASTYTRADE CONNECTED</span>
-            : <span className="text-[10px] text-slate-500 flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-slate-500 inline-block"></span>CONNECTING...</span>
-          }
         </div>
       </div>
 
@@ -286,7 +596,11 @@ export default function Home() {
               <p className="text-[10px] tracking-widest">ADD TICKERS AND RUN SCREENER</p>
             </div>
           )}
-          {loading && <div className="h-full flex flex-col items-center justify-center"><div className="text-[10px] tracking-widest text-slate-500 animate-pulse">FETCHING MARKET DATA...</div></div>}
+          {loading && (
+            <div className="h-full flex flex-col items-center justify-center gap-2">
+              <div className="text-[10px] tracking-widest text-slate-500 animate-pulse">{status || 'SCANNING...'}</div>
+            </div>
+          )}
           {results.length > 0 && (
             <div className="space-y-5">
               <div className="flex items-center justify-between">
