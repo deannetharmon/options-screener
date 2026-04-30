@@ -286,7 +286,7 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
     console.log(`${strategy} ${expDate} bid-ask failures detail:`, 
     sorted.filter(o => o.delta != null && Math.abs(o.delta) >= RULES.SPREAD_DELTA_MIN && Math.abs(o.delta) <= RULES.SPREAD_DELTA_MAX)
     .map(o => ({ strike: o.strikePrice, delta: o.delta, spread: (o.ask - o.bid).toFixed(2), bidAskMax }))
-  }
+  );
   return null;
 }
 
