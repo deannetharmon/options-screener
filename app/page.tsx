@@ -488,6 +488,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
+  const [showRulesModal, setShowRulesModal] = useState(false);
+  const [runtimeRules, setRuntimeRules] = useState({ ...RULES });
 
   const parseTickers = (input: string) =>
     input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -629,7 +631,7 @@ export default function Home() {
             <div className="flex justify-between"><span>Width</span><span className="text-slate-500">$5</span></div>
           </div>
           {error && <div className="text-[10px] text-red-400 bg-red-900/20 border border-red-800/60 rounded p-2 leading-relaxed">{error}</div>}
-          <button onClick={runScreen} disabled={loading} className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto">
+          <button onClick={() => setShowRulesModal(true)} disabled={loading} className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto">
             {loading ? 'SCANNING...' : 'RUN SCREENER'}
           </button>
         </div>
@@ -672,6 +674,42 @@ export default function Home() {
           )}
         </div>
       </div>
+    // TO:
+      {showRulesModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 w-[480px] max-h-[80vh] overflow-auto">
+            <h2 className="text-xs font-bold tracking-widest text-white mb-4">SCREENING RULES</h2>
+            <div className="grid grid-cols-2 gap-3 mb-6">
+              {Object.entries(runtimeRules).map(([key, value]) => (
+                <div key={key}>
+                  <p className="text-[9px] text-slate-500 tracking-wider mb-1">{key.replace(/_/g, ' ')}</p>
+                  <input
+                    type="number"
+                    step="any"
+                    value={value}
+                    onChange={e => setRuntimeRules(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-slate-500"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setShowRulesModal(false); setRuntimeRules({ ...RULES }); }}
+                className="flex-1 border border-slate-700 text-slate-400 py-2 rounded text-xs tracking-widest hover:border-slate-500"
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={() => { setShowRulesModal(false); runScreen(); }}
+                className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200"
+              >
+                RUN
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
