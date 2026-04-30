@@ -221,7 +221,8 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
     }
   }
 
-  expirations.sort();
+  xpirations.sort();
+  console.log('CHAIN DEBUG:', symbol, 'expirations:', expirations, 'total options:', Object.values(chains).flat().length);
   return { expirations, chains };
 }
 
