@@ -506,7 +506,12 @@ export default function Home() {
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
-  const [runtimeRules, setRuntimeRules] = useState<RulesType>({ ...DEFAULT_RULES });
+  const [runtimeRules, setRuntimeRules] = useState<RulesType>(() => {
+    try {
+      const saved = localStorage.getItem('prosper-rules');
+      return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES };
+    } catch { return { ...DEFAULT_RULES }; }
+  });
 
   const parseTickers = (input: string) =>
     input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -724,13 +729,19 @@ export default function Home() {
             </div>
             <div className="flex gap-3">
               <button
+                onClick={() => setRuntimeRules({ ...DEFAULT_RULES })}
+                className="flex-1 border border-slate-700 text-yellow-600 py-2 rounded text-xs tracking-widest hover:border-yellow-600"
+              >
+                RESET
+              </button>
+              <button
                 onClick={() => setShowRulesModal(false)}
                 className="flex-1 border border-slate-700 text-slate-400 py-2 rounded text-xs tracking-widest hover:border-slate-500"
               >
                 CANCEL
               </button>
               <button
-                onClick={() => { setShowRulesModal(false); console.log('RUN clicked with rules:', runtimeRules); runScreen(runtimeRules); }}
+                onClick={() => { setShowRulesModal(false); localStorage.setItem('prosper-rules', JSON.stringify(runtimeRules)); console.log('RUN clicked with rules:', runtimeRules); runScreen(runtimeRules); }}
                 className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200"
               >
                 RUN
