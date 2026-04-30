@@ -728,7 +728,7 @@ export default function Home() {
                 CANCEL
               </button>
               <button
-                onClick={() => { setShowRulesModal(false); runScreen(runtimeRules); }}
+                onClick={() => { setShowRulesModal(false); console.log('RUN clicked with rules:', runtimeRules); runScreen(runtimeRules); }}
                 className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200"
               >
                 RUN
