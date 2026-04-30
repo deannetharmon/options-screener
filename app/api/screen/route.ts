@@ -1,25 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getMarketMetrics, getOptionsChain, getQuote } from '@/lib/tastytrade';
 import { runChecklist, Strategy } from '@/lib/screener';
-import { getValidAccessToken } from '@/lib/tokenStore';
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { bps = [], bcs = [], ic = [] } = body as {
+    const { bps = [], bcs = [], ic = [], accessToken } = body as {
       bps: string[];
       bcs: string[];
       ic: string[];
+      accessToken: string;
     };
+
+    if (!accessToken) {
+      return NextResponse.json({ error: 'No access token provided' }, { status: 401 });
+    }
 
     const allSymbols = Array.from(new Set([...bps, ...bcs, ...ic]));
     if (allSymbols.length === 0) {
       return NextResponse.json({ error: 'No symbols provided' }, { status: 400 });
     }
 
-    const token = await getValidAccessToken();
-
-    const metricsArray = await getMarketMetrics(allSymbols, token);
+    const metricsArray = await getMarketMetrics(allSymbols, accessToken);
     const metricsMap = Object.fromEntries(metricsArray.map(m => [m.symbol, m]));
 
     const results = [];
@@ -41,8 +43,8 @@ export async function POST(req: NextRequest) {
           };
 
           const [chainData, quote] = await Promise.all([
-            getOptionsChain(symbol, token),
-            getQuote(symbol, token),
+            getOptionsChain(symbol, accessToken),
+            getQuote(symbol, accessToken),
           ]);
 
           const price = quote.last ?? (quote.bid && quote.ask ? (quote.bid + quote.ask) / 2 : null);
