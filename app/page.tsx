@@ -146,42 +146,70 @@ async function getChain(symbol: string, token: string) {
   const chains: Record<string, any[]> = {};
   const expirationGroups = nested?.data?.items?.[0]?.expirations ?? [];
 
+  const allStreamerSymbols: string[] = [];
+  const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
+
   for (const expGroup of expirationGroups) {
     const expDate: string = expGroup['expiration-date'];
     if (!expDate) continue;
     const dte = daysUntil(expDate);
     if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
 
-    if (!expirations.includes(expDate)) expirations.push(expDate);
-    if (!chains[expDate]) chains[expDate] = [];
-
     for (const strike of expGroup.strikes ?? []) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
       for (const side of ['call', 'put'] as const) {
         const opt = strike[side];
-        if (!opt) continue;
-        const bid = parseFloat(opt.bid ?? '0');
-        const ask = parseFloat(opt.ask ?? '0');
-        const delta = opt.delta != null ? parseFloat(opt.delta) : null;
-        const oi = parseInt(opt['open-interest'] ?? '0', 10);
-        chains[expDate].push({
-          strikePrice,
-          expirationDate: expDate,
+        if (!opt?.['streamer-symbol']) continue;
+        const ss: string = opt['streamer-symbol'];
+        allStreamerSymbols.push(ss);
+        symbolMeta[ss] = {
+          expDate,
+          strike: strikePrice,
           optionType: side === 'call' ? 'C' : 'P',
-          delta,
-          openInterest: oi,
-          bid,
-          ask,
-          mid: (bid + ask) / 2,
-        });
+        };
       }
+    }
+  }
+
+  if (allStreamerSymbols.length === 0) return { expirations, chains };
+
+  // Fetch Greeks using streamer symbols
+  const chunkSize = 100;
+  for (let i = 0; i < allStreamerSymbols.length; i += chunkSize) {
+    const chunk = allStreamerSymbols.slice(i, i + chunkSize);
+    const encoded = chunk.map(s => encodeURIComponent(s)).join(',');
+    let greeksData: any;
+    try {
+      greeksData = await ttFetch(`/market-data/options?symbols=${encoded}`, token);
+    } catch (e) {
+      console.warn('Greeks fetch failed for chunk', i, e);
+      continue;
+    }
+    for (const item of greeksData?.data?.items ?? []) {
+      const ss: string = item['streamer-symbol'] ?? item.symbol;
+      const meta = symbolMeta[ss];
+      if (!meta) continue;
+      const bid = parseFloat(item.bid ?? '0');
+      const ask = parseFloat(item.ask ?? '0');
+      const delta = item.delta != null ? parseFloat(item.delta) : null;
+      const oi = parseInt(item['open-interest'] ?? '0', 10);
+      if (!expirations.includes(meta.expDate)) expirations.push(meta.expDate);
+      if (!chains[meta.expDate]) chains[meta.expDate] = [];
+      chains[meta.expDate].push({
+        strikePrice: meta.strike,
+        expirationDate: meta.expDate,
+        optionType: meta.optionType,
+        delta, openInterest: oi, bid, ask,
+        mid: (bid + ask) / 2,
+      });
     }
   }
 
   expirations.sort();
   const firstExp = expirations[0];
   if (firstExp) {
-    console.log('NESTED SAMPLE:', JSON.stringify(chains[firstExp]?.[0], null, 2));
+    console.log('GREEKS SAMPLE:', JSON.stringify(chains[firstExp]?.[0], null, 2));
+    console.log('Streamer symbols sample:', allStreamerSymbols.slice(0, 3));
     console.log('Total options:', Object.values(chains).flat().length);
   }
   return { expirations, chains };
