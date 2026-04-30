@@ -16,19 +16,18 @@ export async function getValidAccessToken(): Promise<string> {
   if (!clientId) throw new Error('TASTYTRADE_CLIENT_ID not configured');
   if (!clientSecret) throw new Error('TASTYTRADE_CLIENT_SECRET not configured');
 
-  const body = new URLSearchParams();
-  body.append('grant_type', 'refresh_token');
-  body.append('refresh_token', refreshToken.trim());
-  body.append('client_id', clientId.trim());
-  body.append('client_secret', clientSecret.trim());
-
   const res = await fetch(`${BASE_URL}/oauth/token`, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type': 'application/json',
       'Accept': 'application/json',
     },
-    body: body.toString(),
+    body: JSON.stringify({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken.trim(),
+      client_id: clientId.trim(),
+      client_secret: clientSecret.trim(),
+    }),
   });
 
   const text = await res.text();
@@ -37,12 +36,7 @@ export async function getValidAccessToken(): Promise<string> {
     throw new Error(`Token refresh failed (${res.status}): ${text}`);
   }
 
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`Token refresh bad response: ${text}`);
-  }
+  const data = JSON.parse(text);
 
   if (!data.access_token) {
     throw new Error(`No access token in response: ${text}`);
