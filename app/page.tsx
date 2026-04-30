@@ -144,7 +144,9 @@ async function getChain(symbol: string, token: string) {
   const data = await ttFetch(`/option-chains/${symbol}/nested`, token);
   console.log('CHAIN KEYS:', Object.keys(data.data?.items?.[0] || {}));
   console.log('FIRST EXP:', JSON.stringify(data.data?.items?.[0]?.expirations?.[0]?.strikes?.[0]));
-  
+  const expirations: string[] = [];
+  const chains: Record<string, any[]> = {};
+
   for (const exp of data.data?.items?.[0]?.expirations || []) {
     const expDate: string = exp['expiration-date'];
     expirations.push(expDate);
