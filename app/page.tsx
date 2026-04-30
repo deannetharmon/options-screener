@@ -141,7 +141,22 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
 }
 
 async function getChain(symbol: string, token: string) {
-  const data = await ttFetch(`/option-chains/${symbol}`, token);
+  let data: any;
+  try {
+    data = await ttFetch(`/option-chains/${symbol}`, token);
+  } catch (e) {
+    console.error('CHAIN FETCH ERROR:', e);
+    throw e;
+  }
+  
+// ── DEBUG: log full raw response structure ──
+  console.log('CHAIN RAW KEYS:', Object.keys(data));
+  console.log('CHAIN DATA KEYS:', data.data ? Object.keys(data.data) : 'data is null');
+  console.log('CHAIN ITEMS COUNT:', data.data?.items?.length ?? 'no items');
+  console.log('FLAT CHAIN SAMPLE:', JSON.stringify(data.data?.items?.[0], null, 2));
+  console.log('FULL CHAIN DUMP (first 3):', JSON.stringify(data.data?.items?.slice(0, 3), null, 2));
+  // ── END DEBUG ──
+
   console.log('FLAT CHAIN SAMPLE:', JSON.stringify(data.data?.items?.[0]));
   const expirations: string[] = [];
   const chains: Record<string, any[]> = {};
