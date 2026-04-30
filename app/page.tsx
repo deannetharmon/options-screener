@@ -392,6 +392,7 @@ function runChecklist(
     return true;
   });
 
+  console.log(`${symbol} validExpirations:`, validExpirations, 'all expirations:', chainData.expirations);
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) {
     for (const exp of validExpirations) {
