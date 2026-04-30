@@ -146,7 +146,7 @@ async function getChain(symbol: string, token: string) {
   const chains: Record<string, any[]> = {};
   const expirationGroups = nested?.data?.items?.[0]?.expirations ?? [];
 
-  const allStreamerSymbols: string[] = [];
+  const allOCCSymbols: string[] = [];
   const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
 
   for (const expGroup of expirationGroups) {
@@ -157,26 +157,24 @@ async function getChain(symbol: string, token: string) {
 
     for (const strike of expGroup.strikes ?? []) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
-      for (const side of ['call', 'put'] as const) {
-        const opt = strike[side];
-        if (!opt?.['streamer-symbol']) continue;
-        const ss: string = opt['streamer-symbol'];
-        allStreamerSymbols.push(ss);
-        symbolMeta[ss] = {
-          expDate,
-          strike: strikePrice,
-          optionType: side === 'call' ? 'C' : 'P',
-        };
+      const callSym: string = strike['call'];
+      const putSym: string = strike['put'];
+      if (callSym) {
+        allOCCSymbols.push(callSym);
+        symbolMeta[callSym] = { expDate, strike: strikePrice, optionType: 'C' };
+      }
+      if (putSym) {
+        allOCCSymbols.push(putSym);
+        symbolMeta[putSym] = { expDate, strike: strikePrice, optionType: 'P' };
       }
     }
   }
 
-  if (allStreamerSymbols.length === 0) return { expirations, chains };
+  if (allOCCSymbols.length === 0) return { expirations, chains };
 
-  // Fetch Greeks using streamer symbols
   const chunkSize = 100;
-  for (let i = 0; i < allStreamerSymbols.length; i += chunkSize) {
-    const chunk = allStreamerSymbols.slice(i, i + chunkSize);
+  for (let i = 0; i < allOCCSymbols.length; i += chunkSize) {
+    const chunk = allOCCSymbols.slice(i, i + chunkSize);
     const encoded = chunk.map(s => encodeURIComponent(s)).join(',');
     let greeksData: any;
     try {
@@ -186,8 +184,8 @@ async function getChain(symbol: string, token: string) {
       continue;
     }
     for (const item of greeksData?.data?.items ?? []) {
-      const ss: string = item['streamer-symbol'] ?? item.symbol;
-      const meta = symbolMeta[ss];
+      const occSym: string = item.symbol;
+      const meta = symbolMeta[occSym];
       if (!meta) continue;
       const bid = parseFloat(item.bid ?? '0');
       const ask = parseFloat(item.ask ?? '0');
@@ -209,8 +207,7 @@ async function getChain(symbol: string, token: string) {
   const firstExp = expirations[0];
   if (firstExp) {
     console.log('GREEKS SAMPLE:', JSON.stringify(chains[firstExp]?.[0], null, 2));
-    console.log('Streamer symbols sample:', allStreamerSymbols.slice(0, 3));
-    console.log('Total options:', Object.values(chains).flat().length);
+    console.log('Total options with Greeks:', Object.values(chains).flat().length);
   }
   return { expirations, chains };
 }
