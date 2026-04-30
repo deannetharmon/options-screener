@@ -1,33 +1,44 @@
-import { kv } from '@vercel/kv';
+const BASE_URL = 'https://api.tastytrade.com';
 
-const TOKEN_KEY = 'tastytrade:refresh_token';
-const ACCESS_TOKEN_KEY = 'tastytrade:access_token';
-const ACCESS_TOKEN_EXPIRY_KEY = 'tastytrade:access_token_expiry';
+// In-memory cache for access token (lasts 15 min per TastyTrade)
+let cachedAccessToken: string | null = null;
+let tokenExpiry: number = 0;
 
-export async function saveRefreshToken(refreshToken: string): Promise<void> {
-  await kv.set(TOKEN_KEY, refreshToken);
-}
+export async function getValidAccessToken(): Promise<string> {
+  if (cachedAccessToken && Date.now() < tokenExpiry - 60000) {
+    return cachedAccessToken;
+  }
 
-export async function getRefreshToken(): Promise<string | null> {
-  return await kv.get<string>(TOKEN_KEY);
-}
+  const refreshToken = process.env.TASTYTRADE_REFRESH_TOKEN;
+  const clientId = process.env.TASTYTRADE_CLIENT_ID;
+  const clientSecret = process.env.TASTYTRADE_CLIENT_SECRET;
 
-export async function saveAccessToken(accessToken: string, expiresInSeconds: number = 900): Promise<void> {
-  await kv.set(ACCESS_TOKEN_KEY, accessToken, { ex: expiresInSeconds - 60 }); // expire 60s early
-  await kv.set(ACCESS_TOKEN_EXPIRY_KEY, Date.now() + (expiresInSeconds * 1000));
-}
+  if (!refreshToken) throw new Error('TASTYTRADE_REFRESH_TOKEN not configured');
+  if (!clientId) throw new Error('TASTYTRADE_CLIENT_ID not configured');
+  if (!clientSecret) throw new Error('TASTYTRADE_CLIENT_SECRET not configured');
 
-export async function getCachedAccessToken(): Promise<string | null> {
-  return await kv.get<string>(ACCESS_TOKEN_KEY);
-}
+  const res = await fetch(`${BASE_URL}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+    }),
+  });
 
-export async function clearTokens(): Promise<void> {
-  await kv.del(TOKEN_KEY);
-  await kv.del(ACCESS_TOKEN_KEY);
-  await kv.del(ACCESS_TOKEN_EXPIRY_KEY);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Token refresh failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json();
+  cachedAccessToken = data.access_token;
+  tokenExpiry = Date.now() + ((data.expires_in || 900) * 1000);
+  return cachedAccessToken!;
 }
 
 export async function isAuthenticated(): Promise<boolean> {
-  const token = await getRefreshToken();
-  return token !== null;
+  return !!process.env.TASTYTRADE_REFRESH_TOKEN;
 }

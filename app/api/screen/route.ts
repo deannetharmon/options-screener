@@ -1,21 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getMarketMetrics, getOptionsChain, getQuote, refreshAccessToken } from '@/lib/tastytrade';
+import { getMarketMetrics, getOptionsChain, getQuote } from '@/lib/tastytrade';
 import { runChecklist, Strategy } from '@/lib/screener';
-import { getCachedAccessToken, saveAccessToken, getRefreshToken } from '@/lib/tokenStore';
-
-async function getValidToken(): Promise<string> {
-  // Try cached access token first
-  const cached = await getCachedAccessToken();
-  if (cached) return cached;
-
-  // Refresh using stored refresh token
-  const refreshToken = await getRefreshToken();
-  if (!refreshToken) throw new Error('Not authenticated. Please connect TastyTrade first.');
-
-  const newAccessToken = await refreshAccessToken(refreshToken);
-  await saveAccessToken(newAccessToken, 900);
-  return newAccessToken;
-}
+import { getValidAccessToken } from '@/lib/tokenStore';
 
 export async function POST(req: NextRequest) {
   try {
@@ -26,20 +12,18 @@ export async function POST(req: NextRequest) {
       ic: string[];
     };
 
-    const allSymbols = [...new Set([...bps, ...bcs, ...ic])];
+    const allSymbols = Array.from(new Set([...bps, ...bcs, ...ic]));
     if (allSymbols.length === 0) {
       return NextResponse.json({ error: 'No symbols provided' }, { status: 400 });
     }
 
-    const token = await getValidToken();
+    const token = await getValidAccessToken();
 
-    // Fetch market metrics for all symbols in one call
     const metricsArray = await getMarketMetrics(allSymbols, token);
     const metricsMap = Object.fromEntries(metricsArray.map(m => [m.symbol, m]));
 
     const results = [];
 
-    // Process each bucket
     const buckets: Array<{ symbols: string[]; strategy: Strategy }> = [
       { symbols: bps, strategy: 'BPS' },
       { symbols: bcs, strategy: 'BCS' },
@@ -62,11 +46,9 @@ export async function POST(req: NextRequest) {
           ]);
 
           const price = quote.last ?? (quote.bid && quote.ask ? (quote.bid + quote.ask) / 2 : null);
-
           const result = runChecklist(symbol, strategy, metrics, chainData, price);
           results.push(result);
         } catch (symbolErr: any) {
-          // Don't fail entire screen if one symbol errors
           results.push({
             symbol,
             strategy,
@@ -88,7 +70,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Sort: qualified first, then by IVR descending
     results.sort((a, b) => {
       if (a.qualified && !b.qualified) return -1;
       if (!a.qualified && b.qualified) return 1;
