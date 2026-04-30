@@ -426,6 +426,7 @@ function runChecklist(
   const rocCheck: CheckResult = bestCandidate
     ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` }
     : { status: 'pending', value: '—', reason: 'No candidate' };
+  console.log(`${symbol} bestCandidate:`, bestCandidate ? `strike ${bestCandidate.shortStrike}/${bestCandidate.longStrike} credit ${bestCandidate.credit} roc ${bestCandidate.roc.toFixed(1)}% rocMin ${rocMin}` : 'null');
 
   const qualified =
     ivrCheck.status === 'pass' &&
