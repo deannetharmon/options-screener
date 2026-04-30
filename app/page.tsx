@@ -356,7 +356,9 @@ function runChecklist(
     const daysAway = daysUntil(earningsDate);
     if (daysAway < 0) {
       earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
-    } else if (daysAway <= RULES.DTE_MAX) {
+    //} else if (daysAway <= RULES.DTE_MAX) {
+      } else if (daysAway < 30) {
+
       failReasons.push(`Earnings in ${daysAway}d`);
       earningsCheck = { status: 'fail', value: `${daysAway}d (${earningsDate})`, reason: 'Within expiry window' };
     } else {
