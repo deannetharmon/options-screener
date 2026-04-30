@@ -141,65 +141,33 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
 }
 
 async function getChain(symbol: string, token: string) {
-  const data = await ttFetch(`/option-chains/${symbol}/nested`, token);
+  const data = await ttFetch(`/option-chains/${symbol}`, token);
+  console.log('FLAT CHAIN SAMPLE:', JSON.stringify(data.data?.items?.[0]));
   const expirations: string[] = [];
   const chains: Record<string, any[]> = {};
 
-  for (const exp of data.data?.items?.[0]?.expirations || []) {
-    const expDate: string = exp['expiration-date'];
-    expirations.push(expDate);
+  for (const opt of data.data?.items || []) {
+    const expDate: string = opt['expiration-date'];
+    if (!expDate) continue;
+    if (!expirations.includes(expDate)) expirations.push(expDate);
+    if (!chains[expDate]) chains[expDate] = [];
 
-    // Collect all option symbols for this expiration
-    const optionSymbols: string[] = [];
-    const strikeMap: Record<string, number> = {};
-
-    for (const strike of exp.strikes || []) {
-      const strikePrice = parseFloat(strike['strike-price']);
-      if (strike.call) {
-        optionSymbols.push(strike.call);
-        strikeMap[strike.call] = strikePrice;
-      }
-      if (strike.put) {
-        optionSymbols.push(strike.put);
-        strikeMap[strike.put] = strikePrice;
-      }
-    }
-
-    if (optionSymbols.length === 0) continue;
-
-    // Fetch option data in batches of 50
-    const items: any[] = [];
-    for (let i = 0; i < optionSymbols.length; i += 50) {
-      const batch = optionSymbols.slice(i, i + 50);
-      try {
-        const chainData = await ttFetch(
-          `/option-chains/${symbol}/option-data?symbols=${batch.map(s => encodeURIComponent(s)).join(',')}`,
-          token
-        );
-        console.log('OPTION DATA SAMPLE:', JSON.stringify(chainData.data?.items?.[0]));
-        for (const opt of chainData.data?.items || []) {
-          const bid = parseFloat(opt.bid || '0');
-          const ask = parseFloat(opt.ask || '0');
-          items.push({
-            strikePrice: strikeMap[opt.symbol] || parseFloat(opt['strike-price'] || '0'),
-            expirationDate: expDate,
-            optionType: opt.symbol?.includes('C') ? 'C' : 'P',
-            delta: opt.delta != null ? parseFloat(opt.delta) : null,
-            openInterest: parseInt(opt['open-interest'] || '0', 10),
-            bid, ask,
-            mid: (bid + ask) / 2,
-          });
-        }
-      } catch (e) {
-        console.log('Batch fetch error:', e);
-      }
-    }
-
-    chains[expDate] = items;
+    const bid = parseFloat(opt.bid || '0');
+    const ask = parseFloat(opt.ask || '0');
+    chains[expDate].push({
+      strikePrice: parseFloat(opt['strike-price'] || '0'),
+      expirationDate: expDate,
+      optionType: opt['option-type'] === 'C' ? 'C' : 'P',
+      delta: opt.delta != null ? parseFloat(opt.delta) : null,
+      openInterest: parseInt(opt['open-interest'] || '0', 10),
+      bid, ask,
+      mid: (bid + ask) / 2,
+    });
   }
+
+  expirations.sort();
   return { expirations, chains };
 }
-
 // ── Screener Logic ─────────────────────────────────────────────────────────
 
 function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string): SpreadCandidate | null {
