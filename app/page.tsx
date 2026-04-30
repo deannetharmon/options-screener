@@ -264,7 +264,9 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
   return null;
 }
 
-function findBestIC(chain: any[], expDate: string): SpreadCandidate | null {
+function findBestIC(chain: any[], expDate: string, price: number | null): SpreadCandidate | null {
+  const width = price == null ? 5 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
+  const bidAskMax = price == null ? 0.10 : price >= 200 ? 0.40 : price >= 100 ? 0.20 : 0.10;
   const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P')
     .sort((a: any, b: any) => b.strikePrice - a.strikePrice);
   const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C')
