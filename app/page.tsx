@@ -280,7 +280,8 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
 
 function findBestIC(chain: any[], expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const width = price == null ? RULES.SPREAD_WIDTH : price >= 500 ? 50 : price >= 200 ? 20 : price >= 100 ? 10 : RULES.SPREAD_WIDTH;
-  const bidAskMax = price == null ? 1.50 : price >= 500 ? 3.00 : price >= 200 ? 1.00 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX;
+  //const bidAskMax = price == null ? 1.50 : price >= 500 ? 3.00 : price >= 200 ? 1.00 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX;
+  const bidAskMax = price == null ? 1.50 : price >= 500 ? 3.00 : price >= 200 ? 1.50 : price >= 100 ? 0.50 : RULES.BID_ASK_MAX; // relaxed for individual stocks
   const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P')
     .sort((a: any, b: any) => b.strikePrice - a.strikePrice);
   const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C')
