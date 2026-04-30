@@ -183,7 +183,35 @@ async function getChain(symbol: string, token: string) {
     }
     for (const item of greeksData?.data?.items ?? []) {
       const optSym: string = item.symbol;
-      const meta = symbolMet
+      const meta = symbolMeta[optSym];
+      if (!meta) continue;
+      const bid = parseFloat(item.bid ?? '0');
+      const ask = parseFloat(item.ask ?? '0');
+      const delta = item.delta != null ? parseFloat(item.delta) : null;
+      const oi = parseInt(item['open-interest'] ?? '0', 10);
+      if (!expirations.includes(meta.expDate)) expirations.push(meta.expDate);
+      if (!chains[meta.expDate]) chains[meta.expDate] = [];
+      chains[meta.expDate].push({
+        strikePrice: meta.strike,
+        expirationDate: meta.expDate,
+        optionType: meta.optionType,
+        delta,
+        openInterest: oi,
+        bid,
+        ask,
+        mid: (bid + ask) / 2,
+      });
+    }
+  }
+
+  expirations.sort();
+  const firstExp = expirations[0];
+  if (firstExp) {
+    console.log('GREEKS SAMPLE:', JSON.stringify(chains[firstExp]?.[0], null, 2));
+    console.log('Total options with Greeks:', Object.values(chains).flat().length);
+  }
+  return { expirations, chains };
+}
 
 // ── Screener Logic ─────────────────────────────────────────────────────────
 
