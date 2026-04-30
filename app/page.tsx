@@ -53,7 +53,8 @@ interface ScreenResult {
 const RULES = {
   IVR_MIN: 30,
   IVR_IC_MAX: 70,
-  OI_MIN: 500,
+  //OI_MIN: 500,
+  OI_MIN: 10,
   //BID_ASK_MAX: 0.10,
   BID_ASK_MAX: 0.50,
   CREDIT_RATIO_MIN: 1 / 3,
