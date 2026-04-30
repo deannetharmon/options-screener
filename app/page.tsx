@@ -271,7 +271,11 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
       pop: (1 - absDelta) * 100,
     };
   }
-  console.log(`${strategy} ${expDate} rejections:`, rejections);
+  console.log(`${strategy} ${expDate} summary: ${sorted.length} total strikes checked`);
+  for (const [reason, count] of Object.entries(rejections)) {
+    console.log(`  ✗ ${reason}: ${count} strike${count > 1 ? 's' : ''}`);
+  }
+  if (Object.keys(rejections).length === 0) console.log('  ✗ unknown failure');
   const inDelta = sorted.filter(o => o.delta != null && Math.abs(o.delta) >= RULES.SPREAD_DELTA_MIN && Math.abs(o.delta) <= RULES.SPREAD_DELTA_MAX);
   for (const leg of inDelta) {
     const longStrike = strategy === 'BPS' ? leg.strikePrice - width : leg.strikePrice + width;
