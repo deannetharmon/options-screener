@@ -119,17 +119,16 @@ async function getAccessToken(): Promise<string> {
 
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
-  console.log('METRICS RAW:', JSON.stringify(data?.data?.items?.[0]));
   return (data.data?.items || []).map((item: any) => ({
     symbol: item.symbol,
-    ivRank: item['iv-rank'] != null ? parseFloat(item['iv-rank']) * 100 : null,
+    ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null,
     earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
   }));
 }
 
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
-    const data = await ttFetch(`/market-data/quotes?symbols=${symbol}`, token);
+    const data = await ttFetch(`/market-data/quotes?symbols=${encodeURIComponent(symbol)}`, token);
     const item = data.data?.items?.[0];
     if (!item) return null;
     const last = item.last != null ? parseFloat(item.last) : null;
@@ -143,9 +142,9 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
 
 async function getChain(symbol: string, token: string) {
   const data = await ttFetch(`/option-chains/${symbol}/nested`, token);
-  const expirations: string[] = [];
-  const chains: Record<string, any[]> = {};
-
+  console.log('CHAIN KEYS:', Object.keys(data.data?.items?.[0] || {}));
+  console.log('FIRST EXP:', JSON.stringify(data.data?.items?.[0]?.expirations?.[0]?.strikes?.[0]));
+  
   for (const exp of data.data?.items?.[0]?.expirations || []) {
     const expDate: string = exp['expiration-date'];
     expirations.push(expDate);
