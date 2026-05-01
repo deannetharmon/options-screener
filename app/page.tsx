@@ -53,9 +53,18 @@ interface ScreenResult {
     roc: CheckResult;
   };
 }
+interface FilterSuggestion {
+  priority: number;
+  rule: keyof RulesType;
+  currentValue: number;
+  suggestedValue: number;
+  label: string;
+  rationale: string;
+  tradeoff: string;
+  wouldQualify: number;
+}
 type SavedFilters = Record<string, string[]>;
 type GlobalFilters = Record<string, { bps: string[]; bcs: string[]; ic: string[] }>;
-
 interface LoadPromptState {
   show: boolean;
   name: string;
@@ -85,6 +94,7 @@ const AUTO_TICKER_LIMIT = 5;
 const LS_BPS = 'prosper-tickers-bps';
 const LS_BCS = 'prosper-tickers-bcs';
 const LS_IC = 'prosper-tickers-ic';
+const DTE_ALERT_THRESHOLD = 25;
 
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr);
@@ -106,6 +116,87 @@ function getBidAskMax(price: number | null): number {
   if (price >= 200) return 1.50;
   if (price >= 100) return 0.50;
   return 0.10;
+}
+
+// ── Smart Suggestion Engine ────────────────────────────────────────────────
+function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
+  const disqualified = results.filter(r => !r.qualified);
+  if (disqualified.length === 0) return [];
+
+  const total = disqualified.length;
+  const suggestions: FilterSuggestion[] = [];
+
+  // Count failure reasons
+  const dteFails = disqualified.filter(r => r.failReasons.some(f => f.includes('DTE') || f.includes('expirations'))).length;
+  const earningsFails = disqualified.filter(r => r.failReasons.some(f => f.includes('Earnings'))).length;
+  const ivrFails = disqualified.filter(r => r.failReasons.some(f => f.includes('IVR'))).length;
+  const creditFails = disqualified.filter(r => r.checks.credit.status === 'fail' || r.failReasons.some(f => f.includes('credit') || f.includes('qualifying strikes'))).length;
+  const rocFails = disqualified.filter(r => r.checks.roc.status === 'fail').length;
+
+  // Priority 1: DTE — data problem, easiest fix, no quality tradeoff
+  if (dteFails > 0) {
+    suggestions.push({
+      priority: 1,
+      rule: 'DTE_MAX',
+      currentValue: rules.DTE_MAX,
+      suggestedValue: 55,
+      label: 'Expand DTE window',
+      rationale: `${dteFails} of ${total} stocks have no expirations in your ${rules.DTE_MIN}–${rules.DTE_MAX} day window.`,
+      tradeoff: 'Wider DTE captures monthly-only chains. Theta decay is slightly slower but risk profile is similar.',
+      wouldQualify: dteFails,
+    });
+  }
+
+  // Priority 2: IVR — market condition, suggest waiting or lowering threshold
+  if (ivrFails > total * 0.5) {
+    suggestions.push({
+      priority: 2,
+      rule: 'IVR_MIN',
+      currentValue: rules.IVR_MIN,
+      suggestedValue: 20,
+      label: 'Lower IVR minimum',
+      rationale: `${ivrFails} stocks failed IVR ≥ ${rules.IVR_MIN}%. Market volatility may be suppressed.`,
+      tradeoff: 'Lower IVR means less premium collected. Reduce position size to compensate. Consider waiting for a volatility event.',
+      wouldQualify: ivrFails,
+    });
+  }
+
+  // Priority 3: Credit ratio — quality filter, small relaxation acceptable
+  if (creditFails > 1 && rules.CREDIT_RATIO_MIN > 0.10) {
+    const newRatio = Math.max(0.10, rules.CREDIT_RATIO_MIN - 0.05);
+    suggestions.push({
+      priority: 3,
+      rule: 'CREDIT_RATIO_MIN',
+      currentValue: rules.CREDIT_RATIO_MIN,
+      suggestedValue: newRatio,
+      label: 'Relax credit ratio',
+      rationale: `${creditFails} stocks couldn't generate enough credit relative to spread width.`,
+      tradeoff: `Lowering to ${(newRatio * 100).toFixed(0)}% reduces minimum credit requirement. Only do this if IVR is elevated — lower credit in low IV is a warning sign.`,
+      wouldQualify: creditFails,
+    });
+  }
+
+  // Priority 4: ROC — quality filter, warn about tradeoff
+  if (rocFails > 0 && rules.ROC_MIN_SPREAD > 10) {
+    const newROC = Math.max(10, rules.ROC_MIN_SPREAD - 5);
+    suggestions.push({
+      priority: 4,
+      rule: 'ROC_MIN_SPREAD',
+      currentValue: rules.ROC_MIN_SPREAD,
+      suggestedValue: newROC,
+      label: 'Lower ROC minimum',
+      rationale: `${rocFails} spreads found valid strikes but couldn't reach ${rules.ROC_MIN_SPREAD}% ROC.`,
+      tradeoff: `${newROC}% ROC still profitable but leaves less cushion. Only accept if POP is strong (>70%) and IVR is elevated.`,
+      wouldQualify: rocFails,
+    });
+  }
+
+  // Priority 5: Earnings — never suggest removing, just inform
+  if (earningsFails > 0) {
+    // Don't add a suggestion — just note it in the UI separately
+  }
+
+  return suggestions.sort((a, b) => a.priority - b.priority);
 }
 
 // ── Saved Filters API ──────────────────────────────────────────────────────
@@ -147,7 +238,6 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
   }
   return Array.from(new Set(tickers));
 }
-
 function mergeTickers(existing: string, newTickers: string[]): string {
   const existingList = existing.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
   const existingSet = new Set(existingList);
@@ -155,16 +245,13 @@ function mergeTickers(existing: string, newTickers: string[]): string {
   if (toAdd.length === 0) return existing;
   return [...existingList, ...toAdd].join(', ');
 }
-function tickersToString(tickers: string[]): string {
-  return tickers.join(', ');
-}
+function tickersToString(tickers: string[]): string { return tickers.join(', '); }
 
 // ── Polygon API ────────────────────────────────────────────────────────────
 async function getTrend(symbol: string): Promise<TrendResult> {
   const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
   if (!apiKey) throw new Error('NEXT_PUBLIC_POLYGON_API_KEY not set');
-  const to = new Date();
-  const from = new Date();
+  const to = new Date(), from = new Date();
   from.setMonth(from.getMonth() - 6);
   const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`;
   const res = await fetch(url);
@@ -343,6 +430,103 @@ const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : 
 const trendColor = (t: string) => t === 'uptrend' ? 'text-emerald-400' : t === 'downtrend' ? 'text-red-400' : t === 'sideways' ? 'text-blue-400' : 'text-slate-300';
 const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '↓' : t === 'sideways' ? '→' : '?';
 
+// ── DTE Alert Banner ───────────────────────────────────────────────────────
+function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
+  const approaching = results.filter(r => r.qualified && r.bestCandidate && r.bestCandidate.dte <= DTE_ALERT_THRESHOLD);
+  if (approaching.length === 0) return null;
+  return (
+    <div className="border border-yellow-600/60 bg-yellow-900/20 rounded-lg px-4 py-3 flex items-start gap-3">
+      <span className="text-yellow-400 text-base mt-0.5">⚠</span>
+      <div className="flex-1">
+        <p className="text-xs text-yellow-400 font-bold tracking-wider mb-1">APPROACHING 21 DTE — ACTION REQUIRED</p>
+        <p className="text-[10px] text-yellow-300 mb-2">Close these positions regardless of profit/loss when they hit 21 DTE.</p>
+        <div className="flex flex-wrap gap-2">
+          {approaching.map(r => (
+            <span key={r.symbol} className="text-[10px] bg-yellow-900/40 border border-yellow-700 rounded px-2 py-0.5 text-yellow-300 font-medium">
+              {r.symbol} {r.bestCandidate?.expiration} — <span className={r.bestCandidate!.dte <= 21 ? 'text-red-400 font-bold' : 'text-yellow-400'}>{r.bestCandidate?.dte}d</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Smart Suggestions Panel ────────────────────────────────────────────────
+function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: {
+  results: ScreenResult[];
+  rules: RulesType;
+  onApplyAndRerun: (newRules: RulesType) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const disqualified = results.filter(r => !r.qualified);
+  const earningsFails = disqualified.filter(r => r.failReasons.some(f => f.includes('Earnings'))).length;
+
+  if (disqualified.length === 0 || results.length === 0) return null;
+
+  const suggestions = generateSuggestions(results, rules);
+  if (suggestions.length === 0 && earningsFails === 0) return null;
+
+  return (
+    <div className="border border-slate-600 bg-slate-900/60 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-blue-400 text-sm">◈</span>
+          <div className="text-left">
+            <p className="text-xs text-white font-bold tracking-wider">FILTER SUGGESTIONS</p>
+            <p className="text-[9px] text-slate-400">{suggestions.length} suggestion{suggestions.length !== 1 ? 's' : ''} · {disqualified.length} disqualified stocks analyzed</p>
+          </div>
+        </div>
+        <span className="text-slate-400 text-xs">{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-slate-700 px-4 py-3 space-y-3">
+          {earningsFails > 0 && (
+            <div className="flex items-start gap-2 p-2 bg-slate-800/40 rounded border border-slate-700">
+              <span className="text-slate-500 text-xs mt-0.5">ℹ</span>
+              <div>
+                <p className="text-[10px] text-slate-300 font-medium">{earningsFails} stock{earningsFails !== 1 ? 's' : ''} blocked by upcoming earnings</p>
+                <p className="text-[9px] text-slate-500">Earnings filter is a hard rule — do not modify. Wait for these stocks to report before trading.</p>
+              </div>
+            </div>
+          )}
+
+          {suggestions.map((s, i) => (
+            <div key={i} className="border border-slate-700 rounded p-3 space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[9px] bg-blue-900/40 text-blue-300 border border-blue-700 rounded px-1.5 py-0.5 font-medium">#{s.priority}</span>
+                    <p className="text-xs text-white font-medium">{s.label}</p>
+                  </div>
+                  <p className="text-[10px] text-slate-300 mb-1">{s.rationale}</p>
+                  <p className="text-[9px] text-slate-500 italic">⚖ {s.tradeoff}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-[9px] text-slate-400">{RULE_LABELS[s.rule]}</p>
+                  <p className="text-xs text-slate-500 line-through">{s.currentValue}</p>
+                  <p className="text-xs text-emerald-400 font-bold">→ {s.suggestedValue}</p>
+                  <p className="text-[9px] text-slate-400">+{s.wouldQualify} stocks</p>
+                </div>
+              </div>
+              <button
+                onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })}
+                className="w-full text-[9px] py-1.5 border border-blue-700 text-blue-300 rounded hover:bg-blue-900/30 transition-colors font-medium tracking-wider"
+              >
+                APPLY & RE-RUN
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Load Prompt Modal ──────────────────────────────────────────────────────
 function LoadPromptModal({ state, onClose }: { state: LoadPromptState; onClose: () => void }) {
   if (!state.show) return null;
@@ -375,7 +559,6 @@ interface SessionsPanelProps {
   onLoadAll: (bps: string, bcs: string, ic: string) => void;
   onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
 }
-
 function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelProps) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
   const [showSave, setShowSave] = useState(false);
@@ -383,46 +566,25 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelP
   const [saveName, setSaveName] = useState('');
   const [saveError, setSaveError] = useState('');
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-
-  const refreshFilters = useCallback(async () => {
-    const f = await loadFilters('global') as GlobalFilters;
-    setGlobalFilters(f);
-  }, []);
-
+  const refreshFilters = useCallback(async () => { const f = await loadFilters('global') as GlobalFilters; setGlobalFilters(f); }, []);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
-
   const handleSave = async (replace = false) => {
     if (!saveName.trim()) { setSaveError('Enter a session name'); return; }
     const result = await saveFilter('global', saveName.trim(), { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, replace);
     if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
-    await refreshFilters();
-    setShowSave(false); setSaveName(''); setSaveError('');
+    await refreshFilters(); setShowSave(false); setSaveName(''); setSaveError('');
   };
-
   const handleLoadSelect = (name: string) => {
     const session = globalFilters[name]; if (!session) return;
     setShowLoad(false);
-    onLoadPrompt({
-      name, type: 'global',
-      onLoad: (doMerge: boolean) => {
-        if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic));
-        else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic));
-      },
-    });
+    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic)); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); } });
   };
-
-  const handleDelete = async (name: string) => {
-    await deleteFilter('global', name);
-    await refreshFilters();
-  };
-
+  const handleDelete = async (name: string) => { await deleteFilter('global', name); await refreshFilters(); };
   const filterNames = Object.keys(globalFilters);
-
   return (
     <div className="border-t border-slate-700 pt-3">
       <p className="text-[9px] text-slate-300 tracking-widest font-medium mb-2">SESSIONS</p>
       <div className="flex gap-2">
-        {/* Save */}
         <div className="relative flex-1">
           <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }}
             className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">
@@ -437,17 +599,10 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelP
                   className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-slate-400 placeholder-slate-500" />
                 <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors">Save</button>
               </div>
-              {saveError && (
-                <div className="flex gap-1 items-center mt-1">
-                  <span className="text-[9px] text-yellow-400">{saveError}</span>
-                  {saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded font-medium">Replace</button>}
-                </div>
-              )}
+              {saveError && (<div className="flex gap-1 items-center mt-1"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded font-medium">Replace</button>}</div>)}
             </div>
           )}
         </div>
-
-        {/* Load */}
         <div className="relative flex-1">
           <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }}
             className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">
@@ -455,8 +610,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelP
           </button>
           {showLoad && (
             <div className="absolute top-8 right-0 z-40 bg-slate-900 border border-slate-600 rounded overflow-hidden w-56 shadow-xl">
-              {filterNames.length === 0
-                ? <p className="text-[9px] text-slate-500 px-3 py-2">No saved sessions yet</p>
+              {filterNames.length === 0 ? <p className="text-[9px] text-slate-500 px-3 py-2">No saved sessions yet</p>
                 : filterNames.map(name => (
                   <div key={name} className="flex items-center justify-between px-3 py-2 hover:bg-slate-700 group cursor-pointer">
                     <button onClick={() => handleLoadSelect(name)} className="text-[10px] text-slate-200 hover:text-white text-left flex-1 font-medium">{name}</button>
@@ -473,17 +627,11 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelP
 
 // ── Strategy Box ──────────────────────────────────────────────────────────
 interface StrategyBoxProps {
-  label: string;
-  badge: string;
-  badgeColor: string;
-  borderFocus: string;
-  value: string;
-  onChange: (v: string) => void;
-  strategy: 'BPS' | 'BCS' | 'IC';
-  disabled?: boolean;
+  label: string; badge: string; badgeColor: string; borderFocus: string;
+  value: string; onChange: (v: string) => void;
+  strategy: 'BPS' | 'BCS' | 'IC'; disabled?: boolean;
   onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
 }
-
 function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt }: StrategyBoxProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [scanning, setScanning] = useState(false);
@@ -494,54 +642,28 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   const [showLoad, setShowLoad] = useState(false);
   const [loadingFilters, setLoadingFilters] = useState(false);
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-
-  const refreshFilters = useCallback(async () => {
-    setLoadingFilters(true);
-    const f = await loadFilters(strategy) as SavedFilters;
-    setSavedFilters(f);
-    setLoadingFilters(false);
-  }, [strategy]);
-
+  const refreshFilters = useCallback(async () => { setLoadingFilters(true); const f = await loadFilters(strategy) as SavedFilters; setSavedFilters(f); setLoadingFilters(false); }, [strategy]);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
-
   const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     setScanning(true);
-    try { const tickers = await extractTickersFromImage(file); if (tickers.length > 0) onChange(mergeTickers(value, tickers)); }
-    catch (err) { console.error(err); }
-    setScanning(false);
-    if (fileRef.current) fileRef.current.value = '';
+    try { const tickers = await extractTickersFromImage(file); if (tickers.length > 0) onChange(mergeTickers(value, tickers)); } catch (err) { console.error(err); }
+    setScanning(false); if (fileRef.current) fileRef.current.value = '';
   };
-
   const handleSave = async (replace = false) => {
     if (!saveName.trim()) { setSaveError('Enter a name'); return; }
     const tickers = parseTickers(value);
     if (tickers.length === 0) { setSaveError('No tickers to save'); return; }
     const result = await saveFilter(strategy, saveName.trim(), { tickers }, replace);
     if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
-    await refreshFilters();
-    setShowSaveInput(false); setSaveName(''); setSaveError('');
+    await refreshFilters(); setShowSaveInput(false); setSaveName(''); setSaveError('');
   };
-
   const handleLoadSelect = (name: string) => {
-    const tickers = savedFilters[name] ?? [];
-    setShowLoad(false);
-    onLoadPrompt({
-      name, type: 'strategy',
-      onLoad: (doMerge: boolean) => {
-        if (doMerge) onChange(mergeTickers(value, tickers));
-        else onChange(tickersToString(tickers));
-      },
-    });
+    const tickers = savedFilters[name] ?? []; setShowLoad(false);
+    onLoadPrompt({ name, type: 'strategy', onLoad: (doMerge: boolean) => { if (doMerge) onChange(mergeTickers(value, tickers)); else onChange(tickersToString(tickers)); } });
   };
-
-  const handleDelete = async (name: string) => {
-    await deleteFilter(strategy, name);
-    await refreshFilters();
-  };
-
+  const handleDelete = async (name: string) => { await deleteFilter(strategy, name); await refreshFilters(); };
   const filterNames = Object.keys(savedFilters);
-
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -551,38 +673,21 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
         </div>
         <div className="flex items-center gap-1">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
-          <button onClick={() => fileRef.current?.click()} disabled={disabled || scanning}
-            className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">
-            {scanning ? '⟳' : '↑ img'}
-          </button>
-          <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled}
-            className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40" title="Save this list">
-            💾
-          </button>
-          <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled}
-            className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40" title="Load saved list">
-            ▼
-          </button>
+          <button onClick={() => fileRef.current?.click()} disabled={disabled || scanning} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">{scanning ? '⟳' : '↑ img'}</button>
+          <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40" title="Save this list">💾</button>
+          <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40" title="Load saved list">▼</button>
         </div>
       </div>
-
       {showSaveInput && (
         <div className="mb-1.5 flex flex-col gap-1">
           <div className="flex gap-1">
-            <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }}
-              placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
+            <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
               className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-slate-400 placeholder-slate-500" />
             <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors">Save</button>
           </div>
-          {saveError && (
-            <div className="flex gap-1 items-center">
-              <span className="text-[9px] text-yellow-400">{saveError}</span>
-              {saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded font-medium">Replace</button>}
-            </div>
-          )}
+          {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded font-medium">Replace</button>}</div>)}
         </div>
       )}
-
       {showLoad && (
         <div className="mb-1.5 bg-slate-800 border border-slate-600 rounded overflow-hidden">
           {loadingFilters ? <p className="text-[9px] text-slate-400 px-2 py-1.5">Loading...</p>
@@ -595,7 +700,6 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
             ))}
         </div>
       )}
-
       <textarea value={value} onChange={e => onChange(e.target.value)} placeholder="Tickers..."
         className={`w-full bg-slate-900/80 border border-slate-700 rounded p-2 text-xs text-white h-16 resize-none focus:outline-none ${borderFocus} placeholder-slate-600 leading-relaxed`} />
     </div>
@@ -610,26 +714,27 @@ function StrikesDisplay({ c }: { c: SpreadCandidate }) {
   }
   return <div className="text-xs shrink-0"><span className="text-slate-300">Strikes </span><span className="text-white">{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
-
 function ResultCard({ result }: { result: ScreenResult }) {
   const [expanded, setExpanded] = useState(false);
   const c = result.bestCandidate, t = result.trendResult;
   const stratBg = result.strategy === 'BPS' ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : result.strategy === 'BCS' ? 'bg-red-900/40 border-red-700 text-red-300' : 'bg-blue-900/40 border-blue-700 text-blue-300';
+  const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
   return (
-    <div className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? 'border-slate-600 bg-slate-900/60' : 'border-slate-700 bg-slate-900/30 opacity-60'}`} onClick={() => setExpanded(!expanded)}>
+    <div className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? (isApproaching ? 'border-yellow-600/60 bg-slate-900/60' : 'border-slate-600 bg-slate-900/60') : 'border-slate-700 bg-slate-900/30 opacity-60'}`} onClick={() => setExpanded(!expanded)}>
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
         <div className="w-16 shrink-0"><p className="font-bold text-white text-sm">{result.symbol}</p>{result.price && <p className="text-[10px] text-slate-300">${result.price.toFixed(2)}</p>}</div>
         <span className={`text-[10px] px-2 py-0.5 border rounded shrink-0 font-medium ${stratBg}`}>{result.strategy}</span>
         {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
         <div className="text-xs text-slate-300 shrink-0">IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
         {c && <>
-          <div className="text-xs shrink-0"><span className="text-slate-300">Exp </span><span className="text-white font-medium">{c.expiration}</span><span className="text-slate-300 ml-1">({c.dte}d)</span></div>
+          <div className="text-xs shrink-0"><span className="text-slate-300">Exp </span><span className="text-white font-medium">{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-400' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-400' : 'text-slate-300'}`}>({c.dte}d)</span></div>
           <StrikesDisplay c={c} />
           <div className="text-xs shrink-0"><span className="text-slate-300">Credit </span><span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
           <div className="text-xs shrink-0"><span className="text-slate-300">ROC </span><span className="text-white font-medium">{c.roc.toFixed(0)}%</span></div>
           {c.pop != null && <div className="text-xs shrink-0"><span className="text-slate-300">POP </span><span className="text-white font-medium">{c.pop.toFixed(0)}%</span></div>}
           <div className="text-xs shrink-0"><span className="text-slate-300">δ </span><span className="text-white font-medium">{c.shortDelta.toFixed(2)}</span></div>
           <span className="text-[9px] text-slate-400 border border-slate-600 rounded px-1 py-0.5 shrink-0">opt</span>
+          {isApproaching && <span className="text-[9px] text-yellow-400 border border-yellow-700 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
         </>}
         {!result.qualified && result.failReasons.length > 0 && <div className="text-[10px] text-red-400 ml-auto font-medium">{result.failReasons.slice(0, 2).join(' · ')}</div>}
         <div className="ml-auto text-slate-300 text-xs shrink-0">{expanded ? '▲' : '▼'}</div>
@@ -681,14 +786,8 @@ export default function Home() {
   const handleBpsChange = (v: string) => { setBpsTickers(v); try { localStorage.setItem(LS_BPS, v); } catch {} };
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
-
-  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => {
-    handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc);
-  };
-
-  const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => {
-    setLoadPrompt({ show: true, ...state });
-  };
+  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
+  const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
   const autoTickerList = parseTickers(autoTickers);
@@ -707,6 +806,7 @@ export default function Home() {
     const bps = parseTickers(bpsTickers), bcs = parseTickers(bcsTickers), ic = parseTickers(icTickers);
     if (!autoList.length && !bps.length && !bcs.length && !ic.length) { setError('Enter at least one ticker.'); return; }
     if (autoOverLimit) { setError(`AUTO box limited to ${AUTO_TICKER_LIMIT} tickers.`); return; }
+    setRuntimeRules(rules);
     setLoading(true);
     try {
       setStatus('Getting access token...'); const token = await getAccessToken();
@@ -743,7 +843,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-[#080c14] text-slate-100 font-mono">
-      {/* Header */}
       <div className="border-b border-slate-700 px-6 py-4">
         <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
         <p className="text-[10px] text-slate-300 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
@@ -752,7 +851,6 @@ export default function Home() {
       <div className="flex h-[calc(100vh-57px)]">
         {/* Sidebar */}
         <div className="w-80 border-r border-slate-700 p-4 overflow-auto flex flex-col gap-4 shrink-0">
-
           {/* AUTO */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
@@ -768,14 +866,8 @@ export default function Home() {
             <p className="text-[9px] text-slate-500 mt-1">~{autoTickerList.length * 12}s scan time</p>
           </div>
 
-          {/* Sessions */}
-          <SessionsPanel
-            bps={bpsTickers} bcs={bcsTickers} ic={icTickers}
-            onLoadAll={handleGlobalLoad}
-            onLoadPrompt={showLoadPrompt}
-          />
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} />
 
-          {/* Scan Lists */}
           <div className="border-t border-slate-700 pt-3 space-y-4">
             <p className="text-[9px] text-slate-300 tracking-widest font-medium">SCAN LISTS</p>
             <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-900/40 text-emerald-300 border-emerald-700" borderFocus="focus:border-emerald-600" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} />
@@ -783,25 +875,10 @@ export default function Home() {
             <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-900/40 text-blue-300 border-blue-700" borderFocus="focus:border-blue-600" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} />
           </div>
 
-          {/* Active Rules */}
           <div className="text-[9px] space-y-1 border-t border-slate-700 pt-3">
             <p className="text-slate-300 mb-2 tracking-widest font-medium">ACTIVE RULES</p>
-            {[
-              ['IVR', `≥ ${runtimeRules.IVR_MIN}%`],
-              ['DTE', `${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],
-              ['BPS/BCS delta', `${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],
-              ['IC delta', `${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],
-              ['Credit ratio', `≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
-              ['OI per leg', `≥ ${runtimeRules.OI_MIN}`],
-              ['Bid-Ask', `≤ $${runtimeRules.BID_ASK_MAX}`],
-              ['Max width', `$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],
-              ['Min ROC spread', `${runtimeRules.ROC_MIN_SPREAD}%`],
-              ['Min ROC IC', `${runtimeRules.ROC_MIN_IC}%`],
-            ].map(([k, v]) => (
-              <div key={k} className="flex justify-between">
-                <span className="text-slate-400">{k}</span>
-                <span className="text-slate-200 font-medium">{v}</span>
-              </div>
+            {[['IVR',`≥ ${runtimeRules.IVR_MIN}%`],['DTE',`${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],['BPS/BCS delta',`${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],['IC delta',`${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],['Credit ratio',`≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],['OI per leg',`≥ ${runtimeRules.OI_MIN}`],['Bid-Ask',`≤ $${runtimeRules.BID_ASK_MAX}`],['Max width',`$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],['Min ROC spread',`${runtimeRules.ROC_MIN_SPREAD}%`],['Min ROC IC',`${runtimeRules.ROC_MIN_IC}%`]].map(([k,v]) => (
+              <div key={k} className="flex justify-between"><span className="text-slate-400">{k}</span><span className="text-slate-200 font-medium">{v}</span></div>
             ))}
           </div>
 
@@ -824,7 +901,7 @@ export default function Home() {
           )}
           {loading && <div className="h-full flex flex-col items-center justify-center gap-2"><div className="text-[10px] tracking-widest text-slate-300 animate-pulse font-medium">{status || 'SCANNING...'}</div></div>}
           {results.length > 0 && (
-            <div className="space-y-5">
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex gap-4 text-[10px] tracking-wider font-medium">
                   <span className="text-emerald-400">{qualified.length} QUALIFIED</span>
@@ -833,6 +910,13 @@ export default function Home() {
                 </div>
                 <button onClick={downloadCSV} className="text-[10px] px-3 py-1.5 border border-slate-600 rounded hover:border-slate-400 text-slate-300 hover:text-white transition-colors tracking-wider">↓ CSV</button>
               </div>
+
+              {/* DTE Alert Banner */}
+              <DTEAlertBanner results={results} />
+
+              {/* Smart Suggestions */}
+              <SmartSuggestionsPanel results={results} rules={runtimeRules} onApplyAndRerun={runScreen} />
+
               {qualified.length > 0 && <div><p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} />)}</div></div>}
               {disqualified.length > 0 && <div><p className="text-[9px] text-slate-500 tracking-widest mb-2 font-medium">DISQUALIFIED</p><div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} />)}</div></div>}
             </div>
@@ -840,10 +924,8 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Load Prompt Modal */}
       <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} />
 
-      {/* Rules Modal */}
       {showRulesModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-slate-900 border border-slate-600 rounded-lg p-6 w-[500px] max-h-[80vh] overflow-auto">
