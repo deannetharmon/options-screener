@@ -906,7 +906,8 @@ export default function Home() {
           <h1 className="text-base font-bold tracking-widest text-white">OPTIONS HUNTER</h1>
           <p className="text-[10px] text-white/50 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
         </div>
-        <img src="/header-bg.png" alt="" className="flex-1 mx-6 h-10 object-cover rounded opacity-90 hidden sm:block" />        <div className="flex items-center gap-3">
+        <img src="/header-bg.png" alt="" className="flex-1 mx-6 object-cover hidden sm:block" style={{height: 'calc(100% + 2rem)', marginTop: '-1rem', marginBottom: '-1rem'}} />
+        <div className="flex items-center gap-3">
         <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
         <ThemeToggle theme={theme} setTheme={setTheme} />
       </div>
