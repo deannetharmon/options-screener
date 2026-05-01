@@ -154,7 +154,7 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
   }
 
   // Deduplicate
-  return [...new Set(tickers)];
+  return Array.from(new Set(tickers));
 }
 
 function appendTickers(existing: string, newTickers: string[]): string {
