@@ -43,6 +43,7 @@ interface ScreenResult {
   qualified: boolean;
   bestCandidate: SpreadCandidate | null;
   failReasons: string[];
+  earningsDate?: string | null;
   trendResult?: TrendResult;
   checks: {
     ivr: CheckResult;
@@ -94,6 +95,7 @@ const AUTO_TICKER_LIMIT = 5;
 const LS_BPS = 'prosper-tickers-bps';
 const LS_BCS = 'prosper-tickers-bcs';
 const LS_IC = 'prosper-tickers-ic';
+const LS_CAL = 'prosper-cal-scheduled';
 const DTE_ALERT_THRESHOLD = 25;
 
 function daysUntil(dateStr: string): number {
@@ -102,6 +104,38 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+// ── Business day calculator ────────────────────────────────────────────────
+function addBusinessDays(dateStr: string, days: number): Date {
+  const date = new Date(dateStr);
+  let added = 0;
+  while (added < days) {
+    date.setDate(date.getDate() + 1);
+    const dow = date.getDay();
+    if (dow !== 0 && dow !== 6) added++;
+  }
+  return date;
+}
+
+function formatCalDate(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
+
+function buildGoogleCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
+  const followUpDate = addBusinessDays(earningsDate, 2);
+  const nextDay = new Date(followUpDate);
+  nextDay.setDate(nextDay.getDate() + 1);
+  const start = formatCalDate(followUpDate);
+  const end = formatCalDate(nextDay);
+  const title = encodeURIComponent(`Re-screen ${symbol} — earnings passed`);
+  const details = encodeURIComponent(
+    `${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nRun the Prosper Options Screener to check if this is now a valid trade.\n\nCheck:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC`
+  );
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
+}
 
 // ── Width steps ────────────────────────────────────────────────────────────
 function getWidthSteps(maxWidth: number, price: number | null): number[] {
@@ -122,105 +156,30 @@ function getBidAskMax(price: number | null): number {
 function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
   const disqualified = results.filter(r => !r.qualified);
   if (disqualified.length === 0) return [];
-
   const total = disqualified.length;
   const suggestions: FilterSuggestion[] = [];
-
-  // Count failure reasons
   const dteFails = disqualified.filter(r => r.failReasons.some(f => f.includes('DTE') || f.includes('expirations'))).length;
-  const earningsFails = disqualified.filter(r => r.failReasons.some(f => f.includes('Earnings'))).length;
   const ivrFails = disqualified.filter(r => r.failReasons.some(f => f.includes('IVR'))).length;
-  const creditFails = disqualified.filter(r => r.checks.credit.status === 'fail' || r.failReasons.some(f => f.includes('credit') || f.includes('qualifying strikes'))).length;
+  const creditFails = disqualified.filter(r => r.checks.credit.status === 'fail' || r.failReasons.some(f => f.includes('qualifying strikes'))).length;
   const rocFails = disqualified.filter(r => r.checks.roc.status === 'fail').length;
-
-  // Priority 1: DTE — data problem, easiest fix, no quality tradeoff
-  if (dteFails > 0) {
-    suggestions.push({
-      priority: 1,
-      rule: 'DTE_MAX',
-      currentValue: rules.DTE_MAX,
-      suggestedValue: 55,
-      label: 'Expand DTE window',
-      rationale: `${dteFails} of ${total} stocks have no expirations in your ${rules.DTE_MIN}–${rules.DTE_MAX} day window.`,
-      tradeoff: 'Wider DTE captures monthly-only chains. Theta decay is slightly slower but risk profile is similar.',
-      wouldQualify: dteFails,
-    });
-  }
-
-  // Priority 2: IVR — market condition, suggest waiting or lowering threshold
-  if (ivrFails > total * 0.5) {
-    suggestions.push({
-      priority: 2,
-      rule: 'IVR_MIN',
-      currentValue: rules.IVR_MIN,
-      suggestedValue: 20,
-      label: 'Lower IVR minimum',
-      rationale: `${ivrFails} stocks failed IVR ≥ ${rules.IVR_MIN}%. Market volatility may be suppressed.`,
-      tradeoff: 'Lower IVR means less premium collected. Reduce position size to compensate. Consider waiting for a volatility event.',
-      wouldQualify: ivrFails,
-    });
-  }
-
-  // Priority 3: Credit ratio — quality filter, small relaxation acceptable
-  if (creditFails > 1 && rules.CREDIT_RATIO_MIN > 0.10) {
-    const newRatio = Math.max(0.10, rules.CREDIT_RATIO_MIN - 0.05);
-    suggestions.push({
-      priority: 3,
-      rule: 'CREDIT_RATIO_MIN',
-      currentValue: rules.CREDIT_RATIO_MIN,
-      suggestedValue: newRatio,
-      label: 'Relax credit ratio',
-      rationale: `${creditFails} stocks couldn't generate enough credit relative to spread width.`,
-      tradeoff: `Lowering to ${(newRatio * 100).toFixed(0)}% reduces minimum credit requirement. Only do this if IVR is elevated — lower credit in low IV is a warning sign.`,
-      wouldQualify: creditFails,
-    });
-  }
-
-  // Priority 4: ROC — quality filter, warn about tradeoff
-  if (rocFails > 0 && rules.ROC_MIN_SPREAD > 10) {
-    const newROC = Math.max(10, rules.ROC_MIN_SPREAD - 5);
-    suggestions.push({
-      priority: 4,
-      rule: 'ROC_MIN_SPREAD',
-      currentValue: rules.ROC_MIN_SPREAD,
-      suggestedValue: newROC,
-      label: 'Lower ROC minimum',
-      rationale: `${rocFails} spreads found valid strikes but couldn't reach ${rules.ROC_MIN_SPREAD}% ROC.`,
-      tradeoff: `${newROC}% ROC still profitable but leaves less cushion. Only accept if POP is strong (>70%) and IVR is elevated.`,
-      wouldQualify: rocFails,
-    });
-  }
-
-  // Priority 5: Earnings — never suggest removing, just inform
-  if (earningsFails > 0) {
-    // Don't add a suggestion — just note it in the UI separately
-  }
-
+  if (dteFails > 0) suggestions.push({ priority: 1, rule: 'DTE_MAX', currentValue: rules.DTE_MAX, suggestedValue: 55, label: 'Expand DTE window', rationale: `${dteFails} of ${total} stocks have no expirations in your ${rules.DTE_MIN}–${rules.DTE_MAX} day window.`, tradeoff: 'Wider DTE captures monthly-only chains. Theta decay is slightly slower but risk profile is similar.', wouldQualify: dteFails });
+  if (ivrFails > total * 0.5) suggestions.push({ priority: 2, rule: 'IVR_MIN', currentValue: rules.IVR_MIN, suggestedValue: 20, label: 'Lower IVR minimum', rationale: `${ivrFails} stocks failed IVR ≥ ${rules.IVR_MIN}%. Market volatility may be suppressed.`, tradeoff: 'Lower IVR means less premium collected. Reduce position size to compensate. Consider waiting for a volatility event.', wouldQualify: ivrFails });
+  if (creditFails > 1 && rules.CREDIT_RATIO_MIN > 0.10) { const newRatio = Math.max(0.10, rules.CREDIT_RATIO_MIN - 0.05); suggestions.push({ priority: 3, rule: 'CREDIT_RATIO_MIN', currentValue: rules.CREDIT_RATIO_MIN, suggestedValue: newRatio, label: 'Relax credit ratio', rationale: `${creditFails} stocks couldn't generate enough credit relative to spread width.`, tradeoff: `Lowering to ${(newRatio * 100).toFixed(0)}% reduces minimum credit requirement. Only do this if IVR is elevated.`, wouldQualify: creditFails }); }
+  if (rocFails > 0 && rules.ROC_MIN_SPREAD > 10) { const newROC = Math.max(10, rules.ROC_MIN_SPREAD - 5); suggestions.push({ priority: 4, rule: 'ROC_MIN_SPREAD', currentValue: rules.ROC_MIN_SPREAD, suggestedValue: newROC, label: 'Lower ROC minimum', rationale: `${rocFails} spreads found valid strikes but couldn't reach ${rules.ROC_MIN_SPREAD}% ROC.`, tradeoff: `${newROC}% ROC still profitable but leaves less cushion. Only accept if POP is strong (>70%) and IVR is elevated.`, wouldQualify: rocFails }); }
   return suggestions.sort((a, b) => a.priority - b.priority);
 }
 
 // ── Saved Filters API ──────────────────────────────────────────────────────
 async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilters> {
-  try {
-    const res = await fetch(`/api/filters?strategy=${strategy}`);
-    const data = await res.json();
-    return data.filters ?? {};
-  } catch { return {}; }
+  try { const res = await fetch(`/api/filters?strategy=${strategy}`); const data = await res.json(); return data.filters ?? {}; }
+  catch { return {}; }
 }
 async function saveFilter(strategy: string, name: string, payload: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] }, replace = false): Promise<{ success?: boolean; conflict?: boolean; message?: string }> {
-  const res = await fetch('/api/filters', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ strategy, name, replace, ...payload }),
-  });
+  const res = await fetch('/api/filters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strategy, name, replace, ...payload }) });
   return res.json();
 }
 async function deleteFilter(strategy: string, name: string): Promise<void> {
-  await fetch('/api/filters', {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ strategy, name }),
-  });
+  await fetch('/api/filters', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strategy, name }) });
 }
 
 // ── Tesseract OCR ──────────────────────────────────────────────────────────
@@ -230,12 +189,7 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
   const blacklist = new Set(['USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ','BPS','BCS','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO','AI','AN','IS','IT','AT','OR','AS','BY','IN']);
   const tickers: string[] = [];
   const tickerPattern = /\b([A-Z]{2,5})\b/g;
-  for (const line of text.split('\n')) {
-    let match;
-    while ((match = tickerPattern.exec(line)) !== null) {
-      if (!blacklist.has(match[1])) tickers.push(match[1]);
-    }
-  }
+  for (const line of text.split('\n')) { let match; while ((match = tickerPattern.exec(line)) !== null) { if (!blacklist.has(match[1])) tickers.push(match[1]); } }
   return Array.from(new Set(tickers));
 }
 function mergeTickers(existing: string, newTickers: string[]): string {
@@ -288,11 +242,7 @@ async function getAccessToken(): Promise<string> {
 }
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
-  return (data.data?.items || []).map((item: any) => ({
-    symbol: item.symbol,
-    ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null,
-    earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
-  }));
+  return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
 }
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
@@ -421,7 +371,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   const rocMin = strategy === 'IC' ? RULES.ROC_MIN_IC : RULES.ROC_MIN_SPREAD;
   const rocCheck: CheckResult = bestCandidate ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` } : { status: 'pending', value: '—', reason: 'No candidate' };
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck } };
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
@@ -429,6 +379,41 @@ const statusColor = (s: string) => s === 'pass' ? 'text-emerald-400' : s === 'fa
 const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
 const trendColor = (t: string) => t === 'uptrend' ? 'text-emerald-400' : t === 'downtrend' ? 'text-red-400' : t === 'sideways' ? 'text-blue-400' : 'text-slate-300';
 const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '↓' : t === 'sideways' ? '→' : '?';
+
+// ── Calendar Button ────────────────────────────────────────────────────────
+function CalendarButton({ symbol, strategy, earningsDate, ivr }: { symbol: string; strategy: string; earningsDate: string; ivr: number | null }) {
+  const key = `${symbol}-${earningsDate}`;
+  const [scheduled, setScheduled] = useState(() => {
+    try { const saved = localStorage.getItem(LS_CAL); return saved ? JSON.parse(saved)[key] === true : false; }
+    catch { return false; }
+  });
+
+  const handleClick = () => {
+    const url = buildGoogleCalUrl(symbol, strategy, earningsDate, ivr);
+    window.open(url, '_blank');
+    try {
+      const saved = localStorage.getItem(LS_CAL);
+      const all = saved ? JSON.parse(saved) : {};
+      all[key] = true;
+      localStorage.setItem(LS_CAL, JSON.stringify(all));
+    } catch {}
+    setScheduled(true);
+  };
+
+  if (scheduled) {
+    return <span className="text-[9px] text-emerald-400 border border-emerald-700 rounded px-1.5 py-0.5 font-medium" title="Follow-up scheduled">✓ scheduled</span>;
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-blue-500 hover:text-blue-300 transition-colors font-medium"
+      title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}
+    >
+      📅 follow up
+    </button>
+  );
+}
 
 // ── DTE Alert Banner ───────────────────────────────────────────────────────
 function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
@@ -453,26 +438,16 @@ function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
 }
 
 // ── Smart Suggestions Panel ────────────────────────────────────────────────
-function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: {
-  results: ScreenResult[];
-  rules: RulesType;
-  onApplyAndRerun: (newRules: RulesType) => void;
-}) {
+function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: { results: ScreenResult[]; rules: RulesType; onApplyAndRerun: (newRules: RulesType) => void }) {
   const [expanded, setExpanded] = useState(false);
   const disqualified = results.filter(r => !r.qualified);
   const earningsFails = disqualified.filter(r => r.failReasons.some(f => f.includes('Earnings'))).length;
-
   if (disqualified.length === 0 || results.length === 0) return null;
-
   const suggestions = generateSuggestions(results, rules);
   if (suggestions.length === 0 && earningsFails === 0) return null;
-
   return (
     <div className="border border-slate-600 bg-slate-900/60 rounded-lg overflow-hidden">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-800/40 transition-colors"
-      >
+      <button onClick={() => setExpanded(!expanded)} className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-800/40 transition-colors">
         <div className="flex items-center gap-2">
           <span className="text-blue-400 text-sm">◈</span>
           <div className="text-left">
@@ -482,7 +457,6 @@ function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: {
         </div>
         <span className="text-slate-400 text-xs">{expanded ? '▲' : '▼'}</span>
       </button>
-
       {expanded && (
         <div className="border-t border-slate-700 px-4 py-3 space-y-3">
           {earningsFails > 0 && (
@@ -490,11 +464,10 @@ function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: {
               <span className="text-slate-500 text-xs mt-0.5">ℹ</span>
               <div>
                 <p className="text-[10px] text-slate-300 font-medium">{earningsFails} stock{earningsFails !== 1 ? 's' : ''} blocked by upcoming earnings</p>
-                <p className="text-[9px] text-slate-500">Earnings filter is a hard rule — do not modify. Wait for these stocks to report before trading.</p>
+                <p className="text-[9px] text-slate-500">Earnings filter is a hard rule — do not modify. Use the 📅 follow up button on each card to schedule a re-screen.</p>
               </div>
             </div>
           )}
-
           {suggestions.map((s, i) => (
             <div key={i} className="border border-slate-700 rounded p-3 space-y-2">
               <div className="flex items-start justify-between gap-2">
@@ -513,10 +486,8 @@ function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: {
                   <p className="text-[9px] text-slate-400">+{s.wouldQualify} stocks</p>
                 </div>
               </div>
-              <button
-                onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })}
-                className="w-full text-[9px] py-1.5 border border-blue-700 text-blue-300 rounded hover:bg-blue-900/30 transition-colors font-medium tracking-wider"
-              >
+              <button onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })}
+                className="w-full text-[9px] py-1.5 border border-blue-700 text-blue-300 rounded hover:bg-blue-900/30 transition-colors font-medium tracking-wider">
                 APPLY & RE-RUN
               </button>
             </div>
@@ -536,13 +507,11 @@ function LoadPromptModal({ state, onClose }: { state: LoadPromptState; onClose: 
         <h3 className="text-xs font-bold text-white mb-1 tracking-wider">LOAD {state.type === 'global' ? 'SESSION' : 'FILTER'}</h3>
         <p className="text-[10px] text-slate-300 mb-4">Load <span className="text-white font-medium">"{state.name}"</span> — how should it be applied?</p>
         <div className="space-y-2 mb-4">
-          <button onClick={() => { state.onLoad?.(false); onClose(); }}
-            className="w-full text-left px-3 py-2.5 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
+          <button onClick={() => { state.onLoad?.(false); onClose(); }} className="w-full text-left px-3 py-2.5 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
             <p className="text-xs text-white font-medium">Replace</p>
             <p className="text-[9px] text-slate-400 mt-0.5">Clear current tickers and load this {state.type === 'global' ? 'session' : 'filter'}</p>
           </button>
-          <button onClick={() => { state.onLoad?.(true); onClose(); }}
-            className="w-full text-left px-3 py-2.5 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
+          <button onClick={() => { state.onLoad?.(true); onClose(); }} className="w-full text-left px-3 py-2.5 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
             <p className="text-xs text-white font-medium">Merge</p>
             <p className="text-[9px] text-slate-400 mt-0.5">Add tickers from this {state.type === 'global' ? 'session' : 'filter'} to existing ones</p>
           </button>
@@ -554,12 +523,7 @@ function LoadPromptModal({ state, onClose }: { state: LoadPromptState; onClose: 
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-interface SessionsPanelProps {
-  bps: string; bcs: string; ic: string;
-  onLoadAll: (bps: string, bcs: string, ic: string) => void;
-  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
-}
-function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelProps) {
+function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: { bps: string; bcs: string; ic: string; onLoadAll: (bps: string, bcs: string, ic: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void }) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
   const [showSave, setShowSave] = useState(false);
   const [showLoad, setShowLoad] = useState(false);
@@ -575,8 +539,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelP
     await refreshFilters(); setShowSave(false); setSaveName(''); setSaveError('');
   };
   const handleLoadSelect = (name: string) => {
-    const session = globalFilters[name]; if (!session) return;
-    setShowLoad(false);
+    const session = globalFilters[name]; if (!session) return; setShowLoad(false);
     onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic)); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); } });
   };
   const handleDelete = async (name: string) => { await deleteFilter('global', name); await refreshFilters(); };
@@ -586,16 +549,12 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelP
       <p className="text-[9px] text-slate-300 tracking-widest font-medium mb-2">SESSIONS</p>
       <div className="flex gap-2">
         <div className="relative flex-1">
-          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }}
-            className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">
-            💾 Save Session
-          </button>
+          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">💾 Save Session</button>
           {showSave && (
             <div className="absolute top-8 left-0 z-40 bg-slate-900 border border-slate-600 rounded p-2 w-56 shadow-xl">
               <p className="text-[9px] text-slate-400 mb-1.5">Saves all three scan lists as one session</p>
               <div className="flex gap-1 mb-1">
-                <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }}
-                  placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
+                <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
                   className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-slate-400 placeholder-slate-500" />
                 <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors">Save</button>
               </div>
@@ -604,10 +563,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelP
           )}
         </div>
         <div className="relative flex-1">
-          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }}
-            className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">
-            ▼ Load Session
-          </button>
+          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }} className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">▼ Load Session</button>
           {showLoad && (
             <div className="absolute top-8 right-0 z-40 bg-slate-900 border border-slate-600 rounded overflow-hidden w-56 shadow-xl">
               {filterNames.length === 0 ? <p className="text-[9px] text-slate-500 px-3 py-2">No saved sessions yet</p>
@@ -626,13 +582,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelP
 }
 
 // ── Strategy Box ──────────────────────────────────────────────────────────
-interface StrategyBoxProps {
-  label: string; badge: string; badgeColor: string; borderFocus: string;
-  value: string; onChange: (v: string) => void;
-  strategy: 'BPS' | 'BCS' | 'IC'; disabled?: boolean;
-  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
-}
-function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt }: StrategyBoxProps) {
+function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt }: { label: string; badge: string; badgeColor: string; borderFocus: string; value: string; onChange: (v: string) => void; strategy: 'BPS' | 'BCS' | 'IC'; disabled?: boolean; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [scanning, setScanning] = useState(false);
   const [savedFilters, setSavedFilters] = useState<SavedFilters>({});
@@ -645,8 +595,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   const refreshFilters = useCallback(async () => { setLoadingFilters(true); const f = await loadFilters(strategy) as SavedFilters; setSavedFilters(f); setLoadingFilters(false); }, [strategy]);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
   const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    setScanning(true);
+    const file = e.target.files?.[0]; if (!file) return; setScanning(true);
     try { const tickers = await extractTickersFromImage(file); if (tickers.length > 0) onChange(mergeTickers(value, tickers)); } catch (err) { console.error(err); }
     setScanning(false); if (fileRef.current) fileRef.current.value = '';
   };
@@ -714,11 +663,14 @@ function StrikesDisplay({ c }: { c: SpreadCandidate }) {
   }
   return <div className="text-xs shrink-0"><span className="text-slate-300">Strikes </span><span className="text-white">{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
+
 function ResultCard({ result }: { result: ScreenResult }) {
   const [expanded, setExpanded] = useState(false);
   const c = result.bestCandidate, t = result.trendResult;
   const stratBg = result.strategy === 'BPS' ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : result.strategy === 'BCS' ? 'bg-red-900/40 border-red-700 text-red-300' : 'bg-blue-900/40 border-blue-700 text-blue-300';
   const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
+  const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings')) && result.earningsDate && daysUntil(result.earningsDate) >= 0;
+
   return (
     <div className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? (isApproaching ? 'border-yellow-600/60 bg-slate-900/60' : 'border-slate-600 bg-slate-900/60') : 'border-slate-700 bg-slate-900/30 opacity-60'}`} onClick={() => setExpanded(!expanded)}>
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
@@ -736,7 +688,16 @@ function ResultCard({ result }: { result: ScreenResult }) {
           <span className="text-[9px] text-slate-400 border border-slate-600 rounded px-1 py-0.5 shrink-0">opt</span>
           {isApproaching && <span className="text-[9px] text-yellow-400 border border-yellow-700 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
         </>}
-        {!result.qualified && result.failReasons.length > 0 && <div className="text-[10px] text-red-400 ml-auto font-medium">{result.failReasons.slice(0, 2).join(' · ')}</div>}
+        {!result.qualified && result.failReasons.length > 0 && (
+          <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
+            <span className="text-[10px] text-red-400 font-medium">{result.failReasons.slice(0, 2).join(' · ')}</span>
+            {hasEarningsBlock && result.earningsDate && (
+              <span onClick={e => e.stopPropagation()}>
+                <CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} />
+              </span>
+            )}
+          </div>
+        )}
         <div className="ml-auto text-slate-300 text-xs shrink-0">{expanded ? '▲' : '▼'}</div>
       </div>
       {expanded && (
@@ -754,6 +715,14 @@ function ResultCard({ result }: { result: ScreenResult }) {
               </div>
             ))}
           </div>
+          {hasEarningsBlock && result.earningsDate && (
+            <div className="pt-2 border-t border-slate-700 flex items-center gap-3">
+              <p className="text-[10px] text-slate-400 flex-1">Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
+              <span onClick={e => e.stopPropagation()}>
+                <CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} />
+              </span>
+            </div>
+          )}
           {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && <div className="pt-2 border-t border-slate-700"><p className="text-[10px] text-slate-300">Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p></div>}
           {result.failReasons.length > 0 && <div className="pt-2 border-t border-slate-700"><p className="text-[10px] text-red-400 font-medium">{result.failReasons.join(' · ')}</p></div>}
         </div>
@@ -794,8 +763,8 @@ export default function Home() {
   const autoOverLimit = autoTickerList.length > AUTO_TICKER_LIMIT;
 
   const downloadCSV = () => {
-    const headers = ['Symbol','Strategy','Trend','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Fail Reasons'];
-    const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
+    const headers = ['Symbol','Strategy','Trend','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Earnings Date','Fail Reasons'];
+    const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
     const blob = new Blob([[headers.join(','),...rows].join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
   };
@@ -849,9 +818,7 @@ export default function Home() {
       </div>
 
       <div className="flex h-[calc(100vh-57px)]">
-        {/* Sidebar */}
         <div className="w-80 border-r border-slate-700 p-4 overflow-auto flex flex-col gap-4 shrink-0">
-          {/* AUTO */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
@@ -890,7 +857,6 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Main content */}
         <div className="flex-1 overflow-auto p-5">
           {results.length === 0 && !loading && (
             <div className="h-full flex flex-col items-center justify-center text-slate-500">
@@ -910,13 +876,8 @@ export default function Home() {
                 </div>
                 <button onClick={downloadCSV} className="text-[10px] px-3 py-1.5 border border-slate-600 rounded hover:border-slate-400 text-slate-300 hover:text-white transition-colors tracking-wider">↓ CSV</button>
               </div>
-
-              {/* DTE Alert Banner */}
               <DTEAlertBanner results={results} />
-
-              {/* Smart Suggestions */}
               <SmartSuggestionsPanel results={results} rules={runtimeRules} onApplyAndRerun={runScreen} />
-
               {qualified.length > 0 && <div><p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} />)}</div></div>}
               {disqualified.length > 0 && <div><p className="text-[9px] text-slate-500 tracking-widest mb-2 font-medium">DISQUALIFIED</p><div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} />)}</div></div>}
             </div>
