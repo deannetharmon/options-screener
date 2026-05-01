@@ -903,7 +903,7 @@ export default function Home() {
       {/* Header */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
         <div>
-          <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
+          <h1 className="text-base font-bold tracking-widest text-white">YOUR OPTIONS SCREENER</h1>
           <p className="text-[10px] text-white/50 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
         </div>
         <ThemeToggle theme={theme} setTheme={setTheme} />
