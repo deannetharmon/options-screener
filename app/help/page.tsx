@@ -73,7 +73,7 @@ export default function HelpPage() {
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
         <div>
           <a href="/" className={`text-[10px] ${th.textFaint} hover:text-blue-400 transition-colors tracking-wider`}>← Back to Screener</a>
-          <h1 className="text-base font-bold tracking-widest text-white mt-1">PROSPER OPTIONS SCREENER</h1>
+          <h1 className="text-base font-bold tracking-widest text-white mt-1">OPTIONS HUNTER</h1>
           <p className="text-[10px] text-white/50 tracking-wider">Help & Reference Guide</p>
         </div>
       </div>
@@ -83,7 +83,7 @@ export default function HelpPage() {
         {/* Overview */}
         <Section title="Overview" th={th}>
           <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>
-            Prosper Options Screener helps you find qualifying options trades using the Prosper trading rules. It screens stocks for Bull Put Spreads (BPS), Bear Call Spreads (BCS), and Iron Condors (IC) using real-time data from TastyTrade.
+            OPTIONS HUNTER helps you find qualifying options trades using the Prosper trading rules. It screens stocks for Bull Put Spreads (BPS), Bear Call Spreads (BCS), and Iron Condors (IC) using real-time data from TastyTrade.
           </p>
           <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>
             The screener applies your rules automatically — IVR check, earnings check, chain liquidity, delta, credit ratio, and ROC — and returns only qualifying setups.
@@ -307,7 +307,7 @@ export default function HelpPage() {
 
         {/* Footer */}
         <div className={`text-center text-[10px] ${th.textFaint} py-4 border-t ${th.border}`}>
-          <p>Prosper Options Screener · Based on Prosper Trading course materials</p>
+          <p>OPTIONS HUNTER · Based on Prosper Trading course materials</p>
           <p className="mt-1">Paper trade before going live · Position size: max 5–10% of portfolio per trade</p>
         </div>
 
