@@ -96,6 +96,7 @@ const LS_BPS = 'prosper-tickers-bps';
 const LS_BCS = 'prosper-tickers-bcs';
 const LS_IC = 'prosper-tickers-ic';
 const LS_CAL = 'prosper-cal-scheduled';
+const LS_CAL_ENTRY = 'prosper-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
 
 function daysUntil(dateStr: string): number {
@@ -133,6 +134,25 @@ function buildGoogleCalUrl(symbol: string, strategy: string, earningsDate: strin
   const title = encodeURIComponent(`Re-screen ${symbol} — earnings passed`);
   const details = encodeURIComponent(
     `${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nRun the Prosper Options Screener to check if this is now a valid trade.\n\nCheck:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC`
+  );
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
+}
+
+// ── Entry follow-up calendar URL ───────────────────────────────────────────
+function buildEntryCalUrl(result: ScreenResult): string {
+  const c = result.bestCandidate!;
+  const followUp = addBusinessDays(new Date().toISOString().split('T')[0], 1);
+  const nextDay = new Date(followUp);
+  nextDay.setDate(nextDay.getDate() + 1);
+  const start = formatCalDate(followUp);
+  const end = formatCalDate(nextDay);
+  const title = encodeURIComponent(`Enter trade — ${result.symbol} ${result.strategy}`);
+  const details = encodeURIComponent(
+    `Re-verify and enter if setup still valid:\n\n` +
+    `Symbol: ${result.symbol}\nStrategy: ${result.strategy}\nIVR: ${result.ivr?.toFixed(1)}%\n` +
+    `Expiration: ${c.expiration} (${c.dte}d)\nStrikes: ${c.shortStrike}/${c.longStrike} ·$${c.spreadWidth}·\n` +
+    `Credit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\nDelta: ${c.shortDelta.toFixed(2)}\n\n` +
+    `Checklist:\n• IVR still ≥ 30%\n• No new earnings\n• Credit and ROC still qualify\n• Enter GTC at 50% profit immediately after fill`
   );
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
 }
@@ -415,6 +435,30 @@ function CalendarButton({ symbol, strategy, earningsDate, ivr }: { symbol: strin
   );
 }
 
+function EntryCalendarButton({ result }: { result: ScreenResult }) {
+  const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
+  const [scheduled, setScheduled] = useState(() => {
+    try { const saved = localStorage.getItem(LS_CAL_ENTRY); return saved ? JSON.parse(saved)[key] === true : false; }
+    catch { return false; }
+  });
+  const handleClick = () => {
+    window.open(buildEntryCalUrl(result), '_blank');
+    try {
+      const saved = localStorage.getItem(LS_CAL_ENTRY);
+      const all = saved ? JSON.parse(saved) : {};
+      all[key] = true;
+      localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all));
+    } catch {}
+    setScheduled(true);
+  };
+  if (scheduled) return <span className="text-[9px] text-emerald-400 border border-emerald-700 rounded px-1.5 py-0.5 font-medium">✓ entry scheduled</span>;
+  return (
+    <button onClick={handleClick} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-emerald-500 hover:text-emerald-300 transition-colors font-medium" title="Schedule trade entry for next business day">
+      📅 enter tomorrow
+    </button>
+  );
+}
+
 // ── DTE Alert Banner ───────────────────────────────────────────────────────
 function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
   const approaching = results.filter(r => r.qualified && r.bestCandidate && r.bestCandidate.dte <= DTE_ALERT_THRESHOLD);
@@ -686,6 +730,11 @@ function ResultCard({ result }: { result: ScreenResult }) {
           {c.pop != null && <div className="text-xs shrink-0"><span className="text-slate-300">POP </span><span className="text-white font-medium">{c.pop.toFixed(0)}%</span></div>}
           <div className="text-xs shrink-0"><span className="text-slate-300">δ </span><span className="text-white font-medium">{c.shortDelta.toFixed(2)}</span></div>
           <span className="text-[9px] text-slate-400 border border-slate-600 rounded px-1 py-0.5 shrink-0">opt</span>
+          {result.qualified && c && (
+            <span onClick={e => e.stopPropagation()} className="shrink-0">
+              <EntryCalendarButton result={result} />
+            </span>
+          )}
           {isApproaching && <span className="text-[9px] text-yellow-400 border border-yellow-700 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
         </>}
         {!result.qualified && result.failReasons.length > 0 && (
