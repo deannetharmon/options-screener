@@ -1,6 +1,67 @@
 'use client';
 import { useState, useRef, useEffect, useCallback } from 'react';
 
+// ── Theme ──────────────────────────────────────────────────────────────────
+type Theme = 'dark' | 'medium' | 'light';
+const LS_THEME = 'prosper-theme';
+
+const THEMES: Record<Theme, {
+  bg: string; sidebar: string; card: string; cardQualified: string;
+  border: string; borderLight: string; header: string;
+  text: string; textMuted: string; textFaint: string;
+  input: string; inputBorder: string; tag: string;
+  label: string;
+}> = {
+  dark: {
+    bg: 'bg-[#080c14]',
+    sidebar: 'bg-[#0d1117]',
+    card: 'bg-slate-900/30',
+    cardQualified: 'bg-slate-900/60',
+    border: 'border-slate-700',
+    borderLight: 'border-slate-800',
+    header: 'bg-gradient-to-r from-[#0d1117] to-[#080c14]',
+    text: 'text-white',
+    textMuted: 'text-slate-300',
+    textFaint: 'text-slate-500',
+    input: 'bg-slate-900/80',
+    inputBorder: 'border-slate-700',
+    tag: 'bg-slate-800',
+    label: 'text-slate-400',
+  },
+  medium: {
+    bg: 'bg-[#1a1f2e]',
+    sidebar: 'bg-[#1e2436]',
+    card: 'bg-[#222840]/50',
+    cardQualified: 'bg-[#222840]/80',
+    border: 'border-slate-600',
+    borderLight: 'border-slate-700',
+    header: 'bg-gradient-to-r from-[#1e2436] to-[#1a1f2e]',
+    text: 'text-slate-100',
+    textMuted: 'text-slate-300',
+    textFaint: 'text-slate-400',
+    input: 'bg-[#1a1f2e]',
+    inputBorder: 'border-slate-600',
+    tag: 'bg-slate-700',
+    label: 'text-slate-400',
+  },
+  light: {
+    bg: 'bg-slate-100',
+    sidebar: 'bg-white',
+    card: 'bg-white',
+    cardQualified: 'bg-white',
+    border: 'border-slate-300',
+    borderLight: 'border-slate-200',
+    header: 'bg-gradient-to-r from-slate-800 to-slate-900',
+    text: 'text-slate-900',
+    textMuted: 'text-slate-700',
+    textFaint: 'text-slate-400',
+    input: 'bg-slate-50',
+    inputBorder: 'border-slate-300',
+    tag: 'bg-slate-100',
+    label: 'text-slate-500',
+  },
+};
+
 // ── Types ──────────────────────────────────────────────────────────────────
 interface CheckResult {
   status: 'pass' | 'fail' | 'warn' | 'pending';
@@ -8,69 +69,31 @@ interface CheckResult {
   reason: string;
 }
 interface SpreadCandidate {
-  strategy: string;
-  expiration: string;
-  dte: number;
-  shortStrike: number;
-  longStrike: number;
-  shortDelta: number;
-  credit: number;
-  spreadWidth: number;
-  creditRatio: number;
-  roc: number;
-  pop: number | null;
-  shortOI: number;
-  longOI: number;
-  shortCallStrike?: number;
-  longCallStrike?: number;
-  callCredit?: number;
-  callWidth?: number;
-  totalCredit?: number;
-  optimized?: boolean;
+  strategy: string; expiration: string; dte: number;
+  shortStrike: number; longStrike: number; shortDelta: number;
+  credit: number; spreadWidth: number; creditRatio: number;
+  roc: number; pop: number | null; shortOI: number; longOI: number;
+  shortCallStrike?: number; longCallStrike?: number;
+  callCredit?: number; callWidth?: number; totalCredit?: number; optimized?: boolean;
 }
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
-  strategy: 'BPS' | 'BCS' | 'IC';
-  ma20: number;
-  ma50: number;
-  reason: string;
+  strategy: 'BPS' | 'BCS' | 'IC'; ma20: number; ma50: number; reason: string;
 }
 interface ScreenResult {
-  symbol: string;
-  strategy: string;
-  price: number | null;
-  ivr: number | null;
-  qualified: boolean;
-  bestCandidate: SpreadCandidate | null;
-  failReasons: string[];
-  earningsDate?: string | null;
-  trendResult?: TrendResult;
-  checks: {
-    ivr: CheckResult;
-    earnings: CheckResult;
-    oi: CheckResult;
-    delta: CheckResult;
-    credit: CheckResult;
-    roc: CheckResult;
-  };
+  symbol: string; strategy: string; price: number | null; ivr: number | null;
+  qualified: boolean; bestCandidate: SpreadCandidate | null;
+  failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
+  checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; };
 }
 interface FilterSuggestion {
-  priority: number;
-  rule: keyof RulesType;
-  currentValue: number;
-  suggestedValue: number;
-  label: string;
-  rationale: string;
-  tradeoff: string;
-  wouldQualify: number;
+  priority: number; rule: keyof RulesType; currentValue: number; suggestedValue: number;
+  label: string; rationale: string; tradeoff: string; wouldQualify: number;
 }
 type SavedFilters = Record<string, string[]>;
 type GlobalFilters = Record<string, { bps: string[]; bcs: string[]; ic: string[] }>;
 interface LoadPromptState {
-  show: boolean;
-  name: string;
-  type: 'strategy' | 'global';
-  onLoad?: (merge: boolean) => void;
+  show: boolean; name: string; type: 'strategy' | 'global'; onLoad?: (merge: boolean) => void;
 }
 
 // ── Rules ──────────────────────────────────────────────────────────────────
@@ -107,65 +130,44 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
-
 function getSavedRules(): RulesType {
-  try {
-    const saved = localStorage.getItem(LS_RULES);
-    return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES };
-  } catch { return { ...DEFAULT_RULES }; }
+  try { const saved = localStorage.getItem(LS_RULES); return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES }; }
+  catch { return { ...DEFAULT_RULES }; }
 }
 function saveRulesToStorage(rules: RulesType) {
   try { localStorage.setItem(LS_RULES, JSON.stringify(rules)); } catch {}
+}
+function getSavedTheme(): Theme {
+  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; }
+  catch { return 'dark'; }
 }
 
 // ── Business day calculator ────────────────────────────────────────────────
 function addBusinessDays(dateStr: string, days: number): Date {
   const date = new Date(dateStr);
   let added = 0;
-  while (added < days) {
-    date.setDate(date.getDate() + 1);
-    const dow = date.getDay();
-    if (dow !== 0 && dow !== 6) added++;
-  }
+  while (added < days) { date.setDate(date.getDate() + 1); const dow = date.getDay(); if (dow !== 0 && dow !== 6) added++; }
   return date;
 }
 function formatCalDate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}${m}${d}`;
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
 }
 
-// ── Google Calendar URL builders ───────────────────────────────────────────
+// ── Google Calendar URLs ───────────────────────────────────────────────────
 function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
-  const followUpDate = addBusinessDays(earningsDate, 2);
-  const nextDay = new Date(followUpDate);
-  nextDay.setDate(nextDay.getDate() + 1);
+  const followUp = addBusinessDays(earningsDate, 2);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
   const title = encodeURIComponent(`Re-screen ${symbol} — earnings passed`);
-  const details = encodeURIComponent(
-    `${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\n` +
-    `Checklist:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC\n\n` +
-    `Re-screen: ${SCREENER_URL}`
-  );
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUpDate)}/${formatCalDate(nextDay)}&details=${details}`;
+  const details = encodeURIComponent(`${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nChecklist:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC\n\nRe-screen: ${SCREENER_URL}`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
-
-// ── Entry follow-up calendar URL ───────────────────────────────────────────
 function buildEntryCalUrl(result: ScreenResult): string {
   const c = result.bestCandidate!;
   const followUp = addBusinessDays(new Date().toISOString().split('T')[0], 1);
-  const nextDay = new Date(followUp);
-  nextDay.setDate(nextDay.getDate() + 1);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
   const title = encodeURIComponent(`Enter trade — ${result.symbol} ${result.strategy}`);
-  const details = encodeURIComponent(
-    `Re-verify and enter if setup still valid:\n\n` +
-    `Symbol: ${result.symbol}\nStrategy: ${result.strategy}\nIVR: ${result.ivr?.toFixed(1)}%\n` +
-    `Expiration: ${c.expiration} (${c.dte}d)\nStrikes: ${c.shortStrike}/${c.longStrike} ·$${c.spreadWidth}·\n` +
-    `Credit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\nDelta: ${c.shortDelta.toFixed(2)}\n\n` +
-    `Checklist:\n• IVR still ≥ 30%\n• No new earnings\n• Credit and ROC still qualify\n• Enter GTC at 50% profit immediately after fill\n\n` +
-    `Re-screen: ${SCREENER_URL}`
-  );
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(nextDay)}&details=${details}`;
+  const details = encodeURIComponent(`Re-verify and enter if setup still valid:\n\nSymbol: ${result.symbol}\nStrategy: ${result.strategy}\nIVR: ${result.ivr?.toFixed(1)}%\nExpiration: ${c.expiration} (${c.dte}d)\nStrikes: ${c.shortStrike}/${c.longStrike} ·$${c.spreadWidth}·\nCredit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\nDelta: ${c.shortDelta.toFixed(2)}\n\nChecklist:\n• IVR still ≥ 30%\n• No new earnings\n• Credit and ROC still qualify\n• Enter GTC at 50% profit immediately after fill\n\nRe-screen: ${SCREENER_URL}`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 
 // ── Width steps ────────────────────────────────────────────────────────────
@@ -193,10 +195,13 @@ function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterS
   const ivrFails = disqualified.filter(r => r.failReasons.some(f => f.includes('IVR'))).length;
   const creditFails = disqualified.filter(r => r.checks.credit.status === 'fail' || r.failReasons.some(f => f.includes('qualifying strikes'))).length;
   const rocFails = disqualified.filter(r => r.checks.roc.status === 'fail').length;
-  if (dteFails > 0) suggestions.push({ priority: 1, rule: 'DTE_MAX', currentValue: rules.DTE_MAX, suggestedValue: 55, label: 'Expand DTE window', rationale: `${dteFails} of ${total} stocks have no expirations in your ${rules.DTE_MIN}–${rules.DTE_MAX} day window.`, tradeoff: 'Wider DTE captures monthly-only chains. Theta decay is slightly slower but risk profile is similar.', wouldQualify: dteFails });
-  if (ivrFails > total * 0.5) suggestions.push({ priority: 2, rule: 'IVR_MIN', currentValue: rules.IVR_MIN, suggestedValue: 20, label: 'Lower IVR minimum', rationale: `${ivrFails} stocks failed IVR ≥ ${rules.IVR_MIN}%. Market volatility may be suppressed.`, tradeoff: 'Lower IVR means less premium collected. Reduce position size to compensate. Consider waiting for a volatility event.', wouldQualify: ivrFails });
+  if (dteFails > 0 && rules.DTE_MAX < 60) {
+    const suggestedDTE = Math.min(60, rules.DTE_MAX + 10);
+    suggestions.push({ priority: 1, rule: 'DTE_MAX', currentValue: rules.DTE_MAX, suggestedValue: suggestedDTE, label: 'Expand DTE window', rationale: `${dteFails} of ${total} stocks have no expirations in your ${rules.DTE_MIN}–${rules.DTE_MAX} day window.`, tradeoff: 'Wider DTE captures monthly-only chains. Theta decay is slightly slower but risk profile is similar.', wouldQualify: dteFails });
+  }
+  if (ivrFails > total * 0.5) suggestions.push({ priority: 2, rule: 'IVR_MIN', currentValue: rules.IVR_MIN, suggestedValue: 20, label: 'Lower IVR minimum', rationale: `${ivrFails} stocks failed IVR ≥ ${rules.IVR_MIN}%. Market volatility may be suppressed.`, tradeoff: 'Lower IVR means less premium collected. Reduce position size to compensate.', wouldQualify: ivrFails });
   if (creditFails > 1 && rules.CREDIT_RATIO_MIN > 0.10) { const newRatio = Math.max(0.10, rules.CREDIT_RATIO_MIN - 0.05); suggestions.push({ priority: 3, rule: 'CREDIT_RATIO_MIN', currentValue: rules.CREDIT_RATIO_MIN, suggestedValue: newRatio, label: 'Relax credit ratio', rationale: `${creditFails} stocks couldn't generate enough credit relative to spread width.`, tradeoff: `Lowering to ${(newRatio * 100).toFixed(0)}% reduces minimum credit requirement. Only do this if IVR is elevated.`, wouldQualify: creditFails }); }
-  if (rocFails > 0 && rules.ROC_MIN_SPREAD > 10) { const newROC = Math.max(10, rules.ROC_MIN_SPREAD - 5); suggestions.push({ priority: 4, rule: 'ROC_MIN_SPREAD', currentValue: rules.ROC_MIN_SPREAD, suggestedValue: newROC, label: 'Lower ROC minimum', rationale: `${rocFails} spreads found valid strikes but couldn't reach ${rules.ROC_MIN_SPREAD}% ROC.`, tradeoff: `${newROC}% ROC still profitable but leaves less cushion. Only accept if POP is strong (>70%) and IVR is elevated.`, wouldQualify: rocFails }); }
+  if (rocFails > 0 && rules.ROC_MIN_SPREAD > 10) { const newROC = Math.max(10, rules.ROC_MIN_SPREAD - 5); suggestions.push({ priority: 4, rule: 'ROC_MIN_SPREAD', currentValue: rules.ROC_MIN_SPREAD, suggestedValue: newROC, label: 'Lower ROC minimum', rationale: `${rocFails} spreads found valid strikes but couldn't reach ${rules.ROC_MIN_SPREAD}% ROC.`, tradeoff: `${newROC}% ROC still profitable but leaves less cushion. Only accept if POP is strong (>70%).`, wouldQualify: rocFails }); }
   return suggestions.sort((a, b) => a.priority - b.priority);
 }
 
@@ -236,10 +241,8 @@ function tickersToString(tickers: string[]): string { return tickers.join(', ');
 async function getTrend(symbol: string): Promise<TrendResult> {
   const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
   if (!apiKey) throw new Error('NEXT_PUBLIC_POLYGON_API_KEY not set');
-  const to = new Date(), from = new Date();
-  from.setMonth(from.getMonth() - 6);
-  const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`;
-  const res = await fetch(url);
+  const to = new Date(), from = new Date(); from.setMonth(from.getMonth() - 6);
+  const res = await fetch(`https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`);
   if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
   const data = await res.json();
   const bars: { c: number }[] = data.results ?? [];
@@ -248,8 +251,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
   const currentPrice = closes[closes.length - 1];
-  const maDiff = (ma20 - ma50) / ma50;
-  const priceVsMa50 = (currentPrice - ma50) / ma50;
+  const maDiff = (ma20 - ma50) / ma50, priceVsMa50 = (currentPrice - ma50) / ma50;
   if (Math.abs(maDiff) < 0.03 && Math.abs(priceVsMa50) < 0.07) return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
   if (maDiff > 0 && currentPrice > ma50) return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
   return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
@@ -263,9 +265,7 @@ async function ttFetch(path: string, token: string) {
   return res.json();
 }
 async function getAccessToken(): Promise<string> {
-  const r = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
-  const s = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
-  const c = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
+  const r = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN, s = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET, c = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
   if (!r || !s || !c) throw new Error('TastyTrade credentials not configured');
   const res = await fetch(`${BASE}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: r.trim(), client_id: c.trim(), client_secret: s.trim() }) });
   if (!res.ok) { const text = await res.text(); throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 200)}`); }
@@ -287,14 +287,11 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
 }
 async function getChain(symbol: string, token: string, RULES: RulesType) {
   const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
-  const expirations: string[] = [];
-  const chains: Record<string, any[]> = {};
-  const allOCCSymbols: string[] = [];
+  const expirations: string[] = [], chains: Record<string, any[]> = {}, allOCCSymbols: string[] = [];
   const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
   for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
     const expDate: string = expGroup['expiration-date']; if (!expDate) continue;
-    const dte = daysUntil(expDate);
-    if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
+    const dte = daysUntil(expDate); if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
     for (const strike of expGroup.strikes ?? []) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
       const callSym: string = strike['call'], putSym: string = strike['put'];
@@ -318,8 +315,7 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
       chains[meta.expDate].push({ strikePrice: meta.strike, expirationDate: meta.expDate, optionType: meta.optionType, delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2 });
     }
   }
-  expirations.sort();
-  return { expirations, chains };
+  expirations.sort(); return { expirations, chains };
 }
 
 // ── Screener Logic ─────────────────────────────────────────────────────────
@@ -336,8 +332,7 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN || longLeg.ask - longLeg.bid > bidAskMax) continue;
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
-    const maxLoss = width - credit;
-    const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_SPREAD) continue;
+    const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_SPREAD) continue;
     return { strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop: (1 - absDelta) * 100, optimized: true };
   }
   return null;
@@ -362,8 +357,7 @@ function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, pric
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN || longLeg.ask - longLeg.bid > bidAskMax) continue;
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
-    const maxLoss = width - credit;
-    const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
+    const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
     return { shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, credit, creditRatio, roc, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest };
   }
   return null;
@@ -380,13 +374,11 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
   if (!bestCall) return null;
   const totalCredit = parseFloat((bestPut.credit + bestCall.credit).toFixed(2));
   const maxLoss = Math.max(bestPut.width - bestPut.credit, bestCall.width - bestCall.credit);
-  const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0;
-  if (roc < RULES.ROC_MIN_IC) return null;
+  const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_IC) return null;
   return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true };
 }
 function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]> }, price: number | null, RULES: RulesType, trendResult?: TrendResult): ScreenResult {
-  const failReasons: string[] = [];
-  const ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
+  const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
   const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < RULES.IVR_MIN ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${RULES.IVR_MIN}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${RULES.IVR_MIN}% minimum` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Above minimum' };
   let earningsCheck: CheckResult;
   if (!earningsDate) { earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' }; }
@@ -406,39 +398,54 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
-const statusColor = (s: string) => s === 'pass' ? 'text-emerald-400' : s === 'fail' ? 'text-red-400' : s === 'warn' ? 'text-yellow-400' : 'text-slate-400';
+const statusColor = (s: string) => s === 'pass' ? 'text-emerald-500' : s === 'fail' ? 'text-red-500' : s === 'warn' ? 'text-yellow-500' : 'text-slate-400';
 const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
-const trendColor = (t: string) => t === 'uptrend' ? 'text-emerald-400' : t === 'downtrend' ? 'text-red-400' : t === 'sideways' ? 'text-blue-400' : 'text-slate-300';
+const trendColor = (t: string) => t === 'uptrend' ? 'text-emerald-500' : t === 'downtrend' ? 'text-red-500' : t === 'sideways' ? 'text-blue-500' : 'text-slate-400';
 const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '↓' : t === 'sideways' ? '→' : '?';
+const strategyAccent = (s: string) => s === 'BPS' ? 'border-l-4 border-l-emerald-500' : s === 'BCS' ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500';
 
-// ── Earnings calendar button ───────────────────────────────────────────────
-function CalendarButton({ symbol, strategy, earningsDate, ivr }: { symbol: string; strategy: string; earningsDate: string; ivr: number | null }) {
-  const key = `${symbol}-${earningsDate}`;
-  const [scheduled, setScheduled] = useState(() => {
-    try { const saved = localStorage.getItem(LS_CAL); return saved ? JSON.parse(saved)[key] === true : false; } catch { return false; }
-  });
-  const handleClick = () => {
-    window.open(buildEarningsCalUrl(symbol, strategy, earningsDate, ivr), '_blank');
-    try { const saved = localStorage.getItem(LS_CAL); const all = saved ? JSON.parse(saved) : {}; all[key] = true; localStorage.setItem(LS_CAL, JSON.stringify(all)); } catch {}
-    setScheduled(true);
-  };
-  if (scheduled) return <span className="text-[9px] text-emerald-400 border border-emerald-700 rounded px-1.5 py-0.5 font-medium">✓ scheduled</span>;
-  return <button onClick={handleClick} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-blue-500 hover:text-blue-300 transition-colors font-medium" title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up</button>;
+// ── Theme Toggle ───────────────────────────────────────────────────────────
+function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+  const options: { value: Theme; icon: string; label: string }[] = [
+    { value: 'light', icon: '☀', label: 'Light' },
+    { value: 'medium', icon: '◐', label: 'Medium' },
+    { value: 'dark', icon: '☾', label: 'Dark' },
+  ];
+  return (
+    <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
+      {options.map(o => (
+        <button key={o.value} onClick={() => { setTheme(o.value); try { localStorage.setItem(LS_THEME, o.value); } catch {} }}
+          title={o.label}
+          className={`text-sm px-2 py-1 rounded transition-all ${theme === o.value ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
+          {o.icon}
+        </button>
+      ))}
+    </div>
+  );
 }
 
-// ── Entry calendar button ──────────────────────────────────────────────────
-function EntryCalendarButton({ result }: { result: ScreenResult }) {
-  const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
-  const [scheduled, setScheduled] = useState(() => {
-    try { const saved = localStorage.getItem(LS_CAL_ENTRY); return saved ? JSON.parse(saved)[key] === true : false; } catch { return false; }
-  });
+// ── Calendar Buttons ───────────────────────────────────────────────────────
+function CalendarButton({ symbol, strategy, earningsDate, ivr, th }: { symbol: string; strategy: string; earningsDate: string; ivr: number | null; th: typeof THEMES[Theme] }) {
+  const key = `${symbol}-${earningsDate}`;
+  const [scheduled, setScheduled] = useState(() => { try { const s = localStorage.getItem(LS_CAL); return s ? JSON.parse(s)[key] === true : false; } catch { return false; } });
   const handleClick = () => {
-    window.open(buildEntryCalUrl(result), '_blank');
-    try { const saved = localStorage.getItem(LS_CAL_ENTRY); const all = saved ? JSON.parse(saved) : {}; all[key] = true; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
+    window.open(buildEarningsCalUrl(symbol, strategy, earningsDate, ivr), '_blank');
+    try { const s = localStorage.getItem(LS_CAL); const all = s ? JSON.parse(s) : {}; all[key] = true; localStorage.setItem(LS_CAL, JSON.stringify(all)); } catch {}
     setScheduled(true);
   };
-  if (scheduled) return <span className="text-[9px] text-emerald-400 border border-emerald-700 rounded px-1.5 py-0.5 font-medium">✓ entry scheduled</span>;
-  return <button onClick={handleClick} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-emerald-500 hover:text-emerald-300 transition-colors font-medium" title="Schedule trade entry for next business day">📅 enter tomorrow</button>;
+  if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ scheduled</span>;
+  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium`} title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up</button>;
+}
+function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme] }) {
+  const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
+  const [scheduled, setScheduled] = useState(() => { try { const s = localStorage.getItem(LS_CAL_ENTRY); return s ? JSON.parse(s)[key] === true : false; } catch { return false; } });
+  const handleClick = () => {
+    window.open(buildEntryCalUrl(result), '_blank');
+    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = true; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
+    setScheduled(true);
+  };
+  if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ entry scheduled</span>;
+  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors font-medium`} title="Schedule trade entry for next business day">📅 enter tomorrow</button>;
 }
 
 // ── DTE Alert Banner ───────────────────────────────────────────────────────
@@ -446,14 +453,14 @@ function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
   const approaching = results.filter(r => r.qualified && r.bestCandidate && r.bestCandidate.dte <= DTE_ALERT_THRESHOLD);
   if (approaching.length === 0) return null;
   return (
-    <div className="border border-yellow-600/60 bg-yellow-900/20 rounded-lg px-4 py-3 flex items-start gap-3">
+    <div className="border border-yellow-500/50 bg-yellow-500/10 rounded-lg px-4 py-3 flex items-start gap-3">
       <span className="text-yellow-400 text-base mt-0.5">⚠</span>
       <div className="flex-1">
         <p className="text-xs text-yellow-400 font-bold tracking-wider mb-1">APPROACHING 21 DTE — ACTION REQUIRED</p>
         <p className="text-[10px] text-yellow-300 mb-2">Close these positions regardless of profit/loss when they hit 21 DTE.</p>
         <div className="flex flex-wrap gap-2">
           {approaching.map(r => (
-            <span key={r.symbol} className="text-[10px] bg-yellow-900/40 border border-yellow-700 rounded px-2 py-0.5 text-yellow-300 font-medium">
+            <span key={r.symbol} className="text-[10px] bg-yellow-500/10 border border-yellow-600 rounded px-2 py-0.5 text-yellow-300 font-medium">
               {r.symbol} {r.bestCandidate?.expiration} — <span className={r.bestCandidate!.dte <= 21 ? 'text-red-400 font-bold' : 'text-yellow-400'}>{r.bestCandidate?.dte}d</span>
             </span>
           ))}
@@ -464,7 +471,7 @@ function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
 }
 
 // ── Smart Suggestions Panel ────────────────────────────────────────────────
-function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: { results: ScreenResult[]; rules: RulesType; onApplyAndRerun: (newRules: RulesType) => void }) {
+function SmartSuggestionsPanel({ results, rules, th, onApplyAndRerun }: { results: ScreenResult[]; rules: RulesType; th: typeof THEMES[Theme]; onApplyAndRerun: (r: RulesType) => void }) {
   const [expanded, setExpanded] = useState(false);
   const disqualified = results.filter(r => !r.qualified);
   const earningsFails = disqualified.filter(r => r.failReasons.some(f => f.includes('Earnings'))).length;
@@ -472,47 +479,47 @@ function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: { results: S
   const suggestions = generateSuggestions(results, rules);
   if (suggestions.length === 0 && earningsFails === 0) return null;
   return (
-    <div className="border border-slate-600 bg-slate-900/60 rounded-lg overflow-hidden">
-      <button onClick={() => setExpanded(!expanded)} className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-800/40 transition-colors">
+    <div className={`border ${th.border} ${th.card} rounded-lg overflow-hidden`}>
+      <button onClick={() => setExpanded(!expanded)} className={`w-full px-4 py-3 flex items-center justify-between hover:bg-blue-500/5 transition-colors`}>
         <div className="flex items-center gap-2">
           <span className="text-blue-400 text-sm">◈</span>
           <div className="text-left">
-            <p className="text-xs text-white font-bold tracking-wider">FILTER SUGGESTIONS</p>
-            <p className="text-[9px] text-slate-400">{suggestions.length} suggestion{suggestions.length !== 1 ? 's' : ''} · {disqualified.length} disqualified stocks analyzed</p>
+            <p className={`text-xs font-bold tracking-wider ${th.text}`}>FILTER SUGGESTIONS</p>
+            <p className={`text-[9px] ${th.textFaint}`}>{suggestions.length} suggestion{suggestions.length !== 1 ? 's' : ''} · {disqualified.length} disqualified stocks analyzed</p>
           </div>
         </div>
-        <span className="text-slate-400 text-xs">{expanded ? '▲' : '▼'}</span>
+        <span className={`${th.textFaint} text-xs`}>{expanded ? '▲' : '▼'}</span>
       </button>
       {expanded && (
-        <div className="border-t border-slate-700 px-4 py-3 space-y-3">
+        <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
           {earningsFails > 0 && (
-            <div className="flex items-start gap-2 p-2 bg-slate-800/40 rounded border border-slate-700">
-              <span className="text-slate-500 text-xs mt-0.5">ℹ</span>
+            <div className={`flex items-start gap-2 p-2 ${th.tag} rounded border ${th.borderLight}`}>
+              <span className={`${th.textFaint} text-xs mt-0.5`}>ℹ</span>
               <div>
-                <p className="text-[10px] text-slate-300 font-medium">{earningsFails} stock{earningsFails !== 1 ? 's' : ''} blocked by upcoming earnings</p>
-                <p className="text-[9px] text-slate-500">Earnings filter is a hard rule — do not modify. Use the 📅 follow up button on each card to schedule a re-screen.</p>
+                <p className={`text-[10px] ${th.textMuted} font-medium`}>{earningsFails} stock{earningsFails !== 1 ? 's' : ''} blocked by upcoming earnings</p>
+                <p className={`text-[9px] ${th.textFaint}`}>Earnings filter is a hard rule. Use the 📅 follow up button to schedule a re-screen.</p>
               </div>
             </div>
           )}
           {suggestions.map((s, i) => (
-            <div key={i} className="border border-slate-700 rounded p-3 space-y-2">
+            <div key={i} className={`border ${th.border} rounded p-3 space-y-2`}>
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[9px] bg-blue-900/40 text-blue-300 border border-blue-700 rounded px-1.5 py-0.5 font-medium">#{s.priority}</span>
-                    <p className="text-xs text-white font-medium">{s.label}</p>
+                    <span className="text-[9px] bg-blue-500/20 text-blue-400 border border-blue-600 rounded px-1.5 py-0.5 font-medium">#{s.priority}</span>
+                    <p className={`text-xs ${th.text} font-medium`}>{s.label}</p>
                   </div>
-                  <p className="text-[10px] text-slate-300 mb-1">{s.rationale}</p>
-                  <p className="text-[9px] text-slate-500 italic">⚖ {s.tradeoff}</p>
+                  <p className={`text-[10px] ${th.textMuted} mb-1`}>{s.rationale}</p>
+                  <p className={`text-[9px] ${th.textFaint} italic`}>⚖ {s.tradeoff}</p>
                 </div>
                 <div className="text-right shrink-0">
-                  <p className="text-[9px] text-slate-400">{RULE_LABELS[s.rule]}</p>
-                  <p className="text-xs text-slate-500 line-through">{s.currentValue}</p>
-                  <p className="text-xs text-emerald-400 font-bold">→ {s.suggestedValue}</p>
-                  <p className="text-[9px] text-slate-400">+{s.wouldQualify} stocks</p>
+                  <p className={`text-[9px] ${th.textFaint}`}>{RULE_LABELS[s.rule]}</p>
+                  <p className={`text-xs ${th.textFaint} line-through`}>{s.currentValue}</p>
+                  <p className="text-xs text-emerald-500 font-bold">→ {s.suggestedValue}</p>
+                  <p className={`text-[9px] ${th.textFaint}`}>+{s.wouldQualify} stocks</p>
                 </div>
               </div>
-              <button onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })} className="w-full text-[9px] py-1.5 border border-blue-700 text-blue-300 rounded hover:bg-blue-900/30 transition-colors font-medium tracking-wider">APPLY & RE-RUN</button>
+              <button onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })} className="w-full text-[9px] py-1.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-500/10 transition-colors font-medium tracking-wider">APPLY & RE-RUN</button>
             </div>
           ))}
         </div>
@@ -522,31 +529,31 @@ function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: { results: S
 }
 
 // ── Load Prompt Modal ──────────────────────────────────────────────────────
-function LoadPromptModal({ state, onClose }: { state: LoadPromptState; onClose: () => void }) {
+function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClose: () => void; th: typeof THEMES[Theme] }) {
   if (!state.show) return null;
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-slate-900 border border-slate-600 rounded-lg p-5 w-80 shadow-2xl">
-        <h3 className="text-xs font-bold text-white mb-1 tracking-wider">LOAD {state.type === 'global' ? 'SESSION' : 'FILTER'}</h3>
-        <p className="text-[10px] text-slate-300 mb-4">Load <span className="text-white font-medium">"{state.name}"</span> — how should it be applied?</p>
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-5 w-80 shadow-2xl`}>
+        <h3 className={`text-xs font-bold ${th.text} mb-1 tracking-wider`}>LOAD {state.type === 'global' ? 'SESSION' : 'FILTER'}</h3>
+        <p className={`text-[10px] ${th.textMuted} mb-4`}>Load <span className={`${th.text} font-medium`}>"{state.name}"</span> — how should it be applied?</p>
         <div className="space-y-2 mb-4">
-          <button onClick={() => { state.onLoad?.(false); onClose(); }} className="w-full text-left px-3 py-2.5 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
-            <p className="text-xs text-white font-medium">Replace</p>
-            <p className="text-[9px] text-slate-400 mt-0.5">Clear current tickers and load this {state.type === 'global' ? 'session' : 'filter'}</p>
+          <button onClick={() => { state.onLoad?.(false); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:bg-blue-500/10 hover:border-blue-500 transition-colors`}>
+            <p className={`text-xs ${th.text} font-medium`}>Replace</p>
+            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Clear current tickers and load this {state.type === 'global' ? 'session' : 'filter'}</p>
           </button>
-          <button onClick={() => { state.onLoad?.(true); onClose(); }} className="w-full text-left px-3 py-2.5 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
-            <p className="text-xs text-white font-medium">Merge</p>
-            <p className="text-[9px] text-slate-400 mt-0.5">Add tickers from this {state.type === 'global' ? 'session' : 'filter'} to existing ones</p>
+          <button onClick={() => { state.onLoad?.(true); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:bg-blue-500/10 hover:border-blue-500 transition-colors`}>
+            <p className={`text-xs ${th.text} font-medium`}>Merge</p>
+            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Add tickers from this {state.type === 'global' ? 'session' : 'filter'} to existing ones</p>
           </button>
         </div>
-        <button onClick={onClose} className="w-full text-[10px] text-slate-500 hover:text-slate-300 transition-colors py-1">Cancel</button>
+        <button onClick={onClose} className={`w-full text-[10px] ${th.textFaint} hover:${th.textMuted} transition-colors py-1`}>Cancel</button>
       </div>
     </div>
   );
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: { bps: string; bcs: string; ic: string; onLoadAll: (bps: string, bcs: string, ic: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void }) {
+function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; onLoadAll: (bps: string, bcs: string, ic: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
   const [showSave, setShowSave] = useState(false);
   const [showLoad, setShowLoad] = useState(false);
@@ -568,32 +575,32 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: { bps: string;
   const handleDelete = async (name: string) => { await deleteFilter('global', name); await refreshFilters(); };
   const filterNames = Object.keys(globalFilters);
   return (
-    <div className="border-t border-slate-700 pt-3">
-      <p className="text-[9px] text-slate-300 tracking-widest font-medium mb-2">SESSIONS</p>
+    <div className={`border-t ${th.border} pt-3`}>
+      <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
       <div className="flex gap-2">
         <div className="relative flex-1">
-          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">💾 Save Session</button>
+          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
           {showSave && (
-            <div className="absolute top-8 left-0 z-40 bg-slate-900 border border-slate-600 rounded p-2 w-56 shadow-xl">
-              <p className="text-[9px] text-slate-400 mb-1.5">Saves all three scan lists as one session</p>
+            <div className={`absolute top-8 left-0 z-40 ${th.sidebar} border ${th.border} rounded-lg p-2 w-56 shadow-xl`}>
+              <p className={`text-[9px] ${th.textFaint} mb-1.5`}>Saves all three scan lists as one session</p>
               <div className="flex gap-1 mb-1">
                 <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
-                  className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-slate-400 placeholder-slate-500" />
-                <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors">Save</button>
+                  className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
+                <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition-colors">Save</button>
               </div>
-              {saveError && (<div className="flex gap-1 items-center mt-1"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded font-medium">Replace</button>}</div>)}
+              {saveError && (<div className="flex gap-1 items-center mt-1"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-medium">Replace</button>}</div>)}
             </div>
           )}
         </div>
         <div className="relative flex-1">
-          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }} className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">▼ Load Session</button>
+          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>▼ Load Session</button>
           {showLoad && (
-            <div className="absolute top-8 right-0 z-40 bg-slate-900 border border-slate-600 rounded overflow-hidden w-56 shadow-xl">
-              {filterNames.length === 0 ? <p className="text-[9px] text-slate-500 px-3 py-2">No saved sessions yet</p>
+            <div className={`absolute top-8 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg overflow-hidden w-56 shadow-xl`}>
+              {filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>No saved sessions yet</p>
                 : filterNames.map(name => (
-                  <div key={name} className="flex items-center justify-between px-3 py-2 hover:bg-slate-700 group cursor-pointer">
-                    <button onClick={() => handleLoadSelect(name)} className="text-[10px] text-slate-200 hover:text-white text-left flex-1 font-medium">{name}</button>
-                    <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-600 hover:text-red-400 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                  <div key={name} className={`flex items-center justify-between px-3 py-2 hover:bg-blue-500/10 group cursor-pointer`}>
+                    <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} hover:${th.text} text-left flex-1 font-medium`}>{name}</button>
+                    <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
                   </div>
                 ))}
             </div>
@@ -605,7 +612,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: { bps: string;
 }
 
 // ── Strategy Box ──────────────────────────────────────────────────────────
-function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt }: { label: string; badge: string; badgeColor: string; borderFocus: string; value: string; onChange: (v: string) => void; strategy: 'BPS' | 'BCS' | 'IC'; disabled?: boolean; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void }) {
+function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: { label: string; badge: string; badgeColor: string; borderFocus: string; value: string; onChange: (v: string) => void; strategy: 'BPS' | 'BCS' | 'IC'; disabled?: boolean; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [scanning, setScanning] = useState(false);
   const [savedFilters, setSavedFilters] = useState<SavedFilters>({});
@@ -624,8 +631,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   };
   const handleSave = async (replace = false) => {
     if (!saveName.trim()) { setSaveError('Enter a name'); return; }
-    const tickers = parseTickers(value);
-    if (tickers.length === 0) { setSaveError('No tickers to save'); return; }
+    const tickers = parseTickers(value); if (tickers.length === 0) { setSaveError('No tickers to save'); return; }
     const result = await saveFilter(strategy, saveName.trim(), { tickers }, replace);
     if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
     await refreshFilters(); setShowSaveInput(false); setSaveName(''); setSaveError('');
@@ -640,116 +646,112 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
     <div>
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-2">
-          <span className={`text-[9px] px-1.5 py-0.5 rounded tracking-wider border font-medium ${badgeColor}`}>{badge}</span>
-          <span className="text-[11px] text-slate-200 tracking-wider font-medium">{label}</span>
+          <span className={`text-[9px] px-1.5 py-0.5 rounded-md tracking-wider border font-bold ${badgeColor}`}>{badge}</span>
+          <span className={`text-[11px] ${th.textMuted} tracking-wider font-medium`}>{label}</span>
         </div>
         <div className="flex items-center gap-1">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
-          <button onClick={() => fileRef.current?.click()} disabled={disabled || scanning} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">{scanning ? '⟳' : '↑ img'}</button>
-          <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">💾</button>
-          <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">▼</button>
+          <button onClick={() => fileRef.current?.click()} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
+          <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>💾</button>
+          <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>▼</button>
         </div>
       </div>
       {showSaveInput && (
         <div className="mb-1.5 flex flex-col gap-1">
           <div className="flex gap-1">
             <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
-              className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-slate-400 placeholder-slate-500" />
-            <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors">Save</button>
+              className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
+            <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition-colors">Save</button>
           </div>
-          {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded font-medium">Replace</button>}</div>)}
+          {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-medium">Replace</button>}</div>)}
         </div>
       )}
       {showLoad && (
-        <div className="mb-1.5 bg-slate-800 border border-slate-600 rounded overflow-hidden">
-          {loadingFilters ? <p className="text-[9px] text-slate-400 px-2 py-1.5">Loading...</p>
-            : filterNames.length === 0 ? <p className="text-[9px] text-slate-500 px-2 py-1.5">No saved filters</p>
+        <div className={`mb-1.5 ${th.input} border ${th.border} rounded-lg overflow-hidden`}>
+          {loadingFilters ? <p className={`text-[9px] ${th.textFaint} px-2 py-1.5`}>Loading...</p>
+            : filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-2 py-1.5`}>No saved filters</p>
             : filterNames.map(name => (
-              <div key={name} className="flex items-center justify-between px-2 py-1.5 hover:bg-slate-700 group">
-                <button onClick={() => handleLoadSelect(name)} className="text-[10px] text-slate-200 hover:text-white text-left flex-1 font-medium">{name}</button>
-                <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-600 hover:text-red-400 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+              <div key={name} className={`flex items-center justify-between px-2 py-1.5 hover:bg-blue-500/10 group`}>
+                <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} hover:${th.text} text-left flex-1 font-medium`}>{name}</button>
+                <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
               </div>
             ))}
         </div>
       )}
       <textarea value={value} onChange={e => onChange(e.target.value)} placeholder="Tickers..."
-        className={`w-full bg-slate-900/80 border border-slate-700 rounded p-2 text-xs text-white h-16 resize-none focus:outline-none ${borderFocus} placeholder-slate-600 leading-relaxed`} />
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed`} />
     </div>
   );
 }
 
 // ── Result Card ────────────────────────────────────────────────────────────
-function StrikesDisplay({ c }: { c: SpreadCandidate }) {
-  const widthTag = (w: number) => <span className="text-slate-400 mx-0.5">·${w}·</span>;
+function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme] }) {
+  const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>·${w}·</span>;
   if (c.strategy === 'IC' && c.shortCallStrike != null && c.longCallStrike != null) {
-    return <div className="text-xs shrink-0"><span className="text-slate-300">Strikes </span><span className="text-white">{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}<span className="text-white">{c.shortCallStrike}/{c.longCallStrike}</span>{widthTag(c.callWidth ?? c.spreadWidth)}</div>;
+    return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={th.text}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}<span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>{widthTag(c.callWidth ?? c.spreadWidth)}</div>;
   }
-  return <div className="text-xs shrink-0"><span className="text-slate-300">Strikes </span><span className="text-white">{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
+  return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
-function ResultCard({ result }: { result: ScreenResult }) {
+function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme] }) {
   const [expanded, setExpanded] = useState(false);
   const c = result.bestCandidate, t = result.trendResult;
-  const stratBg = result.strategy === 'BPS' ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : result.strategy === 'BCS' ? 'bg-red-900/40 border-red-700 text-red-300' : 'bg-blue-900/40 border-blue-700 text-blue-300';
+  const stratBadge = result.strategy === 'BPS' ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500' : result.strategy === 'BCS' ? 'bg-red-500/15 border-red-500 text-red-500' : 'bg-blue-500/15 border-blue-500 text-blue-500';
   const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
   const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings')) && result.earningsDate && daysUntil(result.earningsDate) >= 0;
+  const cardBorder = result.qualified ? (isApproaching ? 'border-yellow-500/50' : th.border) : th.borderLight;
   return (
-    <div className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? (isApproaching ? 'border-yellow-600/60 bg-slate-900/60' : 'border-slate-600 bg-slate-900/60') : 'border-slate-700 bg-slate-900/30 opacity-60'}`} onClick={() => setExpanded(!expanded)}>
+    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`} onClick={() => setExpanded(!expanded)}>
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
-        <div className="w-16 shrink-0"><p className="font-bold text-white text-sm">{result.symbol}</p>{result.price && <p className="text-[10px] text-slate-300">${result.price.toFixed(2)}</p>}</div>
-        <span className={`text-[10px] px-2 py-0.5 border rounded shrink-0 font-medium ${stratBg}`}>{result.strategy}</span>
+        <div className="w-16 shrink-0">
+          <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
+          {result.price && <p className={`text-[10px] ${th.textFaint}`}>${result.price.toFixed(2)}</p>}
+        </div>
+        <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
         {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
-        <div className="text-xs text-slate-300 shrink-0">IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
+        <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
         {c && <>
-          <div className="text-xs shrink-0"><span className="text-slate-300">Exp </span><span className="text-white font-medium">{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-400' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-400' : 'text-slate-300'}`}>({c.dte}d)</span></div>
-          <StrikesDisplay c={c} />
-          <div className="text-xs shrink-0"><span className="text-slate-300">Credit </span><span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-          <div className="text-xs shrink-0"><span className="text-slate-300">ROC </span><span className="text-white font-medium">{c.roc.toFixed(0)}%</span></div>
-          {c.pop != null && <div className="text-xs shrink-0"><span className="text-slate-300">POP </span><span className="text-white font-medium">{c.pop.toFixed(0)}%</span></div>}
-          <div className="text-xs shrink-0"><span className="text-slate-300">δ </span><span className="text-white font-medium">{c.shortDelta.toFixed(2)}</span></div>
-          <span className="text-[9px] text-slate-400 border border-slate-600 rounded px-1 py-0.5 shrink-0">opt</span>
-          {result.qualified && (
-            <span onClick={e => e.stopPropagation()} className="shrink-0">
-              <EntryCalendarButton result={result} />
-            </span>
-          )}
-          {isApproaching && <span className="text-[9px] text-yellow-400 border border-yellow-700 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
+          <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
+          <StrikesDisplay c={c} th={th} />
+          <div className="text-xs shrink-0"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+          <div className="text-xs shrink-0"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
+          {c.pop != null && <div className="text-xs shrink-0"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop.toFixed(0)}%</span></div>}
+          <div className="text-xs shrink-0"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+          <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
+          {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} /></span>}
+          {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
         </>}
         {!result.qualified && result.failReasons.length > 0 && (
           <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
-            <span className="text-[10px] text-red-400 font-medium">{result.failReasons.slice(0, 2).join(' · ')}</span>
-            {hasEarningsBlock && result.earningsDate && (
-              <span onClick={e => e.stopPropagation()}>
-                <CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} />
-              </span>
-            )}
+            <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
+            {hasEarningsBlock && result.earningsDate && <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>}
           </div>
         )}
-        <div className="ml-auto text-slate-300 text-xs shrink-0">{expanded ? '▲' : '▼'}</div>
+        <div className={`ml-auto ${th.textFaint} text-xs shrink-0`}>{expanded ? '▲' : '▼'}</div>
       </div>
       {expanded && (
-        <div className="border-t border-slate-700 px-4 py-3 space-y-3">
-          {t && <div className="text-[10px] text-slate-300 pb-2 border-b border-slate-700"><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
+        <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
+          {t && <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border}`}><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {Object.entries(result.checks).map(([key, check]) => (
               <div key={key} className="flex items-start gap-2">
                 <span className={`text-xs mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
                 <div>
-                  <p className="text-[10px] text-slate-400 uppercase tracking-wider">{key}</p>
-                  <p className="text-xs text-white font-medium">{check.value}</p>
-                  <p className="text-[10px] text-slate-300">{check.reason}</p>
+                  <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{key}</p>
+                  <p className={`text-xs ${th.text} font-medium`}>{check.value}</p>
+                  <p className={`text-[10px] ${th.textMuted}`}>{check.reason}</p>
                 </div>
               </div>
             ))}
           </div>
           {hasEarningsBlock && result.earningsDate && (
-            <div className="pt-2 border-t border-slate-700 flex items-center gap-3">
-              <p className="text-[10px] text-slate-400 flex-1">Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
-              <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} /></span>
+            <div className={`pt-2 border-t ${th.border} flex items-center gap-3`}>
+              <p className={`text-[10px] ${th.textFaint} flex-1`}>Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
+              <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>
             </div>
           )}
-          {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && <div className="pt-2 border-t border-slate-700"><p className="text-[10px] text-slate-300">Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p></div>}
-          {result.failReasons.length > 0 && <div className="pt-2 border-t border-slate-700"><p className="text-[10px] text-red-400 font-medium">{result.failReasons.join(' · ')}</p></div>}
+          {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && <div className={`pt-2 border-t ${th.border}`}><p className={`text-[10px] ${th.textMuted}`}>Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p></div>}
+          {result.failReasons.length > 0 && <div className={`pt-2 border-t ${th.border}`}><p className="text-[10px] text-red-500 font-medium">{result.failReasons.join(' · ')}</p></div>}
         </div>
       )}
     </div>
@@ -757,109 +759,71 @@ function ResultCard({ result }: { result: ScreenResult }) {
 }
 
 // ── Rules Modal ────────────────────────────────────────────────────────────
-// Uses text inputs with onBlur parsing to handle decimal entry correctly
-function RulesModal({ rules, onClose, onRun }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void }) {
-  const [rawValues, setRawValues] = useState<Record<string, string>>(
-    () => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)]))
-  );
+function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
+  const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
 
-  const handleChange = (key: string, raw: string) => {
-    setRawValues(prev => ({ ...prev, [key]: raw }));
-  };
-
+  const handleChange = (key: string, raw: string) => setRawValues(prev => ({ ...prev, [key]: raw }));
   const handleBlur = (key: keyof RulesType, raw: string) => {
     const val = parseFloat(raw);
-    if (!isNaN(val)) {
-      const updated = { ...editedRules, [key]: val };
-      setEditedRules(updated);
-      setRawValues(prev => ({ ...prev, [key]: String(val) }));
-    } else {
-      setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
-    }
+    if (!isNaN(val)) { const updated = { ...editedRules, [key]: val }; setEditedRules(updated); setRawValues(prev => ({ ...prev, [key]: String(val) })); }
+    else setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
   };
-
-  const handleReset = () => {
-    setEditedRules({ ...DEFAULT_RULES });
-    setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)])));
-    localStorage.removeItem(LS_RULES);
-  };
-
-  const handleRun = () => {
-    saveRulesToStorage(editedRules);
-    onRun(editedRules);
-  };
+  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); localStorage.removeItem(LS_RULES); };
+  const handleRun = () => { saveRulesToStorage(editedRules); onRun(editedRules); };
 
   const RuleInput = ({ ruleKey }: { ruleKey: keyof RulesType }) => (
     <div>
-      <p className="text-[9px] text-slate-400 tracking-wider mb-1 uppercase">
-        {RULE_LABELS[ruleKey]}
-        {ruleKey === 'MAX_SPREAD_WIDTH' && <span className="text-slate-600 ml-1 normal-case">(optimizer cap)</span>}
+      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase`}>
+        {RULE_LABELS[ruleKey]}{ruleKey === 'MAX_SPREAD_WIDTH' && <span className={`${th.textFaint} ml-1 normal-case opacity-60`}>(optimizer cap)</span>}
       </p>
-      <input
-        type="text"
-        inputMode="decimal"
-        value={rawValues[ruleKey] ?? String(editedRules[ruleKey])}
-        onChange={e => handleChange(ruleKey, e.target.value)}
-        onBlur={e => handleBlur(ruleKey, e.target.value)}
-        className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-slate-400 font-medium"
-      />
+      <input type="text" inputMode="decimal" value={rawValues[ruleKey] ?? String(editedRules[ruleKey])}
+        onChange={e => handleChange(ruleKey, e.target.value)} onBlur={e => handleBlur(ruleKey, e.target.value)}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-sm ${th.text} focus:outline-none focus:border-blue-500 font-medium`} />
     </div>
   );
 
   const SectionHeader = ({ label }: { label: string }) => (
-    <div className="col-span-2 pt-2 pb-1 border-b border-slate-700">
-      <p className="text-[9px] text-slate-500 tracking-widest uppercase font-medium">{label}</p>
+    <div className={`col-span-2 pt-2 pb-1 border-b ${th.border}`}>
+      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
     </div>
   );
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-slate-900 border border-slate-600 rounded-lg p-6 w-[500px] max-h-[85vh] overflow-auto">
-        <h2 className="text-sm font-bold tracking-widest text-red-400 mb-1">SCREENING RULES</h2>
-        <p className="text-[9px] text-slate-400 mb-5 tracking-wider">
-          Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.
-        </p>
-
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-6 w-[500px] max-h-[85vh] overflow-auto shadow-2xl`}>
+        <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
+        <p className={`text-[9px] ${th.textFaint} mb-5 tracking-wider`}>Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.</p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-3 mb-6">
           <SectionHeader label="Implied Volatility Rank" />
-          <RuleInput ruleKey="IVR_MIN" />
-          <RuleInput ruleKey="IVR_IC_MAX" />
-
+          <RuleInput ruleKey="IVR_MIN" /><RuleInput ruleKey="IVR_IC_MAX" />
           <SectionHeader label="Days to Expiration" />
-          <RuleInput ruleKey="DTE_MIN" />
-          <RuleInput ruleKey="DTE_MAX" />
-
+          <RuleInput ruleKey="DTE_MIN" /><RuleInput ruleKey="DTE_MAX" />
           <SectionHeader label="Delta — Spread / IC" />
-          <RuleInput ruleKey="SPREAD_DELTA_MIN" />
-          <RuleInput ruleKey="SPREAD_DELTA_MAX" />
-          <RuleInput ruleKey="IC_DELTA_MIN" />
-          <RuleInput ruleKey="IC_DELTA_MAX" />
-
+          <RuleInput ruleKey="SPREAD_DELTA_MIN" /><RuleInput ruleKey="SPREAD_DELTA_MAX" />
+          <RuleInput ruleKey="IC_DELTA_MIN" /><RuleInput ruleKey="IC_DELTA_MAX" />
           <SectionHeader label="Liquidity" />
-          <RuleInput ruleKey="BID_ASK_MAX" />
-          <RuleInput ruleKey="OI_MIN" />
-
+          <RuleInput ruleKey="BID_ASK_MAX" /><RuleInput ruleKey="OI_MIN" />
           <SectionHeader label="Credit Quality" />
-          <RuleInput ruleKey="CREDIT_RATIO_MIN" />
-          <RuleInput ruleKey="MAX_SPREAD_WIDTH" />
-
+          <RuleInput ruleKey="CREDIT_RATIO_MIN" /><RuleInput ruleKey="MAX_SPREAD_WIDTH" />
           <SectionHeader label="Return on Capital" />
-          <RuleInput ruleKey="ROC_MIN_SPREAD" />
-          <RuleInput ruleKey="ROC_MIN_IC" />
+          <RuleInput ruleKey="ROC_MIN_SPREAD" /><RuleInput ruleKey="ROC_MIN_IC" />
         </div>
-
         <div className="flex gap-3">
-          <button onClick={handleReset} className="flex-1 border border-slate-600 text-yellow-400 py-2 rounded text-xs tracking-widest hover:border-yellow-500 font-medium">RESET</button>
-          <button onClick={onClose} className="flex-1 border border-slate-600 text-slate-300 py-2 rounded text-xs tracking-widest hover:border-slate-400">CANCEL</button>
-          <button onClick={handleRun} className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200">RUN</button>
+          <button onClick={handleReset} className="flex-1 border border-yellow-600 text-yellow-500 py-2 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
+          <button onClick={onClose} className={`flex-1 border ${th.border} ${th.textMuted} py-2 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
+          <button onClick={handleRun} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
         </div>
       </div>
     </div>
   );
 }
+
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
+  const [theme, setTheme] = useState<Theme>(getSavedTheme);
+  const th = THEMES[theme];
+
   const [autoTickers, setAutoTickers] = useState('');
   const [bpsTickers, setBpsTickers] = useState('');
   const [bcsTickers, setBcsTickers] = useState('');
@@ -873,11 +837,7 @@ export default function Home() {
   const [runtimeRules, setRuntimeRules] = useState<RulesType>(getSavedRules);
 
   useEffect(() => {
-    try {
-      setBpsTickers(localStorage.getItem(LS_BPS) || '');
-      setBcsTickers(localStorage.getItem(LS_BCS) || '');
-      setIcTickers(localStorage.getItem(LS_IC) || '');
-    } catch {}
+    try { setBpsTickers(localStorage.getItem(LS_BPS) || ''); setBcsTickers(localStorage.getItem(LS_BCS) || ''); setIcTickers(localStorage.getItem(LS_IC) || ''); } catch {}
   }, []);
 
   const handleBpsChange = (v: string) => { setBpsTickers(v); try { localStorage.setItem(LS_BPS, v); } catch {} };
@@ -939,100 +899,90 @@ export default function Home() {
   const disqualified = results.filter(r => !r.qualified);
 
   return (
-    <div className="min-h-screen bg-[#080c14] text-slate-100 font-mono">
-      <div className="border-b border-slate-700 px-6 py-4">
-        <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
-        <p className="text-[10px] text-slate-300 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
+    <div className={`min-h-screen ${th.bg} text-slate-100 font-mono transition-colors duration-200`}>
+      {/* Header */}
+      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
+        <div>
+          <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
+          <p className="text-[10px] text-white/50 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
+        </div>
+        <ThemeToggle theme={theme} setTheme={setTheme} />
       </div>
 
       <div className="flex h-[calc(100vh-57px)]">
-        <div className="w-80 border-r border-slate-700 p-4 overflow-auto flex flex-col gap-4 shrink-0">
+        {/* Sidebar */}
+        <div className={`w-80 border-r ${th.border} ${th.sidebar} p-4 overflow-auto flex flex-col gap-4 shrink-0`}>
+          {/* AUTO */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
-                <span className="text-[9px] px-1.5 py-0.5 bg-purple-900/40 text-purple-300 border border-purple-700 rounded tracking-wider font-medium">AUTO</span>
-                <span className="text-[11px] text-slate-200 tracking-wider font-medium">TREND DETECT</span>
+                <span className="text-[9px] px-1.5 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500 rounded-md tracking-wider font-bold">AUTO</span>
+                <span className={`text-[11px] ${th.textMuted} tracking-wider font-medium`}>TREND DETECT</span>
               </div>
-              <span className={`text-[9px] font-medium ${autoOverLimit ? 'text-red-400' : 'text-slate-400'}`}>{autoTickerList.length}/{AUTO_TICKER_LIMIT}</span>
+              <span className={`text-[9px] font-medium ${autoOverLimit ? 'text-red-500' : th.textFaint}`}>{autoTickerList.length}/{AUTO_TICKER_LIMIT}</span>
             </div>
             <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC"
-              className={`w-full bg-slate-900/80 border rounded p-2 text-xs text-white h-16 resize-none focus:outline-none placeholder-slate-600 leading-relaxed ${autoOverLimit ? 'border-red-700' : 'border-slate-700 focus:border-purple-600'}`} />
-            {autoOverLimit && <p className="text-[9px] text-red-400 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
-            <p className="text-[9px] text-slate-500 mt-1">~{autoTickerList.length * 12}s scan time</p>
+              className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
+            {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
+            <p className={`text-[9px] ${th.textFaint} mt-1`}>~{autoTickerList.length * 12}s scan time</p>
           </div>
 
-          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} />
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
 
-          <div className="border-t border-slate-700 pt-3 space-y-4">
-            <p className="text-[9px] text-slate-300 tracking-widest font-medium">SCAN LISTS</p>
-            <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-900/40 text-emerald-300 border-emerald-700" borderFocus="focus:border-emerald-600" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} />
-            <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-900/40 text-red-300 border-red-700" borderFocus="focus:border-red-600" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} />
-            <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-900/40 text-blue-300 border-blue-700" borderFocus="focus:border-blue-600" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} />
+          <div className={`border-t ${th.border} pt-3 space-y-4`}>
+            <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
+            <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
           </div>
 
-          <div className="text-[9px] space-y-1 border-t border-slate-700 pt-3">
-            <p className="text-slate-300 mb-2 tracking-widest font-medium">ACTIVE RULES</p>
-            {[
-              ['IVR', `≥ ${runtimeRules.IVR_MIN}%`],
-              ['DTE', `${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],
-              ['BPS/BCS delta', `${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],
-              ['IC delta', `${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],
-              ['Credit ratio', `≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
-              ['OI per leg', `≥ ${runtimeRules.OI_MIN}`],
-              ['Bid-Ask', `≤ $${runtimeRules.BID_ASK_MAX}`],
-              ['Max width', `$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],
-              ['Min ROC spread', `${runtimeRules.ROC_MIN_SPREAD}%`],
-              ['Min ROC IC', `${runtimeRules.ROC_MIN_IC}%`],
-            ].map(([k, v]) => (
-              <div key={k} className="flex justify-between"><span className="text-slate-400">{k}</span><span className="text-slate-200 font-medium">{v}</span></div>
+          {/* Active Rules */}
+          <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
+            <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>ACTIVE RULES</p>
+            {[['IVR',`≥ ${runtimeRules.IVR_MIN}%`],['DTE',`${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],['BPS/BCS delta',`${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],['IC delta',`${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],['Credit ratio',`≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],['OI per leg',`≥ ${runtimeRules.OI_MIN}`],['Bid-Ask',`≤ $${runtimeRules.BID_ASK_MAX}`],['Max width',`$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],['Min ROC spread',`${runtimeRules.ROC_MIN_SPREAD}%`],['Min ROC IC',`${runtimeRules.ROC_MIN_IC}%`]].map(([k,v]) => (
+              <div key={k} className="flex justify-between"><span className={th.textFaint}>{k}</span><span className={`${th.textMuted} font-medium`}>{v}</span></div>
             ))}
           </div>
 
-          {error && <div className="text-[10px] text-red-300 bg-red-900/20 border border-red-700 rounded p-2 leading-relaxed font-medium">{error}</div>}
+          {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
           <button onClick={() => setShowRulesModal(true)} disabled={loading || autoOverLimit}
-            className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto">
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 mt-auto shadow-md">
             {loading ? 'SCANNING...' : 'RUN SCREENER'}
           </button>
         </div>
 
+        {/* Main content */}
         <div className="flex-1 overflow-auto p-5">
           {results.length === 0 && !loading && (
-            <div className="h-full flex flex-col items-center justify-center text-slate-500">
-              <div className="text-4xl mb-3 opacity-30">◈</div>
-              <p className="text-[10px] tracking-widest text-slate-400">ADD TICKERS AND RUN SCREENER</p>
-              <p className="text-[9px] mt-2 text-slate-500">Save sessions · Load scan lists · Upload Finviz screenshots</p>
+            <div className={`h-full flex flex-col items-center justify-center ${th.textFaint}`}>
+              <div className="text-4xl mb-3 opacity-20">◈</div>
+              <p className={`text-[10px] tracking-widest ${th.textMuted}`}>ADD TICKERS AND RUN SCREENER</p>
+              <p className={`text-[9px] mt-2 ${th.textFaint}`}>Save sessions · Load scan lists · Upload Finviz screenshots</p>
             </div>
           )}
-          {loading && <div className="h-full flex flex-col items-center justify-center gap-2"><div className="text-[10px] tracking-widest text-slate-300 animate-pulse font-medium">{status || 'SCANNING...'}</div></div>}
+          {loading && <div className="h-full flex flex-col items-center justify-center gap-2"><div className={`text-[10px] tracking-widest ${th.textMuted} animate-pulse font-medium`}>{status || 'SCANNING...'}</div></div>}
           {results.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex gap-4 text-[10px] tracking-wider font-medium">
-                  <span className="text-emerald-400">{qualified.length} QUALIFIED</span>
-                  <span className="text-slate-400">{disqualified.length} DISQUALIFIED</span>
-                  <span className="text-slate-400">{results.length} SCANNED</span>
+                  <span className="text-emerald-500">{qualified.length} QUALIFIED</span>
+                  <span className={th.textFaint}>{disqualified.length} DISQUALIFIED</span>
+                  <span className={th.textFaint}>{results.length} SCANNED</span>
                 </div>
-                <button onClick={downloadCSV} className="text-[10px] px-3 py-1.5 border border-slate-600 rounded hover:border-slate-400 text-slate-300 hover:text-white transition-colors tracking-wider">↓ CSV</button>
+                <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
               </div>
               <DTEAlertBanner results={results} />
-              <SmartSuggestionsPanel results={results} rules={runtimeRules} onApplyAndRerun={runScreen} />
-              {qualified.length > 0 && <div><p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} />)}</div></div>}
-              {disqualified.length > 0 && <div><p className="text-[9px] text-slate-500 tracking-widest mb-2 font-medium">DISQUALIFIED</p><div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} />)}</div></div>}
+              <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={runScreen} />
+              {qualified.length > 0 && <div><p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} />)}</div></div>}
+              {disqualified.length > 0 && <div><p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p><div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} />)}</div></div>}
             </div>
           )}
         </div>
       </div>
 
-      <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} />
-
-      {showRulesModal && (
-        <RulesModal
-          rules={runtimeRules}
-          onClose={() => setShowRulesModal(false)}
-          onRun={(rules) => { setShowRulesModal(false); setRuntimeRules(rules); runScreen(rules); }}
-        />
-      )}
+      <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} th={th} />
+      {showRulesModal && <RulesModal rules={runtimeRules} onClose={() => setShowRulesModal(false)} onRun={(rules) => { setShowRulesModal(false); setRuntimeRules(rules); runScreen(rules); }} th={th} />}
     </div>
   );
 }
