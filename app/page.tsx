@@ -60,7 +60,6 @@ interface LoadPromptState {
   show: boolean;
   name: string;
   type: 'strategy' | 'global';
-  data?: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] };
   onLoad?: (merge: boolean) => void;
 }
 
@@ -117,7 +116,6 @@ async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilte
     return data.filters ?? {};
   } catch { return {}; }
 }
-
 async function saveFilter(strategy: string, name: string, payload: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] }, replace = false): Promise<{ success?: boolean; conflict?: boolean; message?: string }> {
   const res = await fetch('/api/filters', {
     method: 'POST',
@@ -126,7 +124,6 @@ async function saveFilter(strategy: string, name: string, payload: { tickers?: s
   });
   return res.json();
 }
-
 async function deleteFilter(strategy: string, name: string): Promise<void> {
   await fetch('/api/filters', {
     method: 'DELETE',
@@ -139,7 +136,7 @@ async function deleteFilter(strategy: string, name: string): Promise<void> {
 async function extractTickersFromImage(file: File): Promise<string[]> {
   const Tesseract = await import('tesseract.js');
   const { data: { text } } = await Tesseract.recognize(file, 'eng', { logger: () => {} });
-  const blacklist = new Set(['USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ','BPS','BCS','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO','AI','S','P','C','B','N','E']);
+  const blacklist = new Set(['USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ','BPS','BCS','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO','AI','AN','IS','IT','AT','OR','AS','BY','IN']);
   const tickers: string[] = [];
   const tickerPattern = /\b([A-Z]{2,5})\b/g;
   for (const line of text.split('\n')) {
@@ -158,7 +155,6 @@ function mergeTickers(existing: string, newTickers: string[]): string {
   if (toAdd.length === 0) return existing;
   return [...existingList, ...toAdd].join(', ');
 }
-
 function tickersToString(tickers: string[]): string {
   return tickers.join(', ');
 }
@@ -205,7 +201,11 @@ async function getAccessToken(): Promise<string> {
 }
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
-  return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
+  return (data.data?.items || []).map((item: any) => ({
+    symbol: item.symbol,
+    ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null,
+    earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
+  }));
 }
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
@@ -348,22 +348,124 @@ function LoadPromptModal({ state, onClose }: { state: LoadPromptState; onClose: 
   if (!state.show) return null;
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-slate-900 border border-slate-600 rounded-lg p-5 w-80">
-        <h3 className="text-xs font-bold text-white mb-1 tracking-wider">LOAD FILTER</h3>
+      <div className="bg-slate-900 border border-slate-600 rounded-lg p-5 w-80 shadow-2xl">
+        <h3 className="text-xs font-bold text-white mb-1 tracking-wider">LOAD {state.type === 'global' ? 'SESSION' : 'FILTER'}</h3>
         <p className="text-[10px] text-slate-300 mb-4">Load <span className="text-white font-medium">"{state.name}"</span> — how should it be applied?</p>
-        <div className="space-y-2 mb-5">
+        <div className="space-y-2 mb-4">
           <button onClick={() => { state.onLoad?.(false); onClose(); }}
-            className="w-full text-left px-3 py-2 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
+            className="w-full text-left px-3 py-2.5 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
             <p className="text-xs text-white font-medium">Replace</p>
-            <p className="text-[9px] text-slate-400">Clear current tickers and load this filter</p>
+            <p className="text-[9px] text-slate-400 mt-0.5">Clear current tickers and load this {state.type === 'global' ? 'session' : 'filter'}</p>
           </button>
           <button onClick={() => { state.onLoad?.(true); onClose(); }}
-            className="w-full text-left px-3 py-2 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
+            className="w-full text-left px-3 py-2.5 border border-slate-600 rounded hover:border-slate-400 hover:bg-slate-800 transition-colors">
             <p className="text-xs text-white font-medium">Merge</p>
-            <p className="text-[9px] text-slate-400">Add tickers from this filter to existing ones</p>
+            <p className="text-[9px] text-slate-400 mt-0.5">Add tickers from this {state.type === 'global' ? 'session' : 'filter'} to existing ones</p>
           </button>
         </div>
-        <button onClick={onClose} className="w-full text-[10px] text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+        <button onClick={onClose} className="w-full text-[10px] text-slate-500 hover:text-slate-300 transition-colors py-1">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Sessions Panel ─────────────────────────────────────────────────────────
+interface SessionsPanelProps {
+  bps: string; bcs: string; ic: string;
+  onLoadAll: (bps: string, bcs: string, ic: string) => void;
+  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
+}
+
+function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt }: SessionsPanelProps) {
+  const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
+  const [showSave, setShowSave] = useState(false);
+  const [showLoad, setShowLoad] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+
+  const refreshFilters = useCallback(async () => {
+    const f = await loadFilters('global') as GlobalFilters;
+    setGlobalFilters(f);
+  }, []);
+
+  useEffect(() => { refreshFilters(); }, [refreshFilters]);
+
+  const handleSave = async (replace = false) => {
+    if (!saveName.trim()) { setSaveError('Enter a session name'); return; }
+    const result = await saveFilter('global', saveName.trim(), { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, replace);
+    if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
+    await refreshFilters();
+    setShowSave(false); setSaveName(''); setSaveError('');
+  };
+
+  const handleLoadSelect = (name: string) => {
+    const session = globalFilters[name]; if (!session) return;
+    setShowLoad(false);
+    onLoadPrompt({
+      name, type: 'global',
+      onLoad: (doMerge: boolean) => {
+        if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic));
+        else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic));
+      },
+    });
+  };
+
+  const handleDelete = async (name: string) => {
+    await deleteFilter('global', name);
+    await refreshFilters();
+  };
+
+  const filterNames = Object.keys(globalFilters);
+
+  return (
+    <div className="border-t border-slate-700 pt-3">
+      <p className="text-[9px] text-slate-300 tracking-widest font-medium mb-2">SESSIONS</p>
+      <div className="flex gap-2">
+        {/* Save */}
+        <div className="relative flex-1">
+          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }}
+            className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">
+            💾 Save Session
+          </button>
+          {showSave && (
+            <div className="absolute top-8 left-0 z-40 bg-slate-900 border border-slate-600 rounded p-2 w-56 shadow-xl">
+              <p className="text-[9px] text-slate-400 mb-1.5">Saves all three scan lists as one session</p>
+              <div className="flex gap-1 mb-1">
+                <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }}
+                  placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
+                  className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-slate-400 placeholder-slate-500" />
+                <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors">Save</button>
+              </div>
+              {saveError && (
+                <div className="flex gap-1 items-center mt-1">
+                  <span className="text-[9px] text-yellow-400">{saveError}</span>
+                  {saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded font-medium">Replace</button>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Load */}
+        <div className="relative flex-1">
+          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }}
+            className="w-full text-[9px] px-2 py-1.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center justify-center gap-1">
+            ▼ Load Session
+          </button>
+          {showLoad && (
+            <div className="absolute top-8 right-0 z-40 bg-slate-900 border border-slate-600 rounded overflow-hidden w-56 shadow-xl">
+              {filterNames.length === 0
+                ? <p className="text-[9px] text-slate-500 px-3 py-2">No saved sessions yet</p>
+                : filterNames.map(name => (
+                  <div key={name} className="flex items-center justify-between px-3 py-2 hover:bg-slate-700 group cursor-pointer">
+                    <button onClick={() => handleLoadSelect(name)} className="text-[10px] text-slate-200 hover:text-white text-left flex-1 font-medium">{name}</button>
+                    <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-600 hover:text-red-400 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -391,7 +493,6 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   const [saveError, setSaveError] = useState('');
   const [showLoad, setShowLoad] = useState(false);
   const [loadingFilters, setLoadingFilters] = useState(false);
-
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
 
   const refreshFilters = useCallback(async () => {
@@ -426,9 +527,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
     const tickers = savedFilters[name] ?? [];
     setShowLoad(false);
     onLoadPrompt({
-      name,
-      type: 'strategy',
-      data: { tickers },
+      name, type: 'strategy',
       onLoad: (doMerge: boolean) => {
         if (doMerge) onChange(mergeTickers(value, tickers));
         else onChange(tickersToString(tickers));
@@ -450,14 +549,14 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
           <span className={`text-[9px] px-1.5 py-0.5 rounded tracking-wider border font-medium ${badgeColor}`}>{badge}</span>
           <span className="text-[11px] text-slate-200 tracking-wider font-medium">{label}</span>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
           <button onClick={() => fileRef.current?.click()} disabled={disabled || scanning}
             className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">
             {scanning ? '⟳' : '↑ img'}
           </button>
           <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled}
-            className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40" title="Save ticker list">
+            className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40" title="Save this list">
             💾
           </button>
           <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled}
@@ -473,7 +572,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
             <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }}
               placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
               className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-slate-400 placeholder-slate-500" />
-            <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded transition-colors font-medium">Save</button>
+            <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors">Save</button>
           </div>
           {saveError && (
             <div className="flex gap-1 items-center">
@@ -499,108 +598,6 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
 
       <textarea value={value} onChange={e => onChange(e.target.value)} placeholder="Tickers..."
         className={`w-full bg-slate-900/80 border border-slate-700 rounded p-2 text-xs text-white h-16 resize-none focus:outline-none ${borderFocus} placeholder-slate-600 leading-relaxed`} />
-    </div>
-  );
-}
-
-// ── Global Session Bar ─────────────────────────────────────────────────────
-interface GlobalSessionBarProps {
-  bps: string; bcs: string; ic: string;
-  onLoad: (bps: string, bcs: string, ic: string) => void;
-  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
-}
-
-function GlobalSessionBar({ bps, bcs, ic, onLoad, onLoadPrompt }: GlobalSessionBarProps) {
-  const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
-  const [showSave, setShowSave] = useState(false);
-  const [showLoad, setShowLoad] = useState(false);
-  const [saveName, setSaveName] = useState('');
-  const [saveError, setSaveError] = useState('');
-  const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-
-  const refreshFilters = async () => {
-    const f = await loadFilters('global') as GlobalFilters;
-    setGlobalFilters(f);
-  };
-
-  const handleSave = async (replace = false) => {
-    if (!saveName.trim()) { setSaveError('Enter a session name'); return; }
-    const result = await saveFilter('global', saveName.trim(), { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, replace);
-    if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
-    await refreshFilters();
-    setShowSave(false); setSaveName(''); setSaveError('');
-  };
-
-  const handleLoadSelect = (name: string) => {
-    const session = globalFilters[name];
-    if (!session) return;
-    setShowLoad(false);
-    onLoadPrompt({
-      name,
-      type: 'global',
-      data: session,
-      onLoad: (doMerge: boolean) => {
-        if (doMerge) {
-          onLoad(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic));
-        } else {
-          onLoad(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic));
-        }
-      },
-    });
-  };
-
-  const handleDelete = async (name: string) => {
-    await deleteFilter('global', name);
-    await refreshFilters();
-  };
-
-  const filterNames = Object.keys(globalFilters);
-
-  return (
-    <div className="flex items-center gap-2">
-      {/* Save session */}
-      <div className="relative">
-        <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }}
-          className="text-[9px] px-2 py-1 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center gap-1">
-          💾 <span>Save Session</span>
-        </button>
-        {showSave && (
-          <div className="absolute top-7 right-0 z-40 bg-slate-900 border border-slate-600 rounded p-2 w-52 shadow-xl">
-            <div className="flex gap-1 mb-1">
-              <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }}
-                placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
-                className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-slate-400 placeholder-slate-500" />
-              <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium">Save</button>
-            </div>
-            {saveError && (
-              <div className="flex gap-1 items-center mt-1">
-                <span className="text-[9px] text-yellow-400">{saveError}</span>
-                {saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-700 hover:bg-yellow-600 text-white rounded">Replace</button>}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Load session */}
-      <div className="relative">
-        <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }}
-          className="text-[9px] px-2 py-1 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors font-medium flex items-center gap-1">
-          ▼ <span>Load Session</span>
-        </button>
-        {showLoad && (
-          <div className="absolute top-7 right-0 z-40 bg-slate-900 border border-slate-600 rounded overflow-hidden w-52 shadow-xl">
-            {filterNames.length === 0
-              ? <p className="text-[9px] text-slate-500 px-2 py-1.5">No saved sessions</p>
-              : filterNames.map(name => (
-                <div key={name} className="flex items-center justify-between px-2 py-1.5 hover:bg-slate-700 group">
-                  <button onClick={() => handleLoadSelect(name)} className="text-[10px] text-slate-200 hover:text-white text-left flex-1 font-medium">{name}</button>
-                  <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-600 hover:text-red-400 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
-                </div>
-              ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -747,21 +744,15 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[#080c14] text-slate-100 font-mono">
       {/* Header */}
-      <div className="border-b border-slate-700 px-6 py-3 flex items-center justify-between">
-        <div>
-          <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
-          <p className="text-[10px] text-slate-300 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
-        </div>
-        <GlobalSessionBar
-          bps={bpsTickers} bcs={bcsTickers} ic={icTickers}
-          onLoad={handleGlobalLoad}
-          onLoadPrompt={showLoadPrompt}
-        />
+      <div className="border-b border-slate-700 px-6 py-4">
+        <h1 className="text-base font-bold tracking-widest text-white">PROSPER OPTIONS SCREENER</h1>
+        <p className="text-[10px] text-slate-300 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
       </div>
 
       <div className="flex h-[calc(100vh-57px)]">
         {/* Sidebar */}
         <div className="w-80 border-r border-slate-700 p-4 overflow-auto flex flex-col gap-4 shrink-0">
+
           {/* AUTO */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
@@ -777,8 +768,16 @@ export default function Home() {
             <p className="text-[9px] text-slate-500 mt-1">~{autoTickerList.length * 12}s scan time</p>
           </div>
 
+          {/* Sessions */}
+          <SessionsPanel
+            bps={bpsTickers} bcs={bcsTickers} ic={icTickers}
+            onLoadAll={handleGlobalLoad}
+            onLoadPrompt={showLoadPrompt}
+          />
+
+          {/* Scan Lists */}
           <div className="border-t border-slate-700 pt-3 space-y-4">
-            <p className="text-[9px] text-slate-400 tracking-widest font-medium">MANUAL OVERRIDE</p>
+            <p className="text-[9px] text-slate-300 tracking-widest font-medium">SCAN LISTS</p>
             <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-900/40 text-emerald-300 border-emerald-700" borderFocus="focus:border-emerald-600" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} />
             <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-900/40 text-red-300 border-red-700" borderFocus="focus:border-red-600" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} />
             <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-900/40 text-blue-300 border-blue-700" borderFocus="focus:border-blue-600" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} />
@@ -787,8 +786,22 @@ export default function Home() {
           {/* Active Rules */}
           <div className="text-[9px] space-y-1 border-t border-slate-700 pt-3">
             <p className="text-slate-300 mb-2 tracking-widest font-medium">ACTIVE RULES</p>
-            {[['IVR',`≥ ${runtimeRules.IVR_MIN}%`],['DTE',`${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],['BPS/BCS delta',`${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],['IC delta',`${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],['Credit ratio',`≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],['OI per leg',`≥ ${runtimeRules.OI_MIN}`],['Bid-Ask',`≤ $${runtimeRules.BID_ASK_MAX}`],['Max width',`$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],['Min ROC spread',`${runtimeRules.ROC_MIN_SPREAD}%`],['Min ROC IC',`${runtimeRules.ROC_MIN_IC}%`]].map(([k,v]) => (
-              <div key={k} className="flex justify-between"><span className="text-slate-400">{k}</span><span className="text-slate-200 font-medium">{v}</span></div>
+            {[
+              ['IVR', `≥ ${runtimeRules.IVR_MIN}%`],
+              ['DTE', `${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],
+              ['BPS/BCS delta', `${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],
+              ['IC delta', `${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],
+              ['Credit ratio', `≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
+              ['OI per leg', `≥ ${runtimeRules.OI_MIN}`],
+              ['Bid-Ask', `≤ $${runtimeRules.BID_ASK_MAX}`],
+              ['Max width', `$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],
+              ['Min ROC spread', `${runtimeRules.ROC_MIN_SPREAD}%`],
+              ['Min ROC IC', `${runtimeRules.ROC_MIN_IC}%`],
+            ].map(([k, v]) => (
+              <div key={k} className="flex justify-between">
+                <span className="text-slate-400">{k}</span>
+                <span className="text-slate-200 font-medium">{v}</span>
+              </div>
             ))}
           </div>
 
@@ -806,7 +819,7 @@ export default function Home() {
             <div className="h-full flex flex-col items-center justify-center text-slate-500">
               <div className="text-4xl mb-3 opacity-30">◈</div>
               <p className="text-[10px] tracking-widest text-slate-400">ADD TICKERS AND RUN SCREENER</p>
-              <p className="text-[9px] mt-2 text-slate-500">Save & load sessions · Upload Finviz screenshots</p>
+              <p className="text-[9px] mt-2 text-slate-500">Save sessions · Load scan lists · Upload Finviz screenshots</p>
             </div>
           )}
           {loading && <div className="h-full flex flex-col items-center justify-center gap-2"><div className="text-[10px] tracking-widest text-slate-300 animate-pulse font-medium">{status || 'SCANNING...'}</div></div>}
