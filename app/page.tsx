@@ -963,7 +963,16 @@ export default function Home() {
             <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC"
               className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
             {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
-            <p className={`text-[9px] ${th.textFaint} mt-1`}>~{autoTickerList.length * 12}s scan time</p>
+            <div className="flex items-center justify-between mt-1">
+              <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 12}s scan time</p>
+              <button
+                onClick={() => runScreen(runtimeRules)}
+                disabled={loading || autoOverLimit || autoTickerList.length === 0}
+                className="text-[9px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
+              >
+                {loading ? '...' : '▶ RUN'}
+              </button>
+            </div>
           </div>
 
           <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
