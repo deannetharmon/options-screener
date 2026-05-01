@@ -139,7 +139,7 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
       if (!blacklist.has(match[1])) tickers.push(match[1]);
     }
   }
-  return [...new Set(tickers)];
+  return Array.from(new Set(tickers));
 }
 
 function appendTickers(existing: string, newTickers: string[]): string {
