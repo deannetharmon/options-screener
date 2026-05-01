@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your Filter App</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .btn { padding: 10px 16px; font-size: 16px; cursor: pointer; margin: 5px; }
+    .btn-primary { background: #007bff; color: white; border: none; }
+    .btn-success { background: #28a745; color: white; }
+    .btn-secondary { background: #6c757d; color: white; }
+    .btn-danger { background: #dc3545; color: white; }
+
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal-content {
+      background: white;
+      padding: 25px;
+      border-radius: 8px;
+      width: 400px;
+      max-width: 90%;
+    }
+    .form-control {
+      width: 100%;
+      padding: 8px;
+      margin: 10px 0;
+      box-sizing: border-box;
+    }
+    .modal-buttons {
+      margin-top: 20px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Your Options Scanner</h1>
+  
+  <!-- SAVE BUTTON -->
+  <button id="saveFilterBtn" class="btn btn-primary">
+    💾 Save Current Filter
+  </button>
+
+  <!-- MAIN SAVE MODAL -->
+  <div id="saveModal" class="modal">
+    <div class="modal-content">
+      <h3>Save Filter</h3>
+      
+      <label>Choose Existing Filter or Save New:</label>
+      <select id="existingFilters" class="form-control">
+        <option value="">— Save as New Filter —</option>
+      </select>
+
+      <div id="newNameGroup">
+        <label>New Filter Name:</label>
+        <input type="text" id="newFilterName" placeholder="e.g. Strong BPS Tech" class="form-control">
+      </div>
+
+      <div class="modal-buttons">
+        <button id="cancelSave" class="btn btn-secondary">Cancel</button>
+        <button id="confirmSave" class="btn btn-success">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- OVERWRITE CONFIRMATION MODAL -->
+  <div id="overwriteModal" class="modal">
+    <div class="modal-content">
+      <p>Overwrite existing filter <strong id="overwriteName"></strong>?</p>
+      <div class="modal-buttons">
+        <button id="noOverwrite" class="btn btn-secondary">Cancel</button>
+        <button id="yesOverwrite" class="btn btn-danger">Yes, Overwrite</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
