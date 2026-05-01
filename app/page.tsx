@@ -778,7 +778,9 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
         {RULE_LABELS[ruleKey]}{ruleKey === 'MAX_SPREAD_WIDTH' && <span className={`${th.textFaint} ml-1 normal-case opacity-60`}>(optimizer cap)</span>}
       </p>
       <input type="text" inputMode="decimal" value={rawValues[ruleKey] ?? String(editedRules[ruleKey])}
-        onChange={e => handleChange(ruleKey, e.target.value)} onBlur={e => handleBlur(ruleKey, e.target.value)}
+        onChange={e => handleChange(ruleKey, e.target.value)}
+        onBlur={e => handleBlur(ruleKey, e.target.value)}
+        onFocus={e => e.target.select()}
         className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-sm ${th.text} focus:outline-none focus:border-blue-500 font-medium`} />
     </div>
   );
