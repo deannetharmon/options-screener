@@ -44,21 +44,21 @@ const THEMES: Record<Theme, {
     tag: 'bg-slate-700',
     label: 'text-slate-300',
   },
-  light: {
-    bg: 'bg-slate-100',
+    light: {
+    bg: 'bg-slate-50',
     sidebar: 'bg-white',
     card: 'bg-white',
     cardQualified: 'bg-white',
     border: 'border-slate-300',
     borderLight: 'border-slate-200',
     header: 'bg-gradient-to-r from-slate-800 to-slate-900',
-    text: 'text-slate-900',
-    textMuted: 'text-slate-800',
-    textFaint: 'text-slate-600',
+    text: 'text-slate-950',
+    textMuted: 'text-slate-900',
+    textFaint: 'text-slate-700',
     input: 'bg-slate-50',
-    inputBorder: 'border-slate-300',
+    inputBorder: 'border-slate-400',
     tag: 'bg-slate-100',
-    label: 'text-slate-700',
+    label: 'text-slate-800',
   },
 };
 
