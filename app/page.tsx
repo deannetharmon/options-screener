@@ -91,6 +91,7 @@ const RULE_LABELS: Record<string, string> = {
   ROC_MIN_SPREAD: 'Min ROC Spread %', ROC_MIN_IC: 'Min ROC IC %',
 };
 
+const LS_RULES = 'prosper-rules';
 const AUTO_TICKER_LIMIT = 5;
 const LS_BPS = 'prosper-tickers-bps';
 const LS_BCS = 'prosper-tickers-bcs';
@@ -98,6 +99,7 @@ const LS_IC = 'prosper-tickers-ic';
 const LS_CAL = 'prosper-cal-scheduled';
 const LS_CAL_ENTRY = 'prosper-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
+const SCREENER_URL = 'https://options-screener-dun.vercel.app';
 
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr);
@@ -105,6 +107,16 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+function getSavedRules(): RulesType {
+  try {
+    const saved = localStorage.getItem(LS_RULES);
+    return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES };
+  } catch { return { ...DEFAULT_RULES }; }
+}
+function saveRulesToStorage(rules: RulesType) {
+  try { localStorage.setItem(LS_RULES, JSON.stringify(rules)); } catch {}
+}
 
 // ── Business day calculator ────────────────────────────────────────────────
 function addBusinessDays(dateStr: string, days: number): Date {
@@ -117,7 +129,6 @@ function addBusinessDays(dateStr: string, days: number): Date {
   }
   return date;
 }
-
 function formatCalDate(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -125,17 +136,18 @@ function formatCalDate(date: Date): string {
   return `${y}${m}${d}`;
 }
 
-function buildGoogleCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
+// ── Google Calendar URL builders ───────────────────────────────────────────
+function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
   const followUpDate = addBusinessDays(earningsDate, 2);
   const nextDay = new Date(followUpDate);
   nextDay.setDate(nextDay.getDate() + 1);
-  const start = formatCalDate(followUpDate);
-  const end = formatCalDate(nextDay);
   const title = encodeURIComponent(`Re-screen ${symbol} — earnings passed`);
   const details = encodeURIComponent(
-    `${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nRun the Prosper Options Screener to check if this is now a valid trade.\n\nCheck:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC`
+    `${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\n` +
+    `Checklist:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC\n\n` +
+    `Re-screen: ${SCREENER_URL}`
   );
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUpDate)}/${formatCalDate(nextDay)}&details=${details}`;
 }
 
 // ── Entry follow-up calendar URL ───────────────────────────────────────────
@@ -144,8 +156,6 @@ function buildEntryCalUrl(result: ScreenResult): string {
   const followUp = addBusinessDays(new Date().toISOString().split('T')[0], 1);
   const nextDay = new Date(followUp);
   nextDay.setDate(nextDay.getDate() + 1);
-  const start = formatCalDate(followUp);
-  const end = formatCalDate(nextDay);
   const title = encodeURIComponent(`Enter trade — ${result.symbol} ${result.strategy}`);
   const details = encodeURIComponent(
     `Re-verify and enter if setup still valid:\n\n` +
@@ -153,9 +163,9 @@ function buildEntryCalUrl(result: ScreenResult): string {
     `Expiration: ${c.expiration} (${c.dte}d)\nStrikes: ${c.shortStrike}/${c.longStrike} ·$${c.spreadWidth}·\n` +
     `Credit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\nDelta: ${c.shortDelta.toFixed(2)}\n\n` +
     `Checklist:\n• IVR still ≥ 30%\n• No new earnings\n• Credit and ROC still qualify\n• Enter GTC at 50% profit immediately after fill\n\n` +
-    `Re-screen: https://options-screener-dun.vercel.app`
+    `Re-screen: ${SCREENER_URL}`
   );
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}`;
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(nextDay)}&details=${details}`;
 }
 
 // ── Width steps ────────────────────────────────────────────────────────────
@@ -401,63 +411,34 @@ const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : 
 const trendColor = (t: string) => t === 'uptrend' ? 'text-emerald-400' : t === 'downtrend' ? 'text-red-400' : t === 'sideways' ? 'text-blue-400' : 'text-slate-300';
 const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '↓' : t === 'sideways' ? '→' : '?';
 
-// ── Calendar Button ────────────────────────────────────────────────────────
+// ── Earnings calendar button ───────────────────────────────────────────────
 function CalendarButton({ symbol, strategy, earningsDate, ivr }: { symbol: string; strategy: string; earningsDate: string; ivr: number | null }) {
   const key = `${symbol}-${earningsDate}`;
   const [scheduled, setScheduled] = useState(() => {
-    try { const saved = localStorage.getItem(LS_CAL); return saved ? JSON.parse(saved)[key] === true : false; }
-    catch { return false; }
+    try { const saved = localStorage.getItem(LS_CAL); return saved ? JSON.parse(saved)[key] === true : false; } catch { return false; }
   });
-
   const handleClick = () => {
-    const url = buildGoogleCalUrl(symbol, strategy, earningsDate, ivr);
-    window.open(url, '_blank');
-    try {
-      const saved = localStorage.getItem(LS_CAL);
-      const all = saved ? JSON.parse(saved) : {};
-      all[key] = true;
-      localStorage.setItem(LS_CAL, JSON.stringify(all));
-    } catch {}
+    window.open(buildEarningsCalUrl(symbol, strategy, earningsDate, ivr), '_blank');
+    try { const saved = localStorage.getItem(LS_CAL); const all = saved ? JSON.parse(saved) : {}; all[key] = true; localStorage.setItem(LS_CAL, JSON.stringify(all)); } catch {}
     setScheduled(true);
   };
-
-  if (scheduled) {
-    return <span className="text-[9px] text-emerald-400 border border-emerald-700 rounded px-1.5 py-0.5 font-medium" title="Follow-up scheduled">✓ scheduled</span>;
-  }
-
-  return (
-    <button
-      onClick={handleClick}
-      className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-blue-500 hover:text-blue-300 transition-colors font-medium"
-      title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}
-    >
-      📅 follow up
-    </button>
-  );
+  if (scheduled) return <span className="text-[9px] text-emerald-400 border border-emerald-700 rounded px-1.5 py-0.5 font-medium">✓ scheduled</span>;
+  return <button onClick={handleClick} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-blue-500 hover:text-blue-300 transition-colors font-medium" title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up</button>;
 }
 
+// ── Entry calendar button ──────────────────────────────────────────────────
 function EntryCalendarButton({ result }: { result: ScreenResult }) {
   const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
   const [scheduled, setScheduled] = useState(() => {
-    try { const saved = localStorage.getItem(LS_CAL_ENTRY); return saved ? JSON.parse(saved)[key] === true : false; }
-    catch { return false; }
+    try { const saved = localStorage.getItem(LS_CAL_ENTRY); return saved ? JSON.parse(saved)[key] === true : false; } catch { return false; }
   });
   const handleClick = () => {
     window.open(buildEntryCalUrl(result), '_blank');
-    try {
-      const saved = localStorage.getItem(LS_CAL_ENTRY);
-      const all = saved ? JSON.parse(saved) : {};
-      all[key] = true;
-      localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all));
-    } catch {}
+    try { const saved = localStorage.getItem(LS_CAL_ENTRY); const all = saved ? JSON.parse(saved) : {}; all[key] = true; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
     setScheduled(true);
   };
   if (scheduled) return <span className="text-[9px] text-emerald-400 border border-emerald-700 rounded px-1.5 py-0.5 font-medium">✓ entry scheduled</span>;
-  return (
-    <button onClick={handleClick} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-emerald-500 hover:text-emerald-300 transition-colors font-medium" title="Schedule trade entry for next business day">
-      📅 enter tomorrow
-    </button>
-  );
+  return <button onClick={handleClick} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-emerald-500 hover:text-emerald-300 transition-colors font-medium" title="Schedule trade entry for next business day">📅 enter tomorrow</button>;
 }
 
 // ── DTE Alert Banner ───────────────────────────────────────────────────────
@@ -531,10 +512,7 @@ function SmartSuggestionsPanel({ results, rules, onApplyAndRerun }: { results: S
                   <p className="text-[9px] text-slate-400">+{s.wouldQualify} stocks</p>
                 </div>
               </div>
-              <button onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })}
-                className="w-full text-[9px] py-1.5 border border-blue-700 text-blue-300 rounded hover:bg-blue-900/30 transition-colors font-medium tracking-wider">
-                APPLY & RE-RUN
-              </button>
+              <button onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })} className="w-full text-[9px] py-1.5 border border-blue-700 text-blue-300 rounded hover:bg-blue-900/30 transition-colors font-medium tracking-wider">APPLY & RE-RUN</button>
             </div>
           ))}
         </div>
@@ -668,8 +646,8 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
         <div className="flex items-center gap-1">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
           <button onClick={() => fileRef.current?.click()} disabled={disabled || scanning} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">{scanning ? '⟳' : '↑ img'}</button>
-          <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40" title="Save this list">💾</button>
-          <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40" title="Load saved list">▼</button>
+          <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">💾</button>
+          <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className="text-[9px] px-1.5 py-0.5 border border-slate-600 rounded text-slate-300 hover:border-slate-400 hover:text-white transition-colors disabled:opacity-40">▼</button>
         </div>
       </div>
       {showSaveInput && (
@@ -715,7 +693,6 @@ function ResultCard({ result }: { result: ScreenResult }) {
   const stratBg = result.strategy === 'BPS' ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : result.strategy === 'BCS' ? 'bg-red-900/40 border-red-700 text-red-300' : 'bg-blue-900/40 border-blue-700 text-blue-300';
   const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
   const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings')) && result.earningsDate && daysUntil(result.earningsDate) >= 0;
-
   return (
     <div className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? (isApproaching ? 'border-yellow-600/60 bg-slate-900/60' : 'border-slate-600 bg-slate-900/60') : 'border-slate-700 bg-slate-900/30 opacity-60'}`} onClick={() => setExpanded(!expanded)}>
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
@@ -731,7 +708,7 @@ function ResultCard({ result }: { result: ScreenResult }) {
           {c.pop != null && <div className="text-xs shrink-0"><span className="text-slate-300">POP </span><span className="text-white font-medium">{c.pop.toFixed(0)}%</span></div>}
           <div className="text-xs shrink-0"><span className="text-slate-300">δ </span><span className="text-white font-medium">{c.shortDelta.toFixed(2)}</span></div>
           <span className="text-[9px] text-slate-400 border border-slate-600 rounded px-1 py-0.5 shrink-0">opt</span>
-          {result.qualified && c && (
+          {result.qualified && (
             <span onClick={e => e.stopPropagation()} className="shrink-0">
               <EntryCalendarButton result={result} />
             </span>
@@ -768,15 +745,83 @@ function ResultCard({ result }: { result: ScreenResult }) {
           {hasEarningsBlock && result.earningsDate && (
             <div className="pt-2 border-t border-slate-700 flex items-center gap-3">
               <p className="text-[10px] text-slate-400 flex-1">Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
-              <span onClick={e => e.stopPropagation()}>
-                <CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} />
-              </span>
+              <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} /></span>
             </div>
           )}
           {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && <div className="pt-2 border-t border-slate-700"><p className="text-[10px] text-slate-300">Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p></div>}
           {result.failReasons.length > 0 && <div className="pt-2 border-t border-slate-700"><p className="text-[10px] text-red-400 font-medium">{result.failReasons.join(' · ')}</p></div>}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Rules Modal ────────────────────────────────────────────────────────────
+// Uses text inputs with onBlur parsing to handle decimal entry correctly
+function RulesModal({ rules, onClose, onRun }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void }) {
+  // Store raw string values for display during editing
+  const [rawValues, setRawValues] = useState<Record<string, string>>(
+    () => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)]))
+  );
+  // Parsed numeric rules — updated on blur
+  const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
+
+  const handleChange = (key: string, raw: string) => {
+    setRawValues(prev => ({ ...prev, [key]: raw }));
+  };
+
+  const handleBlur = (key: keyof RulesType, raw: string) => {
+    const val = parseFloat(raw);
+    if (!isNaN(val)) {
+      const updated = { ...editedRules, [key]: val };
+      setEditedRules(updated);
+      setRawValues(prev => ({ ...prev, [key]: String(val) }));
+    } else {
+      // Revert to last good value
+      setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
+    }
+  };
+
+  const handleReset = () => {
+    setEditedRules({ ...DEFAULT_RULES });
+    setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)])));
+    localStorage.removeItem(LS_RULES);
+  };
+
+  const handleRun = () => {
+    saveRulesToStorage(editedRules);
+    onRun(editedRules);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className="bg-slate-900 border border-slate-600 rounded-lg p-6 w-[500px] max-h-[80vh] overflow-auto">
+        <h2 className="text-xs font-bold tracking-widest text-white mb-1">SCREENING RULES</h2>
+        <p className="text-[9px] text-slate-300 mb-4 tracking-wider">Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.</p>
+        <div className="grid grid-cols-2 gap-3 mb-6">
+          {(Object.keys(DEFAULT_RULES) as (keyof RulesType)[]).map(key => (
+            <div key={key}>
+              <p className="text-[9px] text-slate-300 tracking-wider mb-1">
+                {RULE_LABELS[key] ?? key}
+                {key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-500 ml-1">(optimizer cap)</span>}
+              </p>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={rawValues[key] ?? String(editedRules[key])}
+                onChange={e => handleChange(key, e.target.value)}
+                onBlur={e => handleBlur(key, e.target.value)}
+                className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-slate-400"
+              />
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-3">
+          <button onClick={handleReset} className="flex-1 border border-slate-600 text-yellow-400 py-2 rounded text-xs tracking-widest hover:border-yellow-500 font-medium">RESET</button>
+          <button onClick={onClose} className="flex-1 border border-slate-600 text-slate-300 py-2 rounded text-xs tracking-widest hover:border-slate-400">CANCEL</button>
+          <button onClick={handleRun} className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200">RUN</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -793,13 +838,14 @@ export default function Home() {
   const [status, setStatus] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
-  const [runtimeRules, setRuntimeRules] = useState<RulesType>(() => {
-    try { const saved = localStorage.getItem('prosper-rules'); return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES }; }
-    catch { return { ...DEFAULT_RULES }; }
-  });
+  const [runtimeRules, setRuntimeRules] = useState<RulesType>(getSavedRules);
 
   useEffect(() => {
-    try { setBpsTickers(localStorage.getItem(LS_BPS) || ''); setBcsTickers(localStorage.getItem(LS_BCS) || ''); setIcTickers(localStorage.getItem(LS_IC) || ''); } catch {}
+    try {
+      setBpsTickers(localStorage.getItem(LS_BPS) || '');
+      setBcsTickers(localStorage.getItem(LS_BCS) || '');
+      setIcTickers(localStorage.getItem(LS_IC) || '');
+    } catch {}
   }, []);
 
   const handleBpsChange = (v: string) => { setBpsTickers(v); try { localStorage.setItem(LS_BPS, v); } catch {} };
@@ -894,7 +940,18 @@ export default function Home() {
 
           <div className="text-[9px] space-y-1 border-t border-slate-700 pt-3">
             <p className="text-slate-300 mb-2 tracking-widest font-medium">ACTIVE RULES</p>
-            {[['IVR',`≥ ${runtimeRules.IVR_MIN}%`],['DTE',`${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],['BPS/BCS delta',`${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],['IC delta',`${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],['Credit ratio',`≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],['OI per leg',`≥ ${runtimeRules.OI_MIN}`],['Bid-Ask',`≤ $${runtimeRules.BID_ASK_MAX}`],['Max width',`$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],['Min ROC spread',`${runtimeRules.ROC_MIN_SPREAD}%`],['Min ROC IC',`${runtimeRules.ROC_MIN_IC}%`]].map(([k,v]) => (
+            {[
+              ['IVR', `≥ ${runtimeRules.IVR_MIN}%`],
+              ['DTE', `${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],
+              ['BPS/BCS delta', `${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],
+              ['IC delta', `${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],
+              ['Credit ratio', `≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
+              ['OI per leg', `≥ ${runtimeRules.OI_MIN}`],
+              ['Bid-Ask', `≤ $${runtimeRules.BID_ASK_MAX}`],
+              ['Max width', `$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],
+              ['Min ROC spread', `${runtimeRules.ROC_MIN_SPREAD}%`],
+              ['Min ROC IC', `${runtimeRules.ROC_MIN_IC}%`],
+            ].map(([k, v]) => (
               <div key={k} className="flex justify-between"><span className="text-slate-400">{k}</span><span className="text-slate-200 font-medium">{v}</span></div>
             ))}
           </div>
@@ -938,27 +995,11 @@ export default function Home() {
       <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} />
 
       {showRulesModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-slate-900 border border-slate-600 rounded-lg p-6 w-[500px] max-h-[80vh] overflow-auto">
-            <h2 className="text-xs font-bold tracking-widest text-white mb-1">SCREENING RULES</h2>
-            <p className="text-[9px] text-slate-300 mb-4 tracking-wider">Width optimizer tries $5 → ${runtimeRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.</p>
-            <div className="grid grid-cols-2 gap-3 mb-6">
-              {(['IVR_MIN','IVR_IC_MAX','DTE_MIN','DTE_MAX','SPREAD_DELTA_MIN','SPREAD_DELTA_MAX','IC_DELTA_MIN','IC_DELTA_MAX','OI_MIN','BID_ASK_MAX','CREDIT_RATIO_MIN','MAX_SPREAD_WIDTH','ROC_MIN_SPREAD','ROC_MIN_IC'] as (keyof RulesType)[]).map(key => (
-                <div key={key}>
-                  <p className="text-[9px] text-slate-300 tracking-wider mb-1">{RULE_LABELS[key] ?? key}{key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-500 ml-1">(optimizer cap)</span>}</p>
-                  <input type="number" step="any" value={runtimeRules[key]} onChange={e => setRuntimeRules(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
-                    className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-slate-400" />
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-3">
-              <button onClick={() => setRuntimeRules({ ...DEFAULT_RULES })} className="flex-1 border border-slate-600 text-yellow-400 py-2 rounded text-xs tracking-widest hover:border-yellow-500 font-medium">RESET</button>
-              <button onClick={() => setShowRulesModal(false)} className="flex-1 border border-slate-600 text-slate-300 py-2 rounded text-xs tracking-widest hover:border-slate-400">CANCEL</button>
-              <button onClick={() => { setShowRulesModal(false); localStorage.setItem('prosper-rules', JSON.stringify(runtimeRules)); runScreen(runtimeRules); }}
-                className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200">RUN</button>
-            </div>
-          </div>
-        </div>
+        <RulesModal
+          rules={runtimeRules}
+          onClose={() => setShowRulesModal(false)}
+          onRun={(rules) => { setShowRulesModal(false); setRuntimeRules(rules); runScreen(rules); }}
+        />
       )}
     </div>
   );
