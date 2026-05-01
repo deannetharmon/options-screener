@@ -614,6 +614,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
 // ── Strategy Box ──────────────────────────────────────────────────────────
 function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: { label: string; badge: string; badgeColor: string; borderFocus: string; value: string; onChange: (v: string) => void; strategy: 'BPS' | 'BCS' | 'IC'; disabled?: boolean; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const pendingTickersRef = useRef<string[]>([]);
   const [scanning, setScanning] = useState(false);
   const [savedFilters, setSavedFilters] = useState<SavedFilters>({});
   const [showSaveInput, setShowSaveInput] = useState(false);
@@ -624,11 +625,38 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
   const refreshFilters = useCallback(async () => { setLoadingFilters(true); const f = await loadFilters(strategy) as SavedFilters; setSavedFilters(f); setLoadingFilters(false); }, [strategy]);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
+
+  const handleImgClick = () => {
+    // Reset value BEFORE opening picker so onChange always fires (fixes first-click bug)
+    if (fileRef.current) fileRef.current.value = '';
+    fileRef.current?.click();
+  };
+
   const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return; setScanning(true);
-    try { const tickers = await extractTickersFromImage(file); if (tickers.length > 0) onChange(mergeTickers(value, tickers)); } catch (err) { console.error(err); }
-    setScanning(false); if (fileRef.current) fileRef.current.value = '';
+    try {
+      const tickers = await extractTickersFromImage(file);
+      if (tickers.length > 0) {
+        const hasExisting = parseTickers(value).length > 0;
+        if (hasExisting) {
+          // Prompt merge vs replace using existing modal
+          pendingTickersRef.current = tickers;
+          onLoadPrompt({
+            name: `${tickers.length} ticker${tickers.length !== 1 ? 's' : ''} from image`,
+            type: 'strategy',
+            onLoad: (doMerge: boolean) => {
+              if (doMerge) onChange(mergeTickers(value, pendingTickersRef.current));
+              else onChange(tickersToString(pendingTickersRef.current));
+            },
+          });
+        } else {
+          onChange(tickersToString(tickers));
+        }
+      }
+    } catch (err) { console.error(err); }
+    setScanning(false);
   };
+
   const handleSave = async (replace = false) => {
     if (!saveName.trim()) { setSaveError('Enter a name'); return; }
     const tickers = parseTickers(value); if (tickers.length === 0) { setSaveError('No tickers to save'); return; }
@@ -642,6 +670,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   };
   const handleDelete = async (name: string) => { await deleteFilter(strategy, name); await refreshFilters(); };
   const filterNames = Object.keys(savedFilters);
+  const hasValue = parseTickers(value).length > 0;
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -651,7 +680,8 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
         </div>
         <div className="flex items-center gap-1">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
-          <button onClick={() => fileRef.current?.click()} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
+          <button onClick={handleImgClick} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
+          {hasValue && <button onClick={() => onChange('')} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border border-red-800 rounded text-red-500 hover:border-red-500 hover:text-red-400 transition-colors disabled:opacity-40`}>✕</button>}
           <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>💾</button>
           <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>▼</button>
         </div>
