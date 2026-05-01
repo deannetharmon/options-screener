@@ -906,6 +906,7 @@ export default function Home() {
           <h1 className="text-base font-bold tracking-widest text-white">OPTIONS HUNTER</h1>
           <p className="text-[10px] text-white/50 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
         </div>
+        <img src="/header-bg.png" alt="" className="h-10 object-cover rounded opacity-90 hidden sm:block" style={{maxWidth: '400px'}} />
         <div className="flex items-center gap-3">
         <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
         <ThemeToggle theme={theme} setTheme={setTheme} />
