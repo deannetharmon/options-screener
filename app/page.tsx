@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface CheckResult {
@@ -91,6 +91,9 @@ const RULE_LABELS: Record<string, string> = {
 };
 
 const AUTO_TICKER_LIMIT = 5;
+const LS_BPS = 'prosper-tickers-bps';
+const LS_BCS = 'prosper-tickers-bcs';
+const LS_IC = 'prosper-tickers-ic';
 
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr);
@@ -118,6 +121,51 @@ function getBidAskMax(price: number | null): number {
   return 0.10;
 }
 
+// ── Tesseract OCR ──────────────────────────────────────────────────────────
+async function extractTickersFromImage(file: File): Promise<string[]> {
+  // Dynamically load Tesseract to avoid SSR issues
+  const Tesseract = await import('tesseract.js');
+  const { data: { text } } = await Tesseract.recognize(file, 'eng', {
+    logger: () => {},
+  });
+
+  // Extract ticker-like tokens: 1-5 uppercase letters, standalone
+  const lines = text.split('\n');
+  const tickers: string[] = [];
+  const tickerPattern = /\b([A-Z]{1,5})\b/g;
+
+  // Common false positives to filter out
+  const blacklist = new Set([
+    'USA', 'ETF', 'CEO', 'IPO', 'NYSE', 'NASDAQ', 'OTC', 'ADR',
+    'INC', 'LLC', 'LTD', 'PLC', 'THE', 'AND', 'FOR', 'REQ',
+    'BPS', 'BCS', 'PUT', 'CALL', 'OTM', 'ITM', 'ATM',
+    'IVR', 'DTE', 'ROC', 'POP', 'GTC', 'OCO',
+    'A', 'I', 'S', 'P', 'C', 'B', 'N', 'E',
+  ]);
+
+  for (const line of lines) {
+    let match;
+    while ((match = tickerPattern.exec(line)) !== null) {
+      const token = match[1];
+      if (token.length >= 2 && !blacklist.has(token)) {
+        tickers.push(token);
+      }
+    }
+  }
+
+  // Deduplicate
+  return Array.from(new Set(tickers));
+}
+
+function appendTickers(existing: string, newTickers: string[]): string {
+  const existingList = existing.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  const existingSet = new Set(existingList);
+  const toAdd = newTickers.filter(t => !existingSet.has(t));
+  if (toAdd.length === 0) return existing;
+  const combined = [...existingList, ...toAdd];
+  return combined.join(', ');
+}
+
 // ── Polygon / Massive API ──────────────────────────────────────────────────
 async function getTrend(symbol: string): Promise<TrendResult> {
   const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
@@ -143,8 +191,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
   const currentPrice = closes[closes.length - 1];
-
-  const maDiff = (ma20 - ma50) / ma50; // positive = uptrend, negative = downtrend
+  const maDiff = (ma20 - ma50) / ma50;
   const priceVsMa50 = (currentPrice - ma50) / ma50;
   const ma50VsMa20Spread = Math.abs(maDiff);
 
@@ -153,19 +200,13 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   let reason: string;
 
   if (ma50VsMa20Spread < 0.03 && Math.abs(priceVsMa50) < 0.07) {
-    // MAs within 3% of each other, price within 7% of MA50 → sideways
-    trend = 'sideways';
-    strategy = 'IC';
+    trend = 'sideways'; strategy = 'IC';
     reason = `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound`;
   } else if (maDiff > 0 && currentPrice > ma50) {
-    // 20MA above 50MA, price above both → uptrend
-    trend = 'uptrend';
-    strategy = 'BPS';
+    trend = 'uptrend'; strategy = 'BPS';
     reason = `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend`;
   } else {
-    // 20MA below 50MA or price below → downtrend
-    trend = 'downtrend';
-    strategy = 'BCS';
+    trend = 'downtrend'; strategy = 'BCS';
     reason = `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend`;
   }
 
@@ -190,9 +231,7 @@ async function getAccessToken(): Promise<string> {
   const refreshToken = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
   const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
   const clientId = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
-  if (!refreshToken || !clientSecret || !clientId) {
-    throw new Error('TastyTrade credentials not configured');
-  }
+  if (!refreshToken || !clientSecret || !clientId) throw new Error('TastyTrade credentials not configured');
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -231,9 +270,7 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
     const bid = item.bid != null ? parseFloat(item.bid) : null;
     const ask = item.ask != null ? parseFloat(item.ask) : null;
     return last ?? (bid && ask ? (bid + ask) / 2 : null);
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function getChain(symbol: string, token: string, RULES: RulesType) {
@@ -253,14 +290,8 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
       const callSym: string = strike['call'];
       const putSym: string = strike['put'];
-      if (callSym) {
-        allOCCSymbols.push(callSym);
-        symbolMeta[callSym] = { expDate, strike: strikePrice, optionType: 'C' };
-      }
-      if (putSym) {
-        allOCCSymbols.push(putSym);
-        symbolMeta[putSym] = { expDate, strike: strikePrice, optionType: 'P' };
-      }
+      if (callSym) { allOCCSymbols.push(callSym); symbolMeta[callSym] = { expDate, strike: strikePrice, optionType: 'C' }; }
+      if (putSym) { allOCCSymbols.push(putSym); symbolMeta[putSym] = { expDate, strike: strikePrice, optionType: 'P' }; }
     }
   }
 
@@ -271,12 +302,8 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
     const chunk = allOCCSymbols.slice(i, i + chunkSize);
     const qs = chunk.map(s => `equity-option=${encodeURIComponent(s)}`).join('&');
     let greeksData: any;
-    try {
-      greeksData = await ttFetch(`/market-data/by-type?${qs}`, token);
-    } catch (e) {
-      console.warn('Greeks fetch failed for chunk', i, e);
-      continue;
-    }
+    try { greeksData = await ttFetch(`/market-data/by-type?${qs}`, token); }
+    catch (e) { console.warn('Greeks fetch failed for chunk', i, e); continue; }
     const items = greeksData?.data?.items ?? [];
     for (const item of items) {
       const occSym: string = item.symbol;
@@ -289,11 +316,8 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
       if (!expirations.includes(meta.expDate)) expirations.push(meta.expDate);
       if (!chains[meta.expDate]) chains[meta.expDate] = [];
       chains[meta.expDate].push({
-        strikePrice: meta.strike,
-        expirationDate: meta.expDate,
-        optionType: meta.optionType,
-        delta, openInterest: oi, bid, ask,
-        mid: (bid + ask) / 2,
+        strikePrice: meta.strike, expirationDate: meta.expDate, optionType: meta.optionType,
+        delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2,
       });
     }
   }
@@ -304,15 +328,9 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
 }
 
 // ── Screener Logic ─────────────────────────────────────────────────────────
-function trySpreadAtWidth(
-  legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
-  width: number, price: number | null, RULES: RulesType
-): SpreadCandidate | null {
+function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string, width: number, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const bidAskMax = getBidAskMax(price);
-  const sorted = strategy === 'BPS'
-    ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice)
-    : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
-
+  const sorted = strategy === 'BPS' ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice) : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
   for (const shortLeg of sorted) {
     const delta = shortLeg.delta;
     if (delta == null) continue;
@@ -320,12 +338,10 @@ function trySpreadAtWidth(
     if (absDelta < RULES.SPREAD_DELTA_MIN || absDelta > RULES.SPREAD_DELTA_MAX) continue;
     if (shortLeg.openInterest < RULES.OI_MIN) continue;
     if (shortLeg.ask - shortLeg.bid > bidAskMax) continue;
-
     const longStrike = strategy === 'BPS' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
     const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
     if (longLeg.ask - longLeg.bid > bidAskMax) continue;
-
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2));
     if (credit <= 0) continue;
     const creditRatio = credit / width;
@@ -333,26 +349,20 @@ function trySpreadAtWidth(
     const maxLoss = width - credit;
     const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
     if (roc < RULES.ROC_MIN_SPREAD) continue;
-
     return {
       strategy, expiration: expDate, dte: daysUntil(expDate),
       shortStrike: shortLeg.strikePrice, longStrike,
       shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest,
-      credit, spreadWidth: width, creditRatio, roc,
-      pop: (1 - absDelta) * 100, optimized: true,
+      credit, spreadWidth: width, creditRatio, roc, pop: (1 - absDelta) * 100, optimized: true,
     };
   }
   return null;
 }
 
-function findBestSpread(
-  chain: any[], strategy: 'BPS' | 'BCS', expDate: string,
-  price: number | null, RULES: RulesType
-): SpreadCandidate | null {
+function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const optionType = strategy === 'BPS' ? 'P' : 'C';
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === optionType);
   const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
-
   let best: SpreadCandidate | null = null;
   for (const width of widthSteps) {
     const candidate = trySpreadAtWidth(legs, strategy, expDate, width, price, RULES);
@@ -361,15 +371,9 @@ function findBestSpread(
   return best;
 }
 
-function tryICSideAtWidth(
-  legs: any[], side: 'put' | 'call', width: number,
-  price: number | null, RULES: RulesType, minCallStrike?: number
-): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number } | null {
+function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, price: number | null, RULES: RulesType, minCallStrike?: number): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number } | null {
   const bidAskMax = getBidAskMax(price);
-  const sorted = side === 'put'
-    ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice)
-    : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
-
+  const sorted = side === 'put' ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice) : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
   for (const shortLeg of sorted) {
     if (side === 'call' && minCallStrike != null && shortLeg.strikePrice <= minCallStrike) continue;
     const delta = shortLeg.delta;
@@ -378,50 +382,41 @@ function tryICSideAtWidth(
     if (absDelta < RULES.IC_DELTA_MIN || absDelta > RULES.IC_DELTA_MAX) continue;
     if (shortLeg.openInterest < RULES.OI_MIN) continue;
     if (shortLeg.ask - shortLeg.bid > bidAskMax) continue;
-
     const longStrike = side === 'put' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
     const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
     if (!longLeg || longLeg.openInterest < RULES.OI_MIN) continue;
     if (longLeg.ask - longLeg.bid > bidAskMax) continue;
-
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2));
     if (credit <= 0) continue;
     const creditRatio = credit / width;
     if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
     const maxLoss = width - credit;
     const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
-
     return { shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, credit, creditRatio, roc, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest };
   }
   return null;
 }
 
-function findBestIC(
-  chain: any[], expDate: string, price: number | null, RULES: RulesType
-): SpreadCandidate | null {
+function findBestIC(chain: any[], expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P');
   const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C');
   const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
-
   let bestPut: (ReturnType<typeof tryICSideAtWidth> & { width: number }) | null = null;
   for (const width of widthSteps) {
     const candidate = tryICSideAtWidth(puts, 'put', width, price, RULES);
     if (candidate && (bestPut === null || candidate.roc > bestPut.roc)) bestPut = { ...candidate, width };
   }
   if (!bestPut) return null;
-
   let bestCall: (ReturnType<typeof tryICSideAtWidth> & { width: number }) | null = null;
   for (const width of widthSteps) {
     const candidate = tryICSideAtWidth(calls, 'call', width, price, RULES, bestPut.shortStrike);
     if (candidate && (bestCall === null || candidate.roc > bestCall.roc)) bestCall = { ...candidate, width };
   }
   if (!bestCall) return null;
-
   const totalCredit = parseFloat((bestPut.credit + bestCall.credit).toFixed(2));
   const maxLoss = Math.max(bestPut.width - bestPut.credit, bestCall.width - bestCall.credit);
   const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0;
   if (roc < RULES.ROC_MIN_IC) return null;
-
   return {
     strategy: 'IC', expiration: expDate, dte: daysUntil(expDate),
     shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike,
@@ -433,11 +428,7 @@ function findBestIC(
   };
 }
 
-function runChecklist(
-  symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any,
-  chainData: { expirations: string[]; chains: Record<string, any[]> },
-  price: number | null, RULES: RulesType, trendResult?: TrendResult
-): ScreenResult {
+function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]> }, price: number | null, RULES: RulesType, trendResult?: TrendResult): ScreenResult {
   const failReasons: string[] = [];
   const ivrValue = metrics.ivRank;
   const earningsDate = metrics.earningsExpectedDate;
@@ -477,9 +468,7 @@ function runChecklist(
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) {
     for (const exp of validExpirations) {
       const chainItems = chainData.chains[exp] || [];
-      bestCandidate = strategy === 'IC'
-        ? findBestIC(chainItems, exp, price, RULES)
-        : findBestSpread(chainItems, strategy, exp, price, RULES);
+      bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, RULES) : findBestSpread(chainItems, strategy, exp, price, RULES);
       if (bestCandidate) break;
     }
   }
@@ -490,41 +479,22 @@ function runChecklist(
     failReasons.push('No qualifying strikes found');
   }
 
-  const oiCheck: CheckResult = bestCandidate
-    ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: `Both legs ≥ ${RULES.OI_MIN}` }
-    : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
-
-  const deltaCheck: CheckResult = bestCandidate
-    ? { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Within target range' }
-    : { status: 'pending', value: '—', reason: 'No candidate' };
-
-  const creditCheck: CheckResult = bestCandidate
-    ? { status: 'pass', value: `$${(bestCandidate.totalCredit ?? bestCandidate.credit).toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` }
-    : { status: 'pending', value: '—', reason: 'No candidate' };
-
+  const oiCheck: CheckResult = bestCandidate ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: `Both legs ≥ ${RULES.OI_MIN}` } : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
+  const deltaCheck: CheckResult = bestCandidate ? { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Within target range' } : { status: 'pending', value: '—', reason: 'No candidate' };
+  const creditCheck: CheckResult = bestCandidate ? { status: 'pass', value: `$${(bestCandidate.totalCredit ?? bestCandidate.credit).toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` } : { status: 'pending', value: '—', reason: 'No candidate' };
   const rocMin = strategy === 'IC' ? RULES.ROC_MIN_IC : RULES.ROC_MIN_SPREAD;
-  const rocCheck: CheckResult = bestCandidate
-    ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` }
-    : { status: 'pending', value: '—', reason: 'No candidate' };
+  const rocCheck: CheckResult = bestCandidate ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` } : { status: 'pending', value: '—', reason: 'No candidate' };
 
-  const qualified =
-    ivrCheck.status === 'pass' && earningsCheck.status === 'pass' &&
-    oiCheck.status === 'pass' && deltaCheck.status === 'pass' &&
-    creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
+  const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
 
   return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck } };
 }
 
 // ── UI Components ──────────────────────────────────────────────────────────
-const statusColor = (s: string) =>
-  s === 'pass' ? 'text-emerald-400' : s === 'fail' ? 'text-red-400' : s === 'warn' ? 'text-yellow-400' : 'text-slate-400';
-const statusIcon = (s: string) =>
-  s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
-
-const trendColor = (trend: string) =>
-  trend === 'uptrend' ? 'text-emerald-400' : trend === 'downtrend' ? 'text-red-400' : trend === 'sideways' ? 'text-blue-400' : 'text-slate-400';
-const trendIcon = (trend: string) =>
-  trend === 'uptrend' ? '↑' : trend === 'downtrend' ? '↓' : trend === 'sideways' ? '→' : '?';
+const statusColor = (s: string) => s === 'pass' ? 'text-emerald-400' : s === 'fail' ? 'text-red-400' : s === 'warn' ? 'text-yellow-400' : 'text-slate-400';
+const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
+const trendColor = (trend: string) => trend === 'uptrend' ? 'text-emerald-400' : trend === 'downtrend' ? 'text-red-400' : trend === 'sideways' ? 'text-blue-400' : 'text-slate-400';
+const trendIcon = (trend: string) => trend === 'uptrend' ? '↑' : trend === 'downtrend' ? '↓' : trend === 'sideways' ? '→' : '?';
 
 function StrikesDisplay({ c }: { c: SpreadCandidate }) {
   const widthTag = (w: number) => <span className="text-slate-400 mx-0.5">·${w}·</span>;
@@ -548,78 +518,80 @@ function StrikesDisplay({ c }: { c: SpreadCandidate }) {
   );
 }
 
+// ── OCR Upload Button ──────────────────────────────────────────────────────
+function OCRUploadButton({ onTickers, disabled }: { onTickers: (tickers: string[]) => void; disabled?: boolean }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setScanning(true);
+    setError('');
+    try {
+      const tickers = await extractTickersFromImage(file);
+      if (tickers.length === 0) {
+        setError('No tickers found');
+      } else {
+        onTickers(tickers);
+      }
+    } catch (err: any) {
+      setError('OCR failed');
+      console.error(err);
+    }
+    setScanning(false);
+    // Reset input so same file can be re-uploaded
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  return (
+    <div className="flex items-center gap-1">
+      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+      <button
+        onClick={() => fileRef.current?.click()}
+        disabled={disabled || scanning}
+        title="Upload Finviz screenshot to extract tickers"
+        className="text-[9px] px-1.5 py-0.5 border border-slate-700 rounded text-slate-400 hover:border-slate-500 hover:text-slate-300 transition-colors disabled:opacity-40 whitespace-nowrap"
+      >
+        {scanning ? '⟳ scanning...' : '↑ img'}
+      </button>
+      {error && <span className="text-[9px] text-red-400">{error}</span>}
+    </div>
+  );
+}
+
 function ResultCard({ result }: { result: ScreenResult }) {
   const [expanded, setExpanded] = useState(false);
   const c = result.bestCandidate;
   const t = result.trendResult;
-  const stratBg = result.strategy === 'BPS'
-    ? 'bg-emerald-900/30 border-emerald-800 text-emerald-400'
-    : result.strategy === 'BCS'
-    ? 'bg-red-900/30 border-red-800 text-red-400'
-    : 'bg-blue-900/30 border-blue-800 text-blue-400';
+  const stratBg = result.strategy === 'BPS' ? 'bg-emerald-900/30 border-emerald-800 text-emerald-400' : result.strategy === 'BCS' ? 'bg-red-900/30 border-red-800 text-red-400' : 'bg-blue-900/30 border-blue-800 text-blue-400';
 
   return (
-    <div
-      className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? 'border-slate-700 bg-slate-900/40' : 'border-slate-800 bg-slate-900/20 opacity-70'}`}
-      onClick={() => setExpanded(!expanded)}
-    >
+    <div className={`border rounded-lg overflow-hidden cursor-pointer transition-all ${result.qualified ? 'border-slate-700 bg-slate-900/40' : 'border-slate-800 bg-slate-900/20 opacity-70'}`} onClick={() => setExpanded(!expanded)}>
       <div className="px-4 py-3 flex items-center gap-4 flex-wrap">
         <div className="w-16 shrink-0">
           <p className="font-bold text-white">{result.symbol}</p>
           {result.price && <p className="text-[10px] text-slate-400">${result.price.toFixed(2)}</p>}
         </div>
         <span className={`text-[10px] px-2 py-0.5 border rounded shrink-0 ${stratBg}`}>{result.strategy}</span>
-        {t && (
-          <span className={`text-[10px] shrink-0 ${trendColor(t.trend)}`}>
-            {trendIcon(t.trend)} {t.trend}
-          </span>
-        )}
-        <div className="text-xs text-slate-400 shrink-0">
-          IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-400' : 'text-red-400'}>
-            {result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}
-          </span>
-        </div>
+        {t && <span className={`text-[10px] shrink-0 ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
+        <div className="text-xs text-slate-400 shrink-0">IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-400' : 'text-red-400'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
         {c && <>
-          <div className="text-xs shrink-0">
-            <span className="text-slate-400">Exp </span>
-            <span className="text-white">{c.expiration}</span>
-            <span className="text-slate-400 ml-1">({c.dte}d)</span>
-          </div>
+          <div className="text-xs shrink-0"><span className="text-slate-400">Exp </span><span className="text-white">{c.expiration}</span><span className="text-slate-400 ml-1">({c.dte}d)</span></div>
           <StrikesDisplay c={c} />
-          <div className="text-xs shrink-0">
-            <span className="text-slate-400">Credit </span>
-            <span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span>
-          </div>
-          <div className="text-xs shrink-0">
-            <span className="text-slate-400">ROC </span>
-            <span className="text-white">{c.roc.toFixed(0)}%</span>
-          </div>
-          {c.pop != null && (
-            <div className="text-xs shrink-0">
-              <span className="text-slate-400">POP </span>
-              <span className="text-white">{c.pop.toFixed(0)}%</span>
-            </div>
-          )}
-          <div className="text-xs shrink-0">
-            <span className="text-slate-400">δ </span>
-            <span className="text-white">{c.shortDelta.toFixed(2)}</span>
-          </div>
+          <div className="text-xs shrink-0"><span className="text-slate-400">Credit </span><span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+          <div className="text-xs shrink-0"><span className="text-slate-400">ROC </span><span className="text-white">{c.roc.toFixed(0)}%</span></div>
+          {c.pop != null && <div className="text-xs shrink-0"><span className="text-slate-400">POP </span><span className="text-white">{c.pop.toFixed(0)}%</span></div>}
+          <div className="text-xs shrink-0"><span className="text-slate-400">δ </span><span className="text-white">{c.shortDelta.toFixed(2)}</span></div>
           <span className="text-[9px] text-slate-400 border border-slate-700/50 rounded px-1 py-0.5 shrink-0">opt</span>
         </>}
-        {!result.qualified && result.failReasons.length > 0 && (
-          <div className="text-[10px] text-red-400 ml-auto">{result.failReasons.slice(0, 2).join(' · ')}</div>
-        )}
+        {!result.qualified && result.failReasons.length > 0 && <div className="text-[10px] text-red-400 ml-auto">{result.failReasons.slice(0, 2).join(' · ')}</div>}
         <div className="ml-auto text-slate-400 text-xs shrink-0">{expanded ? '▲' : '▼'}</div>
       </div>
-
       {expanded && (
         <div className="border-t border-slate-800 px-4 py-3 space-y-3">
-          {t && (
-            <div className="text-[10px] text-slate-400 pb-2 border-b border-slate-800">
-              <span className={`${trendColor(t.trend)} mr-2`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>
-              {t.reason}
-            </div>
-          )}
+          {t && <div className="text-[10px] text-slate-400 pb-2 border-b border-slate-800"><span className={`${trendColor(t.trend)} mr-2`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {Object.entries(result.checks).map(([key, check]) => (
               <div key={key} className="flex items-start gap-2">
@@ -633,17 +605,9 @@ function ResultCard({ result }: { result: ScreenResult }) {
             ))}
           </div>
           {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
-            <div className="pt-2 border-t border-slate-800">
-              <p className="text-[10px] text-slate-400">
-                Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth} (each optimized for best ROC)
-              </p>
-            </div>
+            <div className="pt-2 border-t border-slate-800"><p className="text-[10px] text-slate-400">Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth} (each optimized for best ROC)</p></div>
           )}
-          {result.failReasons.length > 0 && (
-            <div className="pt-2 border-t border-slate-800">
-              <p className="text-[10px] text-red-400">{result.failReasons.join(' · ')}</p>
-            </div>
-          )}
+          {result.failReasons.length > 0 && <div className="pt-2 border-t border-slate-800"><p className="text-[10px] text-red-400">{result.failReasons.join(' · ')}</p></div>}
         </div>
       )}
     </div>
@@ -668,32 +632,35 @@ export default function Home() {
     } catch { return { ...DEFAULT_RULES }; }
   });
 
-  const parseTickers = (input: string) =>
-    input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  // ── Load persisted tickers on mount ──
+  useEffect(() => {
+    try {
+      setBpsTickers(localStorage.getItem(LS_BPS) || '');
+      setBcsTickers(localStorage.getItem(LS_BCS) || '');
+      setIcTickers(localStorage.getItem(LS_IC) || '');
+    } catch {}
+  }, []);
+
+  // ── Persist tickers on change ──
+  const handleBpsChange = (val: string) => { setBpsTickers(val); try { localStorage.setItem(LS_BPS, val); } catch {} };
+  const handleBcsChange = (val: string) => { setBcsTickers(val); try { localStorage.setItem(LS_BCS, val); } catch {} };
+  const handleIcChange = (val: string) => { setIcTickers(val); try { localStorage.setItem(LS_IC, val); } catch {} };
+
+  // ── OCR append handlers ──
+  const handleBpsOCR = (tickers: string[]) => { const updated = appendTickers(bpsTickers, tickers); handleBpsChange(updated); };
+  const handleBcsOCR = (tickers: string[]) => { const updated = appendTickers(bcsTickers, tickers); handleBcsChange(updated); };
+  const handleIcOCR = (tickers: string[]) => { const updated = appendTickers(icTickers, tickers); handleIcChange(updated); };
+
+  const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
 
   const autoTickerList = parseTickers(autoTickers);
   const autoOverLimit = autoTickerList.length > AUTO_TICKER_LIMIT;
 
   const downloadCSV = () => {
-    const headers = ['Symbol','Strategy','Trend','Qualified','Price','IVR','Expiration','DTE',
-      'Short Put Strike','Long Put Strike','Put Width',
-      'Short Call Strike','Long Call Strike','Call Width',
-      'Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Fail Reasons'];
+    const headers = ['Symbol','Strategy','Trend','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Fail Reasons'];
     const rows = results.map(r => {
       const c = r.bestCandidate;
-      return [
-        r.symbol, r.strategy, r.trendResult?.trend || '',
-        r.qualified ? 'YES' : 'NO',
-        r.price?.toFixed(2) || '', r.ivr?.toFixed(1) || '',
-        c?.expiration || '', c?.dte || '',
-        c?.shortStrike || '', c?.longStrike || '', c?.spreadWidth || '',
-        c?.shortCallStrike || '', c?.longCallStrike || '', c?.callWidth || '',
-        c?.shortDelta?.toFixed(2) || '',
-        c?.credit?.toFixed(2) || '', c?.roc?.toFixed(0) || '', c?.pop?.toFixed(0) || '',
-        c?.shortOI || '', c?.longOI || '',
-        c?.totalCredit?.toFixed(2) || '',
-        r.failReasons.join('; ')
-      ].map(v => `"${v}"`).join(',');
+      return [r.symbol, r.strategy, r.trendResult?.trend || '', r.qualified ? 'YES' : 'NO', r.price?.toFixed(2) || '', r.ivr?.toFixed(1) || '', c?.expiration || '', c?.dte || '', c?.shortStrike || '', c?.longStrike || '', c?.spreadWidth || '', c?.shortCallStrike || '', c?.longCallStrike || '', c?.callWidth || '', c?.shortDelta?.toFixed(2) || '', c?.credit?.toFixed(2) || '', c?.roc?.toFixed(0) || '', c?.pop?.toFixed(0) || '', c?.shortOI || '', c?.longOI || '', c?.totalCredit?.toFixed(2) || '', r.failReasons.join('; ')].map(v => `"${v}"`).join(',');
     });
     const csv = [headers.join(','), ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -707,117 +674,58 @@ export default function Home() {
   const runScreen = async (rules: RulesType) => {
     setError('');
     setResults([]);
-
     const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
     const bps = parseTickers(bpsTickers);
     const bcs = parseTickers(bcsTickers);
     const ic = parseTickers(icTickers);
-
-    if (!autoList.length && !bps.length && !bcs.length && !ic.length) {
-      setError('Enter at least one ticker.');
-      return;
-    }
-    if (autoOverLimit) {
-      setError(`AUTO box limited to ${AUTO_TICKER_LIMIT} tickers (free tier rate limit).`);
-      return;
-    }
-
+    if (!autoList.length && !bps.length && !bcs.length && !ic.length) { setError('Enter at least one ticker.'); return; }
+    if (autoOverLimit) { setError(`AUTO box limited to ${AUTO_TICKER_LIMIT} tickers (free tier rate limit).`); return; }
     setLoading(true);
     try {
       setStatus('Getting access token...');
       const token = await getAccessToken();
-
       const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic]));
       setStatus('Fetching market metrics...');
       const metricsArray = await getMarketMetrics(allSymbols, token);
       const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
-
       const screenResults: ScreenResult[] = [];
 
-      // ── AUTO tickers: fetch trend first, sequentially (rate limit) ──
+      // AUTO tickers with trend detection
       for (let i = 0; i < autoList.length; i++) {
         const symbol = autoList[i];
         setStatus(`Fetching trend data: ${symbol} (${i + 1}/${autoList.length})...`);
-
         let trendResult: TrendResult | undefined;
-        try {
-          trendResult = await getTrend(symbol);
-        } catch (e: any) {
-          console.warn(`Trend fetch failed for ${symbol}:`, e.message);
-        }
-
-        // Wait 12s between Polygon calls to stay under 5/min (skip after last)
+        try { trendResult = await getTrend(symbol); } catch (e: any) { console.warn(`Trend fetch failed for ${symbol}:`, e.message); }
         if (i < autoList.length - 1) await sleep(12000);
-
         setStatus(`Scanning ${symbol} (${i + 1}/${autoList.length})...`);
         const strategy = trendResult?.strategy ?? 'BCS';
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
-          const [chainData, price] = await Promise.all([
-            getChain(symbol, token, rules),
-            getQuote(symbol, token),
-          ]);
-          const result = runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult);
-          screenResults.push(result);
+          const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
+          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult));
         } catch (e: any) {
-          screenResults.push({
-            symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
-            failReasons: [e.message], trendResult,
-            checks: {
-              ivr: { status: 'fail', value: 'Error', reason: e.message },
-              earnings: { status: 'pending', value: '—', reason: '—' },
-              oi: { status: 'pending', value: '—', reason: '—' },
-              delta: { status: 'pending', value: '—', reason: '—' },
-              credit: { status: 'pending', value: '—', reason: '—' },
-              roc: { status: 'pending', value: '—', reason: '—' },
-            },
-          });
+          screenResults.push({ symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null, failReasons: [e.message], trendResult, checks: { ivr: { status: 'fail', value: 'Error', reason: e.message }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' } } });
         }
       }
 
-      // ── Manual tickers: no Polygon call needed ──
-      const manualBuckets = [
-        { symbols: bps, strategy: 'BPS' as const },
-        { symbols: bcs, strategy: 'BCS' as const },
-        { symbols: ic, strategy: 'IC' as const },
-      ];
+      // Manual tickers
+      const manualBuckets = [{ symbols: bps, strategy: 'BPS' as const }, { symbols: bcs, strategy: 'BCS' as const }, { symbols: ic, strategy: 'IC' as const }];
       for (const { symbols, strategy } of manualBuckets) {
         for (const symbol of symbols) {
           setStatus(`Scanning ${symbol}...`);
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
-            const [chainData, price] = await Promise.all([
-              getChain(symbol, token, rules),
-              getQuote(symbol, token),
-            ]);
-            const result = runChecklist(symbol, strategy, metrics, chainData, price, rules);
-            screenResults.push(result);
+            const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
+            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules));
           } catch (e: any) {
-            screenResults.push({
-              symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
-              failReasons: [e.message],
-              checks: {
-                ivr: { status: 'fail', value: 'Error', reason: e.message },
-                earnings: { status: 'pending', value: '—', reason: '—' },
-                oi: { status: 'pending', value: '—', reason: '—' },
-                delta: { status: 'pending', value: '—', reason: '—' },
-                credit: { status: 'pending', value: '—', reason: '—' },
-                roc: { status: 'pending', value: '—', reason: '—' },
-              },
-            });
+            screenResults.push({ symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null, failReasons: [e.message], checks: { ivr: { status: 'fail', value: 'Error', reason: e.message }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' } } });
           }
         }
       }
 
-      screenResults.sort((a, b) => {
-        if (a.qualified && !b.qualified) return -1;
-        if (!a.qualified && b.qualified) return 1;
-        return (b.ivr ?? 0) - (a.ivr ?? 0);
-      });
+      screenResults.sort((a, b) => { if (a.qualified && !b.qualified) return -1; if (!a.qualified && b.qualified) return 1; return (b.ivr ?? 0) - (a.ivr ?? 0); });
       setResults(screenResults);
-    } catch (e: any) {
-      setError(e.message);
-    }
+    } catch (e: any) { setError(e.message); }
     setStatus('');
     setLoading(false);
   };
@@ -843,46 +751,53 @@ export default function Home() {
                 <span className="text-[9px] px-1.5 py-0.5 bg-purple-900/40 text-purple-400 border border-purple-800/60 rounded tracking-wider">AUTO</span>
                 <span className="text-[10px] text-slate-400 tracking-wider">TREND DETECT</span>
               </div>
-              <span className={`text-[9px] ${autoOverLimit ? 'text-red-400' : 'text-slate-500'}`}>
-                {autoTickerList.length}/{AUTO_TICKER_LIMIT}
-              </span>
+              <span className={`text-[9px] ${autoOverLimit ? 'text-red-400' : 'text-slate-500'}`}>{autoTickerList.length}/{AUTO_TICKER_LIMIT}</span>
             </div>
-            <textarea
-              value={autoTickers}
-              onChange={e => setAutoTickers(e.target.value)}
-              placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC"
-              className={`w-full bg-slate-900/60 border rounded p-2 text-xs h-16 resize-none focus:outline-none placeholder-slate-700 leading-relaxed ${autoOverLimit ? 'border-red-700/60 focus:border-red-600' : 'border-slate-700/60 focus:border-purple-700/60'}`}
-            />
-            {autoOverLimit && (
-              <p className="text-[9px] text-red-400 mt-1">Max {AUTO_TICKER_LIMIT} tickers (free tier limit)</p>
-            )}
+            <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC"
+              className={`w-full bg-slate-900/60 border rounded p-2 text-xs h-16 resize-none focus:outline-none placeholder-slate-700 leading-relaxed ${autoOverLimit ? 'border-red-700/60' : 'border-slate-700/60 focus:border-purple-700/60'}`} />
+            {autoOverLimit && <p className="text-[9px] text-red-400 mt-1">Max {AUTO_TICKER_LIMIT} tickers (free tier limit)</p>}
             <p className="text-[9px] text-slate-600 mt-1">~{autoTickerList.length * 12}s scan time</p>
           </div>
 
           <div className="border-t border-slate-800 pt-3 space-y-4">
             <p className="text-[9px] text-slate-600 tracking-widest">MANUAL OVERRIDE</p>
+
+            {/* BPS */}
             <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-[9px] px-1.5 py-0.5 bg-emerald-900/40 text-emerald-400 border border-emerald-800/60 rounded tracking-wider">BULLISH</span>
-                <span className="text-[10px] text-slate-400 tracking-wider">BPS</span>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] px-1.5 py-0.5 bg-emerald-900/40 text-emerald-400 border border-emerald-800/60 rounded tracking-wider">BULLISH</span>
+                  <span className="text-[10px] text-slate-400 tracking-wider">BPS</span>
+                </div>
+                <OCRUploadButton onTickers={handleBpsOCR} disabled={loading} />
               </div>
-              <textarea value={bpsTickers} onChange={e => setBpsTickers(e.target.value)} placeholder="AAPL, MSFT"
+              <textarea value={bpsTickers} onChange={e => handleBpsChange(e.target.value)} placeholder="AAPL, MSFT"
                 className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-14 resize-none focus:outline-none focus:border-emerald-700/60 placeholder-slate-700 leading-relaxed" />
             </div>
+
+            {/* BCS */}
             <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-[9px] px-1.5 py-0.5 bg-red-900/40 text-red-400 border border-red-800/60 rounded tracking-wider">BEARISH</span>
-                <span className="text-[10px] text-slate-400 tracking-wider">BCS</span>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] px-1.5 py-0.5 bg-red-900/40 text-red-400 border border-red-800/60 rounded tracking-wider">BEARISH</span>
+                  <span className="text-[10px] text-slate-400 tracking-wider">BCS</span>
+                </div>
+                <OCRUploadButton onTickers={handleBcsOCR} disabled={loading} />
               </div>
-              <textarea value={bcsTickers} onChange={e => setBcsTickers(e.target.value)} placeholder="META, NVDA"
+              <textarea value={bcsTickers} onChange={e => handleBcsChange(e.target.value)} placeholder="META, NVDA"
                 className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-14 resize-none focus:outline-none focus:border-red-700/60 placeholder-slate-700 leading-relaxed" />
             </div>
+
+            {/* IC */}
             <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-[9px] px-1.5 py-0.5 bg-blue-900/40 text-blue-400 border border-blue-800/60 rounded tracking-wider">NEUTRAL</span>
-                <span className="text-[10px] text-slate-400 tracking-wider">IC</span>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] px-1.5 py-0.5 bg-blue-900/40 text-blue-400 border border-blue-800/60 rounded tracking-wider">NEUTRAL</span>
+                  <span className="text-[10px] text-slate-400 tracking-wider">IC</span>
+                </div>
+                <OCRUploadButton onTickers={handleIcOCR} disabled={loading} />
               </div>
-              <textarea value={icTickers} onChange={e => setIcTickers(e.target.value)} placeholder="SPY, QQQ"
+              <textarea value={icTickers} onChange={e => handleIcChange(e.target.value)} placeholder="SPY, QQQ"
                 className="w-full bg-slate-900/60 border border-slate-700/60 rounded p-2 text-xs h-14 resize-none focus:outline-none focus:border-blue-700/60 placeholder-slate-700 leading-relaxed" />
             </div>
           </div>
@@ -902,15 +817,10 @@ export default function Home() {
             <div className="flex justify-between"><span>Min ROC IC</span><span>{runtimeRules.ROC_MIN_IC}%</span></div>
           </div>
 
-          {error && (
-            <div className="text-[10px] text-red-400 bg-red-900/20 border border-red-800/60 rounded p-2 leading-relaxed">{error}</div>
-          )}
+          {error && <div className="text-[10px] text-red-400 bg-red-900/20 border border-red-800/60 rounded p-2 leading-relaxed">{error}</div>}
 
-          <button
-            onClick={() => setShowRulesModal(true)}
-            disabled={loading || autoOverLimit}
-            className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto"
-          >
+          <button onClick={() => setShowRulesModal(true)} disabled={loading || autoOverLimit}
+            className="w-full bg-white text-black py-2.5 rounded text-xs font-bold tracking-widest hover:bg-slate-200 transition-colors disabled:opacity-40 mt-auto">
             {loading ? 'SCANNING...' : 'RUN SCREENER'}
           </button>
         </div>
@@ -921,7 +831,7 @@ export default function Home() {
             <div className="h-full flex flex-col items-center justify-center text-slate-600">
               <div className="text-4xl mb-3 opacity-30">◈</div>
               <p className="text-[10px] tracking-widest">ADD TICKERS AND RUN SCREENER</p>
-              <p className="text-[9px] mt-2 text-slate-700">AUTO box detects trend · Manual boxes override strategy</p>
+              <p className="text-[9px] mt-2 text-slate-700">Upload a Finviz screenshot to auto-populate tickers</p>
             </div>
           )}
           {loading && (
@@ -961,50 +871,21 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-slate-900 border border-slate-700 rounded-lg p-6 w-[500px] max-h-[80vh] overflow-auto">
             <h2 className="text-xs font-bold tracking-widest text-white mb-1">SCREENING RULES</h2>
-            <p className="text-[9px] text-slate-400 mb-4 tracking-wider">
-              Width optimizer tries $5 → ${runtimeRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.
-            </p>
+            <p className="text-[9px] text-slate-400 mb-4 tracking-wider">Width optimizer tries $5 → ${runtimeRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.</p>
             <div className="grid grid-cols-2 gap-3 mb-6">
-              {([
-                'IVR_MIN', 'IVR_IC_MAX',
-                'DTE_MIN', 'DTE_MAX',
-                'SPREAD_DELTA_MIN', 'SPREAD_DELTA_MAX',
-                'IC_DELTA_MIN', 'IC_DELTA_MAX',
-                'OI_MIN', 'BID_ASK_MAX',
-                'CREDIT_RATIO_MIN', 'MAX_SPREAD_WIDTH',
-                'ROC_MIN_SPREAD', 'ROC_MIN_IC',
-              ] as (keyof RulesType)[]).map(key => (
+              {(['IVR_MIN','IVR_IC_MAX','DTE_MIN','DTE_MAX','SPREAD_DELTA_MIN','SPREAD_DELTA_MAX','IC_DELTA_MIN','IC_DELTA_MAX','OI_MIN','BID_ASK_MAX','CREDIT_RATIO_MIN','MAX_SPREAD_WIDTH','ROC_MIN_SPREAD','ROC_MIN_IC'] as (keyof RulesType)[]).map(key => (
                 <div key={key}>
-                  <p className="text-[9px] text-slate-400 tracking-wider mb-1">
-                    {RULE_LABELS[key] ?? key}
-                    {key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-500 ml-1">(optimizer cap)</span>}
-                  </p>
-                  <input
-                    type="number" step="any" value={runtimeRules[key]}
-                    onChange={e => setRuntimeRules(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-slate-500"
-                  />
+                  <p className="text-[9px] text-slate-400 tracking-wider mb-1">{RULE_LABELS[key] ?? key}{key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-500 ml-1">(optimizer cap)</span>}</p>
+                  <input type="number" step="any" value={runtimeRules[key]} onChange={e => setRuntimeRules(prev => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-slate-500" />
                 </div>
               ))}
             </div>
             <div className="flex gap-3">
-              <button onClick={() => setRuntimeRules({ ...DEFAULT_RULES })}
-                className="flex-1 border border-slate-700 text-yellow-600 py-2 rounded text-xs tracking-widest hover:border-yellow-600">
-                RESET
-              </button>
-              <button onClick={() => setShowRulesModal(false)}
-                className="flex-1 border border-slate-700 text-slate-400 py-2 rounded text-xs tracking-widest hover:border-slate-500">
-                CANCEL
-              </button>
-              <button
-                onClick={() => {
-                  setShowRulesModal(false);
-                  localStorage.setItem('prosper-rules', JSON.stringify(runtimeRules));
-                  runScreen(runtimeRules);
-                }}
-                className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200">
-                RUN
-              </button>
+              <button onClick={() => setRuntimeRules({ ...DEFAULT_RULES })} className="flex-1 border border-slate-700 text-yellow-600 py-2 rounded text-xs tracking-widest hover:border-yellow-600">RESET</button>
+              <button onClick={() => setShowRulesModal(false)} className="flex-1 border border-slate-700 text-slate-400 py-2 rounded text-xs tracking-widest hover:border-slate-500">CANCEL</button>
+              <button onClick={() => { setShowRulesModal(false); localStorage.setItem('prosper-rules', JSON.stringify(runtimeRules)); runScreen(runtimeRules); }}
+                className="flex-1 bg-white text-black py-2 rounded text-xs font-bold tracking-widest hover:bg-slate-200">RUN</button>
             </div>
           </div>
         </div>
