@@ -868,6 +868,7 @@ export default function Home() {
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeRules, setRuntimeRules] = useState<RulesType>(getSavedRules);
+  const [lastRunRules, setLastRunRules] = useState<RulesType | null>(null);
 
   useEffect(() => {
     try { setBpsTickers(localStorage.getItem(LS_BPS) || ''); setBcsTickers(localStorage.getItem(LS_BCS) || ''); setIcTickers(localStorage.getItem(LS_IC) || ''); } catch {}
@@ -897,6 +898,7 @@ export default function Home() {
     if (!autoList.length && !bps.length && !bcs.length && !ic.length) { setError('Enter at least one ticker.'); return; }
     if (autoOverLimit) { setError(`AUTO box limited to ${AUTO_TICKER_LIMIT} tickers.`); return; }
     setRuntimeRules(rules);
+    setLastRunRules(rules);
     setLoading(true);
     try {
       setStatus('Getting access token...'); const token = await getAccessToken();
@@ -973,20 +975,23 @@ export default function Home() {
             <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
           </div>
 
-          {/* Active Rules */}
-          <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
-            <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>ACTIVE RULES</p>
-            {[['IVR',`≥ ${runtimeRules.IVR_MIN}%`],['DTE',`${runtimeRules.DTE_MIN}–${runtimeRules.DTE_MAX} days`],['BPS/BCS delta',`${runtimeRules.SPREAD_DELTA_MIN}–${runtimeRules.SPREAD_DELTA_MAX}`],['IC delta',`${runtimeRules.IC_DELTA_MIN}–${runtimeRules.IC_DELTA_MAX}`],['Credit ratio',`≥ ${(runtimeRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],['OI per leg',`≥ ${runtimeRules.OI_MIN}`],['Bid-Ask',`≤ $${runtimeRules.BID_ASK_MAX}`],['Max width',`$${runtimeRules.MAX_SPREAD_WIDTH} (opt)`],['Min ROC spread',`${runtimeRules.ROC_MIN_SPREAD}%`],['Min ROC IC',`${runtimeRules.ROC_MIN_IC}%`]].map(([k,v]) => (
-              <div key={k} className="flex justify-between"><span className={th.textFaint}>{k}</span><span className={`${th.textMuted} font-medium`}>{v}</span></div>
-            ))}
-          </div>
-
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
           <button onClick={() => setShowRulesModal(true)} disabled={loading || autoOverLimit}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 mt-auto shadow-md">
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
             {loading ? 'SCANNING...' : 'RUN SCREENER'}
           </button>
+
+          {/* Last Rules Used */}
+          <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
+            <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>LAST RULES USED</p>
+            {lastRunRules === null
+              ? <p className={`${th.textFaint} italic`}>No screen run yet</p>
+              : [['IVR',`≥ ${lastRunRules.IVR_MIN}%`],['DTE',`${lastRunRules.DTE_MIN}–${lastRunRules.DTE_MAX} days`],['BPS/BCS delta',`${lastRunRules.SPREAD_DELTA_MIN}–${lastRunRules.SPREAD_DELTA_MAX}`],['IC delta',`${lastRunRules.IC_DELTA_MIN}–${lastRunRules.IC_DELTA_MAX}`],['Credit ratio',`≥ ${(lastRunRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],['OI per leg',`≥ ${lastRunRules.OI_MIN}`],['Bid-Ask',`≤ $${lastRunRules.BID_ASK_MAX}`],['Max width',`$${lastRunRules.MAX_SPREAD_WIDTH} (opt)`],['Min ROC spread',`${lastRunRules.ROC_MIN_SPREAD}%`],['Min ROC IC',`${lastRunRules.ROC_MIN_IC}%`]].map(([k,v]) => (
+                <div key={k} className="flex justify-between"><span className={th.textFaint}>{k}</span><span className={`${th.textMuted} font-medium`}>{v}</span></div>
+              ))
+            }
+          </div>
         </div>
 
         {/* Main content */}
