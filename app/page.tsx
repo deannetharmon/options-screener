@@ -759,11 +759,9 @@ function ResultCard({ result }: { result: ScreenResult }) {
 // ── Rules Modal ────────────────────────────────────────────────────────────
 // Uses text inputs with onBlur parsing to handle decimal entry correctly
 function RulesModal({ rules, onClose, onRun }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void }) {
-  // Store raw string values for display during editing
   const [rawValues, setRawValues] = useState<Record<string, string>>(
     () => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)]))
   );
-  // Parsed numeric rules — updated on blur
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
 
   const handleChange = (key: string, raw: string) => {
@@ -777,7 +775,6 @@ function RulesModal({ rules, onClose, onRun }: { rules: RulesType; onClose: () =
       setEditedRules(updated);
       setRawValues(prev => ({ ...prev, [key]: String(val) }));
     } else {
-      // Revert to last good value
       setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
     }
   };
@@ -793,29 +790,65 @@ function RulesModal({ rules, onClose, onRun }: { rules: RulesType; onClose: () =
     onRun(editedRules);
   };
 
+  const RuleInput = ({ ruleKey }: { ruleKey: keyof RulesType }) => (
+    <div>
+      <p className="text-[9px] text-slate-400 tracking-wider mb-1 uppercase">
+        {RULE_LABELS[ruleKey]}
+        {ruleKey === 'MAX_SPREAD_WIDTH' && <span className="text-slate-600 ml-1 normal-case">(optimizer cap)</span>}
+      </p>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={rawValues[ruleKey] ?? String(editedRules[ruleKey])}
+        onChange={e => handleChange(ruleKey, e.target.value)}
+        onBlur={e => handleBlur(ruleKey, e.target.value)}
+        className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-slate-400 font-medium"
+      />
+    </div>
+  );
+
+  const SectionHeader = ({ label }: { label: string }) => (
+    <div className="col-span-2 pt-2 pb-1 border-b border-slate-700">
+      <p className="text-[9px] text-slate-500 tracking-widest uppercase font-medium">{label}</p>
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-slate-900 border border-slate-600 rounded-lg p-6 w-[500px] max-h-[80vh] overflow-auto">
-        <h2 className="text-xs font-bold tracking-widest text-white mb-1">SCREENING RULES</h2>
-        <p className="text-[9px] text-slate-300 mb-4 tracking-wider">Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.</p>
-        <div className="grid grid-cols-2 gap-3 mb-6">
-          {(Object.keys(DEFAULT_RULES) as (keyof RulesType)[]).map(key => (
-            <div key={key}>
-              <p className="text-[9px] text-slate-300 tracking-wider mb-1">
-                {RULE_LABELS[key] ?? key}
-                {key === 'MAX_SPREAD_WIDTH' && <span className="text-slate-500 ml-1">(optimizer cap)</span>}
-              </p>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={rawValues[key] ?? String(editedRules[key])}
-                onChange={e => handleChange(key, e.target.value)}
-                onBlur={e => handleBlur(key, e.target.value)}
-                className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-slate-400"
-              />
-            </div>
-          ))}
+      <div className="bg-slate-900 border border-slate-600 rounded-lg p-6 w-[500px] max-h-[85vh] overflow-auto">
+        <h2 className="text-sm font-bold tracking-widest text-red-400 mb-1">SCREENING RULES</h2>
+        <p className="text-[9px] text-slate-400 mb-5 tracking-wider">
+          Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.
+        </p>
+
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 mb-6">
+          <SectionHeader label="Implied Volatility Rank" />
+          <RuleInput ruleKey="IVR_MIN" />
+          <RuleInput ruleKey="IVR_IC_MAX" />
+
+          <SectionHeader label="Days to Expiration" />
+          <RuleInput ruleKey="DTE_MIN" />
+          <RuleInput ruleKey="DTE_MAX" />
+
+          <SectionHeader label="Delta — Spread / IC" />
+          <RuleInput ruleKey="SPREAD_DELTA_MIN" />
+          <RuleInput ruleKey="SPREAD_DELTA_MAX" />
+          <RuleInput ruleKey="IC_DELTA_MIN" />
+          <RuleInput ruleKey="IC_DELTA_MAX" />
+
+          <SectionHeader label="Liquidity" />
+          <RuleInput ruleKey="BID_ASK_MAX" />
+          <RuleInput ruleKey="OI_MIN" />
+
+          <SectionHeader label="Credit Quality" />
+          <RuleInput ruleKey="CREDIT_RATIO_MIN" />
+          <RuleInput ruleKey="MAX_SPREAD_WIDTH" />
+
+          <SectionHeader label="Return on Capital" />
+          <RuleInput ruleKey="ROC_MIN_SPREAD" />
+          <RuleInput ruleKey="ROC_MIN_IC" />
         </div>
+
         <div className="flex gap-3">
           <button onClick={handleReset} className="flex-1 border border-slate-600 text-yellow-400 py-2 rounded text-xs tracking-widest hover:border-yellow-500 font-medium">RESET</button>
           <button onClick={onClose} className="flex-1 border border-slate-600 text-slate-300 py-2 rounded text-xs tracking-widest hover:border-slate-400">CANCEL</button>
@@ -825,7 +858,6 @@ function RulesModal({ rules, onClose, onRun }: { rules: RulesType; onClose: () =
     </div>
   );
 }
-
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [autoTickers, setAutoTickers] = useState('');
