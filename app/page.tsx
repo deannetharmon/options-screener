@@ -98,7 +98,7 @@ interface LoadPromptState {
 
 // ── Rules ──────────────────────────────────────────────────────────────────
 const DEFAULT_RULES = {
-  IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 0, BID_ASK_MAX: 0.10,
+  IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 200, BID_ASK_MAX: 0.10,
   CREDIT_RATIO_MIN: 0.15, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
   IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.20, DTE_MIN: 30, DTE_MAX: 45,
   MAX_SPREAD_WIDTH: 50, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 30,
