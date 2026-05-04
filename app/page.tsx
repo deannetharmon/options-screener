@@ -119,6 +119,7 @@ const AUTO_TICKER_LIMIT = 5;
 const LS_BPS = 'prosper-tickers-bps';
 const LS_BCS = 'prosper-tickers-bcs';
 const LS_IC = 'prosper-tickers-ic';
+const LS_BROKEN = 'prosper-tickers-broken';   // ← NEW
 const LS_CAL = 'prosper-cal-scheduled';
 const LS_CAL_ENTRY = 'prosper-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
@@ -613,7 +614,18 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
 }
 
 // ── Strategy Box ──────────────────────────────────────────────────────────
-function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: { label: string; badge: string; badgeColor: string; borderFocus: string; value: string; onChange: (v: string) => void; strategy: 'BPS' | 'BCS' | 'IC'; disabled?: boolean; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
+function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: { 
+  label: string; 
+  badge: string; 
+  badgeColor: string; 
+  borderFocus: string; 
+  value: string; 
+  onChange: (v: string) => void; 
+  strategy: 'BPS' | 'BCS' | 'IC' | 'broken';   // ← updated type
+  disabled?: boolean; 
+  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; 
+  th: typeof THEMES[Theme] 
+}) {
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingTickersRef = useRef<string[]>([]);
   const [scanning, setScanning] = useState(false);
@@ -873,6 +885,71 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
   );
 }
 
+// ── NEW: Trend Detection & Auto-Assign (replaces old AUTO scanning behavior) ──
+async function runTrendDetection(
+  autoTickers: string,
+  bpsTickers: string,
+  bcsTickers: string,
+  icTickers: string,
+  brokenTickers: string,
+  handleBpsChange: (v: string) => void,
+  handleBcsChange: (v: string) => void,
+  handleIcChange: (v: string) => void,
+  handleBrokenChange: (v: string) => void,
+  setError: (e: string) => void,
+  setStatus: (s: string) => void,
+  setLoading: (l: boolean) => void,
+  parseTickers: (s: string) => string[]
+) {
+  const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
+  if (!autoList.length) { setError('Enter at least one ticker for trend detection.'); return; }
+
+  setError('');
+  setLoading(true);
+  try {
+    setStatus('Analyzing trends...');
+    const distributions: { bps: string[]; bcs: string[]; ic: string[]; broken: string[] } = { bps: [], bcs: [], ic: [], broken: [] };
+
+    for (let i = 0; i < autoList.length; i++) {
+      const symbol = autoList[i];
+      setStatus(`Analyzing trend for ${symbol} (${i + 1}/${autoList.length})...`);
+      let trendResult: TrendResult | undefined;
+      try {
+        trendResult = await getTrend(symbol);
+      } catch (e: any) {
+        console.warn(e.message);
+        distributions.broken.push(symbol);
+        continue;
+      }
+      if (i < autoList.length - 1) await sleep(12000);
+
+      if (trendResult?.trend === 'unknown' || !trendResult) {
+        distributions.broken.push(symbol);
+      } else if (trendResult.strategy === 'BPS') {
+        distributions.bps.push(symbol);
+      } else if (trendResult.strategy === 'BCS') {
+        distributions.bcs.push(symbol);
+      } else if (trendResult.strategy === 'IC') {
+        distributions.ic.push(symbol);
+      } else {
+        distributions.broken.push(symbol);
+      }
+    }
+
+    // Auto-merge into target boxes (prevents accidental data loss)
+    if (distributions.bps.length > 0) handleBpsChange(mergeTickers(bpsTickers, distributions.bps));
+    if (distributions.bcs.length > 0) handleBcsChange(mergeTickers(bcsTickers, distributions.bcs));
+    if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
+    if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
+
+    setStatus(`✅ Assigned ${autoList.length} tickers to strategy / review boxes`);
+  } catch (e: any) {
+    setError(e.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
@@ -882,6 +959,7 @@ export default function Home() {
   const [bpsTickers, setBpsTickers] = useState('');
   const [bcsTickers, setBcsTickers] = useState('');
   const [icTickers, setIcTickers] = useState('');
+  const [brokenTickers, setBrokenTickers] = useState('');   // ← NEW 4th box
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -892,12 +970,18 @@ export default function Home() {
   const [lastRunRules, setLastRunRules] = useState<RulesType | null>(null);
 
   useEffect(() => {
-    try { setBpsTickers(localStorage.getItem(LS_BPS) || ''); setBcsTickers(localStorage.getItem(LS_BCS) || ''); setIcTickers(localStorage.getItem(LS_IC) || ''); } catch {}
+    try { 
+      setBpsTickers(localStorage.getItem(LS_BPS) || ''); 
+      setBcsTickers(localStorage.getItem(LS_BCS) || ''); 
+      setIcTickers(localStorage.getItem(LS_IC) || ''); 
+      setBrokenTickers(localStorage.getItem(LS_BROKEN) || '');   // ← NEW
+    } catch {}
   }, []);
 
   const handleBpsChange = (v: string) => { setBpsTickers(v); try { localStorage.setItem(LS_BPS, v); } catch {} };
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
+  const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };   // ← NEW
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
@@ -910,6 +994,25 @@ export default function Home() {
     const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
     const blob = new Blob([[headers.join(','),...rows].join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
+  };
+
+  // ── UPDATED: AUTO now only does trend detection + assignment (no full scan) ──
+  const runTrendDetectionWrapper = () => {
+    runTrendDetection(
+      autoTickers,
+      bpsTickers,
+      bcsTickers,
+      icTickers,
+      brokenTickers,
+      handleBpsChange,
+      handleBcsChange,
+      handleIcChange,
+      handleBrokenChange,
+      setError,
+      setStatus,
+      setLoading,
+      parseTickers
+    );
   };
 
   const runScreen = async (rules: RulesType) => {
@@ -972,7 +1075,7 @@ export default function Home() {
       <div className="flex h-[calc(100vh-57px)]">
         {/* Sidebar */}
         <div className={`w-80 border-r ${th.border} ${th.sidebar} p-4 overflow-auto flex flex-col gap-4 shrink-0`}>
-          {/* AUTO */}
+          {/* AUTO / TREND DETECT */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
@@ -981,17 +1084,17 @@ export default function Home() {
               </div>
               <span className={`text-[9px] font-medium ${autoOverLimit ? 'text-red-500' : th.textFaint}`}>{autoTickerList.length}/{AUTO_TICKER_LIMIT}</span>
             </div>
-            <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC"
+            <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
               className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
             {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
             <div className="flex items-center justify-between mt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 12}s scan time</p>
+              <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 12}s analysis</p>
               <button
-                onClick={() => runScreen(runtimeRules)}
+                onClick={runTrendDetectionWrapper}
                 disabled={loading || autoOverLimit || autoTickerList.length === 0}
                 className="text-[9px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
               >
-                {loading ? '...' : '▶ RUN'}
+                {loading ? '...' : 'ANALYZE TRENDS'}
               </button>
             </div>
           </div>
@@ -1003,6 +1106,20 @@ export default function Home() {
             <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            
+            {/* ← NEW 4th box */}
+            <StrategyBox 
+              label="Broken (Review)" 
+              badge="REVIEW" 
+              badgeColor="bg-amber-500/15 text-amber-500 border-amber-500" 
+              borderFocus="focus:border-amber-500" 
+              value={brokenTickers} 
+              onChange={handleBrokenChange} 
+              strategy="broken" 
+              disabled={loading} 
+              onLoadPrompt={showLoadPrompt} 
+              th={th} 
+            />
           </div>
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
