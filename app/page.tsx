@@ -628,7 +628,6 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
 
   const handleImgClick = () => {
-    // Reset value BEFORE opening picker so onChange always fires (fixes first-click bug)
     if (fileRef.current) fileRef.current.value = '';
     fileRef.current?.click();
   };
@@ -640,7 +639,6 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
       if (tickers.length > 0) {
         const hasExisting = parseTickers(value).length > 0;
         if (hasExisting) {
-          // Prompt merge vs replace using existing modal
           pendingTickersRef.current = tickers;
           onLoadPrompt({
             name: `${tickers.length} ticker${tickers.length !== 1 ? 's' : ''} from image`,
@@ -789,6 +787,41 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
   );
 }
 
+// ── Rules Modal Subcomponents (defined OUTSIDE RulesModal to prevent remount on render) ──
+function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }: {
+  ruleKey: keyof RulesType;
+  rawValues: Record<string, string>;
+  editedRules: RulesType;
+  onRawChange: (key: string, raw: string) => void;
+  onBlur: (key: keyof RulesType, raw: string) => void;
+  th: typeof THEMES[Theme];
+}) {
+  return (
+    <div>
+      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase`}>
+        {RULE_LABELS[ruleKey]}{ruleKey === 'MAX_SPREAD_WIDTH' && <span className={`${th.textFaint} ml-1 normal-case opacity-60`}>(optimizer cap)</span>}
+      </p>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={rawValues[ruleKey] ?? String(editedRules[ruleKey])}
+        onChange={e => onRawChange(ruleKey, e.target.value)}
+        onBlur={e => onBlur(ruleKey, e.target.value)}
+        onFocus={e => e.target.select()}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-sm ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
+      />
+    </div>
+  );
+}
+
+function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
+  return (
+    <div className={`col-span-2 pt-2 pb-1 border-b ${th.border}`}>
+      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
+    </div>
+  );
+}
+
 // ── Rules Modal ────────────────────────────────────────────────────────────
 function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
   const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
@@ -803,44 +836,32 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
   const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); localStorage.removeItem(LS_RULES); };
   const handleRun = () => { saveRulesToStorage(editedRules); onRun(editedRules); };
 
-  const RuleInput = ({ ruleKey }: { ruleKey: keyof RulesType }) => (
-    <div>
-      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase`}>
-        {RULE_LABELS[ruleKey]}{ruleKey === 'MAX_SPREAD_WIDTH' && <span className={`${th.textFaint} ml-1 normal-case opacity-60`}>(optimizer cap)</span>}
-      </p>
-      <input type="text" inputMode="decimal" value={rawValues[ruleKey] ?? String(editedRules[ruleKey])}
-        onChange={e => handleChange(ruleKey, e.target.value)}
-        onBlur={e => handleBlur(ruleKey, e.target.value)}
-        onFocus={e => e.target.select()}
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-sm ${th.text} focus:outline-none focus:border-blue-500 font-medium`} />
-    </div>
-  );
-
-  const SectionHeader = ({ label }: { label: string }) => (
-    <div className={`col-span-2 pt-2 pb-1 border-b ${th.border}`}>
-      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
-    </div>
-  );
-
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className={`${th.sidebar} border ${th.border} rounded-xl p-6 w-[500px] max-h-[85vh] overflow-auto shadow-2xl`}>
         <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
         <p className={`text-[9px] ${th.textFaint} mb-5 tracking-wider`}>Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.</p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-3 mb-6">
-          <SectionHeader label="Implied Volatility Rank" />
-          <RuleInput ruleKey="IVR_MIN" /><RuleInput ruleKey="IVR_IC_MAX" />
-          <SectionHeader label="Days to Expiration" />
-          <RuleInput ruleKey="DTE_MIN" /><RuleInput ruleKey="DTE_MAX" />
-          <SectionHeader label="Delta — Spread / IC" />
-          <RuleInput ruleKey="SPREAD_DELTA_MIN" /><RuleInput ruleKey="SPREAD_DELTA_MAX" />
-          <RuleInput ruleKey="IC_DELTA_MIN" /><RuleInput ruleKey="IC_DELTA_MAX" />
-          <SectionHeader label="Liquidity" />
-          <RuleInput ruleKey="BID_ASK_MAX" /><RuleInput ruleKey="OI_MIN" />
-          <SectionHeader label="Credit Quality" />
-          <RuleInput ruleKey="CREDIT_RATIO_MIN" /><RuleInput ruleKey="MAX_SPREAD_WIDTH" />
-          <SectionHeader label="Return on Capital" />
-          <RuleInput ruleKey="ROC_MIN_SPREAD" /><RuleInput ruleKey="ROC_MIN_IC" />
+          <SectionHeader label="Implied Volatility Rank" th={th} />
+          <RuleInput ruleKey="IVR_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <SectionHeader label="Days to Expiration" th={th} />
+          <RuleInput ruleKey="DTE_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="DTE_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <SectionHeader label="Delta — Spread / IC" th={th} />
+          <RuleInput ruleKey="SPREAD_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="SPREAD_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="IC_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="IC_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <SectionHeader label="Liquidity" th={th} />
+          <RuleInput ruleKey="BID_ASK_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="OI_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <SectionHeader label="Credit Quality" th={th} />
+          <RuleInput ruleKey="CREDIT_RATIO_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="MAX_SPREAD_WIDTH" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <SectionHeader label="Return on Capital" th={th} />
+          <RuleInput ruleKey="ROC_MIN_SPREAD" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="ROC_MIN_IC" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
         </div>
         <div className="flex gap-3">
           <button onClick={handleReset} className="flex-1 border border-yellow-600 text-yellow-500 py-2 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
