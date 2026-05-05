@@ -955,8 +955,9 @@ export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
 
-  const [autoTickers, setAutoTickers] = useState('');
-  const [bpsTickers, setBpsTickers] = useState('');
+const [autoTickers, setAutoTickers] = useState('');
+  const autoFileRef = useRef<HTMLInputElement>(null);
+  const [autoScanning, setAutoScanning] = useState(false);  const [bpsTickers, setBpsTickers] = useState('');
   const [bcsTickers, setBcsTickers] = useState('');
   const [icTickers, setIcTickers] = useState('');
   const [brokenTickers, setBrokenTickers] = useState('');   // ← NEW 4th box
