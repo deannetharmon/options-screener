@@ -1202,7 +1202,27 @@ export default function Home() {
                   <span className={th.textFaint}>{disqualified.length} DISQUALIFIED</span>
                   <span className={th.textFaint}>{results.length} SCANNED</span>
                 </div>
-                <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
+                // This was the orginal line, replaced with an etire div class below <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
+                <div className="flex items-center gap-2">
+                  {results.some(r => !r.qualified && r.earningsDate && daysUntil(r.earningsDate) >= 0 && r.failReasons.some(f => f.includes('Earnings'))) && (
+                    <button onClick={() => {
+                      const toSchedule = results.filter(r => !r.qualified && r.earningsDate && daysUntil(r.earningsDate) >= 0 && r.failReasons.some(f => f.includes('Earnings')));
+                      const stored = (() => { try { const s = localStorage.getItem(LS_CAL); return s ? JSON.parse(s) : {}; } catch { return {}; } })();
+                      toSchedule.forEach((r, i) => {
+                        const key = `${r.symbol}-${r.earningsDate}`;
+                        if (!stored[key]) {
+                          setTimeout(() => window.open(buildEarningsCalUrl(r.symbol, r.strategy, r.earningsDate!, r.ivr), '_blank'), i * 300);
+                          stored[key] = true;
+                        }
+                      });
+                      try { localStorage.setItem(LS_CAL, JSON.stringify(stored)); } catch {}
+                    }}
+                    className={`text-[10px] px-3 py-1.5 border border-blue-700 rounded-lg text-blue-400 hover:border-blue-500 hover:text-blue-300 transition-colors tracking-wider`}>
+                      📅 Schedule All
+                    </button>
+                  )}
+                  <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
+                </div>
               </div>
               <DTEAlertBanner results={results} />
               <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={runScreen} />
