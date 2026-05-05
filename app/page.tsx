@@ -123,7 +123,7 @@ const LS_BROKEN = 'prosper-tickers-broken';   // ← NEW
 const LS_CAL = 'prosper-cal-scheduled';
 const LS_CAL_ENTRY = 'prosper-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
-const SCREENER_URL = 'https://options-screener-dun.vercel.app';
+const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
 
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr);
@@ -159,7 +159,7 @@ function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: str
   const followUp = addBusinessDays(earningsDate, 2);
   const end = new Date(followUp); end.setDate(end.getDate() + 1);
   const title = encodeURIComponent(`Re-screen ${symbol} — earnings passed`);
-  const details = encodeURIComponent(`${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nChecklist:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC\n\nRe-screen: ${SCREENER_URL}`);
+  const details = encodeURIComponent(`${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nChecklist:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC\n\nRe-screen: ${HUNTER_URL}`);
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 function buildEntryCalUrl(result: ScreenResult): string {
@@ -167,7 +167,7 @@ function buildEntryCalUrl(result: ScreenResult): string {
   const followUp = addBusinessDays(new Date().toISOString().split('T')[0], 1);
   const end = new Date(followUp); end.setDate(end.getDate() + 1);
   const title = encodeURIComponent(`Enter trade — ${result.symbol} ${result.strategy}`);
-  const details = encodeURIComponent(`Re-verify and enter if setup still valid:\n\nSymbol: ${result.symbol}\nStrategy: ${result.strategy}\nIVR: ${result.ivr?.toFixed(1)}%\nExpiration: ${c.expiration} (${c.dte}d)\nStrikes: ${c.shortStrike}/${c.longStrike} ·$${c.spreadWidth}·\nCredit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\nDelta: ${c.shortDelta.toFixed(2)}\n\nChecklist:\n• IVR still ≥ 30%\n• No new earnings\n• Credit and ROC still qualify\n• Enter GTC at 50% profit immediately after fill\n\nRe-screen: ${SCREENER_URL}`);
+  const details = encodeURIComponent(`Re-verify and enter if setup still valid:\n\nSymbol: ${result.symbol}\nStrategy: ${result.strategy}\nIVR: ${result.ivr?.toFixed(1)}%\nExpiration: ${c.expiration} (${c.dte}d)\nStrikes: ${c.shortStrike}/${c.longStrike} ·$${c.spreadWidth}·\nCredit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\nDelta: ${c.shortDelta.toFixed(2)}\n\nChecklist:\n• IVR still ≥ 30%\n• No new earnings\n• Credit and ROC still qualify\n• Enter GTC at 50% profit immediately after fill\n\nRe-screen: ${HUNTER_URL}`);
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 
@@ -319,7 +319,7 @@ async function getChain(symbol: string, token: string, RULES: RulesType) {
   expirations.sort(); return { expirations, chains };
 }
 
-// ── Screener Logic ─────────────────────────────────────────────────────────
+// ── HUNTER Logic ─────────────────────────────────────────────────────────
 function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string, width: number, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const bidAskMax = getBidAskMax(price);
   const sorted = strategy === 'BPS' ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice) : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
@@ -1089,7 +1089,25 @@ export default function Home() {
             {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
             <div className="flex items-center justify-between mt-1">
               <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 12}s analysis</p>
-              <button
+              <div className="flex items-center gap-1">
+                {autoTickerList.length > 0 && (
+                  <button
+                    onClick={() => setAutoTickers('')}
+                    disabled={loading}
+                    className="text-[9px] px-2 py-1 border border-red-800 rounded text-red-500 hover:border-red-500 hover:text-red-400 transition-colors disabled:opacity-40 font-bold"
+                  >
+                    ✕
+                  </button>
+                )}
+                <button
+                  onClick={runTrendDetectionWrapper}
+                  disabled={loading || autoOverLimit || autoTickerList.length === 0}
+                  className="text-[9px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
+                >
+                  {loading ? '...' : 'ANALYZE TRENDS'}
+                </button>
+              </div>
+            </div>
                 onClick={runTrendDetectionWrapper}
                 disabled={loading || autoOverLimit || autoTickerList.length === 0}
                 className="text-[9px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
@@ -1126,7 +1144,7 @@ export default function Home() {
 
           <button onClick={() => setShowRulesModal(true)} disabled={loading || autoOverLimit}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
-            {loading ? 'SCANNING...' : 'RUN SCREENER'}
+            {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
 
           {/* Last Rules Used */}
@@ -1146,7 +1164,7 @@ export default function Home() {
           {results.length === 0 && !loading && (
             <div className={`h-full flex flex-col items-center justify-center ${th.textFaint}`}>
               <div className="text-4xl mb-3 opacity-20">◈</div>
-              <p className={`text-[10px] tracking-widest ${th.textMuted}`}>ADD TICKERS AND RUN SCREENER</p>
+              <p className={`text-[10px] tracking-widest ${th.textMuted}`}>ADD TICKERS AND RUN HUNTER</p>
               <p className={`text-[9px] mt-2 ${th.textFaint}`}>Save sessions · Load scan lists · Upload Finviz screenshots</p>
             </div>
           )}
