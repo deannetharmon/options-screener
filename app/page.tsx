@@ -955,9 +955,11 @@ export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
 
-const [autoTickers, setAutoTickers] = useState('');
+  const [autoTickers, setAutoTickers] = useState('');
   const autoFileRef = useRef<HTMLInputElement>(null);
-  const [autoScanning, setAutoScanning] = useState(false);  const [bpsTickers, setBpsTickers] = useState('');
+  const [autoScanning, setAutoScanning] = useState(false);
+  const autoPendingTickersRef = useRef<string[]>([]);
+  const [bpsTickers, setBpsTickers] = useState('');
   const [bcsTickers, setBcsTickers] = useState('');
   const [icTickers, setIcTickers] = useState('');
   const [brokenTickers, setBrokenTickers] = useState('');   // ← NEW 4th box
@@ -1083,7 +1085,36 @@ const [autoTickers, setAutoTickers] = useState('');
                 <span className="text-[9px] px-1.5 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500 rounded-md tracking-wider font-bold">AUTO</span>
                 <span className={`text-[11px] ${th.textMuted} tracking-wider font-medium`}>TREND DETECT</span>
               </div>
-              <span className={`text-[9px] font-medium ${autoOverLimit ? 'text-red-500' : th.textFaint}`}>{autoTickerList.length}/{AUTO_TICKER_LIMIT}</span>
+              <div className="flex items-center gap-1">
+                <input ref={autoFileRef} type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                  const file = e.target.files?.[0]; if (!file) return; setAutoScanning(true);
+                  try {
+                    const tickers = await extractTickersFromImage(file);
+                    if (tickers.length > 0) {
+                      const hasExisting = autoTickers.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean).length > 0;
+                      if (hasExisting) {
+                        autoPendingTickersRef.current = tickers;
+                        showLoadPrompt({
+                          name: `${tickers.length} ticker${tickers.length !== 1 ? 's' : ''} from image`,
+                          type: 'strategy',
+                          onLoad: (doMerge: boolean) => {
+                            if (doMerge) setAutoTickers(mergeTickers(autoTickers, autoPendingTickersRef.current));
+                            else setAutoTickers(tickersToString(autoPendingTickersRef.current));
+                          },
+                        });
+                      } else {
+                        setAutoTickers(tickersToString(tickers));
+                      }
+                    }
+                  } catch (err) { console.error(err); }
+                  setAutoScanning(false);
+                }} />
+                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; autoFileRef.current?.click(); }} disabled={loading || autoScanning}
+                  className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>
+                  {autoScanning ? '⟳' : '↑ img'}
+                </button>
+                <span className={`text-[9px] font-medium ${autoOverLimit ? 'text-red-500' : th.textFaint}`}>{autoTickerList.length}/{AUTO_TICKER_LIMIT}</span>
+              </div>
             </div>
             <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
               className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
