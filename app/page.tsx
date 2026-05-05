@@ -1108,14 +1108,6 @@ export default function Home() {
                 </button>
               </div>
             </div>
-                onClick={runTrendDetectionWrapper}
-                disabled={loading || autoOverLimit || autoTickerList.length === 0}
-                className="text-[9px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
-              >
-                {loading ? '...' : 'ANALYZE TRENDS'}
-              </button>
-            </div>
-          </div>
 
           <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
 
