@@ -1108,6 +1108,7 @@ export default function Home() {
                 </button>
               </div>
             </div>
+          </div>
 
           <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
 
