@@ -701,9 +701,8 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   const handleDelete = async (name: string) => { await deleteFilter(strategy, name); await refreshFilters(); };
   const filterNames = Object.keys(savedFilters);
   const hasValue = parseTickers(value).length > 0;
-  return (
-    <div>
-      <div>
+            {/* AUTO / TREND DETECT - Unlimited with friendly batching */}
+          <div>
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
                 <span className="text-[9px] px-1.5 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500 rounded-md tracking-wider font-bold">AUTO</span>
@@ -711,6 +710,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
               </div>
               <span className={`text-[9px] font-medium ${th.textFaint}`}>{autoTickerList.length} tickers</span>
             </div>
+            
             <textarea 
               value={autoTickers} 
               onChange={e => setAutoTickers(e.target.value)} 
@@ -718,22 +718,29 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
               className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} 
             />
             
-            {/* Friendly batch message when >5 tickers */}
             {autoTickerList.length > 5 && (
               <div className="mt-2 px-3 py-2 bg-purple-500/10 border border-purple-500/30 rounded-lg text-[10px] leading-tight">
                 <span className="text-purple-400 font-medium">ℹ Only 5 will scan at a time</span><br />
                 Once they finish, they will move to the correct strategy boxes.<br />
-                Click <span className="font-medium">ANALYZE TRENDS</span> again for the next batch.<br />
-                This repeats until the TREND DETECT box is empty.
+                Click ANALYZE NEXT again for the next batch.
               </div>
             )}
 
             <div className="flex items-center justify-between mt-3">
               <p className={`text-[9px] ${th.textFaint}`}>~{Math.min(5, autoTickerList.length) * 12}s per batch</p>
               <div className="flex gap-1">
-                <input ref={fileRefAuto} type="file" accept="image/*" className="hidden" onChange={handleAutoOCR} />
-                <button onClick={() => fileRefAuto.current?.click()} disabled={loading} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>↑ img</button>
+                <input ref={autoFileRef} type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                  const file = e.target.files?.[0]; if (!file) return; setAutoScanning(true);
+                  try {
+                    const tickers = await extractTickersFromImage(file);
+                    if (tickers.length > 0) setAutoTickers(tickersToString(tickers));
+                  } catch (err) { console.error(err); }
+                  setAutoScanning(false);
+                }} />
+                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; autoFileRef.current?.click(); }} disabled={loading} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>↑ img</button>
+                
                 {autoTickerList.length > 0 && <button onClick={() => setAutoTickers('')} disabled={loading} className="text-[9px] px-2 py-0.5 border border-red-800 rounded text-red-500 hover:border-red-500 hover:text-red-400 font-medium">✕ Clear</button>}
+                
                 <button 
                   onClick={runTrendDetectionWrapper} 
                   disabled={loading || autoTickerList.length === 0}
@@ -744,6 +751,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
               </div>
             </div>
           </div>
+  
   );
 }
 
