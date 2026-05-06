@@ -96,12 +96,22 @@ interface LoadPromptState {
   show: boolean; name: string; type: 'strategy' | 'global'; onLoad?: (merge: boolean) => void;
 }
 
+// ── Index / ETF overrides ──────────────────────────────────────────────────
+// These instruments have no earnings, high liquidity, and typically lower IVR.
+// They are screened with relaxed IVR rules and the earnings check is suppressed.
+const INDEX_TICKERS = new Set([
+  'SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD',
+  'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY',
+  'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX',
+]);
+const INDEX_IVR_MIN = 15; // Indexes run structurally lower IVR than single stocks
+
 // ── Rules ──────────────────────────────────────────────────────────────────
 const DEFAULT_RULES = {
   IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 200, BID_ASK_MAX: 0.10,
   CREDIT_RATIO_MIN: 0.15, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
-  IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.20, DTE_MIN: 30, DTE_MAX: 45,
-  MAX_SPREAD_WIDTH: 50, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 30,
+  IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.25, DTE_MIN: 30, DTE_MAX: 45,
+  MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 30,
 };
 type RulesType = typeof DEFAULT_RULES;
 
@@ -173,7 +183,7 @@ function buildEntryCalUrl(result: ScreenResult): string {
 
 // ── Width steps ────────────────────────────────────────────────────────────
 function getWidthSteps(maxWidth: number, price: number | null): number[] {
-  const minWidth = price == null ? 5 : price >= 500 ? 50 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
+  const minWidth = price == null ? 5 : price >= 500 ? 25 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
   const steps: number[] = [];
   for (let w = minWidth; w <= maxWidth; w += minWidth) steps.push(w);
   return steps;
@@ -253,7 +263,11 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
   const currentPrice = closes[closes.length - 1];
   const maDiff = (ma20 - ma50) / ma50, priceVsMa50 = (currentPrice - ma50) / ma50;
-  if (Math.abs(maDiff) < 0.03 && Math.abs(priceVsMa50) < 0.07) return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
+  // Indexes trend gradually upward by nature — use a wider sideways band so IC is surfaced more often
+  const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
+  const sidewaysBand = isIdx ? 0.06 : 0.03;
+  const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
+  if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand) return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
   if (maDiff > 0 && currentPrice > ma50) return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
   return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
 }
@@ -380,11 +394,16 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
 }
 function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]> }, price: number | null, RULES: RulesType, trendResult?: TrendResult): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
-  const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < RULES.IVR_MIN ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${RULES.IVR_MIN}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${RULES.IVR_MIN}% minimum` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Above minimum' };
+  const isIndex = INDEX_TICKERS.has(symbol.toUpperCase());
+  const effectiveIvrMin = isIndex ? INDEX_IVR_MIN : RULES.IVR_MIN;
+  const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < effectiveIvrMin ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${effectiveIvrMin}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${effectiveIvrMin}% minimum${isIndex ? ' (index)' : ''}` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: isIndex ? `Above ${effectiveIvrMin}% (index floor)` : 'Above minimum' };
   let earningsCheck: CheckResult;
-  if (!earningsDate) { earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' }; }
+  // Indexes and ETFs do not report earnings — skip this check entirely
+  if (isIndex) {
+    earningsCheck = { status: 'pass', value: 'N/A (index/ETF)', reason: 'No earnings events' };
+  } else if (!earningsDate) { earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' }; }
   else { const d = daysUntil(earningsDate); if (d < 0) { earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' }; } else if (d < 30) { failReasons.push(`Earnings in ${d}d`); earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: 'Within expiry window' }; } else { earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: 'Outside expiry window' }; } }
-  const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false; if (earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
+  const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false; if (!isIndex && earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, RULES) : findBestSpread(chainItems, strategy, exp, price, RULES); if (bestCandidate) break; } }
   if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
