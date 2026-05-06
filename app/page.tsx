@@ -763,8 +763,11 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
-function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme] }) {
-  const [expanded, setExpanded] = useState(false);
+function ResultCard({ result, th, rules }: { 
+  result: ScreenResult; 
+  th: typeof THEMES[Theme]; 
+  rules: RulesType; 
+}) {  const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);   // ← NEW
 
   const c = result.bestCandidate;
@@ -1458,8 +1461,10 @@ export default function Home() {
               </div>
               <DTEAlertBanner results={results} />
               <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={runScreen} />
-              {qualified.length > 0 && <div><p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div></div>}
-              {disqualified.length > 0 && <div><p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p><div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div></div>}
+              {qualified.length > 0 && <div><p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}
+
+{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div></div>}
+              {disqualified.length > 0 && <div><p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}  {disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div></div>}
             </div>
           )}
         </div>
