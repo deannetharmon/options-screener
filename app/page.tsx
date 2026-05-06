@@ -146,10 +146,88 @@ function tickersToString(tickers: string[]): string { return tickers.join(', ');
 
 function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] { return []; }
 
-async function loadFilters(strategy: string): Promise<any> { return {}; }
-async function saveFilter(...args: any[]): Promise<any> { return {}; }
-async function deleteFilter(...args: any[]): Promise<void> {}
+// ── Persistent Saved Filters (LocalStorage + API fallback) ─────────────────
+async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilters> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
+  
+  // Try LocalStorage first (fast + always works)
+  try {
+    const saved = localStorage.getItem(lsKey);
+    if (saved) return JSON.parse(saved);
+  } catch {}
 
+  // Fallback to API
+  try {
+    const res = await fetch(`/api/filters?strategy=${strategy}`);
+    const data = await res.json();
+    const filters = data.filters ?? {};
+    // Cache to localStorage
+    localStorage.setItem(lsKey, JSON.stringify(filters));
+    return filters;
+  } catch {
+    return {};
+  }
+}
+
+async function saveFilter(
+  strategy: string, 
+  name: string, 
+  payload: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] }, 
+  replace = false
+): Promise<{ success?: boolean; conflict?: boolean; message?: string }> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
+  
+  try {
+    // First try API
+    const res = await fetch('/api/filters', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ strategy, name, replace, ...payload }) 
+    });
+    const result = await res.json();
+    
+    if (result.success) {
+      // Sync to localStorage
+      const current = await loadFilters(strategy);
+      if (replace) current[name] = payload.tickers || { bps: payload.bps, bcs: payload.bcs, ic: payload.ic };
+      else current[name] = payload.tickers || { bps: payload.bps, bcs: payload.bcs, ic: payload.ic };
+      localStorage.setItem(lsKey, JSON.stringify(current));
+    }
+    return result;
+  } catch {
+    // API failed → save only to localStorage
+    try {
+      const current = await loadFilters(strategy);
+      if (replace || !current[name]) {
+        current[name] = payload.tickers || { bps: payload.bps, bcs: payload.bcs, ic: payload.ic };
+        localStorage.setItem(lsKey, JSON.stringify(current));
+        return { success: true };
+      } else {
+        return { conflict: true, message: `"${name}" already exists` };
+      }
+    } catch (e) {
+      return { success: false, message: 'Failed to save' };
+    }
+  }
+}
+async function deleteFilter(strategy: string, name: string): Promise<void> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
+  
+  try {
+    await fetch('/api/filters', { 
+      method: 'DELETE', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ strategy, name }) 
+    });
+  } catch {}
+
+  // Always update localStorage
+  try {
+    const current = await loadFilters(strategy);
+    delete current[name];
+    localStorage.setItem(lsKey, JSON.stringify(current));
+  } catch {}
+}
 // ── Index / ETF overrides ──────────────────────────────────────────────────
 const INDEX_TICKERS = new Set(['SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY', 'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX']);
 const INDEX_IVR_MIN = 15;
@@ -175,6 +253,8 @@ const LS_CAL = 'prosper-cal-scheduled';
 const LS_CAL_ENTRY = 'prosper-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
 const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
+const LS_SAVED_FILTERS = 'prosper-saved-filters';    
+const LS_GLOBAL_SESSIONS = 'prosper-global-sessions'; 
 
 // ── TastyTrade API ─────────────────────────────────────────────────────────
 const BASE = 'https://api.tastytrade.com';
