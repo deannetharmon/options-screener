@@ -703,44 +703,47 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   const hasValue = parseTickers(value).length > 0;
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-2">
-          <span className={`text-[9px] px-1.5 py-0.5 rounded-md tracking-wider border font-bold ${badgeColor}`}>{badge}</span>
-          <span className={`text-[11px] ${th.textMuted} tracking-wider font-medium`}>{label}</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
-          <button onClick={handleImgClick} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
-          {hasValue && <button onClick={() => onChange('')} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border border-red-800 rounded text-red-500 hover:border-red-500 hover:text-red-400 transition-colors disabled:opacity-40`}>✕</button>}
-          <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>💾</button>
-          <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>▼</button>
-        </div>
-      </div>
-      {showSaveInput && (
-        <div className="mb-1.5 flex flex-col gap-1">
-          <div className="flex gap-1">
-            <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
-              className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
-            <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition-colors">Save</button>
-          </div>
-          {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-medium">Replace</button>}</div>)}
-        </div>
-      )}
-      {showLoad && (
-        <div className={`mb-1.5 ${th.input} border ${th.border} rounded-lg overflow-hidden`}>
-          {loadingFilters ? <p className={`text-[9px] ${th.textFaint} px-2 py-1.5`}>Loading...</p>
-            : filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-2 py-1.5`}>No saved filters</p>
-            : filterNames.map(name => (
-              <div key={name} className={`flex items-center justify-between px-2 py-1.5 hover:bg-blue-500/10 group`}>
-                <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} hover:${th.text} text-left flex-1 font-medium`}>{name}</button>
-                <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+      <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] px-1.5 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500 rounded-md tracking-wider font-bold">AUTO</span>
+                <span className={`text-[11px] ${th.textMuted} tracking-wider font-medium`}>TREND DETECT</span>
               </div>
-            ))}
-        </div>
-      )}
-      <textarea value={value} onChange={e => onChange(e.target.value)} placeholder="Tickers..."
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed`} />
-    </div>
+              <span className={`text-[9px] font-medium ${th.textFaint}`}>{autoTickerList.length} tickers</span>
+            </div>
+            <textarea 
+              value={autoTickers} 
+              onChange={e => setAutoTickers(e.target.value)} 
+              placeholder="AAPL, MSFT, XOM&#10;You can paste as many as you want"
+              className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} 
+            />
+            
+            {/* Friendly batch message when >5 tickers */}
+            {autoTickerList.length > 5 && (
+              <div className="mt-2 px-3 py-2 bg-purple-500/10 border border-purple-500/30 rounded-lg text-[10px] leading-tight">
+                <span className="text-purple-400 font-medium">ℹ Only 5 will scan at a time</span><br />
+                Once they finish, they will move to the correct strategy boxes.<br />
+                Click <span className="font-medium">ANALYZE TRENDS</span> again for the next batch.<br />
+                This repeats until the TREND DETECT box is empty.
+              </div>
+            )}
+
+            <div className="flex items-center justify-between mt-3">
+              <p className={`text-[9px] ${th.textFaint}`}>~{Math.min(5, autoTickerList.length) * 12}s per batch</p>
+              <div className="flex gap-1">
+                <input ref={fileRefAuto} type="file" accept="image/*" className="hidden" onChange={handleAutoOCR} />
+                <button onClick={() => fileRefAuto.current?.click()} disabled={loading} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>↑ img</button>
+                {autoTickerList.length > 0 && <button onClick={() => setAutoTickers('')} disabled={loading} className="text-[9px] px-2 py-0.5 border border-red-800 rounded text-red-500 hover:border-red-500 hover:text-red-400 font-medium">✕ Clear</button>}
+                <button 
+                  onClick={runTrendDetectionWrapper} 
+                  disabled={loading || autoTickerList.length === 0}
+                  className="text-[9px] px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
+                >
+                  {loading ? '...' : `ANALYZE NEXT ${Math.min(5, autoTickerList.length)}`}
+                </button>
+              </div>
+            </div>
+          </div>
   );
 }
 
