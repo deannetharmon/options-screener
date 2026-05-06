@@ -862,7 +862,7 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
   );
 }
 
-// ── NEW: Trend Detection & Auto-Assign (replaces old AUTO scanning behavior) ──
+// ── Trend Detection with Batch Processing (5 at a time) ─────────────────────
 async function runTrendDetection(
   autoTickers: string,
   bpsTickers: string,
@@ -873,23 +873,31 @@ async function runTrendDetection(
   handleBcsChange: (v: string) => void,
   handleIcChange: (v: string) => void,
   handleBrokenChange: (v: string) => void,
+  setAutoTickers: (v: string) => void,
   setError: (e: string) => void,
   setStatus: (s: string) => void,
   setLoading: (l: boolean) => void,
   parseTickers: (s: string) => string[]
 ) {
-  const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
-  if (!autoList.length) { setError('Enter at least one ticker for trend detection.'); return; }
+  let autoList = parseTickers(autoTickers);
+  if (autoList.length === 0) { 
+    setError('Enter at least one ticker for trend detection.'); 
+    return; 
+  }
+
+  const batch = autoList.slice(0, 5);
+  const remaining = autoList.slice(5);
 
   setError('');
   setLoading(true);
+
   try {
-    setStatus('Analyzing trends...');
+    setStatus(`Analyzing batch of ${batch.length} tickers...`);
     const distributions: { bps: string[]; bcs: string[]; ic: string[]; broken: string[] } = { bps: [], bcs: [], ic: [], broken: [] };
 
-    for (let i = 0; i < autoList.length; i++) {
-      const symbol = autoList[i];
-      setStatus(`Analyzing trend for ${symbol} (${i + 1}/${autoList.length})...`);
+    for (let i = 0; i < batch.length; i++) {
+      const symbol = batch[i];
+      setStatus(`Analyzing ${symbol} (${i + 1}/${batch.length})...`);
       let trendResult: TrendResult | undefined;
       try {
         trendResult = await getTrend(symbol);
@@ -898,7 +906,7 @@ async function runTrendDetection(
         distributions.broken.push(symbol);
         continue;
       }
-      if (i < autoList.length - 1) await sleep(12000);
+      if (i < batch.length - 1) await sleep(12000);
 
       if (trendResult?.trend === 'unknown' || !trendResult) {
         distributions.broken.push(symbol);
@@ -913,13 +921,14 @@ async function runTrendDetection(
       }
     }
 
-    // Auto-merge into target boxes (prevents accidental data loss)
     if (distributions.bps.length > 0) handleBpsChange(mergeTickers(bpsTickers, distributions.bps));
     if (distributions.bcs.length > 0) handleBcsChange(mergeTickers(bcsTickers, distributions.bcs));
     if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
     if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
 
-    setStatus(`✅ Assigned ${autoList.length} tickers to strategy / review boxes`);
+    setAutoTickers(tickersToString(remaining));   // Keep only unprocessed tickers
+
+    setStatus(`✅ Processed ${batch.length} tickers. ${remaining.length} remaining in AUTO box.`);
   } catch (e: any) {
     setError(e.message);
   } finally {
@@ -1172,6 +1181,7 @@ export default function Home() {
       handleBcsChange,
       handleIcChange,
       handleBrokenChange,
+      setAutoTickers,
       setError,
       setStatus,
       setLoading,
