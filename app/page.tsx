@@ -248,13 +248,11 @@ function tickersToString(tickers: string[]): string {
   return tickers.join(', '); 
 }
 
-// Missing generateSuggestions
 function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
-  // (You can leave this empty or copy from previous version if you have it)
-  return [];
+  return []; // TODO: implement later if you want smart suggestions
 }
 
-// Missing load/save filter functions (stub for now)
+
 async function loadFilters(strategy: string): Promise<any> { return {}; }
 async function saveFilter(...args: any[]): Promise<any> { return {}; }
 async function deleteFilter(...args: any[]): Promise<void> {}
