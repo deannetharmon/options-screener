@@ -814,7 +814,6 @@ function ResultCard({ result, th, rules }: {
     </div>
   );
 }
-
 // ── Rules Modal Subcomponents (defined OUTSIDE RulesModal to prevent remount on render) ──
 function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }: {
   ruleKey: keyof RulesType;
