@@ -849,7 +849,7 @@ function ResultCard({ result, th, rules }: {
           symbol={result.symbol} 
           onClose={() => setShowBestFinder(false)} 
           th={th} 
-          rules={runtimeRules} 
+          rules={rules} 
         />
       )}
     </div>
