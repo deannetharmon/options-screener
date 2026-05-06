@@ -783,7 +783,7 @@ function ResultCard({ result, th, rules }: {
           {c.pop != null && <div className="text-xs shrink-0"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop.toFixed(0)}%</span></div>}
           <div className="text-xs shrink-0"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
           <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
-          {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} /></span>}
+          {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
           {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
         </>}
 
@@ -1151,15 +1151,6 @@ function BestOpportunityFinder({
 
 
 // ── Main App ───────────────────────────────────────────────────────────────
-    {showBestFinder && (
-      <BestOpportunityFinder 
-        symbol={result.symbol} 
-        onClose={() => setShowBestFinder(false)} 
-        th={th} 
-        rules={runtimeRules} 
-      />
-    )}
-
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
