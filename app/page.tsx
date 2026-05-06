@@ -695,11 +695,13 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
-function ResultCard({ result, th, rules }: { result: ScreenResult; th: typeof THEMES[Theme]; rules: RulesType; }) {
+function ResultCard({ result, th, rules }: { 
+  result: ScreenResult; 
+  th: typeof THEMES[Theme]; 
+  rules: RulesType; 
+}) {
   const [expanded, setExpanded] = useState(false);
-  const [showBestFinder, setShowBestFinder] = useState(false); 
-}) {  const [expanded, setExpanded] = useState(false);
-  const [showBestFinder, setShowBestFinder] = useState(false);   // ← NEW
+  const [showBestFinder, setShowBestFinder] = useState(false);
 
   const c = result.bestCandidate;
   const t = result.trendResult;
@@ -722,7 +724,7 @@ function ResultCard({ result, th, rules }: { result: ScreenResult; th: typeof TH
     <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`} 
          onClick={() => setExpanded(!expanded)}>
 
-      {/* Header Row - unchanged */}
+      {/* Header Row */}
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
         <div className="w-16 shrink-0">
           <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
@@ -790,7 +792,7 @@ function ResultCard({ result, th, rules }: { result: ScreenResult; th: typeof TH
             </div>
           )}
 
-      {/* NEW: Best Opportunity Button */}
+          {/* Best Opportunity Button */}
           <button 
             onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
             className="w-full py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-sm font-medium tracking-wider transition-colors mt-2"
@@ -800,7 +802,7 @@ function ResultCard({ result, th, rules }: { result: ScreenResult; th: typeof TH
         </div>
       )}
 
-      {/* NEW: Best Opportunity Modal - renders at component level */}
+      {/* Best Opportunity Modal */}
       {showBestFinder && (
         <BestOpportunityFinder 
           symbol={result.symbol} 
