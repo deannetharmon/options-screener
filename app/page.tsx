@@ -188,28 +188,44 @@ async function saveFilter(
     
     if (result.success) {
       // Sync to localStorage
-      const current = await loadFilters(strategy);
-      if (replace) current[name] = payload.tickers || { bps: payload.bps, bcs: payload.bcs, ic: payload.ic };
-      else current[name] = payload.tickers || { bps: payload.bps, bcs: payload.bcs, ic: payload.ic };
+      const current = await loadFilters(strategy) as any;
+      
+      if (strategy === 'global') {
+        current[name] = { 
+          bps: payload.bps || [], 
+          bcs: payload.bcs || [], 
+          ic: payload.ic || [] 
+        };
+      } else {
+        current[name] = payload.tickers || [];
+      }
+      
       localStorage.setItem(lsKey, JSON.stringify(current));
     }
     return result;
   } catch {
     // API failed → save only to localStorage
     try {
-      const current = await loadFilters(strategy);
-      if (replace || !current[name]) {
-        current[name] = payload.tickers || { bps: payload.bps, bcs: payload.bcs, ic: payload.ic };
-        localStorage.setItem(lsKey, JSON.stringify(current));
-        return { success: true };
+      const current = await loadFilters(strategy) as any;
+      
+      if (strategy === 'global') {
+        current[name] = { 
+          bps: payload.bps || [], 
+          bcs: payload.bcs || [], 
+          ic: payload.ic || [] 
+        };
       } else {
-        return { conflict: true, message: `"${name}" already exists` };
+        current[name] = payload.tickers || [];
       }
+      
+      localStorage.setItem(lsKey, JSON.stringify(current));
+      return { success: true };
     } catch (e) {
       return { success: false, message: 'Failed to save' };
     }
   }
 }
+
 async function deleteFilter(strategy: string, name: string): Promise<void> {
   const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
   
