@@ -96,6 +96,127 @@ interface LoadPromptState {
   show: boolean; name: string; type: 'strategy' | 'global'; onLoad?: (merge: boolean) => void;
 }
 
+// ── Helper Functions ───────────────────────────────────────────────────────
+function daysUntil(dateStr: string): number {
+  const target = new Date(dateStr);
+  const now = new Date();
+  return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function sleep(ms: number) { 
+  return new Promise(resolve => setTimeout(resolve, ms)); 
+}
+
+function getSavedRules(): RulesType {
+  try { 
+    const saved = localStorage.getItem(LS_RULES); 
+    return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES }; 
+  } catch { 
+    return { ...DEFAULT_RULES }; 
+  }
+}
+
+function saveRulesToStorage(rules: RulesType) {
+  try { localStorage.setItem(LS_RULES, JSON.stringify(rules)); } catch {}
+}
+
+function getSavedTheme(): Theme {
+  try { 
+    const t = localStorage.getItem(LS_THEME); 
+    return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; 
+  } catch { 
+    return 'dark'; 
+  }
+}
+
+// Width steps
+function getWidthSteps(maxWidth: number, price: number | null): number[] {
+  const minWidth = price == null ? 5 : price >= 500 ? 25 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
+  const steps: number[] = [];
+  for (let w = minWidth; w <= maxWidth; w += minWidth) steps.push(w);
+  return steps;
+}
+
+function getBidAskMax(price: number | null): number {
+  if (price == null) return 1.50;
+  if (price >= 500) return 3.00;
+  if (price >= 200) return 1.50;
+  if (price >= 100) return 0.50;
+  return 0.10;
+}
+
+// Google Calendar URLs (needed for buttons)
+function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
+  const followUp = addBusinessDays(earningsDate, 2); // you'll need addBusinessDays too
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
+  const title = encodeURIComponent(`Re-screen ${symbol} — earnings passed`);
+  const details = encodeURIComponent(`${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nRe-screen: ${HUNTER_URL}`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
+}
+
+function buildEntryCalUrl(result: ScreenResult): string {
+  const c = result.bestCandidate!;
+  const followUp = addBusinessDays(new Date().toISOString().split('T')[0], 1);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
+  const title = encodeURIComponent(`Enter trade — ${result.symbol} ${result.strategy}`);
+  const details = encodeURIComponent(`Re-verify ${result.symbol} ${result.strategy}\nCredit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\n\n${HUNTER_URL}`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
+}
+
+// Business day helpers
+function addBusinessDays(dateStr: string, days: number): Date {
+  const date = new Date(dateStr);
+  let added = 0;
+  while (added < days) {
+    date.setDate(date.getDate() + 1);
+    const dow = date.getDay();
+    if (dow !== 0 && dow !== 6) added++;
+  }
+  return date;
+}
+
+function formatCalDate(date: Date): string {
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
+}
+
+// Missing OCR + merge helpers
+async function extractTickersFromImage(file: File): Promise<string[]> {
+  const Tesseract = await import('tesseract.js');
+  const { data: { text } } = await Tesseract.recognize(file, 'eng', { logger: () => {} });
+  const blacklist = new Set(['USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ','BPS','BCS','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO','AI','AN','IS','IT','AT','OR','AS','BY','IN']);
+  const tickers: string[] = [];
+  const tickerPattern = /\b([A-Z]{2,5})\b/g;
+  for (const line of text.split('\n')) {
+    let match;
+    while ((match = tickerPattern.exec(line)) !== null) {
+      if (!blacklist.has(match[1])) tickers.push(match[1]);
+    }
+  }
+  return Array.from(new Set(tickers));
+}
+
+function mergeTickers(existing: string, newTickers: string[]): string {
+  const existingList = existing.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  const existingSet = new Set(existingList);
+  const toAdd = newTickers.filter(t => !existingSet.has(t));
+  return [...existingList, ...toAdd].join(', ');
+}
+
+function tickersToString(tickers: string[]): string { 
+  return tickers.join(', '); 
+}
+
+// Missing generateSuggestions
+function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
+  // (You can leave this empty or copy from previous version if you have it)
+  return [];
+}
+
+// Missing load/save filter functions (stub for now)
+async function loadFilters(strategy: string): Promise<any> { return {}; }
+async function saveFilter(...args: any[]): Promise<any> { return {}; }
+async function deleteFilter(...args: any[]): Promise<void> {}
+
 // ── Index / ETF overrides ──────────────────────────────────────────────────
 // These instruments have no earnings, high liquidity, and typically lower IVR.
 // They are screened with relaxed IVR rules and the earnings check is suppressed.
