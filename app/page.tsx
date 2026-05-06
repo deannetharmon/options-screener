@@ -179,7 +179,49 @@ function formatCalDate(date: Date): string {
   return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
 }
 
-// Missing OCR + merge helpers
+// ── Polygon Trend Detection ────────────────────────────────────────────────
+async function getTrend(symbol: string): Promise<TrendResult> {
+  const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
+  if (!apiKey) throw new Error('NEXT_PUBLIC_POLYGON_API_KEY not set');
+
+  const to = new Date();
+  const from = new Date();
+  from.setMonth(from.getMonth() - 6);
+
+  const res = await fetch(
+    `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`
+  );
+
+  if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
+
+  const data = await res.json();
+  const bars: { c: number }[] = data.results ?? [];
+
+  if (bars.length < 50) 
+    return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough price history' };
+
+  const closes = bars.map(b => b.c);
+  const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+  const currentPrice = closes[closes.length - 1];
+
+  const maDiff = (ma20 - ma50) / ma50;
+  const priceVsMa50 = (currentPrice - ma50) / ma50;
+
+  const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
+  const sidewaysBand = isIdx ? 0.06 : 0.03;
+  const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
+
+  if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand) {
+    return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
+  }
+  if (maDiff > 0 && currentPrice > ma50) {
+    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
+  }
+  return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
+}
+
+// OCR + merge helpers
 async function extractTickersFromImage(file: File): Promise<string[]> {
   const Tesseract = await import('tesseract.js');
   const { data: { text } } = await Tesseract.recognize(file, 'eng', { logger: () => {} });
