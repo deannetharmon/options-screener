@@ -135,6 +135,16 @@ const LS_CAL_ENTRY = 'prosper-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
 const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
 
+// ── NEW: Best Opportunity Finder Component ─────────────────────────────────
+interface BestSetup {
+  strategy: string;
+  grade: 'A+' | 'A' | 'B' | 'C' | 'Skip';
+  setup: SpreadCandidate;
+  score: number;
+  summary: string;
+  caveats: string[];
+}
+
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr);
   const now = new Date();
@@ -755,13 +765,30 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
 
 function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme] }) {
   const [expanded, setExpanded] = useState(false);
-  const c = result.bestCandidate, t = result.trendResult;
-  const stratBadge = result.strategy === 'BPS' ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500' : result.strategy === 'BCS' ? 'bg-red-500/15 border-red-500 text-red-500' : 'bg-blue-500/15 border-blue-500 text-blue-500';
+  const [showBestFinder, setShowBestFinder] = useState(false);   // ← NEW
+
+  const c = result.bestCandidate;
+  const t = result.trendResult;
+  const stratBadge = result.strategy === 'BPS' 
+    ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500' 
+    : result.strategy === 'BCS' 
+    ? 'bg-red-500/15 border-red-500 text-red-500' 
+    : 'bg-blue-500/15 border-blue-500 text-blue-500';
+
   const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
-  const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings')) && result.earningsDate && daysUntil(result.earningsDate) >= 0;
-  const cardBorder = result.qualified ? (isApproaching ? 'border-yellow-500/50' : th.border) : th.borderLight;
+  const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings')) 
+    && result.earningsDate 
+    && daysUntil(result.earningsDate) >= 0;
+
+  const cardBorder = result.qualified 
+    ? (isApproaching ? 'border-yellow-500/50' : th.border) 
+    : th.borderLight;
+
   return (
-    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`} onClick={() => setExpanded(!expanded)}>
+    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`} 
+         onClick={() => setExpanded(!expanded)}>
+
+      {/* Header Row - unchanged */}
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
         <div className="w-16 shrink-0">
           <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
@@ -770,6 +797,7 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
         {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
+        
         {c && <>
           <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
           <StrikesDisplay c={c} th={th} />
@@ -781,6 +809,7 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
           {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} /></span>}
           {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
         </>}
+
         {!result.qualified && result.failReasons.length > 0 && (
           <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
             <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
@@ -789,9 +818,12 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
         )}
         <div className={`ml-auto ${th.textFaint} text-xs shrink-0`}>{expanded ? '▲' : '▼'}</div>
       </div>
+
+      {/* Expanded Content */}
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
           {t && <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border}`}><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
+          
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {Object.entries(result.checks).map(([key, check]) => (
               <div key={key} className="flex items-start gap-2">
@@ -804,15 +836,44 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
               </div>
             ))}
           </div>
+
           {hasEarningsBlock && result.earningsDate && (
             <div className={`pt-2 border-t ${th.border} flex items-center gap-3`}>
               <p className={`text-[10px] ${th.textFaint} flex-1`}>Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
               <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>
             </div>
           )}
-          {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && <div className={`pt-2 border-t ${th.border}`}><p className={`text-[10px] ${th.textMuted}`}>Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p></div>}
-          {result.failReasons.length > 0 && <div className={`pt-2 border-t ${th.border}`}><p className="text-[10px] text-red-500 font-medium">{result.failReasons.join(' · ')}</p></div>}
+
+          {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
+            <div className={`pt-2 border-t ${th.border}`}>
+              <p className={`text-[10px] ${th.textMuted}`}>Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p>
+            </div>
+          )}
+
+          {result.failReasons.length > 0 && (
+            <div className={`pt-2 border-t ${th.border}`}>
+              <p className="text-[10px] text-red-500 font-medium">{result.failReasons.join(' · ')}</p>
+            </div>
+          )}
+
+          {/* NEW: Best Opportunity Button */}
+          <button 
+            onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
+            className="w-full py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-sm font-medium tracking-wider transition-colors mt-2"
+          >
+            🔍 FIND BEST OPPORTUNITY FOR {result.symbol}
+          </button>
         </div>
+      )}
+
+      {/* NEW: Best Opportunity Modal */}
+      {showBestFinder && (
+        <BestOpportunityFinder 
+          symbol={result.symbol} 
+          onClose={() => setShowBestFinder(false)} 
+          th={th} 
+          rules={runtimeRules} 
+        />
       )}
     </div>
   );
@@ -969,7 +1030,159 @@ async function runTrendDetection(
   }
 }
 
+// ── NEW: Best Opportunity Finder ───────────────────────────────────────────
+interface BestSetup {
+  strategy: string;
+  grade: 'A+' | 'A' | 'B' | 'C' | 'Skip';
+  setup: SpreadCandidate;
+  score: number;
+  summary: string;
+  caveats: string[];
+}
+
+function BestOpportunityFinder({ 
+  symbol, 
+  onClose, 
+  th, 
+  rules 
+}: { 
+  symbol: string; 
+  onClose: () => void; 
+  th: typeof THEMES[Theme]; 
+  rules: RulesType;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [best, setBest] = useState<BestSetup | null>(null);
+  const [error, setError] = useState('');
+
+  const findBest = async () => {
+    setLoading(true); setError(''); setBest(null);
+    try {
+      const token = await getAccessToken();
+      const [metricsArray, price] = await Promise.all([
+        getMarketMetrics([symbol], token),
+        getQuote(symbol, token)
+      ]);
+      const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
+      const chainData = await getChain(symbol, token, rules);
+
+      const candidates: BestSetup[] = [];
+      const strategies: ('BPS' | 'BCS' | 'IC')[] = ['BPS', 'BCS', 'IC'];
+
+      for (const strat of strategies) {
+        const result = runChecklist(symbol, strat, metrics, chainData, price, rules);
+        if (result.bestCandidate && result.qualified) {
+          const c = result.bestCandidate;
+          let score = (c.roc || 0) * 0.45 + ((c.pop || 70) * 0.35) + (c.creditRatio * 100 * 0.2);
+          if (strat === 'IC') score += 12;
+
+          let grade: BestSetup['grade'] = 'C';
+          if (score > 88) grade = 'A+';
+          else if (score > 75) grade = 'A';
+          else if (score > 60) grade = 'B';
+
+          const caveats: string[] = [];
+          if (c.creditRatio < 0.28) caveats.push("Credit ratio somewhat thin due to current low VIX");
+          if (c.dte < 35) caveats.push("DTE approaching 21 — watch gamma risk");
+          if (metrics.ivRank && metrics.ivRank < 28) caveats.push("Lower IVR reduces premium cushion");
+          if (result.earningsDate) caveats.push(`Earnings coming on ${result.earningsDate}`);
+
+          candidates.push({
+            strategy: strat,
+            grade,
+            setup: c,
+            score,
+            summary: `Strong ${strat} setup on ${symbol} — high probability in current market conditions.`,
+            caveats: caveats.length ? caveats : ["Very clean setup with no major red flags"]
+          });
+        }
+      }
+
+      if (candidates.length === 0) {
+        setError("No qualifying setups found even with deeper analysis.");
+      } else {
+        const top = candidates.sort((a, b) => b.score - a.score)[0];
+        setBest(top);
+      }
+    } catch (e: any) {
+      setError(e.message || "Failed to analyze chain");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
+        <div className="flex justify-between mb-4">
+          <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity Finder — {symbol}</h2>
+          <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <button
+          onClick={findBest}
+          disabled={loading}
+          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors"
+        >
+          {loading ? "DEEP SCANNING OPTIONS CHAIN..." : "FIND BEST SETUP FOR THIS STOCK"}
+        </button>
+
+        {error && <div className="mt-4 p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm">{error}</div>}
+
+        {best && (
+          <div className="mt-6 space-y-5">
+            <div className={`p-5 rounded-2xl border ${best.grade.startsWith('A') ? 'border-emerald-500 bg-emerald-950/40' : 'border-amber-500 bg-amber-950/30'}`}>
+              <div className="flex justify-between items-start">
+                <div>
+                  <span className="text-5xl font-black text-emerald-400">{best.grade}</span>
+                  <span className="ml-4 text-2xl font-semibold">{best.strategy}</span>
+                </div>
+                <div className="text-right">
+                  <div className="text-3xl font-bold text-emerald-400">${best.setup.credit.toFixed(2)}</div>
+                  <div className="text-sm text-slate-400">{best.setup.roc.toFixed(0)}% ROC • {best.setup.pop?.toFixed(0)}% POP</div>
+                </div>
+              </div>
+
+              <StrikesDisplay c={best.setup} th={th} />
+              <p className="mt-4 text-sm leading-relaxed text-slate-200">{best.summary}</p>
+
+              {best.caveats.length > 0 && (
+                <div className="mt-5 pt-4 border-t border-slate-700">
+                  <p className="uppercase text-[10px] tracking-widest text-amber-400 mb-2">CAVEATS / RISKS</p>
+                  <ul className="text-sm space-y-1.5 text-slate-300">
+                    {best.caveats.map((c, i) => <li key={i}>• {c}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={() => {
+                alert(`Trade ready: ${best.strategy} ${symbol} ${best.setup.shortStrike}/${best.setup.longStrike} — $${best.setup.credit.toFixed(2)} credit`);
+                onClose();
+              }}
+              className="w-full py-4 bg-white text-black font-bold rounded-2xl hover:bg-slate-100 text-base"
+            >
+              TRADE THIS SETUP IN TASTYTRADE →
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 // ── Main App ───────────────────────────────────────────────────────────────
+    {showBestFinder && (
+      <BestOpportunityFinder 
+        symbol={result.symbol} 
+        onClose={() => setShowBestFinder(false)} 
+        th={th} 
+        rules={runtimeRules} 
+      />
+    )}
+
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
