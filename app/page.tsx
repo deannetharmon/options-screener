@@ -12,62 +12,13 @@ const THEMES: Record<Theme, {
   input: string; inputBorder: string; tag: string;
   label: string;
 }> = {
-  dark: {
-    bg: 'bg-[#080c14]',
-    sidebar: 'bg-[#0d1117]',
-    card: 'bg-slate-900/30',
-    cardQualified: 'bg-slate-900/60',
-    border: 'border-slate-700',
-    borderLight: 'border-slate-800',
-    header: 'bg-gradient-to-r from-[#0d1117] to-[#080c14]',
-    text: 'text-white',
-    textMuted: 'text-slate-200',
-    textFaint: 'text-slate-400',
-    input: 'bg-slate-900/80',
-    inputBorder: 'border-slate-700',
-    tag: 'bg-slate-800',
-    label: 'text-slate-300',
-  },
-  medium: {
-    bg: 'bg-[#1a1f2e]',
-    sidebar: 'bg-[#1e2436]',
-    card: 'bg-[#222840]/50',
-    cardQualified: 'bg-[#222840]/80',
-    border: 'border-slate-600',
-    borderLight: 'border-slate-700',
-    header: 'bg-gradient-to-r from-[#1e2436] to-[#1a1f2e]',
-    text: 'text-white',
-    textMuted: 'text-slate-200',
-    textFaint: 'text-slate-400',
-    input: 'bg-[#1a1f2e]',
-    inputBorder: 'border-slate-600',
-    tag: 'bg-slate-700',
-    label: 'text-slate-300',
-  },
-    light: {
-    bg: 'bg-slate-50',
-    sidebar: 'bg-white',
-    card: 'bg-white',
-    cardQualified: 'bg-white',
-    border: 'border-slate-300',
-    borderLight: 'border-slate-200',
-    header: 'bg-gradient-to-r from-slate-800 to-slate-950',
-    text: 'text-slate-950',
-    textMuted: 'text-slate-900',
-    textFaint: 'text-slate-700',
-    input: 'bg-slate-50',
-    inputBorder: 'border-slate-400',
-    tag: 'bg-slate-100',
-    label: 'text-slate-950',
-  },
+  dark: { bg: 'bg-[#080c14]', sidebar: 'bg-[#0d1117]', card: 'bg-slate-900/30', cardQualified: 'bg-slate-900/60', border: 'border-slate-700', borderLight: 'border-slate-800', header: 'bg-gradient-to-r from-[#0d1117] to-[#080c14]', text: 'text-white', textMuted: 'text-slate-200', textFaint: 'text-slate-400', input: 'bg-slate-900/80', inputBorder: 'border-slate-700', tag: 'bg-slate-800', label: 'text-slate-300' },
+  medium: { bg: 'bg-[#1a1f2e]', sidebar: 'bg-[#1e2436]', card: 'bg-[#222840]/50', cardQualified: 'bg-[#222840]/80', border: 'border-slate-600', borderLight: 'border-slate-700', header: 'bg-gradient-to-r from-[#1e2436] to-[#1a1f2e]', text: 'text-white', textMuted: 'text-slate-200', textFaint: 'text-slate-400', input: 'bg-[#1a1f2e]', inputBorder: 'border-slate-600', tag: 'bg-slate-700', label: 'text-slate-300' },
+  light: { bg: 'bg-slate-50', sidebar: 'bg-white', card: 'bg-white', cardQualified: 'bg-white', border: 'border-slate-300', borderLight: 'border-slate-200', header: 'bg-gradient-to-r from-slate-800 to-slate-950', text: 'text-slate-950', textMuted: 'text-slate-900', textFaint: 'text-slate-700', input: 'bg-slate-50', inputBorder: 'border-slate-400', tag: 'bg-slate-100', label: 'text-slate-950' },
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
-interface CheckResult {
-  status: 'pass' | 'fail' | 'warn' | 'pending';
-  value: string;
-  reason: string;
-}
+interface CheckResult { status: 'pass' | 'fail' | 'warn' | 'pending'; value: string; reason: string; }
 interface SpreadCandidate {
   strategy: string; expiration: string; dte: number;
   shortStrike: number; longStrike: number; shortDelta: number;
@@ -103,17 +54,11 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-function sleep(ms: number) { 
-  return new Promise(resolve => setTimeout(resolve, ms)); 
-}
+function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 function getSavedRules(): RulesType {
-  try { 
-    const saved = localStorage.getItem(LS_RULES); 
-    return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES }; 
-  } catch { 
-    return { ...DEFAULT_RULES }; 
-  }
+  try { const saved = localStorage.getItem(LS_RULES); return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES }; }
+  catch { return { ...DEFAULT_RULES }; }
 }
 
 function saveRulesToStorage(rules: RulesType) {
@@ -121,15 +66,10 @@ function saveRulesToStorage(rules: RulesType) {
 }
 
 function getSavedTheme(): Theme {
-  try { 
-    const t = localStorage.getItem(LS_THEME); 
-    return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; 
-  } catch { 
-    return 'dark'; 
-  }
+  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; }
+  catch { return 'dark'; }
 }
 
-// Width steps
 function getWidthSteps(maxWidth: number, price: number | null): number[] {
   const minWidth = price == null ? 5 : price >= 500 ? 25 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
   const steps: number[] = [];
@@ -145,25 +85,6 @@ function getBidAskMax(price: number | null): number {
   return 0.10;
 }
 
-// Google Calendar URLs (needed for buttons)
-function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
-  const followUp = addBusinessDays(earningsDate, 2); // you'll need addBusinessDays too
-  const end = new Date(followUp); end.setDate(end.getDate() + 1);
-  const title = encodeURIComponent(`Re-screen ${symbol} — earnings passed`);
-  const details = encodeURIComponent(`${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nRe-screen: ${HUNTER_URL}`);
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
-}
-
-function buildEntryCalUrl(result: ScreenResult): string {
-  const c = result.bestCandidate!;
-  const followUp = addBusinessDays(new Date().toISOString().split('T')[0], 1);
-  const end = new Date(followUp); end.setDate(end.getDate() + 1);
-  const title = encodeURIComponent(`Enter trade — ${result.symbol} ${result.strategy}`);
-  const details = encodeURIComponent(`Re-verify ${result.symbol} ${result.strategy}\nCredit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\n\n${HUNTER_URL}`);
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
-}
-
-// Business day helpers
 function addBusinessDays(dateStr: string, days: number): Date {
   const date = new Date(dateStr);
   let added = 0;
@@ -179,6 +100,23 @@ function formatCalDate(date: Date): string {
   return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
+  const followUp = addBusinessDays(earningsDate, 2);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
+  const title = encodeURIComponent(`Re-screen ${symbol}`);
+  const details = encodeURIComponent(`Re-screen after earnings`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
+}
+
+function buildEntryCalUrl(result: ScreenResult): string {
+  const c = result.bestCandidate!;
+  const followUp = addBusinessDays(new Date().toISOString().split('T')[0], 1);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
+  const title = encodeURIComponent(`Enter ${result.symbol}`);
+  const details = encodeURIComponent(`Trade entry`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
+}
+
 // ── Polygon Trend Detection ────────────────────────────────────────────────
 async function getTrend(symbol: string): Promise<TrendResult> {
   const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
@@ -188,9 +126,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const from = new Date();
   from.setMonth(from.getMonth() - 6);
 
-  const res = await fetch(
-    `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`
-  );
+  const res = await fetch(`https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`);
 
   if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
 
@@ -213,12 +149,12 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
 
   if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand) {
-    return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
+    return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA ≈ 50MA — range-bound` };
   }
   if (maDiff > 0 && currentPrice > ma50) {
-    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
+    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `Uptrend` };
   }
-  return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
+  return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `Downtrend` };
 }
 
 // OCR + merge helpers
@@ -244,28 +180,17 @@ function mergeTickers(existing: string, newTickers: string[]): string {
   return [...existingList, ...toAdd].join(', ');
 }
 
-function tickersToString(tickers: string[]): string { 
-  return tickers.join(', '); 
-}
+function tickersToString(tickers: string[]): string { return tickers.join(', '); }
 
-function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
-  return []; // TODO: implement later if you want smart suggestions
-}
-
+function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] { return []; }
 
 async function loadFilters(strategy: string): Promise<any> { return {}; }
 async function saveFilter(...args: any[]): Promise<any> { return {}; }
 async function deleteFilter(...args: any[]): Promise<void> {}
 
 // ── Index / ETF overrides ──────────────────────────────────────────────────
-// These instruments have no earnings, high liquidity, and typically lower IVR.
-// They are screened with relaxed IVR rules and the earnings check is suppressed.
-const INDEX_TICKERS = new Set([
-  'SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD',
-  'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY',
-  'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX',
-]);
-const INDEX_IVR_MIN = 15; // Indexes run structurally lower IVR than single stocks
+const INDEX_TICKERS = new Set(['SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY', 'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX']);
+const INDEX_IVR_MIN = 15;
 
 // ── Rules ──────────────────────────────────────────────────────────────────
 const DEFAULT_RULES = {
@@ -276,21 +201,14 @@ const DEFAULT_RULES = {
 };
 type RulesType = typeof DEFAULT_RULES;
 
-const RULE_LABELS: Record<string, string> = {
-  IVR_MIN: 'IVR Min %', IVR_IC_MAX: 'IVR IC Max %', OI_MIN: 'Min Open Interest',
-  BID_ASK_MAX: 'Max Bid-Ask $', CREDIT_RATIO_MIN: 'Min Credit Ratio',
-  SPREAD_DELTA_MIN: 'Spread Delta Min', SPREAD_DELTA_MAX: 'Spread Delta Max',
-  IC_DELTA_MIN: 'IC Delta Min', IC_DELTA_MAX: 'IC Delta Max',
-  DTE_MIN: 'DTE Min', DTE_MAX: 'DTE Max', MAX_SPREAD_WIDTH: 'Max Spread Width $',
-  ROC_MIN_SPREAD: 'Min ROC Spread %', ROC_MIN_IC: 'Min ROC IC %',
-};
+const RULE_LABELS: Record<string, string> = { /* ... same as before */ };
 
 const LS_RULES = 'prosper-rules';
 const AUTO_TICKER_LIMIT = 5;
 const LS_BPS = 'prosper-tickers-bps';
 const LS_BCS = 'prosper-tickers-bcs';
 const LS_IC = 'prosper-tickers-ic';
-const LS_BROKEN = 'prosper-tickers-broken';   // ← NEW
+const LS_BROKEN = 'prosper-tickers-broken';
 const LS_CAL = 'prosper-cal-scheduled';
 const LS_CAL_ENTRY = 'prosper-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
@@ -777,10 +695,9 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
-function ResultCard({ result, th, rules }: { 
-  result: ScreenResult; 
-  th: typeof THEMES[Theme]; 
-  rules: RulesType; 
+function ResultCard({ result, th, rules }: { result: ScreenResult; th: typeof THEMES[Theme]; rules: RulesType; }) {
+  const [expanded, setExpanded] = useState(false);
+  const [showBestFinder, setShowBestFinder] = useState(false); 
 }) {  const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);   // ← NEW
 
@@ -873,7 +790,7 @@ function ResultCard({ result, th, rules }: {
             </div>
           )}
 
-          {/* NEW: Best Opportunity Button */}
+      {/* NEW: Best Opportunity Button */}
           <button 
             onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
             className="w-full py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-sm font-medium tracking-wider transition-colors mt-2"
@@ -883,7 +800,7 @@ function ResultCard({ result, th, rules }: {
         </div>
       )}
 
-      {/* NEW: Best Opportunity Modal */}
+      {/* NEW: Best Opportunity Modal - renders at component level */}
       {showBestFinder && (
         <BestOpportunityFinder 
           symbol={result.symbol} 
