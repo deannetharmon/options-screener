@@ -477,12 +477,28 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; return all[key] || null; } catch { return null; }
   });
   const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
 
   const presets: { label: string; days: number; hint: string }[] = [
-    { label: '+2d', days: 2, hint: 'Minor issue — revisit soon' },
-    { label: '+1wk', days: 5, hint: 'Post-spike or thin premium' },
+    { label: '+2d',  days: 2,  hint: 'Minor issue — revisit soon' },
+    { label: '+1wk', days: 5,  hint: 'Post-spike or thin premium' },
     { label: '+2wk', days: 10, hint: 'Post-earnings settle' },
   ];
+
+  const handleOpen = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setPopoverStyle({
+        position: 'fixed',
+        top: rect.bottom + 6,
+        left: rect.left,
+        zIndex: 9999,
+      });
+    }
+    setOpen(!open);
+  };
 
   const handleSchedule = (days: number, label: string) => {
     window.open(buildEntryCalUrl(result, days), '_blank');
@@ -491,6 +507,13 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
     setOpen(false);
   };
 
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [open]);
+
   if (scheduled) return (
     <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">
       ✓ re-screen {scheduled}
@@ -498,9 +521,10 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
   );
 
   return (
-    <div className="relative inline-block">
+    <>
       <button
-        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+        ref={btnRef}
+        onClick={handleOpen}
         className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors font-medium`}
       >
         📅 re-screen
@@ -508,22 +532,23 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
       {open && (
         <div
           onClick={e => e.stopPropagation()}
-          className={`absolute bottom-6 left-0 z-50 ${th.sidebar} border ${th.border} rounded-lg shadow-xl p-2 w-44`}
+          style={popoverStyle}
+          className={`${th.sidebar} border ${th.border} rounded-lg shadow-2xl p-2 w-48`}
         >
-          <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5 uppercase`}>Schedule re-screen in</p>
+          <p className={`text-[8px] ${th.textFaint} tracking-widest mb-2 uppercase`}>Re-screen this stock in:</p>
           {presets.map(p => (
             <button
               key={p.label}
               onClick={() => handleSchedule(p.days, p.label)}
-              className={`w-full text-left px-2 py-1.5 rounded hover:bg-emerald-500/10 hover:border-emerald-500 border border-transparent transition-colors mb-1 last:mb-0`}
+              className={`w-full text-left px-2 py-2 rounded hover:bg-emerald-500/10 border border-transparent hover:border-emerald-700 transition-colors mb-1 last:mb-0`}
             >
-              <span className="text-[10px] text-emerald-400 font-bold">{p.label}</span>
+              <span className="text-emerald-400 font-bold text-xs">{p.label}</span>
               <span className={`text-[9px] ${th.textFaint} ml-2`}>{p.hint}</span>
             </button>
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -847,7 +872,7 @@ function ResultCard({ result, th, rules }: {
     : th.borderLight;
 
   return (
-    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`}
+    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg cursor-pointer transition-all hover:shadow-md`}
          onClick={() => setExpanded(!expanded)}>
 
       {/* Header Row */}
@@ -1617,7 +1642,7 @@ export default function Home() {
                       try { localStorage.setItem(LS_CAL, JSON.stringify(stored)); } catch {}
                     }}
                     className={`text-[10px] px-3 py-1.5 border border-blue-700 rounded-lg text-blue-400 hover:border-blue-500 hover:text-blue-300 transition-colors tracking-wider`}>
-                      📅 Schedule All
+                      📅 Schedule All Earnings Follow-ups
                     </button>
                   )}
                   <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
