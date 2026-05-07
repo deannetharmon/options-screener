@@ -117,8 +117,6 @@ function buildEntryCalUrl(result: ScreenResult): string {
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 
-
-
 // OCR + merge helpers
 async function extractTickersFromImage(file: File): Promise<string[]> {
   const Tesseract = await import('tesseract.js');
@@ -149,19 +147,14 @@ function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterS
 // ── Persistent Saved Filters (LocalStorage + API fallback) ─────────────────
 async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilters> {
   const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
-  
-  // Try LocalStorage first (fast + always works)
   try {
     const saved = localStorage.getItem(lsKey);
     if (saved) return JSON.parse(saved);
   } catch {}
-
-  // Fallback to API
   try {
     const res = await fetch(`/api/filters?strategy=${strategy}`);
     const data = await res.json();
     const filters = data.filters ?? {};
-    // Cache to localStorage
     localStorage.setItem(lsKey, JSON.stringify(filters));
     return filters;
   } catch {
@@ -170,54 +163,37 @@ async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilte
 }
 
 async function saveFilter(
-  strategy: string, 
-  name: string, 
-  payload: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] }, 
+  strategy: string,
+  name: string,
+  payload: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] },
   replace = false
 ): Promise<{ success?: boolean; conflict?: boolean; message?: string }> {
   const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
-  
   try {
-    // First try API
-    const res = await fetch('/api/filters', { 
-      method: 'POST', 
-      headers: { 'Content-Type': 'application/json' }, 
-      body: JSON.stringify({ strategy, name, replace, ...payload }) 
+    const res = await fetch('/api/filters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy, name, replace, ...payload })
     });
     const result = await res.json();
-    
     if (result.success) {
-      // Sync to localStorage
       const current = await loadFilters(strategy) as any;
-      
       if (strategy === 'global') {
-        current[name] = { 
-          bps: payload.bps || [], 
-          bcs: payload.bcs || [], 
-          ic: payload.ic || [] 
-        };
+        current[name] = { bps: payload.bps || [], bcs: payload.bcs || [], ic: payload.ic || [] };
       } else {
         current[name] = payload.tickers || [];
       }
-      
       localStorage.setItem(lsKey, JSON.stringify(current));
     }
     return result;
   } catch {
-    // API failed → save only to localStorage
     try {
       const current = await loadFilters(strategy) as any;
-      
       if (strategy === 'global') {
-        current[name] = { 
-          bps: payload.bps || [], 
-          bcs: payload.bcs || [], 
-          ic: payload.ic || [] 
-        };
+        current[name] = { bps: payload.bps || [], bcs: payload.bcs || [], ic: payload.ic || [] };
       } else {
         current[name] = payload.tickers || [];
       }
-      
       localStorage.setItem(lsKey, JSON.stringify(current));
       return { success: true };
     } catch (e) {
@@ -228,36 +204,53 @@ async function saveFilter(
 
 async function deleteFilter(strategy: string, name: string): Promise<void> {
   const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
-  
   try {
-    await fetch('/api/filters', { 
-      method: 'DELETE', 
-      headers: { 'Content-Type': 'application/json' }, 
-      body: JSON.stringify({ strategy, name }) 
+    await fetch('/api/filters', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy, name })
     });
   } catch {}
-
-  // Always update localStorage
   try {
     const current = await loadFilters(strategy);
     delete current[name];
     localStorage.setItem(lsKey, JSON.stringify(current));
   } catch {}
 }
+
 // ── Index / ETF overrides ──────────────────────────────────────────────────
 const INDEX_TICKERS = new Set(['SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY', 'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX']);
 const INDEX_IVR_MIN = 15;
 
 // ── Rules ──────────────────────────────────────────────────────────────────
+// CHANGE 1: Added EARNINGS_BUFFER_DAYS and CREDIT_MIN_ABS
 const DEFAULT_RULES = {
   IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 200, BID_ASK_MAX: 0.10,
   CREDIT_RATIO_MIN: 0.15, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
   IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.25, DTE_MIN: 30, DTE_MAX: 45,
   MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 30,
+  EARNINGS_BUFFER_DAYS: 45, CREDIT_MIN_ABS: 0.15,
 };
 type RulesType = typeof DEFAULT_RULES;
 
-const RULE_LABELS: Record<string, string> = { /* ... same as before */ };
+const RULE_LABELS: Record<string, string> = {
+  IVR_MIN: 'IVR Min %',
+  IVR_IC_MAX: 'IVR Max % (IC only)',
+  OI_MIN: 'Open Interest Min',
+  BID_ASK_MAX: 'Bid-Ask Max $',
+  CREDIT_RATIO_MIN: 'Credit Ratio Min',
+  SPREAD_DELTA_MIN: 'Spread Delta Min',
+  SPREAD_DELTA_MAX: 'Spread Delta Max',
+  IC_DELTA_MIN: 'IC Delta Min',
+  IC_DELTA_MAX: 'IC Delta Max',
+  DTE_MIN: 'DTE Min',
+  DTE_MAX: 'DTE Max',
+  MAX_SPREAD_WIDTH: 'Max Spread Width $',
+  ROC_MIN_SPREAD: 'Min ROC % (Spread)',
+  ROC_MIN_IC: 'Min ROC % (IC)',
+  EARNINGS_BUFFER_DAYS: 'Earnings Buffer (days)',
+  CREDIT_MIN_ABS: 'Min Credit $ (floor)',
+};
 
 const LS_RULES = 'prosper-rules';
 const AUTO_TICKER_LIMIT = 5;
@@ -269,8 +262,8 @@ const LS_CAL = 'prosper-cal-scheduled';
 const LS_CAL_ENTRY = 'prosper-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
 const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
-const LS_SAVED_FILTERS = 'prosper-saved-filters';    
-const LS_GLOBAL_SESSIONS = 'prosper-global-sessions'; 
+const LS_SAVED_FILTERS = 'prosper-saved-filters';
+const LS_GLOBAL_SESSIONS = 'prosper-global-sessions';
 
 // ── TastyTrade API ─────────────────────────────────────────────────────────
 const BASE = 'https://api.tastytrade.com';
@@ -392,17 +385,31 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
   const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_IC) return null;
   return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true };
 }
+
 function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]> }, price: number | null, RULES: RulesType, trendResult?: TrendResult): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
   const isIndex = INDEX_TICKERS.has(symbol.toUpperCase());
   const effectiveIvrMin = isIndex ? INDEX_IVR_MIN : RULES.IVR_MIN;
   const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < effectiveIvrMin ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${effectiveIvrMin}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${effectiveIvrMin}% minimum${isIndex ? ' (index)' : ''}` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: isIndex ? `Above ${effectiveIvrMin}% (index floor)` : 'Above minimum' };
+
+  // CHANGE 2a: Earnings check now uses RULES.EARNINGS_BUFFER_DAYS instead of hardcoded 30
   let earningsCheck: CheckResult;
-  // Indexes and ETFs do not report earnings — skip this check entirely
   if (isIndex) {
     earningsCheck = { status: 'pass', value: 'N/A (index/ETF)', reason: 'No earnings events' };
-  } else if (!earningsDate) { earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' }; }
-  else { const d = daysUntil(earningsDate); if (d < 0) { earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' }; } else if (d < 30) { failReasons.push(`Earnings in ${d}d`); earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: 'Within expiry window' }; } else { earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: 'Outside expiry window' }; } }
+  } else if (!earningsDate) {
+    earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' };
+  } else {
+    const d = daysUntil(earningsDate);
+    if (d < 0) {
+      earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
+    } else if (d < RULES.EARNINGS_BUFFER_DAYS) {
+      failReasons.push(`Earnings in ${d}d`);
+      earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: `Within ${RULES.EARNINGS_BUFFER_DAYS}d buffer` };
+    } else {
+      earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: 'Outside buffer window' };
+    }
+  }
+
   const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false; if (!isIndex && earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, RULES) : findBestSpread(chainItems, strategy, exp, price, RULES); if (bestCandidate) break; } }
@@ -410,7 +417,16 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   else if (!bestCandidate && validExpirations.length > 0 && !failReasons.length) failReasons.push('No qualifying strikes found');
   const oiCheck: CheckResult = bestCandidate ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: `Both legs ≥ ${RULES.OI_MIN}` } : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
   const deltaCheck: CheckResult = bestCandidate ? { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Within target range' } : { status: 'pending', value: '—', reason: 'No candidate' };
-  const creditCheck: CheckResult = bestCandidate ? { status: 'pass', value: `$${(bestCandidate.totalCredit ?? bestCandidate.credit).toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` } : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  // CHANGE 2b: Credit check now enforces absolute dollar floor (CREDIT_MIN_ABS) in addition to ratio
+  const rawCredit = bestCandidate ? (bestCandidate.totalCredit ?? bestCandidate.credit) : 0;
+  const creditPassesAbs = rawCredit >= RULES.CREDIT_MIN_ABS;
+  const creditCheck: CheckResult = bestCandidate
+    ? creditPassesAbs
+      ? { status: 'pass', value: `$${rawCredit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` }
+      : (() => { failReasons.push(`Credit $${rawCredit.toFixed(2)} < $${RULES.CREDIT_MIN_ABS} floor`); return { status: 'fail' as const, value: `$${rawCredit.toFixed(2)}`, reason: `Below $${RULES.CREDIT_MIN_ABS} minimum` }; })()
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
   const rocMin = strategy === 'IC' ? RULES.ROC_MIN_IC : RULES.ROC_MIN_SPREAD;
   const rocCheck: CheckResult = bestCandidate ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` } : { status: 'pending', value: '—', reason: 'No candidate' };
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
@@ -633,17 +649,17 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
 }
 
 // ── Strategy Box ──────────────────────────────────────────────────────────
-function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: { 
-  label: string; 
-  badge: string; 
-  badgeColor: string; 
-  borderFocus: string; 
-  value: string; 
-  onChange: (v: string) => void; 
-  strategy: 'BPS' | 'BCS' | 'IC' | 'broken';   // ← updated type
-  disabled?: boolean; 
-  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; 
-  th: typeof THEMES[Theme] 
+function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: {
+  label: string;
+  badge: string;
+  badgeColor: string;
+  borderFocus: string;
+  value: string;
+  onChange: (v: string) => void;
+  strategy: 'BPS' | 'BCS' | 'IC' | 'broken';
+  disabled?: boolean;
+  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
+  th: typeof THEMES[Theme]
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingTickersRef = useRef<string[]>([]);
@@ -701,57 +717,55 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   const handleDelete = async (name: string) => { await deleteFilter(strategy, name); await refreshFilters(); };
   const filterNames = Object.keys(savedFilters);
   const hasValue = parseTickers(value).length > 0;
-            {/* AUTO / TREND DETECT - Unlimited with friendly batching */}
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] px-1.5 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500 rounded-md tracking-wider font-bold">AUTO</span>
-                <span className={`text-[11px] ${th.textMuted} tracking-wider font-medium`}>TREND DETECT</span>
-              </div>
-              <span className={`text-[9px] font-medium ${th.textFaint}`}>{autoTickerList.length} tickers</span>
-            </div>
-            
-            <textarea 
-              value={autoTickers} 
-              onChange={e => setAutoTickers(e.target.value)} 
-              placeholder="AAPL, MSFT, XOM&#10;You can paste as many as you want"
-              className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} 
-            />
-            
-            {autoTickerList.length > 5 && (
-              <div className="mt-2 px-3 py-2 bg-purple-500/10 border border-purple-500/30 rounded-lg text-[10px] leading-tight">
-                <span className="text-purple-400 font-medium">ℹ Only 5 will scan at a time</span><br />
-                Once they finish, they will move to the correct strategy boxes.<br />
-                Click ANALYZE NEXT again for the next batch.
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[9px] px-1.5 py-0.5 border rounded-md tracking-wider font-bold ${badgeColor}`}>{badge}</span>
+          <span className={`text-[10px] ${th.textMuted} font-medium tracking-wider`}>{label}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
+          <button onClick={handleImgClick} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
+          <div className="relative">
+            <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled || !hasValue} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>💾</button>
+            {showSaveInput && (
+              <div className={`absolute top-6 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg p-2 w-44 shadow-xl`}>
+                <div className="flex gap-1 mb-1">
+                  <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
+                    className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
+                  <button onClick={() => handleSave()} className="text-[9px] px-1.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium">Save</button>
+                </div>
+                {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1 py-0.5 bg-yellow-600 text-white rounded">Replace</button>}</div>)}
               </div>
             )}
-
-            <div className="flex items-center justify-between mt-3">
-              <p className={`text-[9px] ${th.textFaint}`}>~{Math.min(5, autoTickerList.length) * 12}s per batch</p>
-              <div className="flex gap-1">
-                <input ref={autoFileRef} type="file" accept="image/*" className="hidden" onChange={async (e) => {
-                  const file = e.target.files?.[0]; if (!file) return; setAutoScanning(true);
-                  try {
-                    const tickers = await extractTickersFromImage(file);
-                    if (tickers.length > 0) setAutoTickers(tickersToString(tickers));
-                  } catch (err) { console.error(err); }
-                  setAutoScanning(false);
-                }} />
-                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; autoFileRef.current?.click(); }} disabled={loading} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>↑ img</button>
-                
-                {autoTickerList.length > 0 && <button onClick={() => setAutoTickers('')} disabled={loading} className="text-[9px] px-2 py-0.5 border border-red-800 rounded text-red-500 hover:border-red-500 hover:text-red-400 font-medium">✕ Clear</button>}
-                
-                <button 
-                  onClick={runTrendDetectionWrapper} 
-                  disabled={loading || autoTickerList.length === 0}
-                  className="text-[9px] px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
-                >
-                  {loading ? '...' : `ANALYZE NEXT ${Math.min(5, autoTickerList.length)}`}
-                </button>
-              </div>
-            </div>
           </div>
-  
+          <div className="relative">
+            <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>▼</button>
+            {showLoad && (
+              <div className={`absolute top-6 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg overflow-hidden w-44 shadow-xl`}>
+                {loadingFilters ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>Loading...</p>
+                  : filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>No saved filters yet</p>
+                  : filterNames.map(name => (
+                    <div key={name} className={`flex items-center justify-between px-3 py-2 hover:bg-blue-500/10 group cursor-pointer`}>
+                      <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} text-left flex-1 font-medium`}>{name}</button>
+                      <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      <textarea
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder={`${label} tickers...`}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-14 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed disabled:opacity-40`}
+      />
+    </div>
   );
 }
 
@@ -764,33 +778,33 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
-function ResultCard({ result, th, rules }: { 
-  result: ScreenResult; 
-  th: typeof THEMES[Theme]; 
-  rules: RulesType; 
+function ResultCard({ result, th, rules }: {
+  result: ScreenResult;
+  th: typeof THEMES[Theme];
+  rules: RulesType;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
 
   const c = result.bestCandidate;
   const t = result.trendResult;
-  const stratBadge = result.strategy === 'BPS' 
-    ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500' 
-    : result.strategy === 'BCS' 
-    ? 'bg-red-500/15 border-red-500 text-red-500' 
+  const stratBadge = result.strategy === 'BPS'
+    ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500'
+    : result.strategy === 'BCS'
+    ? 'bg-red-500/15 border-red-500 text-red-500'
     : 'bg-blue-500/15 border-blue-500 text-blue-500';
 
   const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
-  const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings')) 
-    && result.earningsDate 
+  const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings'))
+    && result.earningsDate
     && daysUntil(result.earningsDate) >= 0;
 
-  const cardBorder = result.qualified 
-    ? (isApproaching ? 'border-yellow-500/50' : th.border) 
+  const cardBorder = result.qualified
+    ? (isApproaching ? 'border-yellow-500/50' : th.border)
     : th.borderLight;
 
   return (
-    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`} 
+    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`}
          onClick={() => setExpanded(!expanded)}>
 
       {/* Header Row */}
@@ -802,7 +816,7 @@ function ResultCard({ result, th, rules }: {
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
         {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
-        
+
         {c && <>
           <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
           <StrikesDisplay c={c} th={th} />
@@ -828,7 +842,7 @@ function ResultCard({ result, th, rules }: {
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
           {t && <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border}`}><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
-          
+
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {Object.entries(result.checks).map(([key, check]) => (
               <div key={key} className="flex items-start gap-2">
@@ -862,7 +876,7 @@ function ResultCard({ result, th, rules }: {
           )}
 
           {/* Best Opportunity Button */}
-          <button 
+          <button
             onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
             className="w-full py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-sm font-medium tracking-wider transition-colors mt-2"
           >
@@ -873,17 +887,18 @@ function ResultCard({ result, th, rules }: {
 
       {/* Best Opportunity Modal */}
       {showBestFinder && (
-        <BestOpportunityFinder 
-          symbol={result.symbol} 
-          onClose={() => setShowBestFinder(false)} 
-          th={th} 
-          rules={rules} 
+        <BestOpportunityFinder
+          symbol={result.symbol}
+          onClose={() => setShowBestFinder(false)}
+          th={th}
+          rules={rules}
         />
       )}
     </div>
   );
 }
-// ── Rules Modal Subcomponents (defined OUTSIDE RulesModal to prevent remount on render) ──
+
+// ── Rules Modal Subcomponents ──────────────────────────────────────────────
 function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }: {
   ruleKey: keyof RulesType;
   rawValues: Record<string, string>;
@@ -912,13 +927,14 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 
 function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
   return (
-    <div className={`col-span-2 pt-2 pb-1 border-b ${th.border}`}>
+    <div className={`col-span-2 pt-1 pb-0.5 border-b ${th.border}`}>
       <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
     </div>
   );
 }
 
 // ── Rules Modal ────────────────────────────────────────────────────────────
+// CHANGE 3: Added Earnings Gate section, CREDIT_MIN_ABS field, IVR cap clarification note
 function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
   const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
@@ -934,27 +950,40 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className={`${th.sidebar} border ${th.border} rounded-xl p-6 w-[500px] max-h-[85vh] overflow-auto shadow-2xl`}>
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[75vh] overflow-y-auto shadow-2xl`}>
         <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
-        <p className={`text-[9px] ${th.textFaint} mb-5 tracking-wider`}>Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps and returns best ROC. IC sides optimized independently.</p>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3 mb-6">
+        <p className={`text-[9px] ${th.textFaint} mb-4 tracking-wider`}>
+          IVR cap applies to IC only — BPS/BCS spreads have no upper IVR limit by design. Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps, returns best ROC. IC sides optimized independently.
+        </p>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-4">
           <SectionHeader label="Implied Volatility Rank" th={th} />
           <RuleInput ruleKey="IVR_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+
+          <SectionHeader label="Earnings Gate" th={th} />
+          <RuleInput ruleKey="EARNINGS_BUFFER_DAYS" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <div /> {/* keep 2-col grid aligned */}
+
           <SectionHeader label="Days to Expiration" th={th} />
           <RuleInput ruleKey="DTE_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="DTE_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+
           <SectionHeader label="Delta — Spread / IC" th={th} />
           <RuleInput ruleKey="SPREAD_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="SPREAD_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="IC_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="IC_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+
           <SectionHeader label="Liquidity" th={th} />
           <RuleInput ruleKey="BID_ASK_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="OI_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+
           <SectionHeader label="Credit Quality" th={th} />
           <RuleInput ruleKey="CREDIT_RATIO_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="CREDIT_MIN_ABS" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="MAX_SPREAD_WIDTH" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <div /> {/* keep 2-col grid aligned */}
+
           <SectionHeader label="Return on Capital" th={th} />
           <RuleInput ruleKey="ROC_MIN_SPREAD" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="ROC_MIN_IC" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
@@ -987,9 +1016,9 @@ async function runTrendDetection(
   parseTickers: (s: string) => string[]
 ) {
   let autoList = parseTickers(autoTickers);
-  if (autoList.length === 0) { 
-    setError('Enter at least one ticker for trend detection.'); 
-    return; 
+  if (autoList.length === 0) {
+    setError('Enter at least one ticker for trend detection.');
+    return;
   }
 
   const batch = autoList.slice(0, 5);
@@ -1033,8 +1062,7 @@ async function runTrendDetection(
     if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
     if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
 
-    setAutoTickers(tickersToString(remaining));   // Keep only unprocessed tickers
-
+    setAutoTickers(tickersToString(remaining));
     setStatus(`✅ Processed ${batch.length} tickers. ${remaining.length} remaining in AUTO box.`);
   } catch (e: any) {
     setError(e.message);
@@ -1042,6 +1070,7 @@ async function runTrendDetection(
     setLoading(false);
   }
 }
+
 // ── Polygon getTrend ───────────────────────────────────────────────────────
 async function getTrend(symbol: string): Promise<TrendResult> {
   const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
@@ -1060,7 +1089,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const data = await res.json();
   const bars: { c: number }[] = data.results ?? [];
 
-  if (bars.length < 50) 
+  if (bars.length < 50)
     return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough price history' };
 
   const closes = bars.map(b => b.c);
@@ -1084,7 +1113,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `Downtrend` };
 }
 
-// ── NEW: Best Opportunity Finder ───────────────────────────────────────────
+// ── Best Opportunity Finder ────────────────────────────────────────────────
 interface BestSetup {
   strategy: string;
   grade: 'A+' | 'A' | 'B' | 'C' | 'Skip';
@@ -1094,15 +1123,15 @@ interface BestSetup {
   caveats: string[];
 }
 
-function BestOpportunityFinder({ 
-  symbol, 
-  onClose, 
-  th, 
-  rules 
-}: { 
-  symbol: string; 
-  onClose: () => void; 
-  th: typeof THEMES[Theme]; 
+function BestOpportunityFinder({
+  symbol,
+  onClose,
+  th,
+  rules
+}: {
+  symbol: string;
+  onClose: () => void;
+  th: typeof THEMES[Theme];
   rules: RulesType;
 }) {
   const [loading, setLoading] = useState(false);
@@ -1226,7 +1255,6 @@ function BestOpportunityFinder({
   );
 }
 
-
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
@@ -1239,7 +1267,7 @@ export default function Home() {
   const [bpsTickers, setBpsTickers] = useState('');
   const [bcsTickers, setBcsTickers] = useState('');
   const [icTickers, setIcTickers] = useState('');
-  const [brokenTickers, setBrokenTickers] = useState('');   // ← NEW 4th box
+  const [brokenTickers, setBrokenTickers] = useState('');
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -1250,18 +1278,18 @@ export default function Home() {
   const [lastRunRules, setLastRunRules] = useState<RulesType | null>(null);
 
   useEffect(() => {
-    try { 
-      setBpsTickers(localStorage.getItem(LS_BPS) || ''); 
-      setBcsTickers(localStorage.getItem(LS_BCS) || ''); 
-      setIcTickers(localStorage.getItem(LS_IC) || ''); 
-      setBrokenTickers(localStorage.getItem(LS_BROKEN) || '');   // ← NEW
+    try {
+      setBpsTickers(localStorage.getItem(LS_BPS) || '');
+      setBcsTickers(localStorage.getItem(LS_BCS) || '');
+      setIcTickers(localStorage.getItem(LS_IC) || '');
+      setBrokenTickers(localStorage.getItem(LS_BROKEN) || '');
     } catch {}
   }, []);
 
   const handleBpsChange = (v: string) => { setBpsTickers(v); try { localStorage.setItem(LS_BPS, v); } catch {} };
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
-  const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };   // ← NEW
+  const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
@@ -1276,30 +1304,18 @@ export default function Home() {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
   };
 
-  // ── UPDATED: AUTO now only does trend detection + assignment (no full scan) ──
   const runTrendDetectionWrapper = () => {
     runTrendDetection(
-      autoTickers,
-      bpsTickers,
-      bcsTickers,
-      icTickers,
-      brokenTickers,
-      handleBpsChange,
-      handleBcsChange,
-      handleIcChange,
-      handleBrokenChange,
-      setAutoTickers,
-      setError,
-      setStatus,
-      setLoading,
-      parseTickers
+      autoTickers, bpsTickers, bcsTickers, icTickers, brokenTickers,
+      handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
+      setAutoTickers, setError, setStatus, setLoading, parseTickers
     );
   };
 
-    const runScreen = async (rules: RulesType) => {
-    setError(''); 
+  const runScreen = async (rules: RulesType) => {
+    setError('');
     setResults([]);
-    
+
     const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
     const bps = parseTickers(bpsTickers);
     const bcs = parseTickers(bcsTickers);
@@ -1324,6 +1340,7 @@ export default function Home() {
       const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
 
       const screenResults: ScreenResult[] = [];
+
       const errResult = (symbol: string, strategy: string, msg: string, trendResult?: TrendResult): ScreenResult => ({
         symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
         failReasons: [msg], trendResult,
@@ -1386,7 +1403,6 @@ export default function Home() {
     }
   };
 
-  
   const qualified = results.filter(r => r.qualified);
   const disqualified = results.filter(r => !r.qualified);
 
@@ -1400,9 +1416,9 @@ export default function Home() {
         </div>
         <img src="/header-bg.png" alt="" className="flex-1 mx-6 hidden sm:block" style={{height: '57px', marginTop: '-1rem', marginBottom: '-1rem', objectFit: 'cover'}} />
         <div className="flex items-center gap-3">
-        <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
-        <ThemeToggle theme={theme} setTheme={setTheme} />
-      </div>
+          <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
+          <ThemeToggle theme={theme} setTheme={setTheme} />
+        </div>
       </div>
 
       <div className="flex h-[calc(100vh-57px)]">
@@ -1479,19 +1495,17 @@ export default function Home() {
             <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
-            
-            {/* ← NEW 4th box */}
-            <StrategyBox 
-              label="Broken (Review)" 
-              badge="REVIEW" 
-              badgeColor="bg-amber-500/15 text-amber-500 border-amber-500" 
-              borderFocus="focus:border-amber-500" 
-              value={brokenTickers} 
-              onChange={handleBrokenChange} 
-              strategy="broken" 
-              disabled={loading} 
-              onLoadPrompt={showLoadPrompt} 
-              th={th} 
+            <StrategyBox
+              label="Broken (Review)"
+              badge="REVIEW"
+              badgeColor="bg-amber-500/15 text-amber-500 border-amber-500"
+              borderFocus="focus:border-amber-500"
+              value={brokenTickers}
+              onChange={handleBrokenChange}
+              strategy="broken"
+              disabled={loading}
+              onLoadPrompt={showLoadPrompt}
+              th={th}
             />
           </div>
 
@@ -1507,9 +1521,22 @@ export default function Home() {
             <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>LAST RULES USED</p>
             {lastRunRules === null
               ? <p className={`${th.textFaint} italic`}>No screen run yet</p>
-              : [['IVR',`≥ ${lastRunRules.IVR_MIN}%`],['DTE',`${lastRunRules.DTE_MIN}–${lastRunRules.DTE_MAX} days`],['BPS/BCS delta',`${lastRunRules.SPREAD_DELTA_MIN}–${lastRunRules.SPREAD_DELTA_MAX}`],['IC delta',`${lastRunRules.IC_DELTA_MIN}–${lastRunRules.IC_DELTA_MAX}`],['Credit ratio',`≥ ${(lastRunRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],['OI per leg',`≥ ${lastRunRules.OI_MIN}`],['Bid-Ask',`≤ $${lastRunRules.BID_ASK_MAX}`],['Max width',`$${lastRunRules.MAX_SPREAD_WIDTH} (opt)`],['Min ROC spread',`${lastRunRules.ROC_MIN_SPREAD}%`],['Min ROC IC',`${lastRunRules.ROC_MIN_IC}%`]].map(([k,v]) => (
-                <div key={k} className="flex justify-between"><span className={th.textFaint}>{k}</span><span className={`${th.textMuted} font-medium`}>{v}</span></div>
-              ))
+              : [
+                  ['IVR', `≥ ${lastRunRules.IVR_MIN}%`],
+                  ['DTE', `${lastRunRules.DTE_MIN}–${lastRunRules.DTE_MAX} days`],
+                  ['Earnings buffer', `${lastRunRules.EARNINGS_BUFFER_DAYS}d`],
+                  ['BPS/BCS delta', `${lastRunRules.SPREAD_DELTA_MIN}–${lastRunRules.SPREAD_DELTA_MAX}`],
+                  ['IC delta', `${lastRunRules.IC_DELTA_MIN}–${lastRunRules.IC_DELTA_MAX}`],
+                  ['Credit ratio', `≥ ${(lastRunRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
+                  ['Min credit $', `≥ $${lastRunRules.CREDIT_MIN_ABS}`],
+                  ['OI per leg', `≥ ${lastRunRules.OI_MIN}`],
+                  ['Bid-Ask', `≤ $${lastRunRules.BID_ASK_MAX}`],
+                  ['Max width', `$${lastRunRules.MAX_SPREAD_WIDTH} (opt)`],
+                  ['Min ROC spread', `${lastRunRules.ROC_MIN_SPREAD}%`],
+                  ['Min ROC IC', `${lastRunRules.ROC_MIN_IC}%`],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex justify-between"><span className={th.textFaint}>{k}</span><span className={`${th.textMuted} font-medium`}>{v}</span></div>
+                ))
             }
           </div>
         </div>
@@ -1532,7 +1559,6 @@ export default function Home() {
                   <span className={th.textFaint}>{disqualified.length} DISQUALIFIED</span>
                   <span className={th.textFaint}>{results.length} SCANNED</span>
                 </div>
-                // This was the orginal line, replaced with an etire div class below <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
                 <div className="flex items-center gap-2">
                   {results.some(r => !r.qualified && r.earningsDate && daysUntil(r.earningsDate) >= 0 && r.failReasons.some(f => f.includes('Earnings'))) && (
                     <button onClick={() => {
@@ -1556,10 +1582,18 @@ export default function Home() {
               </div>
               <DTEAlertBanner results={results} />
               <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={runScreen} />
-              {qualified.length > 0 && <div><p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}
-
-{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div></div>}
-              {disqualified.length > 0 && <div><p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}  {disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div></div>}
+              {qualified.length > 0 && (
+                <div>
+                  <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
+                  <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div>
+                </div>
+              )}
+              {disqualified.length > 0 && (
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
+                  <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div>
+                </div>
+              )}
             </div>
           )}
         </div>
