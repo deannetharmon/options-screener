@@ -960,6 +960,7 @@ function ResultCard({ result, th, rules }: {
           onClose={() => setShowBestFinder(false)}
           th={th}
           rules={rules}
+          preferredStrategy={result.strategy as 'BPS' | 'BCS' | 'IC'}
         />
       )}
     </div>
@@ -1180,30 +1181,33 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 // ── Best Opportunity Finder ────────────────────────────────────────────────
 interface BestSetup {
   strategy: string;
-  grade: 'A+' | 'A' | 'B' | 'C' | 'Skip';
+  grade: 'A+' | 'A' | 'B' | 'C';
   setup: SpreadCandidate;
   score: number;
-  summary: string;
-  caveats: string[];
+  notes: string[];
+  result: ScreenResult;
 }
 
 function BestOpportunityFinder({
   symbol,
   onClose,
   th,
-  rules
+  rules,
+  preferredStrategy,
 }: {
   symbol: string;
   onClose: () => void;
   th: typeof THEMES[Theme];
   rules: RulesType;
+  preferredStrategy?: 'BPS' | 'BCS' | 'IC';
 }) {
   const [loading, setLoading] = useState(false);
   const [best, setBest] = useState<BestSetup | null>(null);
+  const [failDetails, setFailDetails] = useState<{ strategy: string; reasons: string[] }[]>([]);
   const [error, setError] = useState('');
 
   const findBest = async () => {
-    setLoading(true); setError(''); setBest(null);
+    setLoading(true); setError(''); setBest(null); setFailDetails([]);
     try {
       const token = await getAccessToken();
       const [metricsArray, price] = await Promise.all([
@@ -1213,43 +1217,51 @@ function BestOpportunityFinder({
       const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
       const chainData = await getChain(symbol, token, rules);
 
+      // Try preferred strategy first, then others
+      const strategies: ('BPS' | 'BCS' | 'IC')[] = preferredStrategy
+        ? [preferredStrategy, ...(['BPS', 'BCS', 'IC'] as const).filter(s => s !== preferredStrategy)]
+        : ['BPS', 'BCS', 'IC'];
+
       const candidates: BestSetup[] = [];
-      const strategies: ('BPS' | 'BCS' | 'IC')[] = ['BPS', 'BCS', 'IC'];
+      const failures: { strategy: string; reasons: string[] }[] = [];
 
       for (const strat of strategies) {
         const result = runChecklist(symbol, strat, metrics, chainData, price, rules);
-        if (result.bestCandidate && result.qualified) {
-          const c = result.bestCandidate;
-          let score = (c.roc || 0) * 0.45 + ((c.pop || 70) * 0.35) + (c.creditRatio * 100 * 0.2);
-          if (strat === 'IC') score += 12;
 
-          let grade: BestSetup['grade'] = 'C';
-          if (score > 88) grade = 'A+';
-          else if (score > 75) grade = 'A';
-          else if (score > 60) grade = 'B';
-
-          const caveats: string[] = [];
-          if (c.creditRatio < 0.28) caveats.push("Credit ratio somewhat thin due to current low VIX");
-          if (c.dte < 35) caveats.push("DTE approaching 21 — watch gamma risk");
-          if (metrics.ivRank && metrics.ivRank < 28) caveats.push("Lower IVR reduces premium cushion");
-          if (result.earningsDate) caveats.push(`Earnings coming on ${result.earningsDate}`);
-
-          candidates.push({
-            strategy: strat,
-            grade,
-            setup: c,
-            score,
-            summary: `Strong ${strat} setup on ${symbol} — high probability in current market conditions.`,
-            caveats: caveats.length ? caveats : ["Very clean setup with no major red flags"]
-          });
+        if (!result.qualified || !result.bestCandidate) {
+          // Hard fail — record exactly why
+          failures.push({ strategy: strat, reasons: result.failReasons.length > 0 ? result.failReasons : ['No qualifying strikes found'] });
+          continue;
         }
+
+        const c = result.bestCandidate;
+
+        // Score based purely on quality metrics
+        let score = (c.roc || 0) * 0.45 + ((c.pop || 70) * 0.35) + (c.creditRatio * 100 * 0.2);
+        if (strat === 'IC') score += 12;
+        if (strat === preferredStrategy) score += 20; // boost preferred direction
+
+        let grade: BestSetup['grade'] = 'C';
+        if (score > 88) grade = 'A+';
+        else if (score > 75) grade = 'A';
+        else if (score > 60) grade = 'B';
+
+        // Notes are genuine observations only — not rule violations
+        const notes: string[] = [];
+        if (c.dte < 35) notes.push(`DTE is ${c.dte} — on the shorter side, watch 21 DTE closely`);
+        if (metrics.ivRank && metrics.ivRank > 60) notes.push(`IVR ${metrics.ivRank.toFixed(0)}% is elevated — rich premium but verify no binary event`);
+        if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
+        if (notes.length === 0) notes.push('Clean setup — all rules pass');
+
+        candidates.push({ strategy: strat, grade, setup: c, score, notes, result });
       }
 
+      setFailDetails(failures);
+
       if (candidates.length === 0) {
-        setError("No qualifying setups found even with deeper analysis.");
+        setError(`No qualifying setups found for ${symbol} with current rules. See details below.`);
       } else {
-        const top = candidates.sort((a, b) => b.score - a.score)[0];
-        setBest(top);
+        setBest(candidates.sort((a, b) => b.score - a.score)[0]);
       }
     } catch (e: any) {
       setError(e.message || "Failed to analyze chain");
@@ -1258,54 +1270,105 @@ function BestOpportunityFinder({
     }
   };
 
+  const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
+  const gradeBorder = (g: string) => g === 'A+' || g === 'A' ? 'border-emerald-500 bg-emerald-950/40' : 'border-yellow-500 bg-yellow-950/20';
+
   return (
     <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] p-4">
       <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
-        <div className="flex justify-between mb-4">
-          <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity Finder — {symbol}</h2>
+        <div className="flex justify-between mb-2">
+          <div>
+            <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity Finder — {symbol}</h2>
+            {preferredStrategy && <p className={`text-[10px] ${th.textFaint} mt-0.5`}>Preferred direction: <span className="text-blue-400 font-bold">{preferredStrategy}</span> · Adjust rules in Screening Rules modal to relax filters</p>}
+          </div>
           <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white">✕</button>
         </div>
+
+        <p className={`text-[9px] ${th.textFaint} mb-4 tracking-wider`}>
+          Uses your current screening rules as hard gates. To find more results, open Screening Rules and relax parameters.
+        </p>
 
         <button
           onClick={findBest}
           disabled={loading}
           className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors"
         >
-          {loading ? "DEEP SCANNING OPTIONS CHAIN..." : "FIND BEST SETUP FOR THIS STOCK"}
+          {loading ? "SCANNING OPTIONS CHAIN..." : "FIND BEST SETUP FOR THIS STOCK"}
         </button>
 
-        {error && <div className="mt-4 p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm">{error}</div>}
+        {error && (
+          <div className="mt-4 p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm">{error}</div>
+        )}
+
+        {/* Fail details — shown when no candidate found */}
+        {!best && failDetails.length > 0 && (
+          <div className={`mt-4 border ${th.border} rounded-xl p-4 space-y-2`}>
+            <p className={`text-[10px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>Why each strategy failed</p>
+            {failDetails.map(f => (
+              <div key={f.strategy} className="flex items-start gap-3">
+                <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${f.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : f.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{f.strategy}</span>
+                <p className="text-[10px] text-red-400">{f.reasons.join(' · ')}</p>
+              </div>
+            ))}
+          </div>
+        )}
 
         {best && (
-          <div className="mt-6 space-y-5">
-            <div className={`p-5 rounded-2xl border ${best.grade.startsWith('A') ? 'border-emerald-500 bg-emerald-950/40' : 'border-amber-500 bg-amber-950/30'}`}>
-              <div className="flex justify-between items-start">
-                <div>
-                  <span className="text-5xl font-black text-emerald-400">{best.grade}</span>
-                  <span className="ml-4 text-2xl font-semibold">{best.strategy}</span>
+          <div className="mt-6 space-y-4">
+            <div className={`p-5 rounded-2xl border ${gradeBorder(best.grade)}`}>
+
+              {/* Grade + Strategy + Credit */}
+              <div className="flex justify-between items-start mb-4">
+                <div className="flex items-baseline gap-3">
+                  <span className={`text-5xl font-black ${gradeColor(best.grade)}`}>{best.grade}</span>
+                  <span className={`text-2xl font-semibold ${th.text}`}>{best.strategy}</span>
                 </div>
                 <div className="text-right">
-                  <div className="text-3xl font-bold text-emerald-400">${best.setup.credit.toFixed(2)}</div>
-                  <div className="text-sm text-slate-400">{best.setup.roc.toFixed(0)}% ROC • {best.setup.pop?.toFixed(0)}% POP</div>
+                  <div className="text-3xl font-bold text-emerald-400">${(best.setup.totalCredit ?? best.setup.credit).toFixed(2)}</div>
+                  <div className="text-sm text-slate-400">{best.setup.roc.toFixed(0)}% ROC · {best.setup.pop?.toFixed(0)}% POP</div>
                 </div>
               </div>
 
-              <StrikesDisplay c={best.setup} th={th} />
-              <p className="mt-4 text-sm leading-relaxed text-slate-200">{best.summary}</p>
-
-              {best.caveats.length > 0 && (
-                <div className="mt-5 pt-4 border-t border-slate-700">
-                  <p className="uppercase text-[10px] tracking-widest text-amber-400 mb-2">CAVEATS / RISKS</p>
-                  <ul className="text-sm space-y-1.5 text-slate-300">
-                    {best.caveats.map((c, i) => <li key={i}>• {c}</li>)}
-                  </ul>
+              {/* Key trade details */}
+              <div className={`grid grid-cols-2 gap-3 p-3 rounded-lg ${th.card} border ${th.borderLight} mb-4`}>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiration</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{best.setup.expiration} <span className="text-yellow-400">({best.setup.dte}d)</span></p>
                 </div>
-              )}
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{best.setup.shortStrike} / {best.setup.longStrike} <span className={`${th.textFaint}`}>(${best.setup.spreadWidth} wide)</span></p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Short Delta</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{best.setup.shortDelta.toFixed(2)}</p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit Ratio</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{(best.setup.creditRatio * 100).toFixed(0)}% of width</p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>50% Close Target</p>
+                  <p className="text-sm font-bold text-emerald-400">${((best.setup.totalCredit ?? best.setup.credit) * 0.5).toFixed(2)}</p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI (Short/Long)</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{best.setup.shortOI} / {best.setup.longOI}</p>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div className={`pt-3 border-t ${th.border}`}>
+                <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Notes</p>
+                <ul className="space-y-1">
+                  {best.notes.map((n, i) => <li key={i} className={`text-xs ${th.textMuted}`}>· {n}</li>)}
+                </ul>
+              </div>
             </div>
 
             <button
               onClick={() => {
-                alert(`Trade ready: ${best.strategy} ${symbol} ${best.setup.shortStrike}/${best.setup.longStrike} — $${best.setup.credit.toFixed(2)} credit`);
+                alert(`${best.strategy} ${symbol}\nExp: ${best.setup.expiration} (${best.setup.dte}d)\nStrikes: ${best.setup.shortStrike}/${best.setup.longStrike}\nCredit: $${(best.setup.totalCredit ?? best.setup.credit).toFixed(2)}\n50% target: $${((best.setup.totalCredit ?? best.setup.credit) * 0.5).toFixed(2)}`);
                 onClose();
               }}
               className="w-full py-4 bg-white text-black font-bold rounded-2xl hover:bg-slate-100 text-base"
