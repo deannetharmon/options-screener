@@ -950,7 +950,7 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[75vh] overflow-y-auto shadow-2xl`}>
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[90vh] overflow-y-auto shadow-2xl`}>
         <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
         <p className={`text-[9px] ${th.textFaint} mb-4 tracking-wider`}>
           IVR cap applies to IC only — BPS/BCS spreads have no upper IVR limit by design. Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps, returns best ROC. IC sides optimized independently.
