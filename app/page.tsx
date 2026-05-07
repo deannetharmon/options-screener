@@ -996,7 +996,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
   return (
     <div className={`col-span-2 pt-1 pb-0.5 border-b ${th.border}`}>
-      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
+      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold`}>{label}</p>
     </div>
   );
 }
