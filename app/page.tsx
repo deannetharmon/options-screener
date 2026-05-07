@@ -108,12 +108,11 @@ function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: str
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 
-function buildEntryCalUrl(result: ScreenResult): string {
-  const c = result.bestCandidate!;
-  const followUp = addBusinessDays(new Date().toISOString().split('T')[0], 1);
+function buildEntryCalUrl(result: ScreenResult, businessDays: number): string {
+  const followUp = addBusinessDays(new Date().toISOString().split('T')[0], businessDays);
   const end = new Date(followUp); end.setDate(end.getDate() + 1);
   const title = encodeURIComponent(`Enter ${result.symbol}`);
-  const details = encodeURIComponent(`Trade entry`);
+  const details = encodeURIComponent(`Re-screen & enter ${result.symbol} — ${result.strategy} ${result.bestCandidate?.shortStrike}/${result.bestCandidate?.longStrike} Jun ${result.bestCandidate?.expiration}`);
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 
@@ -474,14 +473,58 @@ function CalendarButton({ symbol, strategy, earningsDate, ivr, th }: { symbol: s
 }
 function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme]; rules: RulesType; }) {
   const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
-  const [scheduled, setScheduled] = useState(() => { try { const s = localStorage.getItem(LS_CAL_ENTRY); return s ? JSON.parse(s)[key] === true : false; } catch { return false; } });
-  const handleClick = () => {
-    window.open(buildEntryCalUrl(result), '_blank');
-    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = true; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
-    setScheduled(true);
+  const [scheduled, setScheduled] = useState<string | null>(() => {
+    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; return all[key] || null; } catch { return null; }
+  });
+  const [open, setOpen] = useState(false);
+
+  const presets: { label: string; days: number; hint: string }[] = [
+    { label: '+2d', days: 2, hint: 'Minor issue — revisit soon' },
+    { label: '+1wk', days: 5, hint: 'Post-spike or thin premium' },
+    { label: '+2wk', days: 10, hint: 'Post-earnings settle' },
+  ];
+
+  const handleSchedule = (days: number, label: string) => {
+    window.open(buildEntryCalUrl(result, days), '_blank');
+    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = label; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
+    setScheduled(label);
+    setOpen(false);
   };
-  if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ entry scheduled</span>;
-  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors font-medium`} title="Schedule trade entry for next business day">📅 enter tomorrow</button>;
+
+  if (scheduled) return (
+    <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">
+      ✓ re-screen {scheduled}
+    </span>
+  );
+
+  return (
+    <div className="relative inline-block">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+        className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors font-medium`}
+      >
+        📅 re-screen
+      </button>
+      {open && (
+        <div
+          onClick={e => e.stopPropagation()}
+          className={`absolute bottom-6 left-0 z-50 ${th.sidebar} border ${th.border} rounded-lg shadow-xl p-2 w-44`}
+        >
+          <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5 uppercase`}>Schedule re-screen in</p>
+          {presets.map(p => (
+            <button
+              key={p.label}
+              onClick={() => handleSchedule(p.days, p.label)}
+              className={`w-full text-left px-2 py-1.5 rounded hover:bg-emerald-500/10 hover:border-emerald-500 border border-transparent transition-colors mb-1 last:mb-0`}
+            >
+              <span className="text-[10px] text-emerald-400 font-bold">{p.label}</span>
+              <span className={`text-[9px] ${th.textFaint} ml-2`}>{p.hint}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── DTE Alert Banner ───────────────────────────────────────────────────────
@@ -909,7 +952,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 }) {
   return (
     <div>
-      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-0.5 uppercase`}>
+      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase`}>
         {RULE_LABELS[ruleKey]}{ruleKey === 'MAX_SPREAD_WIDTH' && <span className={`${th.textFaint} ml-1 normal-case opacity-60`}>(optimizer cap)</span>}
       </p>
       <input
@@ -919,7 +962,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
         onChange={e => onRawChange(ruleKey, e.target.value)}
         onBlur={e => onBlur(ruleKey, e.target.value)}
         onFocus={e => e.target.select()}
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-1.5 text-xs ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-sm ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
       />
     </div>
   );
@@ -927,7 +970,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 
 function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
   return (
-    <div className={`col-span-2 pb-0.5 border-b ${th.border}`}>
+    <div className={`col-span-2 pt-1 pb-0.5 border-b ${th.border}`}>
       <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
     </div>
   );
@@ -950,12 +993,12 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[90vh] overflow-y-auto shadow-2xl`}>
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[75vh] overflow-y-auto shadow-2xl`}>
         <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
         <p className={`text-[9px] ${th.textFaint} mb-4 tracking-wider`}>
           IVR cap applies to IC only — BPS/BCS spreads have no upper IVR limit by design. Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps, returns best ROC. IC sides optimized independently.
         </p>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1 mb-3">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-4">
           <SectionHeader label="Implied Volatility Rank" th={th} />
           <RuleInput ruleKey="IVR_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
