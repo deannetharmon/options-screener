@@ -228,7 +228,7 @@ const DEFAULT_RULES = {
   CREDIT_RATIO_MIN: 0.15, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
   IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.25, DTE_MIN: 30, DTE_MAX: 45,
   MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 30,
-  EARNINGS_BUFFER_DAYS: 45, CREDIT_MIN_ABS: 0.15,
+  CREDIT_MIN_ABS: 0.15,
 };
 type RulesType = typeof DEFAULT_RULES;
 
@@ -247,7 +247,6 @@ const RULE_LABELS: Record<string, string> = {
   MAX_SPREAD_WIDTH: 'Max Spread Width $',
   ROC_MIN_SPREAD: 'Min ROC % (Spread)',
   ROC_MIN_IC: 'Min ROC % (IC)',
-  EARNINGS_BUFFER_DAYS: 'Earnings Buffer (days)',
   CREDIT_MIN_ABS: 'Min Credit $ (floor)',
 };
 
@@ -391,7 +390,8 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   const effectiveIvrMin = isIndex ? INDEX_IVR_MIN : RULES.IVR_MIN;
   const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < effectiveIvrMin ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${effectiveIvrMin}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${effectiveIvrMin}% minimum${isIndex ? ' (index)' : ''}` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: isIndex ? `Above ${effectiveIvrMin}% (index floor)` : 'Above minimum' };
 
-  // CHANGE 2a: Earnings check now uses RULES.EARNINGS_BUFFER_DAYS instead of hardcoded 30
+  // Earnings buffer auto-derived: DTE_MAX + 5 days cushion
+  const earningsBuffer = RULES.DTE_MAX + 5;
   let earningsCheck: CheckResult;
   if (isIndex) {
     earningsCheck = { status: 'pass', value: 'N/A (index/ETF)', reason: 'No earnings events' };
@@ -401,11 +401,11 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     const d = daysUntil(earningsDate);
     if (d < 0) {
       earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
-    } else if (d < RULES.EARNINGS_BUFFER_DAYS) {
+    } else if (d < earningsBuffer) {
       failReasons.push(`Earnings in ${d}d`);
-      earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: `Within ${RULES.EARNINGS_BUFFER_DAYS}d buffer` };
+      earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: `Within ${earningsBuffer}d buffer (DTE Max + 5)` };
     } else {
-      earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: 'Outside buffer window' };
+      earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: `Outside ${earningsBuffer}d buffer` };
     }
   }
 
@@ -996,7 +996,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
   return (
     <div className={`col-span-2 pt-1 pb-0.5 border-b ${th.border}`}>
-      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold`}>{label}</p>
+      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
     </div>
   );
 }
@@ -1018,19 +1018,15 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[92vh] overflow-y-auto shadow-2xl`}>
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[75vh] overflow-y-auto shadow-2xl`}>
         <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
         <p className={`text-[9px] ${th.textFaint} mb-4 tracking-wider`}>
-          IVR cap applies to IC only — BPS/BCS spreads have no upper IVR limit by design. Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps, returns best ROC. IC sides optimized independently.
+          IVR cap applies to IC only — BPS/BCS spreads have no upper IVR limit by design. Earnings buffer is auto-calculated as DTE Max + 5 days. Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps, returns best ROC.
         </p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-4">
           <SectionHeader label="Implied Volatility Rank" th={th} />
           <RuleInput ruleKey="IVR_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-
-          <SectionHeader label="Earnings Gate" th={th} />
-          <RuleInput ruleKey="EARNINGS_BUFFER_DAYS" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <div /> {/* keep 2-col grid aligned */}
 
           <SectionHeader label="Days to Expiration" th={th} />
           <RuleInput ruleKey="DTE_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
@@ -1592,7 +1588,7 @@ export default function Home() {
               : [
                   ['IVR', `≥ ${lastRunRules.IVR_MIN}%`],
                   ['DTE', `${lastRunRules.DTE_MIN}–${lastRunRules.DTE_MAX} days`],
-                  ['Earnings buffer', `${lastRunRules.EARNINGS_BUFFER_DAYS}d`],
+                  ['Earnings buffer', `${lastRunRules.DTE_MAX + 5}d (auto)`],
                   ['BPS/BCS delta', `${lastRunRules.SPREAD_DELTA_MIN}–${lastRunRules.SPREAD_DELTA_MAX}`],
                   ['IC delta', `${lastRunRules.IC_DELTA_MIN}–${lastRunRules.IC_DELTA_MAX}`],
                   ['Credit ratio', `≥ ${(lastRunRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
