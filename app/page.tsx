@@ -909,7 +909,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 }) {
   return (
     <div>
-      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase`}>
+      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-0.5 uppercase`}>
         {RULE_LABELS[ruleKey]}{ruleKey === 'MAX_SPREAD_WIDTH' && <span className={`${th.textFaint} ml-1 normal-case opacity-60`}>(optimizer cap)</span>}
       </p>
       <input
@@ -919,7 +919,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
         onChange={e => onRawChange(ruleKey, e.target.value)}
         onBlur={e => onBlur(ruleKey, e.target.value)}
         onFocus={e => e.target.select()}
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-sm ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-1.5 text-xs ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
       />
     </div>
   );
@@ -927,7 +927,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 
 function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
   return (
-    <div className={`col-span-2 pt-1 pb-0.5 border-b ${th.border}`}>
+    <div className={`col-span-2 pb-0.5 border-b ${th.border}`}>
       <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
     </div>
   );
@@ -955,7 +955,7 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
         <p className={`text-[9px] ${th.textFaint} mb-4 tracking-wider`}>
           IVR cap applies to IC only — BPS/BCS spreads have no upper IVR limit by design. Width optimizer tries $5 → ${editedRules.MAX_SPREAD_WIDTH} in steps, returns best ROC. IC sides optimized independently.
         </p>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-4">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 mb-3">
           <SectionHeader label="Implied Volatility Rank" th={th} />
           <RuleInput ruleKey="IVR_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
