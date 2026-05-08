@@ -432,11 +432,16 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   //   3. priceAboveLow < 0.35 — hasn't bounced too far off the low
   //   4. currentDropFromHigh > 0.20 — still meaningfully below the high
   const priceVsMa50Pct = Math.abs((currentPrice - ma50) / ma50);
-  const notConsolidatingAtMa50 = currentPrice < ma50 || priceVsMa50Pct > 0.02;
-  const confirmedDowntrend = maDiff < -0.015          // lowered from -0.02 to catch ADP at -1.91%
+  // Consolidating AT the MA50 means price is hugging it closely from either side —
+  // this indicates choppy indecision, not a confirmed directional trend.
+  // CRM: price $186.34 vs MA50 $186.63 = 0.15% → consolidating → block escape to BCS
+  // ADP: price $214.09 vs MA50 $206.94 = 3.46% → not consolidating → allow escape
+  const consolidatingAtMa = priceVsMa50Pct < 0.025;
+  const notConsolidatingAtMa50 = !consolidatingAtMa;
+  const confirmedDowntrend = maDiff < -0.015
     && notConsolidatingAtMa50
     && priceAboveLow < 0.35
-    && currentDropFromHigh > 0.12;                    // lowered from 0.20 — ADP ~22% off high but spike filter may compress this
+    && currentDropFromHigh > 0.12;
   const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentPeakFlag && !earningsSpikeFlag
     && (!recentReversalFlag || (maDiff < -0.03 && priceAboveLow < 0.08));
   // Extra guard: if price is consolidating right at MA50 (choppy recovery like CRM),
