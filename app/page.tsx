@@ -395,14 +395,25 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const overrideReason = overrideReasons.join(' · ');
 
   // ── Confirmed downtrend escape hatch ─────────────────────────────────────
-  // If the stock is in a confirmed downtrend (MA20 < MA50, price < MA50, barely off the low)
-  // then brokenTrendFlag and freshCrossoverFlag are noise — route to BCS not Broken.
-  // freshCrossoverFlag fires frequently in sustained downtrends as price bounces then resumes.
-  // This fixes ACN, APTV: clean sustained downtrends that never had a V-recovery.
   const confirmedDowntrend = maDiff < 0 && currentPrice < ma50 && priceAboveLow < 0.20;
   const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentReversalFlag;
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag)
     && !(downwardFlags && confirmedDowntrend);
+
+  // ── Diagnostic logging — open browser console to read ────────────────────
+  console.log(`[getTrend] ${symbol}`, {
+    currentPrice: currentPrice.toFixed(2),
+    ma20: ma20.toFixed(2), ma50: ma50.toFixed(2),
+    maDiff: (maDiff * 100).toFixed(2) + '%',
+    priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
+    maxDrawdown: (maxDrawdown * 100).toFixed(1) + '%',
+    currentDropFromHigh: (currentDropFromHigh * 100).toFixed(1) + '%',
+    highInFirstTwoThirds, isTransientSpike,
+    sustainedHigh: sustainedHigh.toFixed(2),
+    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag,
+    confirmedDowntrend, downwardFlags, hasOverride,
+    verdict: hasOverride ? 'BROKEN' : maDiff < 0 ? 'BCS' : maDiff > 0 ? 'BPS' : 'IC',
+  });
 
   // ── Trend classification ──────────────────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
