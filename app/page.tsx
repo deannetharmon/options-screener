@@ -30,6 +30,11 @@ interface SpreadCandidate {
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
   strategy: 'BPS' | 'BCS' | 'IC'; ma20: number; ma50: number; reason: string;
+  // Candle analysis fields
+  consecutiveRed: number; consecutiveGreen: number;
+  pctFromHigh: number;       // % below 20-day high (positive = below)
+  rejectionFlag: boolean;    // upper wick rejection near recent high
+  candleWarning?: string;    // human-readable warning if candles conflict with trend
 }
 interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
@@ -431,12 +436,8 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   const rocCheck: CheckResult = bestCandidate ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` } : { status: 'pending', value: '—', reason: 'No candidate' };
   const trendCheck: CheckResult = !trendResult || trendResult.trend === 'unknown'
   ? { status: 'warn', value: 'Unknown', reason: 'No trend data — run ANALYZE TRENDS first' }
-  : strategy === 'BPS' && trendResult.trend === 'downtrend'
-    ? (() => { failReasons.push('Downtrend conflicts with BPS (bearish momentum)'); return { status: 'fail' as const, value: trendResult.trend, reason: `MA20 ${trendResult.ma20.toFixed(2)} < MA50 ${trendResult.ma50.toFixed(2)}` }; })()
-  : strategy === 'BCS' && trendResult.trend === 'uptrend'
-    ? (() => { failReasons.push('Uptrend conflicts with BCS (bullish momentum)'); return { status: 'fail' as const, value: trendResult.trend, reason: `MA20 ${trendResult.ma20.toFixed(2)} > MA50 ${trendResult.ma50.toFixed(2)}` }; })()
   : { status: 'pass', value: trendResult.trend, reason: trendResult.reason };
-  const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && trendCheck.status !== 'fail' && bestCandidate !== null;
+  const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
 return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, trend: trendCheck } };
 }
 
@@ -917,8 +918,24 @@ function ResultCard({ result, th, rules }: {
       {/* Expanded Content */}
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
-          {t && <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border}`}><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
-
+{t && (
+  <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border} space-y-1`}>
+    <div>
+      <span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>
+      {t.reason}
+    </div>
+    {t.candleWarning && (
+      <div className="text-yellow-400 font-medium">{t.candleWarning}</div>
+    )}
+    {(t.consecutiveRed >= 2 || t.consecutiveGreen >= 2) && (
+      <div className={`${th.textFaint}`}>
+        {t.consecutiveRed >= 2 ? `${t.consecutiveRed} consecutive red candles` : `${t.consecutiveGreen} consecutive green candles`}
+        {' · '}{(t.pctFromHigh * 100).toFixed(1)}% off 20d high
+        {t.rejectionFlag ? ' · rejection wick detected' : ''}
+      </div>
+    )}
+  </div>
+)}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {Object.entries(result.checks).map(([key, check]) => (
               <div key={key} className="flex items-start gap-2">
@@ -1160,30 +1177,97 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
 
   const data = await res.json();
-  const bars: { c: number }[] = data.results ?? [];
+  const bars: { o: number; h: number; l: number; c: number }[] = data.results ?? [];
 
-  if (bars.length < 50)
-    return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough price history' };
+  const EMPTY: TrendResult = {
+    trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
+    reason: 'Not enough price history',
+    consecutiveRed: 0, consecutiveGreen: 0, pctFromHigh: 0,
+    rejectionFlag: false,
+  };
+  if (bars.length < 50) return EMPTY;
 
   const closes = bars.map(b => b.c);
   const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
   const currentPrice = closes[closes.length - 1];
 
-  const maDiff = (ma20 - ma50) / ma50;
-  const priceVsMa50 = (currentPrice - ma50) / ma50;
+  // ── Consecutive candles ──────────────────────────────────────────────────
+  let consecutiveRed = 0, consecutiveGreen = 0;
+  for (let i = bars.length - 1; i >= 0; i--) {
+    const isRed = bars[i].c < bars[i].o;
+    if (consecutiveRed === 0 && consecutiveGreen === 0) {
+      isRed ? consecutiveRed++ : consecutiveGreen++;
+    } else if (consecutiveRed > 0 && isRed) {
+      consecutiveRed++;
+    } else if (consecutiveGreen > 0 && !isRed) {
+      consecutiveGreen++;
+    } else {
+      break;
+    }
+  }
 
+  // ── Distance from 20-day high ────────────────────────────────────────────
+  const high20 = Math.max(...bars.slice(-20).map(b => b.h));
+  const pctFromHigh = (high20 - currentPrice) / high20; // positive = below high
+
+  // ── Rejection detection (upper wick on last 3 bars near 20d high) ────────
+  const recentBars = bars.slice(-3);
+  const rejectionFlag = recentBars.some(b => {
+    const bodySize = Math.abs(b.c - b.o);
+    const upperWick = b.h - Math.max(b.c, b.o);
+    const totalRange = b.h - b.l;
+    // Upper wick > 40% of total range AND wick > body = rejection candle
+    return totalRange > 0 && upperWick / totalRange > 0.4 && upperWick > bodySize;
+  });
+
+  // ── MA trend (same logic as before) ─────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
   const sidewaysBand = isIdx ? 0.06 : 0.03;
   const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
+  const maDiff = (ma20 - ma50) / ma50;
+  const priceVsMa50 = (currentPrice - ma50) / ma50;
+
+  let trend: TrendResult['trend'];
+  let strategy: TrendResult['strategy'];
+  let reason: string;
 
   if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand) {
-    return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA ≈ 50MA — range-bound` };
+    trend = 'sideways'; strategy = 'IC';
+    reason = `20MA ≈ 50MA — range-bound`;
+  } else if (maDiff > 0 && currentPrice > ma50) {
+    trend = 'uptrend'; strategy = 'BPS';
+    reason = `Uptrend — MA20 ${ma20.toFixed(2)} > MA50 ${ma50.toFixed(2)}`;
+  } else {
+    trend = 'downtrend'; strategy = 'BCS';
+    reason = `Downtrend — MA20 ${ma20.toFixed(2)} < MA50 ${ma50.toFixed(2)}`;
   }
-  if (maDiff > 0 && currentPrice > ma50) {
-    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `Uptrend` };
+
+  // ── Candle conflict detection ────────────────────────────────────────────
+  let candleWarning: string | undefined;
+
+  if (trend === 'uptrend') {
+    if (consecutiveRed >= 3 && pctFromHigh > 0.05) {
+      candleWarning = `⚠ ${consecutiveRed} red candles, ${(pctFromHigh * 100).toFixed(1)}% off high — momentum weakening`;
+      strategy = 'IC'; // downgrade from BPS to IC
+    } else if (consecutiveRed >= 3) {
+      candleWarning = `⚠ ${consecutiveRed} consecutive red candles — wait for stabilization`;
+    } else if (rejectionFlag && pctFromHigh < 0.04) {
+      candleWarning = `⚠ Rejection candle near recent high — possible reversal`;
+    } else if (pctFromHigh > 0.08) {
+      candleWarning = `⚠ ${(pctFromHigh * 100).toFixed(1)}% off 20d high — extended pullback`;
+    }
+  } else if (trend === 'downtrend') {
+    if (consecutiveGreen >= 3) {
+      candleWarning = `⚠ ${consecutiveGreen} green candles in downtrend — possible bounce, confirm before BCS`;
+    }
   }
-  return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `Downtrend` };
+
+  return {
+    trend, strategy, ma20, ma50, reason,
+    consecutiveRed, consecutiveGreen, pctFromHigh,
+    rejectionFlag, candleWarning,
+  };
 }
 
 // ── Best Opportunity Finder ────────────────────────────────────────────────
