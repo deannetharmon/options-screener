@@ -395,14 +395,14 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const overrideReason = overrideReasons.join(' · ');
 
   // ── Confirmed downtrend escape hatch ─────────────────────────────────────
-  // If brokenTrendFlag is the ONLY flag firing, but the stock is still near its 6-month
-  // low (hasn't bounced) and MA20 < MA50 (confirmed downtrend direction), it's not
-  // "broken" — it's just a big downtrend. Route to BCS instead of Broken.
+  // If the stock is in a confirmed downtrend (MA20 < MA50, price < MA50, barely off the low)
+  // then brokenTrendFlag and freshCrossoverFlag are noise — route to BCS not Broken.
+  // freshCrossoverFlag fires frequently in sustained downtrends as price bounces then resumes.
   // This fixes ACN, APTV: clean sustained downtrends that never had a V-recovery.
-  const onlyBrokenFlag = brokenTrendFlag && !recentReversalFlag && !freshCrossoverFlag;
   const confirmedDowntrend = maDiff < 0 && currentPrice < ma50 && priceAboveLow < 0.20;
+  const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentReversalFlag;
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag)
-    && !(onlyBrokenFlag && confirmedDowntrend);
+    && !(downwardFlags && confirmedDowntrend);
 
   // ── Trend classification ──────────────────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
