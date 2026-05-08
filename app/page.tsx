@@ -1028,151 +1028,220 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; broken: string; onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
+function SessionsModal({ bps, bcs, ic, broken, onClose, onLoadAll, onLoadPrompt, th }: {
+  bps: string; bcs: string; ic: string; broken: string;
+  onClose: () => void;
+  onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void;
+  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
+  th: typeof THEMES[Theme];
+}) {
+  const [tab, setTab] = useState<'load' | 'save'>('load');
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
-  const [showManage, setShowManage] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveError, setSaveError] = useState('');
+  const [overwriteTarget, setOverwriteTarget] = useState('');
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [overwriteTarget, setOverwriteTarget] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-  const refreshFilters = useCallback(async () => { const f = await loadFilters('global') as GlobalFilters; setGlobalFilters(f); }, []);
+  const refreshFilters = useCallback(async () => {
+    const f = await loadFilters('global') as GlobalFilters;
+    setGlobalFilters(f);
+  }, []);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
 
   const filterNames = Object.keys(globalFilters);
+  const hasTickers = parseTickers(bps).length > 0 || parseTickers(bcs).length > 0 || parseTickers(ic).length > 0;
 
   const handleSaveNew = async () => {
     if (!saveName.trim()) { setSaveError('Enter a session name'); return; }
+    setBusy(true);
     const result = await saveFilter('global', saveName.trim(), { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, false);
-    if (result.conflict) { setSaveError(`"${saveName}" already exists`); return; }
+    setBusy(false);
+    if (result.conflict) { setSaveError(`"${saveName}" already exists — use Overwrite to replace it`); return; }
     await refreshFilters(); setSaveName(''); setSaveError('');
   };
 
-  const handleOverwrite = async (name: string) => {
-    await saveFilter('global', name, { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, true);
-    await refreshFilters(); setOverwriteTarget(null);
-  };
-
-  const handleRename = async (oldName: string) => {
-    const newName = renameValue.trim();
-    if (!newName || newName === oldName) { setRenamingName(null); return; }
-    const session = globalFilters[oldName];
-    if (!session) return;
-    await saveFilter('global', newName, { bps: session.bps, bcs: session.bcs, ic: session.ic }, false);
-    await deleteFilter('global', oldName);
-    await refreshFilters(); setRenamingName(null); setRenameValue('');
-  };
-
-  const handleDelete = async (name: string) => {
-    await deleteFilter('global', name);
-    await refreshFilters();
+  const handleOverwrite = async () => {
+    if (!overwriteTarget) return;
+    setBusy(true);
+    await saveFilter('global', overwriteTarget, { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, true);
+    setBusy(false);
+    await refreshFilters(); setOverwriteTarget('');
   };
 
   const handleLoad = (name: string) => {
     const session = globalFilters[name]; if (!session) return;
+    onClose();
     onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => {
       if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken);
       else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
     }});
   };
 
+  const handleRename = async (oldName: string) => {
+    const newName = renameValue.trim();
+    if (!newName || newName === oldName) { setRenamingName(null); return; }
+    const session = globalFilters[oldName]; if (!session) return;
+    setBusy(true);
+    await saveFilter('global', newName, { bps: session.bps, bcs: session.bcs, ic: session.ic }, false);
+    await deleteFilter('global', oldName);
+    setBusy(false);
+    await refreshFilters(); setRenamingName(null); setRenameValue('');
+  };
+
+  const handleDelete = async (name: string) => {
+    setBusy(true);
+    await deleteFilter('global', name);
+    setBusy(false);
+    await refreshFilters(); setDeleteConfirm(null);
+  };
+
   return (
-    <div className={`border-t ${th.border} pt-3`}>
-      <div className="flex items-center justify-between mb-2">
-        <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SESSIONS</p>
-        <button onClick={() => setShowManage(o => !o)} className={`text-[9px] px-2 py-0.5 border ${th.inputBorder} rounded ${th.textFaint} hover:border-blue-500 hover:text-blue-400 transition-colors`}>
-          {showManage ? '▲ close' : '⚙ manage'}
-        </button>
-      </div>
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-96 max-h-[80vh] flex flex-col overflow-hidden`}>
 
-      {/* Quick action row */}
-      <div className="flex gap-2 mb-2">
-        <button onClick={() => onLoadAll('', '', '', '')}
-          className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium shrink-0`}>✕ Clear</button>
-        {filterNames.map(name => (
-          <button key={name} onClick={() => handleLoad(name)}
-            className={`text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium truncate max-w-[80px]`}
-            title={`Load "${name}"`}>
-            ▶ {name}
-          </button>
-        ))}
-      </div>
+        {/* Header */}
+        <div className={`flex items-center justify-between px-5 py-4 border-b ${th.border}`}>
+          <h2 className={`text-sm font-bold tracking-widest ${th.text}`}>SESSIONS</h2>
+          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg transition-colors`}>✕</button>
+        </div>
 
-      {/* Manage panel */}
-      {showManage && (
-        <div className={`${th.tag} border ${th.border} rounded-lg p-2 space-y-2`}>
+        {/* Tabs */}
+        <div className={`flex border-b ${th.border}`}>
+          {(['load', 'save'] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`flex-1 py-2.5 text-[10px] font-bold tracking-widest transition-colors ${tab === t ? 'text-blue-400 border-b-2 border-blue-500' : `${th.textFaint} hover:${th.textMuted}`}`}>
+              {t === 'load' ? '▶ LOAD' : '💾 SAVE'}
+            </button>
+          ))}
+        </div>
 
-          {/* Save new */}
-          <div>
-            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase mb-1`}>Save current as new</p>
-            <div className="flex gap-1">
-              <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }}
-                placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSaveNew()}
-                className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
-              <button onClick={handleSaveNew} className="text-[9px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition-colors">Save</button>
-            </div>
-            {saveError && <p className="text-[9px] text-red-400 mt-0.5">{saveError}</p>}
-          </div>
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-4">
 
-          {/* Overwrite existing */}
-          {filterNames.length > 0 && (
-            <div>
-              <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase mb-1`}>Overwrite existing</p>
-              <div className="flex flex-wrap gap-1">
-                {filterNames.map(name => (
-                  overwriteTarget === name ? (
-                    <div key={name} className="flex gap-1 w-full">
-                      <span className={`text-[9px] ${th.textMuted} flex-1 truncate py-1`}>Overwrite "{name}"?</span>
-                      <button onClick={() => handleOverwrite(name)} className="text-[9px] px-2 py-1 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-medium">Yes</button>
-                      <button onClick={() => setOverwriteTarget(null)} className={`text-[9px] px-2 py-1 border ${th.inputBorder} rounded ${th.textFaint}`}>No</button>
+          {/* ── LOAD TAB ── */}
+          {tab === 'load' && (
+            <div className="space-y-2">
+              {filterNames.length === 0 && (
+                <p className={`text-[10px] ${th.textFaint} italic text-center py-6`}>No saved sessions yet — go to Save to create one</p>
+              )}
+              {filterNames.map(name => (
+                <div key={name} className={`border ${th.border} rounded-lg p-3`}>
+                  {renamingName === name ? (
+                    <div className="flex gap-2 items-center">
+                      <input autoFocus type="text" value={renameValue}
+                        onChange={e => setRenameValue(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleRename(name); if (e.key === 'Escape') setRenamingName(null); }}
+                        className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-[11px] ${th.text} focus:outline-none focus:border-blue-500`} />
+                      <button onClick={() => handleRename(name)} disabled={busy}
+                        className="text-[10px] px-2.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-bold disabled:opacity-40">✓</button>
+                      <button onClick={() => setRenamingName(null)}
+                        className={`text-[10px] px-2.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint}`}>✕</button>
+                    </div>
+                  ) : deleteConfirm === name ? (
+                    <div className="flex gap-2 items-center">
+                      <p className={`text-[10px] ${th.textMuted} flex-1`}>Delete "{name}"?</p>
+                      <button onClick={() => handleDelete(name)} disabled={busy}
+                        className="text-[10px] px-2.5 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded font-bold disabled:opacity-40">Delete</button>
+                      <button onClick={() => setDeleteConfirm(null)}
+                        className={`text-[10px] px-2.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint}`}>Cancel</button>
                     </div>
                   ) : (
-                    <button key={name} onClick={() => setOverwriteTarget(name)}
-                      className={`text-[9px] px-2 py-1 border ${th.inputBorder} rounded ${th.textFaint} hover:border-yellow-500 hover:text-yellow-400 transition-colors truncate max-w-[120px]`}
-                      title={`Overwrite "${name}" with current lists`}>
-                      ↩ {name}
-                    </button>
-                  )
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Existing sessions — rename + delete */}
-          {filterNames.length > 0 && (
-            <div>
-              <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase mb-1`}>Rename / delete</p>
-              <div className="space-y-1">
-                {filterNames.map(name => (
-                  <div key={name} className={`flex items-center gap-1 px-2 py-1 rounded border ${th.borderLight}`}>
-                    {renamingName === name ? (
-                      <>
-                        <input autoFocus type="text" value={renameValue}
-                          onChange={e => setRenameValue(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter') handleRename(name); if (e.key === 'Escape') setRenamingName(null); }}
-                          className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-1.5 py-0.5 text-[10px] ${th.text} focus:outline-none focus:border-blue-500`} />
-                        <button onClick={() => handleRename(name)} className="text-[9px] px-1.5 py-0.5 bg-blue-600 text-white rounded">✓</button>
-                        <button onClick={() => setRenamingName(null)} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textFaint}`}>✕</button>
-                      </>
-                    ) : (
-                      <>
-                        <span className={`text-[10px] ${th.textMuted} flex-1 truncate font-medium`}>{name}</span>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => handleLoad(name)}
+                        className={`flex-1 text-left text-[11px] ${th.text} font-medium hover:text-blue-400 transition-colors truncate`}>
+                        ▶ {name}
+                      </button>
+                      <div className="flex gap-1 shrink-0">
                         <button onClick={() => { setRenamingName(name); setRenameValue(name); }}
-                          className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textFaint} hover:border-blue-500 hover:text-blue-400 transition-colors`} title="Rename">✎</button>
-                        <button onClick={() => handleDelete(name)}
-                          className="text-[9px] px-1.5 py-0.5 border border-red-900 rounded text-red-500 hover:border-red-500 hover:text-red-400 transition-colors" title="Delete">✕</button>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
+                          className={`text-[10px] px-2 py-1 border ${th.inputBorder} rounded ${th.textFaint} hover:border-blue-500 hover:text-blue-400 transition-colors`} title="Rename">✎</button>
+                        <button onClick={() => setDeleteConfirm(name)}
+                          className={`text-[10px] px-2 py-1 border border-red-900 rounded text-red-500 hover:border-red-500 transition-colors`} title="Delete">✕</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
-          {filterNames.length === 0 && <p className={`text-[9px] ${th.textFaint} italic`}>No saved sessions yet</p>}
+          {/* ── SAVE TAB ── */}
+          {tab === 'save' && (
+            <div className="space-y-5">
+              {!hasTickers && (
+                <div className={`text-[10px] ${th.textFaint} bg-yellow-500/10 border border-yellow-600/40 rounded-lg px-3 py-2`}>
+                  No tickers in scan lists — add tickers to BPS/BCS/IC boxes first
+                </div>
+              )}
+
+              {/* Save as new */}
+              <div>
+                <p className={`text-[10px] ${th.textMuted} font-bold tracking-wider mb-2`}>Save as new session</p>
+                <div className="flex gap-2">
+                  <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }}
+                    placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSaveNew()}
+                    className={`flex-1 ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-[11px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
+                  <button onClick={handleSaveNew} disabled={busy || !hasTickers || !saveName.trim()}
+                    className="text-[10px] px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg font-bold transition-colors">
+                    Save
+                  </button>
+                </div>
+                {saveError && <p className="text-[10px] text-red-400 mt-1.5">{saveError}</p>}
+              </div>
+
+              {/* Overwrite existing */}
+              {filterNames.length > 0 && (
+                <div>
+                  <p className={`text-[10px] ${th.textMuted} font-bold tracking-wider mb-2`}>Overwrite existing session</p>
+                  <p className={`text-[9px] ${th.textFaint} mb-2`}>Replaces the selected session with your current scan lists</p>
+                  <div className="flex gap-2">
+                    <select value={overwriteTarget} onChange={e => setOverwriteTarget(e.target.value)}
+                      className={`flex-1 ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-[11px] ${th.text} focus:outline-none focus:border-yellow-500 bg-slate-900`}>
+                      <option value="">— select session —</option>
+                      {filterNames.map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                    <button onClick={handleOverwrite} disabled={busy || !hasTickers || !overwriteTarget}
+                      className="text-[10px] px-3 py-2 bg-yellow-700 hover:bg-yellow-600 disabled:opacity-40 text-white rounded-lg font-bold transition-colors">
+                      Overwrite
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
+
+        {/* Footer */}
+        <div className={`px-5 py-3 border-t ${th.border} flex justify-between items-center`}>
+          <button onClick={() => { onLoadAll('', '', '', ''); onClose(); }}
+            className="text-[10px] border border-red-800 text-red-500 hover:border-red-500 rounded-lg px-3 py-1.5 font-medium transition-colors">
+            ✕ Clear all lists
+          </button>
+          <button onClick={onClose} className={`text-[10px] ${th.textFaint} hover:${th.textMuted} transition-colors`}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; broken: string; onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
+  const [showModal, setShowModal] = useState(false);
+  return (
+    <div className={`border-t ${th.border} pt-3`}>
+      <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
+      <button onClick={() => setShowModal(true)}
+        className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1.5`}>
+        💾 Save / Load Sessions
+      </button>
+      {showModal && (
+        <SessionsModal bps={bps} bcs={bcs} ic={ic} broken={broken}
+          onClose={() => setShowModal(false)}
+          onLoadAll={onLoadAll}
+          onLoadPrompt={onLoadPrompt}
+          th={th} />
       )}
     </div>
   );
