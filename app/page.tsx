@@ -88,9 +88,10 @@ interface TrendResult {
   isCoiling: boolean;           // last 3 candle ranges each smaller than prior
   maDivergence: number;         // MA20 vs MA50 spread as % — conviction proxy
   // Context override flags — route to Broken when true
-  recentReversalFlag: boolean;  // 6-month low within last 15 bars, bounce unconfirmed
-  brokenTrendFlag: boolean;     // dropped >20% from 6-month high set in first 2/3 of period
-  freshCrossoverFlag: boolean;  // MA20/MA50 crossed within last 10 bars — unreliable signal
+  recentReversalFlag: boolean;  // 6-month low within last 10 bars, bounce unconfirmed
+  brokenTrendFlag: boolean;     // dropped >28% from 6-month high set in first 2/3 of period
+  freshCrossoverFlag: boolean;  // MA20/MA50 crossed within last 5 bars — unreliable signal
+  recentPeakFlag: boolean;      // 6-month high hit within last 10 bars, dropped 5%+ since
   overrideReason: string;       // human-readable explanation when any flag is true
 }
 interface ScreenResult {
@@ -274,7 +275,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     reason: 'Not enough price history', closes30: [], trendStrength: 'unknown',
     rangePercent: 0, hasLongWicks: false, isCoiling: false, maDivergence: 0,
     recentReversalFlag: false, brokenTrendFlag: false, freshCrossoverFlag: false,
-    overrideReason: '',
+    recentPeakFlag: false, overrideReason: '',
   };
   if (bars.length < 50) return EMPTY;
 
@@ -387,17 +388,25 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     }
   }
 
+  // Flag 4: Recent peak — 6-month high hit within last 10 bars AND dropped 5%+ since.
+  // Catches ETR/BKR pattern: strong uptrend that just rolled over at the top.
+  // The MA is still bullish (trend was real) but the stock just peaked — don't enter BPS now.
+  const barsAgoHigh = n - 1 - allTimeHighIdx;
+  const dropSincePeak = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
+  const recentPeakFlag = barsAgoHigh <= 10 && dropSincePeak > 0.05;
+
   // ── Build override reason string ──────────────────────────────────────────
   const overrideReasons: string[] = [];
   if (recentReversalFlag) overrideReasons.push(`6-month low ${barsAgoLow}d ago — bounce unconfirmed (+${(priceAboveLow * 100).toFixed(0)}% off low)`);
   if (brokenTrendFlag)    overrideReasons.push(`Dropped ${(maxDrawdown * 100).toFixed(0)}% from 6-month high, still ${(currentDropFromHigh * 100).toFixed(0)}% below peak`);
   if (freshCrossoverFlag) overrideReasons.push('MA20/MA50 crossed recently — signal unreliable');
+  if (recentPeakFlag)     overrideReasons.push(`6-month high ${barsAgoHigh}d ago — dropped ${(dropSincePeak * 100).toFixed(0)}% since peak, possible reversal`);
   const overrideReason = overrideReasons.join(' · ');
 
   // ── Confirmed downtrend escape hatch ─────────────────────────────────────
   const confirmedDowntrend = maDiff < 0 && currentPrice < ma50 && priceAboveLow < 0.20;
-  const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentReversalFlag;
-  const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag)
+  const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentReversalFlag && !recentPeakFlag;
+  const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag)
     && !(downwardFlags && confirmedDowntrend);
 
   // ── Trend classification ──────────────────────────────────────────────────
@@ -407,7 +416,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
   const base = {
     ma20, ma50, closes30, trendStrength, rangePercent, hasLongWicks, isCoiling, maDivergence,
-    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, overrideReason,
+    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, overrideReason,
   };
 
   // Override fires before MA classification — send to 'unknown' so routing sends to Broken
@@ -1017,14 +1026,16 @@ function getReviewSubLabel(t: TrendResult | undefined): {
   badge: string; color: string; action: string;
 } | null {
   if (!t) return null;
-  const { recentReversalFlag, brokenTrendFlag, freshCrossoverFlag } = t;
-  if (!recentReversalFlag && !brokenTrendFlag && !freshCrossoverFlag) return null;
+  const { recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag } = t;
+  if (!recentReversalFlag && !brokenTrendFlag && !freshCrossoverFlag && !recentPeakFlag) return null;
 
-  const count = [recentReversalFlag, brokenTrendFlag, freshCrossoverFlag].filter(Boolean).length;
+  const count = [recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag].filter(Boolean).length;
 
   if (count > 1) {
-    // Multiple flags — genuinely unclear
     return { badge: 'UNCLEAR', color: 'bg-red-500/15 text-red-400 border-red-500', action: 'Multiple signals — manual chart check required' };
+  }
+  if (recentPeakFlag) {
+    return { badge: 'PEAKED', color: 'bg-orange-500/15 text-orange-400 border-orange-500', action: 'Just hit 6-month high and rolling over — wait for direction confirmation' };
   }
   if (recentReversalFlag) {
     return { badge: 'NEW LOW', color: 'bg-amber-500/15 text-amber-400 border-amber-500', action: 'Just hit 6-month low — re-screen in 1–2 weeks' };
