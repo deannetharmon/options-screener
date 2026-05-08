@@ -448,17 +448,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     && !(downwardFlags && confirmedDowntrend && !consolidatingAtMa);
 
   // ── Diagnostic logging ────────────────────────────────────────────────────
-  console.log(`[getTrend] ${symbol}`, {
-    verdict: hasOverride ? 'REVIEW' : maDiff < 0 ? 'BCS' : maDiff > 0 ? 'BPS' : 'IC',
-    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag,
-    confirmedDowntrend, downwardFlags, hasOverride,
-    priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
-    currentDropFromHigh: (currentDropFromHigh * 100).toFixed(1) + '%',
-    priceVsMa50Pct: (priceVsMa50Pct * 100).toFixed(2) + '%',
-    maDiff: (maDiff * 100).toFixed(2) + '%',
-    currentPrice: currentPrice.toFixed(2), ma50: ma50.toFixed(2),
-  });
-
   // ── Trend classification ──────────────────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
   const sidewaysBand      = isIdx ? 0.06 : 0.03;
@@ -474,19 +463,12 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     return { ...base, trend: 'unknown', strategy: 'BCS', reason: overrideReason };
 
   // ── Wide-range IC check ───────────────────────────────────────────────────
-  // Catches stocks like TMUS: large 6-month range, current price near the middle.
-  // The MA may briefly dip below/above during the oscillation — that's not a real trend.
-  // Conditions:
-  //   1. 6-month range > 25% of price AND current price is in the middle 30–70% of range
-  //   2. The RECENT half of the period must also be range-bound (not a sustained trend)
-  //      — prevents FUTU-style downtrends that merely started high from being called IC
   const high6m = Math.max(...highs);
   const low6m  = Math.min(...lows);
   const range6m = high6m - low6m;
   const range6mPct = low6m > 0 ? range6m / low6m : 0;
   const positionInRange = range6m > 0 ? (currentPrice - low6m) / range6m : 0.5;
   const inMiddleOfRange = positionInRange >= 0.30 && positionInRange <= 0.70;
-  // Recent-half check: look at the last n/2 bars — is that sub-period also range-bound?
   const recentHalf = Math.floor(n / 2);
   const recentHighs = highs.slice(-recentHalf);
   const recentLows  = lows.slice(-recentHalf);
@@ -494,20 +476,34 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const recentLow   = Math.min(...recentLows);
   const recentRange = recentHigh - recentLow;
   const recentRangePct = recentLow > 0 ? recentRange / recentLow : 0;
-  // Recent period must show oscillation (range > 8%) rather than trending (MA drift > 6%)
-  // A sustained downtrend will have low recentRangePct relative to overall OR high MA drift
   const recentMa10 = closes.slice(-10).reduce((a, b) => a + b, 0) / 10;
   const recentMa20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const recentTrending = Math.abs((recentMa10 - recentMa20) / recentMa20) > 0.06;
   const recentIsRangeBound = recentRangePct > 0.08 && !recentTrending;
-  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08 && recentIsRangeBound && !brokenTrendFlag)
-    return { ...base, trend: 'sideways', strategy: 'IC', reason: `Price in middle of ${(range6mPct * 100).toFixed(0)}% 6-month range ($${low6m.toFixed(0)}–$${high6m.toFixed(0)}) — range-bound` };
 
-  if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand)
-    return { ...base, trend: 'sideways',  strategy: 'IC',  reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
-  if (maDiff > 0 && currentPrice > ma50)
-    return { ...base, trend: 'uptrend',   strategy: 'BPS', reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
-  return   { ...base, trend: 'downtrend', strategy: 'BCS', reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
+  // Determine final result — brokenTrendFlag stocks bypass both IC checks
+  let finalResult: TrendResult;
+  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08 && recentIsRangeBound && !brokenTrendFlag)
+    finalResult = { ...base, trend: 'sideways', strategy: 'IC', reason: `Price in middle of ${(range6mPct * 100).toFixed(0)}% 6-month range ($${low6m.toFixed(0)}–$${high6m.toFixed(0)}) — range-bound` };
+  else if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand && !brokenTrendFlag)
+    finalResult = { ...base, trend: 'sideways', strategy: 'IC',  reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
+  else if (maDiff > 0 && currentPrice > ma50)
+    finalResult = { ...base, trend: 'uptrend',  strategy: 'BPS', reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
+  else
+    finalResult = { ...base, trend: 'downtrend', strategy: 'BCS', reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
+
+  console.log(`[getTrend] ${symbol}`, {
+    verdict: finalResult.strategy,
+    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag,
+    confirmedDowntrend, downwardFlags, hasOverride,
+    priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
+    currentDropFromHigh: (currentDropFromHigh * 100).toFixed(1) + '%',
+    priceVsMa50Pct: (priceVsMa50Pct * 100).toFixed(2) + '%',
+    maDiff: (maDiff * 100).toFixed(2) + '%',
+    currentPrice: currentPrice.toFixed(2), ma50: ma50.toFixed(2),
+  });
+
+  return finalResult;
 }
 
 // ── TastyTrade API ─────────────────────────────────────────────────────────
