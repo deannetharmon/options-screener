@@ -500,7 +500,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const recentMa20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const recentTrending = Math.abs((recentMa10 - recentMa20) / recentMa20) > 0.06;
   const recentIsRangeBound = recentRangePct > 0.08 && !recentTrending;
-  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08 && recentIsRangeBound)
+  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08 && recentIsRangeBound && !brokenTrendFlag)
     return { ...base, trend: 'sideways', strategy: 'IC', reason: `Price in middle of ${(range6mPct * 100).toFixed(0)}% 6-month range ($${low6m.toFixed(0)}–$${high6m.toFixed(0)}) — range-bound` };
 
   if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand)
