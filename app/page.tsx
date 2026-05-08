@@ -1466,7 +1466,7 @@ export default function Home() {
       for (let i = 0; i < autoList.length; i++) {
         const symbol = autoList[i]; setStatus(`Fetching trend: ${symbol} (${i+1}/${autoList.length})...`);
         let trendResult: TrendResult | undefined;
-        try { trendResult = await getTrend(symbol); } catch (e: any) { console.warn(e.message); }
+        try { trendResult = await getTrend(symbol); } catch (e: any) { console.error(`[getTrend] ${symbol} CRASHED:`, e); }
         if (i < autoList.length - 1) await sleep(1000);
         setStatus(`Scanning ${symbol} (${i+1}/${autoList.length})...`);
         const strategy = trendResult?.strategy ?? 'BCS';
