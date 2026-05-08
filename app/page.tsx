@@ -1074,11 +1074,16 @@ function SessionsModal({ bps, bcs, ic, broken, onClose, onLoadAll, onLoadPrompt,
 
   const handleLoad = (name: string) => {
     const session = globalFilters[name]; if (!session) return;
+    const isEmpty = !bps.trim() && !bcs.trim() && !ic.trim() && !broken.trim();
     onClose();
-    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => {
-      if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken);
-      else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
-    }});
+    if (isEmpty) {
+      onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
+    } else {
+      onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => {
+        if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken);
+        else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
+      }});
+    }
   };
 
   const handleRename = async (oldName: string) => {
