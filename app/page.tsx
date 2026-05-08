@@ -270,6 +270,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   }
   const data = await res.json();
   const bars: { o: number; h: number; l: number; c: number }[] = data.bars ?? [];
+  console.log(`[getTrend] ${symbol} reached classification`, { maDiff, ma20, ma50, currentPrice });
   console.log(`[getTrend] ${symbol} bars received:`, bars.length);
 
   const EMPTY: TrendResult = {
@@ -278,6 +279,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     rangePercent: 0, hasLongWicks: false, isCoiling: false, maDivergence: 0,
     recentReversalFlag: false, brokenTrendFlag: false, freshCrossoverFlag: false,
     recentPeakFlag: false, earningsSpikeFlag: false, overrideReason: '',
+    console.log(`[getTrend] ${symbol} starting calculations`);
   };
   if (bars.length < 50) return EMPTY;
 
