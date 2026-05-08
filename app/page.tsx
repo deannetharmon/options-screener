@@ -490,9 +490,9 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
   // Determine final result — brokenTrendFlag stocks bypass both IC checks
   let finalResult: TrendResult;
-  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08 && recentIsRangeBound && !brokenTrendFlag)
+  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08 && recentIsRangeBound && !brokenTrendFlag && currentDropFromHigh < 0.10)
     finalResult = { ...base, trend: 'sideways', strategy: 'IC', reason: `Price in middle of ${(range6mPct * 100).toFixed(0)}% 6-month range ($${low6m.toFixed(0)}–$${high6m.toFixed(0)}) — range-bound` };
-  else if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand && !brokenTrendFlag)
+  else if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand && !brokenTrendFlag && currentDropFromHigh < 0.10)
     finalResult = { ...base, trend: 'sideways', strategy: 'IC',  reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
   else if (maDiff > 0 && currentPrice > ma50)
     finalResult = { ...base, trend: 'uptrend',  strategy: 'BPS', reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
