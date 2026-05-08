@@ -295,7 +295,6 @@ const DEFAULT_RULES = {
   CREDIT_RATIO_MIN: 0.33, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
   IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.20, DTE_MIN: 30, DTE_MAX: 45,
   MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30,
-  CREDIT_MIN_ABS: 0.15,
 };
 type RulesType = typeof DEFAULT_RULES;
 
@@ -305,7 +304,6 @@ const RULE_LABELS: Record<string, string> = {
   OI_MIN: 'Open Interest Min (per leg)',
   BID_ASK_MAX: 'Bid-Ask Max $ (per leg)',
   CREDIT_RATIO_MIN: 'Min Credit — % of Width  (0.33 = course · 0.25 = floor · 0.20 = danger)',
-  CREDIT_MIN_ABS: 'Min Credit — $ Absolute floor',
   SPREAD_DELTA_MIN: 'Spread Delta Min',
   SPREAD_DELTA_MAX: 'Spread Delta Max',
   IC_DELTA_MIN: 'IC Delta Min',
@@ -496,13 +494,9 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   const oiCheck: CheckResult = bestCandidate ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: `Both legs ≥ ${RULES.OI_MIN}` } : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
   const deltaCheck: CheckResult = bestCandidate ? { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Within target range' } : { status: 'pending', value: '—', reason: 'No candidate' };
 
-  // CHANGE 2b: Credit check now enforces absolute dollar floor (CREDIT_MIN_ABS) in addition to ratio
   const rawCredit = bestCandidate ? (bestCandidate.totalCredit ?? bestCandidate.credit) : 0;
-  const creditPassesAbs = rawCredit >= RULES.CREDIT_MIN_ABS;
   const creditCheck: CheckResult = bestCandidate
-    ? creditPassesAbs
-      ? { status: 'pass', value: `$${rawCredit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` }
-      : (() => { failReasons.push(`Credit $${rawCredit.toFixed(2)} < $${RULES.CREDIT_MIN_ABS} floor`); return { status: 'fail' as const, value: `$${rawCredit.toFixed(2)}`, reason: `Below $${RULES.CREDIT_MIN_ABS} minimum` }; })()
+    ? { status: 'pass', value: `$${rawCredit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` }
     : { status: 'pending', value: '—', reason: 'No candidate' };
 
   const rocMin = strategy === 'IC' ? RULES.ROC_MIN_IC : RULES.ROC_MIN_SPREAD;
@@ -1207,12 +1201,8 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
             </div>
             <div className="grid grid-cols-3 gap-3 mt-3">
               {ri('CREDIT_RATIO_MIN', 'Min Credit Ratio',  '0.33 = course · 0.25 = floor · 0.20 = danger')}
-              {ri('CREDIT_MIN_ABS',   'Min Credit $',      'Absolute dollar floor')}
               {ri('ROC_MIN_SPREAD',   'Min ROC % — Spread','BPS and BCS')}
-            </div>
-            <div className="grid grid-cols-3 gap-3 mt-3">
-              {ri('ROC_MIN_IC', 'Min ROC % — IC', 'Iron Condor')}
-              <div /><div />
+              {ri('ROC_MIN_IC',       'Min ROC % — IC',    'Iron Condor')}
             </div>
           </div>
 
@@ -1822,7 +1812,6 @@ export default function Home() {
                   ['BPS/BCS delta', `${lastRunRules.SPREAD_DELTA_MIN}–${lastRunRules.SPREAD_DELTA_MAX}`],
                   ['IC delta', `${lastRunRules.IC_DELTA_MIN}–${lastRunRules.IC_DELTA_MAX}`],
                   ['Credit ratio', `≥ ${(lastRunRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
-                  ['Min credit $', `≥ $${lastRunRules.CREDIT_MIN_ABS}`],
                   ['OI per leg', `≥ ${lastRunRules.OI_MIN}`],
                   ['Bid-Ask', `≤ $${lastRunRules.BID_ASK_MAX}`],
                   ['Max width', `$${lastRunRules.MAX_SPREAD_WIDTH} (opt)`],
