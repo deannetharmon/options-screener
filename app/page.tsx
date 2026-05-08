@@ -1683,63 +1683,45 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
           ))}
         </div>
 
-        {/* Grid */}
-        <div className="px-6 pb-4">
-          <div className="grid grid-cols-4 gap-x-4 gap-y-3">
+        <div className="px-6 pb-4 space-y-4">
 
-            {/* ── IVR ── */}
-            <SectionHeader label="Implied Volatility Rank (IVR)" th={th} />
-            {ri('IVR_MIN', 'IVR Min %', 'Floor for all strategies')}
-            {ri('IVR_IC_MAX', 'IVR Max % (IC only)', 'Above this = skip IC')}
-            <div /><div />
-
-            {/* ── DTE ── */}
-            <SectionHeader label="Days to Expiration (DTE)" th={th} />
-            {ri('DTE_MIN', 'Min Days')}
-            {ri('DTE_MAX', 'Max Days')}
-            <div /><div />
-
-            {/* ── Delta ── */}
-            <SectionHeader label="Strike Selection — Delta" th={th} />
-            <div className={`col-span-2 grid grid-cols-2 gap-3`}>
-              <div>
-                <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase font-medium`}>Spread Delta</p>
-                <div className="flex gap-2 items-center">
-                  {ri('SPREAD_DELTA_MIN', 'Min')}
-                  <span className={`text-[10px] ${th.textFaint} mt-4`}>→</span>
-                  {ri('SPREAD_DELTA_MAX', 'Max')}
-                </div>
-              </div>
-              <div>
-                <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase font-medium`}>IC Delta</p>
-                <div className="flex gap-2 items-center">
-                  {ri('IC_DELTA_MIN', 'Min')}
-                  <span className={`text-[10px] ${th.textFaint} mt-4`}>→</span>
-                  {ri('IC_DELTA_MAX', 'Max')}
-                </div>
-              </div>
+          {/* ── Row 1: IVR + DTE ── */}
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>Volatility & Timing</p>
+            <div className="grid grid-cols-4 gap-3">
+              {ri('IVR_MIN',    'IVR Min %',        'Floor — all strategies')}
+              {ri('IVR_IC_MAX', 'IVR Max % (IC)',   'IC only — above = skip')}
+              {ri('DTE_MIN',    'DTE Min (days)')}
+              {ri('DTE_MAX',    'DTE Max (days)')}
             </div>
-            <div /><div />
-
-            {/* ── Liquidity ── */}
-            <SectionHeader label="Liquidity" th={th} />
-            {ri('OI_MIN', 'Min Open Interest', 'Per leg')}
-            {ri('BID_ASK_MAX', 'Max Bid-Ask $', 'Per leg')}
-            <div /><div />
-
-            {/* ── Credit Quality ── */}
-            <SectionHeader label="Credit Quality" th={th} />
-            {ri('CREDIT_RATIO_MIN', 'Min Credit Ratio', '0.33 = course · 0.25 = relaxed · 0.20 = minimum')}
-            {ri('MAX_SPREAD_WIDTH', 'Max Spread Width $', 'Optimizer cap')}
-            <div /><div />
-
-            {/* ── ROC ── */}
-            <SectionHeader label="Return on Capital (ROC)" th={th} />
-            {ri('ROC_MIN_SPREAD', 'Min ROC % — Spreads', 'BPS and BCS')}
-            {ri('ROC_MIN_IC', 'Min ROC % — IC', 'Iron Condor')}
-            <div /><div />
-
           </div>
+
+          {/* ── Row 2: Delta ── */}
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>Strike Selection — Delta</p>
+            <div className="grid grid-cols-4 gap-3">
+              {ri('SPREAD_DELTA_MIN', 'Spread δ Min', 'BPS / BCS short strike')}
+              {ri('SPREAD_DELTA_MAX', 'Spread δ Max', 'BPS / BCS short strike')}
+              {ri('IC_DELTA_MIN',     'IC δ Min',     'Both IC short strikes')}
+              {ri('IC_DELTA_MAX',     'IC δ Max',     'Both IC short strikes')}
+            </div>
+          </div>
+
+          {/* ── Row 3: Liquidity + Credit + ROC ── */}
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>Liquidity · Credit · Return</p>
+            <div className="grid grid-cols-3 gap-3">
+              {ri('OI_MIN',           'Min Open Interest', 'Per leg')}
+              {ri('BID_ASK_MAX',      'Max Bid-Ask $',     'Per leg')}
+              {ri('MAX_SPREAD_WIDTH', 'Max Spread Width $','Optimizer cap')}
+            </div>
+            <div className="grid grid-cols-3 gap-3 mt-3">
+              {ri('CREDIT_RATIO_MIN', 'Min Credit Ratio',  '0.33 = course · 0.25 = floor · 0.20 = danger')}
+              {ri('ROC_MIN_SPREAD',   'Min ROC % — Spread','BPS and BCS')}
+              {ri('ROC_MIN_IC',       'Min ROC % — IC',    'Iron Condor')}
+            </div>
+          </div>
+
         </div>
 
         {/* Footer */}
