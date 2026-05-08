@@ -433,16 +433,17 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   //   4. currentDropFromHigh > 0.20 — still meaningfully below the high
   const priceVsMa50Pct = Math.abs((currentPrice - ma50) / ma50);
   const notConsolidatingAtMa50 = currentPrice < ma50 || priceVsMa50Pct > 0.02;
-  const confirmedDowntrend = maDiff < -0.02
+  const confirmedDowntrend = maDiff < -0.015          // lowered from -0.02 to catch ADP at -1.91%
     && notConsolidatingAtMa50
     && priceAboveLow < 0.35
-    && currentDropFromHigh > 0.20;
+    && currentDropFromHigh > 0.12;                    // lowered from 0.20 — ADP ~22% off high but spike filter may compress this
   const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentPeakFlag && !earningsSpikeFlag
-    // Allow escape even when recentReversalFlag fires IF: the MA structure is deeply bearish
-    // AND price is still very close to the low (bounce hasn't started — ACN at 3.8% off low)
     && (!recentReversalFlag || (maDiff < -0.03 && priceAboveLow < 0.08));
+  // Extra guard: if price is consolidating right at MA50 (choppy recovery like CRM),
+  // force Review even if downwardFlags+confirmedDowntrend would otherwise escape to BCS.
+  const consolidatingAtMa = !notConsolidatingAtMa50;
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag || earningsSpikeFlag)
-    && !(downwardFlags && confirmedDowntrend);
+    && !(downwardFlags && confirmedDowntrend && !consolidatingAtMa);
 
   // ── Diagnostic logging ────────────────────────────────────────────────────
   console.log(`[getTrend] ${symbol}`, {
@@ -450,6 +451,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag,
     confirmedDowntrend, downwardFlags, hasOverride,
     priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
+    currentDropFromHigh: (currentDropFromHigh * 100).toFixed(1) + '%',
     priceVsMa50Pct: (priceVsMa50Pct * 100).toFixed(2) + '%',
     maDiff: (maDiff * 100).toFixed(2) + '%',
     currentPrice: currentPrice.toFixed(2), ma50: ma50.toFixed(2),
