@@ -270,6 +270,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   }
   const data = await res.json();
   const bars: { o: number; h: number; l: number; c: number }[] = data.bars ?? [];
+  console.log(`[getTrend] ${symbol} bars received:`, bars.length);
 
   const EMPTY: TrendResult = {
     trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
