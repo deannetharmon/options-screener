@@ -136,7 +136,79 @@ function mergeTickers(existing: string, newTickers: string[]): string {
 
 function tickersToString(tickers: string[]): string { return tickers.join(', '); }
 
-function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] { return []; }
+function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
+  const suggestions: FilterSuggestion[] = [];
+  const disqualified = results.filter(r => !r.qualified);
+  if (disqualified.length === 0) return [];
+
+  // Count how many fail each specific rule (excluding earnings which is a hard gate)
+  const failedCredit = disqualified.filter(r => r.failReasons.some(f => f.includes('Credit') || f.includes('credit'))).length;
+  const failedOI = disqualified.filter(r => r.failReasons.some(f => f.includes('OI') || f.includes('qualifying strikes'))).length;
+  const failedROC = disqualified.filter(r => r.failReasons.some(f => f.includes('ROC') || f.includes('roc'))).length;
+  const failedIVR = disqualified.filter(r => r.failReasons.some(f => f.includes('IVR'))).length;
+
+  // Credit ratio suggestion
+  if (failedCredit > 0 && rules.CREDIT_RATIO_MIN > 0.20) {
+    const relaxed = rules.CREDIT_RATIO_MIN === 0.33 ? 0.25 : 0.20;
+    suggestions.push({
+      priority: 1,
+      rule: 'CREDIT_RATIO_MIN',
+      currentValue: rules.CREDIT_RATIO_MIN,
+      suggestedValue: relaxed,
+      label: `Relax credit ratio to ${(relaxed * 100).toFixed(0)}% of width`,
+      rationale: `${failedCredit} stock${failedCredit !== 1 ? 's' : ''} failed credit minimum. Current premium environment is thin — ${(relaxed * 100).toFixed(0)}% is the ${relaxed === 0.25 ? 'professional floor' : 'absolute minimum'}.`,
+      tradeoff: relaxed === 0.25 ? 'Slightly less cushion but mathematically sound. Still profitable if POP holds.' : 'Risk/reward becomes marginal. Only use in high IVR environments.',
+      wouldQualify: failedCredit,
+    });
+  }
+
+  // OI suggestion
+  if (failedOI > 0 && rules.OI_MIN > 200) {
+    const relaxed = rules.OI_MIN === 500 ? 300 : 200;
+    suggestions.push({
+      priority: 2,
+      rule: 'OI_MIN',
+      currentValue: rules.OI_MIN,
+      suggestedValue: relaxed,
+      label: `Relax OI minimum to ${relaxed}`,
+      rationale: `${failedOI} stock${failedOI !== 1 ? 's' : ''} failed OI check. Lower OI means wider bid-ask fills — acceptable for smaller position sizes.`,
+      tradeoff: 'Wider bid-ask spreads on entry/exit. Keep position size to 1 contract until liquidity improves.',
+      wouldQualify: failedOI,
+    });
+  }
+
+  // ROC suggestion
+  if (failedROC > 0 && rules.ROC_MIN_SPREAD > 15) {
+    const relaxed = Math.max(15, rules.ROC_MIN_SPREAD - 5);
+    suggestions.push({
+      priority: 3,
+      rule: 'ROC_MIN_SPREAD',
+      currentValue: rules.ROC_MIN_SPREAD,
+      suggestedValue: relaxed,
+      label: `Relax min ROC to ${relaxed}%`,
+      rationale: `${failedROC} stock${failedROC !== 1 ? 's' : ''} failed ROC minimum. Current market conditions compress returns.`,
+      tradeoff: 'Lower return per dollar at risk. Only worthwhile if POP is high (70%+).',
+      wouldQualify: failedROC,
+    });
+  }
+
+  // IVR suggestion
+  if (failedIVR > 0 && rules.IVR_MIN > 20) {
+    const relaxed = Math.max(20, rules.IVR_MIN - 5);
+    suggestions.push({
+      priority: 4,
+      rule: 'IVR_MIN',
+      currentValue: rules.IVR_MIN,
+      suggestedValue: relaxed,
+      label: `Relax IVR floor to ${relaxed}%`,
+      rationale: `${failedIVR} stock${failedIVR !== 1 ? 's' : ''} failed IVR minimum. Low IV environment — less premium available across the board.`,
+      tradeoff: 'Selling premium when IV is low means less cushion and smaller credits. Use smaller position sizes.',
+      wouldQualify: failedIVR,
+    });
+  }
+
+  return suggestions.sort((a, b) => a.priority - b.priority);
+}
 
 // ── Persistent Saved Filters (LocalStorage + API fallback) ─────────────────
 async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilters> {
