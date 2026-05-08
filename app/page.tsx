@@ -821,7 +821,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
 
   const handleImgClick = () => {
     if (fileRef.current) fileRef.current.value = '';
-    setTimeout(() => fileRef.current?.click(), 50);
+    setTimeout(() => fileRef.current?.click(), 100);
   };
 
   const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1461,7 +1461,7 @@ export default function Home() {
                   } catch (err) { console.error(err); }
                   setAutoScanning(false);
                 }} />
-                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; setTimeout(() => autoFileRef.current?.click(), 50); }} disabled={loading || autoScanning}
+                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; setTimeout(() => autoFileRef.current?.click(), 100); }} disabled={loading || autoScanning}
                   className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>
                   {autoScanning ? '⟳' : '↑ img'}
                 </button>
