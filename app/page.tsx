@@ -637,7 +637,7 @@ function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
     <div className="border border-yellow-500/50 bg-yellow-500/10 rounded-lg px-4 py-3 flex items-start gap-3">
       <span className="text-yellow-400 text-base mt-0.5">⚠</span>
       <div className="flex-1">
-        <p className="text-xs text-yellow-400 font-bold tracking-wider mb-1">APPROACHING 21 DTE — ACTION REQUIRED</p>
+        <p className="text-[10px] text-yellow-400 font-bold tracking-wider mb-1">APPROACHING 21 DTE — ACTION REQUIRED</p>
         <p className="text-[10px] text-yellow-300 mb-2">Close these positions regardless of profit/loss when they hit 21 DTE.</p>
         <div className="flex flex-wrap gap-2">
           {approaching.map(r => (
@@ -665,17 +665,17 @@ function SmartSuggestionsPanel({ results, rules, th, onApplyAndRerun }: { result
         <div className="flex items-center gap-2">
           <span className="text-blue-400 text-sm">◈</span>
           <div className="text-left">
-            <p className={`text-xs font-bold tracking-wider ${th.text}`}>FILTER SUGGESTIONS</p>
+            <p className={`text-[10px] font-bold tracking-wider ${th.text}`}>FILTER SUGGESTIONS</p>
             <p className={`text-[9px] ${th.textFaint}`}>{suggestions.length} suggestion{suggestions.length !== 1 ? 's' : ''} · {disqualified.length} disqualified stocks analyzed</p>
           </div>
         </div>
-        <span className={`${th.textFaint} text-xs`}>{expanded ? '▲' : '▼'}</span>
+        <span className={`${th.textFaint} text-[10px]`}>{expanded ? '▲' : '▼'}</span>
       </button>
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
           {earningsFails > 0 && (
             <div className={`flex items-start gap-2 p-2 ${th.tag} rounded border ${th.borderLight}`}>
-              <span className={`${th.textFaint} text-xs mt-0.5`}>ℹ</span>
+              <span className={`${th.textFaint} text-[10px] mt-0.5`}>ℹ</span>
               <div>
                 <p className={`text-[10px] ${th.textMuted} font-medium`}>{earningsFails} stock{earningsFails !== 1 ? 's' : ''} blocked by upcoming earnings</p>
                 <p className={`text-[9px] ${th.textFaint}`}>Earnings filter is a hard rule. Use the 📅 follow up button to schedule a re-screen.</p>
@@ -688,15 +688,15 @@ function SmartSuggestionsPanel({ results, rules, th, onApplyAndRerun }: { result
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-[9px] bg-blue-500/20 text-blue-400 border border-blue-600 rounded px-1.5 py-0.5 font-medium">#{s.priority}</span>
-                    <p className={`text-xs ${th.text} font-medium`}>{s.label}</p>
+                    <p className={`text-[10px] ${th.text} font-medium`}>{s.label}</p>
                   </div>
                   <p className={`text-[10px] ${th.textMuted} mb-1`}>{s.rationale}</p>
                   <p className={`text-[9px] ${th.textFaint} italic`}>⚖ {s.tradeoff}</p>
                 </div>
                 <div className="text-right shrink-0">
                   <p className={`text-[9px] ${th.textFaint}`}>{RULE_LABELS[s.rule]}</p>
-                  <p className={`text-xs ${th.textFaint} line-through`}>{s.currentValue}</p>
-                  <p className="text-xs text-emerald-500 font-bold">→ {s.suggestedValue}</p>
+                  <p className={`text-[10px] ${th.textFaint} line-through`}>{s.currentValue}</p>
+                  <p className="text-[10px] text-emerald-500 font-bold">→ {s.suggestedValue}</p>
                   <p className={`text-[9px] ${th.textFaint}`}>+{s.wouldQualify} stocks</p>
                 </div>
               </div>
@@ -715,15 +715,15 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
       <div className={`${th.sidebar} border ${th.border} rounded-xl p-5 w-80 shadow-2xl`}>
-        <h3 className={`text-xs font-bold ${th.text} mb-1 tracking-wider`}>LOAD {state.type === 'global' ? 'SESSION' : 'FILTER'}</h3>
+        <h3 className={`text-[10px] font-bold ${th.text} mb-1 tracking-wider`}>LOAD {state.type === 'global' ? 'SESSION' : 'FILTER'}</h3>
         <p className={`text-[10px] ${th.textMuted} mb-4`}>Load <span className={`${th.text} font-medium`}>"{state.name}"</span> — how should it be applied?</p>
         <div className="space-y-2 mb-4">
           <button onClick={() => { state.onLoad?.(false); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:bg-blue-500/10 hover:border-blue-500 transition-colors`}>
-            <p className={`text-xs ${th.text} font-medium`}>Replace</p>
+            <p className={`text-[10px] ${th.text} font-medium`}>Replace</p>
             <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Clear current tickers and load this {state.type === 'global' ? 'session' : 'filter'}</p>
           </button>
           <button onClick={() => { state.onLoad?.(true); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:bg-blue-500/10 hover:border-blue-500 transition-colors`}>
-            <p className={`text-xs ${th.text} font-medium`}>Merge</p>
+            <p className={`text-[10px] ${th.text} font-medium`}>Merge</p>
             <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Add tickers from this {state.type === 'global' ? 'session' : 'filter'} to existing ones</p>
           </button>
         </div>
@@ -900,7 +900,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
         </div>
       )}
       <textarea value={value} onChange={e => onChange(e.target.value)} placeholder="Tickers..."
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-10 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed`} />
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-[10px] ${th.text} h-12 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed`} />
     </div>
   );
 }
@@ -1042,9 +1042,9 @@ function getReviewSubLabel(t: TrendResult | undefined): {
 function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme] }) {
   const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>·${w}·</span>;
   if (c.strategy === 'IC' && c.shortCallStrike != null && c.longCallStrike != null) {
-    return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={th.text}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}<span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>{widthTag(c.callWidth ?? c.spreadWidth)}</div>;
+    return <div className="text-[10px] shrink-0"><span className={th.label}>Strikes </span><span className={th.text}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}<span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>{widthTag(c.callWidth ?? c.spreadWidth)}</div>;
   }
-  return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
+  return <div className="text-[10px] shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
 function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme] }) {
@@ -1071,14 +1071,14 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
             {reviewSubLabel.badge}
           </span>
         )}
-        <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
+        <div className={`text-[10px] ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
         {c && <>
-          <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
+          <div className="text-[10px] shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
           <StrikesDisplay c={c} th={th} />
-          <div className="text-xs shrink-0"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-          <div className="text-xs shrink-0"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
-          {c.pop != null && <div className="text-xs shrink-0"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop.toFixed(0)}%</span></div>}
-          <div className="text-xs shrink-0"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+          <div className="text-[10px] shrink-0"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+          <div className="text-[10px] shrink-0"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
+          {c.pop != null && <div className="text-[10px] shrink-0"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop.toFixed(0)}%</span></div>}
+          <div className="text-[10px] shrink-0"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
           <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
           {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} /></span>}
           {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
@@ -1093,7 +1093,7 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
             {hasEarningsBlock && result.earningsDate && <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>}
           </div>
         )}
-        <div className={`ml-auto ${th.textFaint} text-xs shrink-0`}>{expanded ? '▲' : '▼'}</div>
+        <div className={`ml-auto ${th.textFaint} text-[10px] shrink-0`}>{expanded ? '▲' : '▼'}</div>
       </div>
 
       {/* ── Trend panel: sparkline + strength + flags — always visible when trend data exists ── */}
@@ -1108,10 +1108,10 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {Object.entries(result.checks).map(([key, check]) => (
               <div key={key} className="flex items-start gap-2">
-                <span className={`text-xs mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
+                <span className={`text-[10px] mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
                 <div>
                   <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{key}</p>
-                  <p className={`text-xs ${th.text} font-medium`}>{check.value}</p>
+                  <p className={`text-[10px] ${th.text} font-medium`}>{check.value}</p>
                   <p className={`text-[10px] ${th.textMuted}`}>{check.reason}</p>
                 </div>
               </div>
@@ -1208,9 +1208,9 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
           <RuleInput ruleKey="ROC_MIN_IC" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
         </div>
         <div className="flex gap-3">
-          <button onClick={handleReset} className="flex-1 border border-yellow-600 text-yellow-500 py-2 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
-          <button onClick={onClose} className={`flex-1 border ${th.border} ${th.textMuted} py-2 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
-          <button onClick={handleRun} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
+          <button onClick={handleReset} className="flex-1 border border-yellow-600 text-yellow-500 py-2 rounded-lg text-[10px] tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
+          <button onClick={onClose} className={`flex-1 border ${th.border} ${th.textMuted} py-2 rounded-lg text-[10px] tracking-widest hover:border-blue-500`}>CANCEL</button>
+          <button onClick={handleRun} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-[10px] font-bold tracking-widest transition-colors">RUN</button>
         </div>
       </div>
     </div>
@@ -1422,7 +1422,7 @@ export default function Home() {
         </div>
         <img src="/header-bg.png" alt="" className="flex-1 mx-6 hidden sm:block" style={{height: '57px', marginTop: '-1rem', marginBottom: '-1rem', objectFit: 'cover'}} />
         <div className="flex items-center gap-3">
-        <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
+        <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-[10px] font-medium tracking-wider transition-colors" title="Help">?</a>
         <ThemeToggle theme={theme} setTheme={setTheme} />
       </div>
       </div>
@@ -1469,7 +1469,7 @@ export default function Home() {
               </div>
             </div>
             <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
-              className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-10 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
+              className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-[10px] ${th.text} h-12 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
             {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
             <div className="flex items-center justify-between mt-1">
               <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 2}s analysis</p>
@@ -1526,7 +1526,7 @@ export default function Home() {
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
           <button onClick={() => setShowRulesModal(true)} disabled={loading || autoOverLimit}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-[10px] font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
 
