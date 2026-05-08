@@ -409,6 +409,16 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag)
     && !(downwardFlags && confirmedDowntrend);
 
+  // ── Diagnostic logging ────────────────────────────────────────────────────
+  console.log(`[getTrend] ${symbol}`, {
+    verdict: hasOverride ? 'REVIEW' : maDiff < 0 ? 'BCS' : maDiff > 0 ? 'BPS' : 'IC',
+    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag,
+    confirmedDowntrend, downwardFlags, hasOverride,
+    priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
+    maDiff: (maDiff * 100).toFixed(2) + '%',
+    currentPrice: currentPrice.toFixed(2), ma50: ma50.toFixed(2),
+  });
+
   // ── Trend classification ──────────────────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
   const sidewaysBand      = isIdx ? 0.06 : 0.03;
@@ -426,14 +436,31 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // ── Wide-range IC check ───────────────────────────────────────────────────
   // Catches stocks like TMUS: large 6-month range, current price near the middle.
   // The MA may briefly dip below/above during the oscillation — that's not a real trend.
-  // Conditions: 6-month range > 25% of price AND current price is in the middle 40% of range.
+  // Conditions:
+  //   1. 6-month range > 25% of price AND current price is in the middle 30–70% of range
+  //   2. The RECENT half of the period must also be range-bound (not a sustained trend)
+  //      — prevents FUTU-style downtrends that merely started high from being called IC
   const high6m = Math.max(...highs);
   const low6m  = Math.min(...lows);
   const range6m = high6m - low6m;
   const range6mPct = low6m > 0 ? range6m / low6m : 0;
   const positionInRange = range6m > 0 ? (currentPrice - low6m) / range6m : 0.5;
   const inMiddleOfRange = positionInRange >= 0.30 && positionInRange <= 0.70;
-  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08)
+  // Recent-half check: look at the last n/2 bars — is that sub-period also range-bound?
+  const recentHalf = Math.floor(n / 2);
+  const recentHighs = highs.slice(-recentHalf);
+  const recentLows  = lows.slice(-recentHalf);
+  const recentHigh  = Math.max(...recentHighs);
+  const recentLow   = Math.min(...recentLows);
+  const recentRange = recentHigh - recentLow;
+  const recentRangePct = recentLow > 0 ? recentRange / recentLow : 0;
+  // Recent period must show oscillation (range > 8%) rather than trending (MA drift > 6%)
+  // A sustained downtrend will have low recentRangePct relative to overall OR high MA drift
+  const recentMa10 = closes.slice(-10).reduce((a, b) => a + b, 0) / 10;
+  const recentMa20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const recentTrending = Math.abs((recentMa10 - recentMa20) / recentMa20) > 0.06;
+  const recentIsRangeBound = recentRangePct > 0.08 && !recentTrending;
+  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08 && recentIsRangeBound)
     return { ...base, trend: 'sideways', strategy: 'IC', reason: `Price in middle of ${(range6mPct * 100).toFixed(0)}% 6-month range ($${low6m.toFixed(0)}–$${high6m.toFixed(0)}) — range-bound` };
 
   if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand)
@@ -743,7 +770,7 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; onLoadAll: (bps: string, bcs: string, ic: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
+function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; broken: string; onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
   const [showSave, setShowSave] = useState(false);
   const [showLoad, setShowLoad] = useState(false);
@@ -760,7 +787,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
   };
   const handleLoadSelect = (name: string) => {
     const session = globalFilters[name]; if (!session) return; setShowLoad(false);
-    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic)); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); } });
+    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), ''); } });
   };
   const handleDelete = async (name: string) => { await deleteFilter('global', name); await refreshFilters(); };
   const filterNames = Object.keys(globalFilters);
@@ -768,7 +795,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
     <div className={`border-t ${th.border} pt-3`}>
       <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
       <div className="flex gap-2">
-        <button onClick={() => onLoadAll('', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
+        <button onClick={() => onLoadAll('', '', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
         <div className="relative flex-1">
           <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
           {showSave && (
@@ -1335,7 +1362,7 @@ export default function Home() {
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };   // ← NEW
-  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
+  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -1511,7 +1538,7 @@ export default function Home() {
             )}
           </div>
 
-          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} broken={brokenTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
 
           <div className={`border-t ${th.border} pt-3 space-y-4`}>
             <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
