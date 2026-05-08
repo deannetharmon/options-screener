@@ -78,7 +78,15 @@ interface SpreadCandidate {
 }
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
-  strategy: 'BPS' | 'BCS' | 'IC'; ma20: number; ma50: number; reason: string;
+  strategy: 'BPS' | 'BCS' | 'IC';
+  ma20: number; ma50: number; reason: string;
+  // Enhanced chart signals — computed from same API call, no extra requests
+  closes30: number[];          // last 30 daily closes for sparkline
+  trendStrength: 'strong' | 'weak' | 'choppy' | 'unknown';
+  rangePercent: number;        // recent high-low range as % of price (IC tightness)
+  hasLongWicks: boolean;       // avg wick > 30% of body on recent candles
+  isCoiling: boolean;          // last 3 candles tightening inside each other
+  maDivergence: number;        // MA20 vs MA50 spread as % — conviction proxy
 }
 interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
@@ -96,22 +104,12 @@ interface LoadPromptState {
   show: boolean; name: string; type: 'strategy' | 'global'; onLoad?: (merge: boolean) => void;
 }
 
-// ── Index / ETF overrides ──────────────────────────────────────────────────
-// These instruments have no earnings, high liquidity, and typically lower IVR.
-// They are screened with relaxed IVR rules and the earnings check is suppressed.
-const INDEX_TICKERS = new Set([
-  'SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD',
-  'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY',
-  'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX',
-]);
-const INDEX_IVR_MIN = 15; // Indexes run structurally lower IVR than single stocks
-
 // ── Rules ──────────────────────────────────────────────────────────────────
 const DEFAULT_RULES = {
   IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 200, BID_ASK_MAX: 0.10,
   CREDIT_RATIO_MIN: 0.15, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
-  IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.25, DTE_MIN: 30, DTE_MAX: 45,
-  MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 30,
+  IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.20, DTE_MIN: 30, DTE_MAX: 45,
+  MAX_SPREAD_WIDTH: 50, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 30,
 };
 type RulesType = typeof DEFAULT_RULES;
 
@@ -183,7 +181,7 @@ function buildEntryCalUrl(result: ScreenResult): string {
 
 // ── Width steps ────────────────────────────────────────────────────────────
 function getWidthSteps(maxWidth: number, price: number | null): number[] {
-  const minWidth = price == null ? 5 : price >= 500 ? 25 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
+  const minWidth = price == null ? 5 : price >= 500 ? 50 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
   const steps: number[] = [];
   for (let w = minWidth; w <= maxWidth; w += minWidth) steps.push(w);
   return steps;
@@ -256,20 +254,85 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const res = await fetch(`https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`);
   if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
   const data = await res.json();
-  const bars: { c: number }[] = data.results ?? [];
-  if (bars.length < 50) return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough price history' };
+  const bars: { o: number; h: number; l: number; c: number }[] = data.results ?? [];
+
+  const EMPTY: TrendResult = {
+    trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
+    reason: 'Not enough price history', closes30: [], trendStrength: 'unknown',
+    rangePercent: 0, hasLongWicks: false, isCoiling: false, maDivergence: 0,
+  };
+  if (bars.length < 50) return EMPTY;
+
   const closes = bars.map(b => b.c);
+  const highs  = bars.map(b => b.h);
+  const lows   = bars.map(b => b.l);
+
+  // ── MAs ───────────────────────────────────────────────────────────────────
   const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
   const currentPrice = closes[closes.length - 1];
-  const maDiff = (ma20 - ma50) / ma50, priceVsMa50 = (currentPrice - ma50) / ma50;
-  // Indexes trend gradually upward by nature — use a wider sideways band so IC is surfaced more often
+  const maDiff = (ma20 - ma50) / ma50;
+  const priceVsMa50 = (currentPrice - ma50) / ma50;
+  const maDivergence = Math.abs(maDiff) * 100;
+
+  // ── Sparkline (last 30 closes) ────────────────────────────────────────────
+  const closes30 = closes.slice(-30);
+
+  // ── Range tightness (last 20 bars) ────────────────────────────────────────
+  const rangeHigh = Math.max(...highs.slice(-20));
+  const rangeLow  = Math.min(...lows.slice(-20));
+  const rangePercent = currentPrice > 0 ? ((rangeHigh - rangeLow) / currentPrice) * 100 : 0;
+
+  // ── Trend strength via swing high/low consistency ─────────────────────────
+  const recentH = highs.slice(-22), recentL = lows.slice(-22);
+  const swingHighs: number[] = [], swingLows: number[] = [];
+  for (let i = 1; i < recentH.length - 1; i++) {
+    if (recentH[i] > recentH[i - 1] && recentH[i] > recentH[i + 1]) swingHighs.push(recentH[i]);
+    if (recentL[i] < recentL[i - 1] && recentL[i] < recentL[i + 1]) swingLows.push(recentL[i]);
+  }
+  const ascending  = (arr: number[]) => arr.length >= 2 && arr.slice(-3).every((v, i, a) => i === 0 || v > a[i - 1]);
+  const descending = (arr: number[]) => arr.length >= 2 && arr.slice(-3).every((v, i, a) => i === 0 || v < a[i - 1]);
+
+  let trendStrength: TrendResult['trendStrength'];
+  if (maDiff > 0 && currentPrice > ma50) {
+    if (ascending(swingHighs) && ascending(swingLows))        trendStrength = 'strong';
+    else if (ascending(swingHighs) || ascending(swingLows))   trendStrength = 'weak';
+    else                                                       trendStrength = 'choppy';
+  } else if (maDiff < 0 && currentPrice < ma50) {
+    if (descending(swingHighs) && descending(swingLows))      trendStrength = 'strong';
+    else if (descending(swingHighs) || descending(swingLows)) trendStrength = 'weak';
+    else                                                       trendStrength = 'choppy';
+  } else {
+    trendStrength = rangePercent < 6 ? 'strong' : rangePercent < 12 ? 'weak' : 'choppy';
+  }
+
+  // ── Long wicks (last 5 candles) ───────────────────────────────────────────
+  const last5 = bars.slice(-5);
+  const avgWickRatio = last5.reduce((sum, b) => {
+    const body = Math.abs(b.c - b.o), range = b.h - b.l;
+    return sum + (range > 0 ? (range - body) / range : 0);
+  }, 0) / last5.length;
+  const hasLongWicks = avgWickRatio > 0.45;
+
+  // ── Coiling (each of last 3 candle ranges smaller than previous) ──────────
+  const last3ranges = bars.slice(-3).map(b => b.h - b.l);
+  const isCoiling = last3ranges.length === 3
+    && last3ranges[0] > last3ranges[1]
+    && last3ranges[1] > last3ranges[2]
+    && last3ranges[2] < currentPrice * 0.005;
+
+  // ── Trend classification ──────────────────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
-  const sidewaysBand = isIdx ? 0.06 : 0.03;
+  const sidewaysBand      = isIdx ? 0.06 : 0.03;
   const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
-  if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand) return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
-  if (maDiff > 0 && currentPrice > ma50) return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
-  return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
+
+  const base = { ma20, ma50, closes30, trendStrength, rangePercent, hasLongWicks, isCoiling, maDivergence };
+
+  if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand)
+    return { ...base, trend: 'sideways',  strategy: 'IC',  reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
+  if (maDiff > 0 && currentPrice > ma50)
+    return { ...base, trend: 'uptrend',   strategy: 'BPS', reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
+  return   { ...base, trend: 'downtrend', strategy: 'BCS', reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
 }
 
 // ── TastyTrade API ─────────────────────────────────────────────────────────
@@ -394,16 +457,11 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
 }
 function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]> }, price: number | null, RULES: RulesType, trendResult?: TrendResult): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
-  const isIndex = INDEX_TICKERS.has(symbol.toUpperCase());
-  const effectiveIvrMin = isIndex ? INDEX_IVR_MIN : RULES.IVR_MIN;
-  const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < effectiveIvrMin ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${effectiveIvrMin}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${effectiveIvrMin}% minimum${isIndex ? ' (index)' : ''}` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: isIndex ? `Above ${effectiveIvrMin}% (index floor)` : 'Above minimum' };
+  const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < RULES.IVR_MIN ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${RULES.IVR_MIN}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${RULES.IVR_MIN}% minimum` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Above minimum' };
   let earningsCheck: CheckResult;
-  // Indexes and ETFs do not report earnings — skip this check entirely
-  if (isIndex) {
-    earningsCheck = { status: 'pass', value: 'N/A (index/ETF)', reason: 'No earnings events' };
-  } else if (!earningsDate) { earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' }; }
+  if (!earningsDate) { earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' }; }
   else { const d = daysUntil(earningsDate); if (d < 0) { earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' }; } else if (d < 30) { failReasons.push(`Earnings in ${d}d`); earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: 'Within expiry window' }; } else { earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: 'Outside expiry window' }; } }
-  const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false; if (!isIndex && earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
+  const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false; if (earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, RULES) : findBestSpread(chainItems, strategy, exp, price, RULES); if (bestCandidate) break; } }
   if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
@@ -744,6 +802,91 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   );
 }
 
+// ── Sparkline ──────────────────────────────────────────────────────────────
+function Sparkline({ closes, strategy, width = 120, height = 32 }: {
+  closes: number[]; strategy: string; width?: number; height?: number;
+}) {
+  if (!closes || closes.length < 2) return null;
+  const min = Math.min(...closes), max = Math.max(...closes);
+  const range = max - min || 1;
+  const pts = closes.map((c, i) => {
+    const x = (i / (closes.length - 1)) * width;
+    const y = height - ((c - min) / range) * (height - 4) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const color = strategy === 'BPS' ? '#10b981' : strategy === 'BCS' ? '#ef4444' : '#3b82f6';
+  const fillId = `sf-${strategy}`;
+  // Build fill path: line points + bottom-right + bottom-left corners
+  const firstX = 0, lastX = width;
+  const fillPts = `${pts} ${lastX},${height} ${firstX},${height}`;
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">
+      <defs>
+        <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.18" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <polygon points={fillPts} fill={`url(#${fillId})`} />
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// ── Trend Panel ────────────────────────────────────────────────────────────
+function TrendPanel({ t, strategy, th }: {
+  t: TrendResult; strategy: string; th: typeof THEMES[Theme];
+}) {
+  const strengthColor = t.trendStrength === 'strong' ? 'text-emerald-400' : t.trendStrength === 'choppy' ? 'text-red-400' : 'text-yellow-400';
+  const strengthLabel = t.trendStrength === 'strong' ? 'STRONG' : t.trendStrength === 'choppy' ? 'CHOPPY' : t.trendStrength === 'weak' ? 'WEAK' : '—';
+  const rangeLabel = strategy === 'IC'
+    ? (t.rangePercent < 6 ? '✓ tight' : t.rangePercent < 12 ? '⚠ moderate' : '✗ wide')
+    : null;
+  const rangeLabelColor = strategy === 'IC'
+    ? (t.rangePercent < 6 ? 'text-emerald-400' : t.rangePercent < 12 ? 'text-yellow-400' : 'text-red-400')
+    : '';
+  const maLabel = `MA spread ${t.maDivergence.toFixed(1)}%`;
+  const maLabelColor = t.maDivergence > 4 ? 'text-emerald-400' : t.maDivergence > 1.5 ? 'text-yellow-400' : 'text-slate-400';
+
+  return (
+    <div className={`border-b ${th.border} px-4 pt-2 pb-3`}>
+      {/* Sparkline row */}
+      <div className="flex items-center gap-3 mb-2">
+        <div className="flex-1 min-w-0">
+          <Sparkline closes={t.closes30} strategy={strategy} width={200} height={36} />
+        </div>
+        <div className="shrink-0 text-right space-y-0.5">
+          <div className="flex items-center justify-end gap-1.5">
+            <span className={`text-[9px] font-bold tracking-widest ${strengthColor}`}>{strengthLabel}</span>
+            <span className={`text-[9px] ${th.textFaint}`}>{trendIcon(t.trend)} {t.trend}</span>
+          </div>
+          <div className={`text-[9px] ${maLabelColor}`}>{maLabel}</div>
+          {strategy === 'IC' && rangeLabel && (
+            <div className={`text-[9px] font-medium ${rangeLabelColor}`}>
+              Range ±{t.rangePercent.toFixed(1)}% {rangeLabel}
+            </div>
+          )}
+        </div>
+      </div>
+      {/* Warning flags row */}
+      {(t.hasLongWicks || t.isCoiling) && (
+        <div className="flex gap-2 flex-wrap">
+          {t.hasLongWicks && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded border border-yellow-600/60 bg-yellow-500/10 text-yellow-400 font-medium">
+              ⚠ long wicks — indecision
+            </span>
+          )}
+          {t.isCoiling && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded border border-purple-600/60 bg-purple-500/10 text-purple-400 font-medium">
+              ◈ coiling — breakout pending
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Result Card ────────────────────────────────────────────────────────────
 function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme] }) {
   const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>·${w}·</span>;
@@ -762,13 +905,14 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
   const cardBorder = result.qualified ? (isApproaching ? 'border-yellow-500/50' : th.border) : th.borderLight;
   return (
     <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`} onClick={() => setExpanded(!expanded)}>
+
+      {/* ── Header row: symbol / strategy / IVR / trade data ── */}
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
         <div className="w-16 shrink-0">
           <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
           {result.price && <p className={`text-[10px] ${th.textFaint}`}>${result.price.toFixed(2)}</p>}
         </div>
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
-        {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
         {c && <>
           <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
@@ -789,6 +933,13 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
         )}
         <div className={`ml-auto ${th.textFaint} text-xs shrink-0`}>{expanded ? '▲' : '▼'}</div>
       </div>
+
+      {/* ── Trend panel: sparkline + strength + flags — always visible when trend data exists ── */}
+      {t && t.closes30.length > 0 && (
+        <TrendPanel t={t} strategy={result.strategy} th={th} />
+      )}
+
+      {/* ── Expanded checklist ── */}
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
           {t && <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border}`}><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
