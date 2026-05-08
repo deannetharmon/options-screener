@@ -400,6 +400,20 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // Override fires before MA classification — send to 'unknown' so routing sends to Broken
   if (hasOverride)
     return { ...base, trend: 'unknown', strategy: 'BCS', reason: overrideReason };
+
+  // ── Wide-range IC check ───────────────────────────────────────────────────
+  // Catches stocks like TMUS: large 6-month range, current price near the middle.
+  // The MA may briefly dip below/above during the oscillation — that's not a real trend.
+  // Conditions: 6-month range > 25% of price AND current price is in the middle 40% of range.
+  const high6m = Math.max(...highs);
+  const low6m  = Math.min(...lows);
+  const range6m = high6m - low6m;
+  const range6mPct = low6m > 0 ? range6m / low6m : 0;
+  const positionInRange = range6m > 0 ? (currentPrice - low6m) / range6m : 0.5;
+  const inMiddleOfRange = positionInRange >= 0.30 && positionInRange <= 0.70;
+  if (range6mPct > 0.25 && inMiddleOfRange && Math.abs(maDiff) < 0.08)
+    return { ...base, trend: 'sideways', strategy: 'IC', reason: `Price in middle of ${(range6mPct * 100).toFixed(0)}% 6-month range ($${low6m.toFixed(0)}–$${high6m.toFixed(0)}) — range-bound` };
+
   if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand)
     return { ...base, trend: 'sideways',  strategy: 'IC',  reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
   if (maDiff > 0 && currentPrice > ma50)
