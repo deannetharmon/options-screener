@@ -81,12 +81,17 @@ interface TrendResult {
   strategy: 'BPS' | 'BCS' | 'IC';
   ma20: number; ma50: number; reason: string;
   // Enhanced chart signals — computed from same API call, no extra requests
-  closes30: number[];          // last 30 daily closes for sparkline
+  closes30: number[];           // last 30 daily closes for sparkline
   trendStrength: 'strong' | 'weak' | 'choppy' | 'unknown';
-  rangePercent: number;        // recent high-low range as % of price (IC tightness)
-  hasLongWicks: boolean;       // avg wick > 30% of body on recent candles
-  isCoiling: boolean;          // last 3 candles tightening inside each other
-  maDivergence: number;        // MA20 vs MA50 spread as % — conviction proxy
+  rangePercent: number;         // recent high-low range as % of price (IC tightness)
+  hasLongWicks: boolean;        // avg wick > 45% of candle range on last 5 bars
+  isCoiling: boolean;           // last 3 candle ranges each smaller than prior
+  maDivergence: number;         // MA20 vs MA50 spread as % — conviction proxy
+  // Context override flags — route to Broken when true
+  recentReversalFlag: boolean;  // 6-month low within last 15 bars, bounce unconfirmed
+  brokenTrendFlag: boolean;     // dropped >20% from 6-month high set in first 2/3 of period
+  freshCrossoverFlag: boolean;  // MA20/MA50 crossed within last 10 bars — unreliable signal
+  overrideReason: string;       // human-readable explanation when any flag is true
 }
 interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
@@ -131,7 +136,7 @@ const RULE_LABELS: Record<string, string> = {
 };
 
 const LS_RULES = 'prosper-rules';
-const AUTO_TICKER_LIMIT = 5;
+const AUTO_TICKER_LIMIT = 20;
 const LS_BPS = 'prosper-tickers-bps';
 const LS_BCS = 'prosper-tickers-bcs';
 const LS_IC = 'prosper-tickers-ic';
@@ -254,31 +259,46 @@ function mergeTickers(existing: string, newTickers: string[]): string {
 }
 function tickersToString(tickers: string[]): string { return tickers.join(', '); }
 
-// ── Polygon API ────────────────────────────────────────────────────────────
+// ── Finnhub API (replaces Polygon for chart data — 60 calls/min free tier) ──
 async function getTrend(symbol: string): Promise<TrendResult> {
-  const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
-  if (!apiKey) throw new Error('NEXT_PUBLIC_POLYGON_API_KEY not set');
-  const to = new Date(), from = new Date(); from.setMonth(from.getMonth() - 6);
-  const res = await fetch(`https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`);
-  if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
-  const data = await res.json();
-  const bars: { o: number; h: number; l: number; c: number }[] = data.results ?? [];
+  const apiKey = process.env.NEXT_PUBLIC_FINNHUB_API_KEY;
+  if (!apiKey) throw new Error('NEXT_PUBLIC_FINNHUB_API_KEY not set');
 
-  const EMPTY: TrendResult = {
-    trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
-    reason: 'Not enough price history', closes30: [], trendStrength: 'unknown',
-    rangePercent: 0, hasLongWicks: false, isCoiling: false, maDivergence: 0,
-  };
-  if (bars.length < 50) return EMPTY;
+  const to   = Math.floor(Date.now() / 1000);
+  const from = Math.floor((Date.now() - 180 * 24 * 60 * 60 * 1000) / 1000); // 6 months in unix seconds
+
+  const res = await fetch(
+    `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=D&from=${from}&to=${to}&token=${apiKey}`
+  );
+  if (!res.ok) throw new Error(`Finnhub fetch failed (${res.status})`);
+  const data = await res.json();
+
+  // Finnhub returns { s: 'ok'|'no_data', t: [], o: [], h: [], l: [], c: [], v: [] }
+  if (data.s !== 'ok' || !data.c || data.c.length < 50) {
+    return {
+      trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
+      reason: data.s === 'no_data' ? 'No data from Finnhub' : 'Not enough price history',
+      closes30: [], trendStrength: 'unknown', rangePercent: 0,
+      hasLongWicks: false, isCoiling: false, maDivergence: 0,
+      recentReversalFlag: false, brokenTrendFlag: false, freshCrossoverFlag: false,
+      overrideReason: '',
+    };
+  }
+
+  // Map Finnhub parallel arrays → bar objects identical to what the rest of the function expects
+  const bars: { o: number; h: number; l: number; c: number }[] = data.c.map((_: number, i: number) => ({
+    o: data.o[i], h: data.h[i], l: data.l[i], c: data.c[i],
+  }));
 
   const closes = bars.map(b => b.c);
   const highs  = bars.map(b => b.h);
   const lows   = bars.map(b => b.l);
+  const n = closes.length;
 
   // ── MAs ───────────────────────────────────────────────────────────────────
   const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
-  const currentPrice = closes[closes.length - 1];
+  const currentPrice = closes[n - 1];
   const maDiff = (ma20 - ma50) / ma50;
   const priceVsMa50 = (currentPrice - ma50) / ma50;
   const maDivergence = Math.abs(maDiff) * 100;
@@ -329,13 +349,65 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     && last3ranges[1] > last3ranges[2]
     && last3ranges[2] < currentPrice * 0.005;
 
+  // ── CONTEXT OVERRIDE FLAGS ────────────────────────────────────────────────
+
+  // Flag 1: Recent reversal — 6-month low hit within last 15 bars, bounce unconfirmed.
+  // A stock bouncing off a multi-month low for <3 weeks hasn't earned a BPS label yet.
+  const allTimeLow6m = Math.min(...lows);
+  const allTimeLowIdx = lows.indexOf(allTimeLow6m);
+  const barsAgoLow = n - 1 - allTimeLowIdx;
+  const priceAboveLow = currentPrice > 0 ? (currentPrice - allTimeLow6m) / allTimeLow6m : 0;
+  // Triggered if: low was recent AND price hasn't bounced far enough to confirm new trend
+  const recentReversalFlag = barsAgoLow <= 15 && priceAboveLow < 0.15;
+
+  // Flag 2: Broken trend — dropped >20% from 6-month high, and that high was set
+  // in the first 2/3 of the lookback period (so it's not just a recent pullback).
+  const allTimeHigh6m = Math.max(...highs);
+  const allTimeHighIdx = highs.indexOf(allTimeHigh6m);
+  const highInFirstTwoThirds = allTimeHighIdx < (n * 2) / 3;
+  const dropFromHigh = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
+  const brokenTrendFlag = highInFirstTwoThirds && dropFromHigh > 0.20;
+
+  // Flag 3: Fresh MA crossover — MA20 crossed MA50 within the last 10 bars.
+  // Crossovers are lagging signals; a very recent one means the "trend" just flipped
+  // and hasn't been confirmed by sustained price action.
+  let freshCrossoverFlag = false;
+  const lookback = Math.min(10, n - 1);
+  for (let i = 1; i <= lookback; i++) {
+    const pastSlice = closes.slice(-(20 + i), closes.length - i + 1 > 0 ? closes.length - i + 1 : undefined);
+    const pastSlice50 = closes.slice(-(50 + i), closes.length - i + 1 > 0 ? closes.length - i + 1 : undefined);
+    if (pastSlice.length < 20 || pastSlice50.length < 50) break;
+    const pastMa20 = pastSlice.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const pastMa50 = pastSlice50.slice(-50).reduce((a, b) => a + b, 0) / 50;
+    const pastDiff = pastMa20 - pastMa50;
+    // If sign flipped between then and now, crossover happened in this window
+    if ((maDiff > 0 && pastDiff < 0) || (maDiff < 0 && pastDiff > 0)) {
+      freshCrossoverFlag = true;
+      break;
+    }
+  }
+
+  // ── Build override reason string ──────────────────────────────────────────
+  const overrideReasons: string[] = [];
+  if (recentReversalFlag) overrideReasons.push(`6-month low ${barsAgoLow}d ago — bounce unconfirmed (+${(priceAboveLow * 100).toFixed(0)}% off low)`);
+  if (brokenTrendFlag)    overrideReasons.push(`Dropped ${(dropFromHigh * 100).toFixed(0)}% from 6-month high — trend broken`);
+  if (freshCrossoverFlag) overrideReasons.push('MA20/MA50 crossed recently — signal unreliable');
+  const overrideReason = overrideReasons.join(' · ');
+  const hasOverride = recentReversalFlag || brokenTrendFlag || freshCrossoverFlag;
+
   // ── Trend classification ──────────────────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
   const sidewaysBand      = isIdx ? 0.06 : 0.03;
   const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
 
-  const base = { ma20, ma50, closes30, trendStrength, rangePercent, hasLongWicks, isCoiling, maDivergence };
+  const base = {
+    ma20, ma50, closes30, trendStrength, rangePercent, hasLongWicks, isCoiling, maDivergence,
+    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, overrideReason,
+  };
 
+  // Override fires before MA classification — send to 'unknown' so routing sends to Broken
+  if (hasOverride)
+    return { ...base, trend: 'unknown', strategy: 'BCS', reason: overrideReason };
   if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand)
     return { ...base, trend: 'sideways',  strategy: 'IC',  reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
   if (maDiff > 0 && currentPrice > ma50)
@@ -826,7 +898,7 @@ function Sparkline({ closes, strategy, width = 120, height = 32 }: {
     const y = height - ((c - min) / range) * (height - 4) - 2;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
-  const color = strategy === 'BPS' ? '#10b981' : strategy === 'BCS' ? '#ef4444' : '#3b82f6';
+  const color = strategy === 'BPS' ? '#10b981' : strategy === 'BCS' ? '#ef4444' : strategy === 'OVERRIDE' ? '#f59e0b' : '#3b82f6';
   const fillId = `sf-${strategy}`;
   // Build fill path: line points + bottom-right + bottom-left corners
   const firstX = 0, lastX = width;
@@ -849,6 +921,7 @@ function Sparkline({ closes, strategy, width = 120, height = 32 }: {
 function TrendPanel({ t, strategy, th }: {
   t: TrendResult; strategy: string; th: typeof THEMES[Theme];
 }) {
+  const hasOverride = t.recentReversalFlag || t.brokenTrendFlag || t.freshCrossoverFlag;
   const strengthColor = t.trendStrength === 'strong' ? 'text-emerald-400' : t.trendStrength === 'choppy' ? 'text-red-400' : 'text-yellow-400';
   const strengthLabel = t.trendStrength === 'strong' ? 'STRONG' : t.trendStrength === 'choppy' ? 'CHOPPY' : t.trendStrength === 'weak' ? 'WEAK' : '—';
   const rangeLabel = strategy === 'IC'
@@ -860,18 +933,25 @@ function TrendPanel({ t, strategy, th }: {
   const maLabel = `MA spread ${t.maDivergence.toFixed(1)}%`;
   const maLabelColor = t.maDivergence > 4 ? 'text-emerald-400' : t.maDivergence > 1.5 ? 'text-yellow-400' : 'text-slate-400';
 
+  // Sparkline color: amber when overridden (context unclear), otherwise strategy color
+  const sparklineStrategy = hasOverride ? 'OVERRIDE' : strategy;
+
   return (
     <div className={`border-b ${th.border} px-4 pt-2 pb-3`}>
       {/* Sparkline row */}
       <div className="flex items-center gap-3 mb-2">
         <div className="flex-1 min-w-0">
-          <Sparkline closes={t.closes30} strategy={strategy} width={200} height={36} />
+          <Sparkline closes={t.closes30} strategy={sparklineStrategy} width={200} height={36} />
         </div>
         <div className="shrink-0 text-right space-y-0.5">
-          <div className="flex items-center justify-end gap-1.5">
-            <span className={`text-[9px] font-bold tracking-widest ${strengthColor}`}>{strengthLabel}</span>
-            <span className={`text-[9px] ${th.textFaint}`}>{trendIcon(t.trend)} {t.trend}</span>
-          </div>
+          {hasOverride ? (
+            <div className="text-[9px] font-bold text-amber-400 tracking-widest">REVIEW CONTEXT</div>
+          ) : (
+            <div className="flex items-center justify-end gap-1.5">
+              <span className={`text-[9px] font-bold tracking-widest ${strengthColor}`}>{strengthLabel}</span>
+              <span className={`text-[9px] ${th.textFaint}`}>{trendIcon(t.trend)} {t.trend}</span>
+            </div>
+          )}
           <div className={`text-[9px] ${maLabelColor}`}>{maLabel}</div>
           {strategy === 'IC' && rangeLabel && (
             <div className={`text-[9px] font-medium ${rangeLabelColor}`}>
@@ -880,7 +960,21 @@ function TrendPanel({ t, strategy, th }: {
           )}
         </div>
       </div>
-      {/* Warning flags row */}
+
+      {/* Override reason banner — shown when context flags fired */}
+      {hasOverride && t.overrideReason && (
+        <div className="mb-2 px-2 py-1.5 rounded border border-amber-600/50 bg-amber-500/10 flex items-start gap-1.5">
+          <span className="text-amber-400 text-[10px] mt-px shrink-0">⚠</span>
+          <div className="space-y-0.5">
+            {t.recentReversalFlag && <p className="text-[9px] text-amber-300 font-medium">Recent reversal — bounce unconfirmed. Verify chart before trading.</p>}
+            {t.brokenTrendFlag    && <p className="text-[9px] text-amber-300 font-medium">Broken trend — dropped significantly from 6-month high. Direction unclear.</p>}
+            {t.freshCrossoverFlag && <p className="text-[9px] text-amber-300 font-medium">Fresh MA crossover — signal just fired, not yet confirmed.</p>}
+            <p className={`text-[9px] ${th.textFaint} italic`}>{t.overrideReason}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Standard warning flags row */}
       {(t.hasLongWicks || t.isCoiling) && (
         <div className="flex gap-2 flex-wrap">
           {t.hasLongWicks && (
@@ -1081,7 +1175,8 @@ async function runTrendDetection(
   setError: (e: string) => void,
   setStatus: (s: string) => void,
   setLoading: (l: boolean) => void,
-  parseTickers: (s: string) => string[]
+  parseTickers: (s: string) => string[],
+  setAutoTickers: (v: string) => void
 ) {
   const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
   if (!autoList.length) { setError('Enter at least one ticker for trend detection.'); return; }
@@ -1103,7 +1198,7 @@ async function runTrendDetection(
         distributions.broken.push(symbol);
         continue;
       }
-      if (i < autoList.length - 1) await sleep(12000);
+      if (i < autoList.length - 1) await sleep(1000);
 
       if (trendResult?.trend === 'unknown' || !trendResult) {
         distributions.broken.push(symbol);
@@ -1124,6 +1219,8 @@ async function runTrendDetection(
     if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
     if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
 
+    // Clear the auto-detect box — tickers have been routed, no need to keep them here
+    setAutoTickers('');
     setStatus(`✅ Assigned ${autoList.length} tickers to strategy / review boxes`);
   } catch (e: any) {
     setError(e.message);
@@ -1196,7 +1293,8 @@ export default function Home() {
       setError,
       setStatus,
       setLoading,
-      parseTickers
+      parseTickers,
+      setAutoTickers
     );
   };
 
@@ -1220,7 +1318,7 @@ export default function Home() {
         const symbol = autoList[i]; setStatus(`Fetching trend: ${symbol} (${i+1}/${autoList.length})...`);
         let trendResult: TrendResult | undefined;
         try { trendResult = await getTrend(symbol); } catch (e: any) { console.warn(e.message); }
-        if (i < autoList.length - 1) await sleep(12000);
+        if (i < autoList.length - 1) await sleep(1000);
         setStatus(`Scanning ${symbol} (${i+1}/${autoList.length})...`);
         const strategy = trendResult?.strategy ?? 'BCS';
         try { const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null }; const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]); screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult)); }
@@ -1302,7 +1400,7 @@ export default function Home() {
               className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
             {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
             <div className="flex items-center justify-between mt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 12}s analysis</p>
+              <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 2}s analysis</p>
               <div className="flex items-center gap-1">
                 {autoTickerList.length > 0 && (
                   <button
