@@ -270,19 +270,17 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   }
   const data = await res.json();
   const bars: { o: number; h: number; l: number; c: number }[] = data.bars ?? [];
-  console.log(`[getTrend] ${symbol} reached classification`, { maDiff, ma20, ma50, currentPrice });
-  console.log(`[getTrend] ${symbol} bars received:`, bars.length);
-
   const EMPTY: TrendResult = {
     trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
     reason: 'Not enough price history', closes30: [], trendStrength: 'unknown',
     rangePercent: 0, hasLongWicks: false, isCoiling: false, maDivergence: 0,
     recentReversalFlag: false, brokenTrendFlag: false, freshCrossoverFlag: false,
     recentPeakFlag: false, earningsSpikeFlag: false, overrideReason: '',
-    console.log(`[getTrend] ${symbol} starting calculations`);
   };
   if (bars.length < 50) return EMPTY;
 
+  console.log(`[getTrend] ${symbol} bars received:`, bars.length);
+  if (bars.length < 50) return EMPTY;
   const closes = bars.map(b => b.c);
   const highs  = bars.map(b => b.h);
   const lows   = bars.map(b => b.l);
