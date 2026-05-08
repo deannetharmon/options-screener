@@ -1201,13 +1201,15 @@ function BestOpportunityFinder({
   onClose,
   th,
   rules,
-  preferredStrategy,
+   preferredStrategy,
+  trendResult,
 }: {
   symbol: string;
   onClose: () => void;
   th: typeof THEMES[Theme];
   rules: RulesType;
   preferredStrategy?: 'BPS' | 'BCS' | 'IC';
+  trendResult?: TrendResult;
 }) {
   const [loading, setLoading] = useState(false);
   const [best, setBest] = useState<BestSetup | null>(null);
