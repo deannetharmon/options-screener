@@ -444,9 +444,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     && currentDropFromHigh > 0.12;
   const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentPeakFlag && !earningsSpikeFlag
     && (!recentReversalFlag || (maDiff < -0.03 && priceAboveLow < 0.08));
-  // Extra guard: if price is consolidating right at MA50 (choppy recovery like CRM),
-  // force Review even if downwardFlags+confirmedDowntrend would otherwise escape to BCS.
-  const consolidatingAtMa = !notConsolidatingAtMa50;
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag || earningsSpikeFlag)
     && !(downwardFlags && confirmedDowntrend && !consolidatingAtMa);
 
