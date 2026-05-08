@@ -360,14 +360,18 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const priceAboveLow = currentPrice > 0 ? (currentPrice - allTimeLow6m) / allTimeLow6m : 0;
   const recentReversalFlag = barsAgoLow <= 10 && priceAboveLow < 0.10;
 
-  // Flag 2: Broken trend — dropped >28% from 6-month high set in first 2/3 of period.
-  // Threshold raised from 20% → 28%: a 20-25% drop during a broad market correction
-  // (like April 2025) is normal and recoverable. 28%+ indicates a stock-specific breakdown.
+  // Flag 2: Broken trend — the 6-month high was set early AND the stock dropped hard
+  // from it AND has NOT substantially recovered.
+  // Key fix: measure drop to the *lowest point*, not to current price.
+  // A stock that crashed 35% then recovered back to within 12% of its high is NOT broken.
   const allTimeHigh6m = Math.max(...highs);
   const allTimeHighIdx = highs.indexOf(allTimeHigh6m);
   const highInFirstTwoThirds = allTimeHighIdx < (n * 2) / 3;
-  const dropFromHigh = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
-  const brokenTrendFlag = highInFirstTwoThirds && dropFromHigh > 0.28;
+  const lowestAfterHigh = Math.min(...lows.slice(allTimeHighIdx));  // worst point after the peak
+  const maxDrawdown = allTimeHigh6m > 0 ? (allTimeHigh6m - lowestAfterHigh) / allTimeHigh6m : 0;
+  const currentDropFromHigh = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
+  // Trigger only if: high was early AND drawdown was severe AND stock hasn't recovered much
+  const brokenTrendFlag = highInFirstTwoThirds && maxDrawdown > 0.28 && currentDropFromHigh > 0.15;
 
   // Flag 3: Fresh MA crossover — MA20 crossed MA50 within the last 5 bars only.
   // Window tightened from 10 → 5 bars: if the crossover happened >1 week ago and price
@@ -390,7 +394,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // ── Build override reason string ──────────────────────────────────────────
   const overrideReasons: string[] = [];
   if (recentReversalFlag) overrideReasons.push(`6-month low ${barsAgoLow}d ago — bounce unconfirmed (+${(priceAboveLow * 100).toFixed(0)}% off low)`);
-  if (brokenTrendFlag)    overrideReasons.push(`Dropped ${(dropFromHigh * 100).toFixed(0)}% from 6-month high — trend broken`);
+  if (brokenTrendFlag)    overrideReasons.push(`Dropped ${(maxDrawdown * 100).toFixed(0)}% from 6-month high, still ${(currentDropFromHigh * 100).toFixed(0)}% below peak`);
   if (freshCrossoverFlag) overrideReasons.push('MA20/MA50 crossed recently — signal unreliable');
   const overrideReason = overrideReasons.join(' · ');
   const hasOverride = recentReversalFlag || brokenTrendFlag || freshCrossoverFlag;
