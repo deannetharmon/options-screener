@@ -396,14 +396,20 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const dropSincePeak = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
   const recentPeakFlag = barsAgoHigh <= 10 && dropSincePeak > 0.05;
 
-  // Flag 5: Earnings / event spike — a single candle in the last 5 bars moved >15% of price.
-  // Catches DDOG-style post-earnings gap-ups: the chart shows a clear trend but the most
-  // recent bar is a massive event candle, not a tradeable trend signal.
-  // These stocks need to settle before entering — route to Review regardless of MA direction.
+  // Flag 5: Earnings / event spike — catches two patterns:
+  //   a) Single candle high-low range >12% (intraday spike)
+  //   b) Gap between consecutive closes >10% (gap-up/gap-down on earnings)
+  // DDOG gapped up ~25% open-to-open on May 7 — the candle body itself may be smaller
+  // but the gap from prev close is the tell.
   const last5Bars = bars.slice(-5);
-  const earningsSpikeFlag = last5Bars.some(b => {
-    const move = (b.h - b.l) / (b.l || 1);
-    return move > 0.15;
+  const last5Closes = closes.slice(-6); // one extra for gap calculation
+  const earningsSpikeFlag = last5Bars.some((b, i) => {
+    const intradayRange = (b.h - b.l) / (b.l || 1);
+    if (intradayRange > 0.12) return true;
+    // Gap check: compare this bar's open to previous bar's close
+    const prevClose = i > 0 ? last5Bars[i - 1].c : last5Closes[last5Closes.length - 6 + i];
+    const gap = prevClose > 0 ? Math.abs(b.o - prevClose) / prevClose : 0;
+    return gap > 0.10;
   });
 
   // ── Build override reason string ──────────────────────────────────────────
@@ -419,14 +425,21 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // Allows stocks with brokenTrendFlag or freshCrossoverFlag to route BCS instead of Review
   // when the downtrend is clearly confirmed by MA alignment AND the bounce is modest.
   // Guards:
-  //   1. MA20 < MA50 AND price < MA50 — structure is bearish (primary signal)
-  //   2. priceAboveLow < 0.35 — hasn't bounced too far off the low (keeps CRM/choppy out)
-  //   3. currentDropFromHigh > 0.20 — still meaningfully below the high (not recovering)
-  //   4. maDiff < -0.02 — MA separation is meaningfully negative (not just crossed)
-  const confirmedDowntrend = maDiff < -0.02 && currentPrice < ma50
+  //   1. maDiff < -0.02 — MA20 meaningfully below MA50
+  //   2. currentPrice < ma50 AND currentPrice < ma20 — price below BOTH MAs (not bouncing)
+  //   3. priceAboveLow < 0.35 — hasn't bounced too far off the low
+  //   4. currentDropFromHigh > 0.20 — still meaningfully below the high
+  // CRM fails guard 2: price ~= MA50 and above MA20 → bouncing, stay Review
+  // ACN passes all guards: price < MA20 < MA50, only 3.8% off low → confirmed downtrend
+  const confirmedDowntrend = maDiff < -0.02
+    && currentPrice < ma50
+    && currentPrice < ma20
     && priceAboveLow < 0.35
     && currentDropFromHigh > 0.20;
-  const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentReversalFlag && !recentPeakFlag && !earningsSpikeFlag;
+  const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentPeakFlag && !earningsSpikeFlag
+    // Allow escape even when recentReversalFlag fires IF: the MA structure is deeply bearish
+    // AND price is still very close to the low (bounce hasn't started — ACN at 3.8% off low)
+    && (!recentReversalFlag || (maDiff < -0.03 && priceAboveLow < 0.08));
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag || earningsSpikeFlag)
     && !(downwardFlags && confirmedDowntrend);
 
