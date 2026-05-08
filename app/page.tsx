@@ -35,7 +35,8 @@ interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
   qualified: boolean; bestCandidate: SpreadCandidate | null;
   failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
-  checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; };
+  checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; trend: CheckResult; };
+
 }
 interface FilterSuggestion {
   priority: number; rule: keyof RulesType; currentValue: number; suggestedValue: number;
@@ -428,8 +429,15 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
 
   const rocMin = strategy === 'IC' ? RULES.ROC_MIN_IC : RULES.ROC_MIN_SPREAD;
   const rocCheck: CheckResult = bestCandidate ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` } : { status: 'pending', value: '—', reason: 'No candidate' };
-  const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck } };
+  const trendCheck: CheckResult = !trendResult || trendResult.trend === 'unknown'
+  ? { status: 'warn', value: 'Unknown', reason: 'No trend data — run ANALYZE TRENDS first' }
+  : strategy === 'BPS' && trendResult.trend === 'downtrend'
+    ? (() => { failReasons.push('Downtrend conflicts with BPS (bearish momentum)'); return { status: 'fail' as const, value: trendResult.trend, reason: `MA20 ${trendResult.ma20.toFixed(2)} < MA50 ${trendResult.ma50.toFixed(2)}` }; })()
+  : strategy === 'BCS' && trendResult.trend === 'uptrend'
+    ? (() => { failReasons.push('Uptrend conflicts with BCS (bullish momentum)'); return { status: 'fail' as const, value: trendResult.trend, reason: `MA20 ${trendResult.ma20.toFixed(2)} > MA50 ${trendResult.ma50.toFixed(2)}` }; })()
+  : { status: 'pass', value: trendResult.trend, reason: trendResult.reason };
+  const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && trendCheck.status !== 'fail' && bestCandidate !== null;
+return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, trend: trendCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
