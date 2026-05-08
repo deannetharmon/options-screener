@@ -1255,7 +1255,7 @@ function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] 
 }
 
 // ── Rules Modal ────────────────────────────────────────────────────────────
-function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
+function RulesModal({ rules, onClose, onRun, th, hasIC, hasBCS, hasBPS }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme]; hasBPS: boolean; hasBCS: boolean; hasIC: boolean; }) {
   const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
 
@@ -1276,15 +1276,15 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
         <div className="grid grid-cols-2 gap-x-4 gap-y-3 mb-6">
           <SectionHeader label="Implied Volatility Rank" th={th} />
           <RuleInput ruleKey="IVR_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          {hasIC && <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />}
           <SectionHeader label="Days to Expiration" th={th} />
           <RuleInput ruleKey="DTE_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="DTE_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <SectionHeader label="Delta — Spread / IC" th={th} />
-          <RuleInput ruleKey="SPREAD_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="SPREAD_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="IC_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="IC_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <SectionHeader label="Delta" th={th} />
+          {(hasBPS || hasBCS) && <RuleInput ruleKey="SPREAD_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />}
+          {(hasBPS || hasBCS) && <RuleInput ruleKey="SPREAD_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />}
+          {hasIC && <RuleInput ruleKey="IC_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />}
+          {hasIC && <RuleInput ruleKey="IC_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />}
           <SectionHeader label="Liquidity" th={th} />
           <RuleInput ruleKey="BID_ASK_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="OI_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
@@ -1292,8 +1292,8 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
           <RuleInput ruleKey="CREDIT_RATIO_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <RuleInput ruleKey="MAX_SPREAD_WIDTH" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
           <SectionHeader label="Return on Capital" th={th} />
-          <RuleInput ruleKey="ROC_MIN_SPREAD" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="ROC_MIN_IC" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          {(hasBPS || hasBCS) && <RuleInput ruleKey="ROC_MIN_SPREAD" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />}
+          {hasIC && <RuleInput ruleKey="ROC_MIN_IC" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />}
         </div>
         <div className="flex gap-3">
           <button onClick={handleReset} className="flex-1 border border-yellow-600 text-yellow-500 py-2 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
@@ -1680,7 +1680,7 @@ export default function Home() {
       </div>
 
       <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} th={th} />
-      {showRulesModal && <RulesModal rules={runtimeRules} onClose={() => setShowRulesModal(false)} onRun={(rules) => { setShowRulesModal(false); setRuntimeRules(rules); runScreen(rules); }} th={th} />}
+      {showRulesModal && <RulesModal rules={runtimeRules} onClose={() => setShowRulesModal(false)} onRun={(rules) => { setShowRulesModal(false); setRuntimeRules(rules); runScreen(rules); }} th={th} hasBPS={parseTickers(bpsTickers).length > 0} hasBCS={parseTickers(bcsTickers).length > 0} hasIC={parseTickers(icTickers).length > 0} />}
     </div>
   );
 }
