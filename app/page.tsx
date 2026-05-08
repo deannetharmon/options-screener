@@ -438,11 +438,17 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // ADP/ACN: MA10 < MA20, price still grinding down → confirmed downtrend → BCS
   const ma10 = closes.slice(-10).reduce((a, b) => a + b, 0) / 10;
   const shortTermMomentumUp = ma10 > ma20;
+  // Recent 30-bar range as % of price — wide range means choppy, not trending
+  const recent30High = Math.max(...highs.slice(-30));
+  const recent30Low = Math.min(...lows.slice(-30));
+  const recent30RangePct = currentPrice > 0 ? (recent30High - recent30Low) / currentPrice : 0;
+  const recentlyChoppy = recent30RangePct > 0.28; // >28% range in last 30 bars = choppy
   const confirmedDowntrend = maDiff < -0.015
     && notConsolidatingAtMa50
     && priceAboveLow < 0.35
     && currentDropFromHigh > 0.12
-    && !shortTermMomentumUp;           // if price is rising short-term, it's recovering not downtrending
+    && !shortTermMomentumUp
+    && !recentlyChoppy;           // wide recent range = not a directional downtrend
   const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentPeakFlag && !earningsSpikeFlag
     && (!recentReversalFlag || (maDiff < -0.03 && priceAboveLow < 0.08));
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag || earningsSpikeFlag)
@@ -497,6 +503,8 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     verdict: finalResult.strategy,
     recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag,
     confirmedDowntrend, downwardFlags, hasOverride,
+    shortTermMomentumUp, recentlyChoppy,
+    recent30RangePct: (recent30RangePct * 100).toFixed(1) + '%',
     priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
     currentDropFromHigh: (currentDropFromHigh * 100).toFixed(1) + '%',
     priceVsMa50Pct: (priceVsMa50Pct * 100).toFixed(2) + '%',
