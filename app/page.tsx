@@ -12,62 +12,13 @@ const THEMES: Record<Theme, {
   input: string; inputBorder: string; tag: string;
   label: string;
 }> = {
-  dark: {
-    bg: 'bg-[#080c14]',
-    sidebar: 'bg-[#0d1117]',
-    card: 'bg-slate-900/30',
-    cardQualified: 'bg-slate-900/60',
-    border: 'border-slate-700',
-    borderLight: 'border-slate-800',
-    header: 'bg-gradient-to-r from-[#0d1117] to-[#080c14]',
-    text: 'text-white',
-    textMuted: 'text-slate-200',
-    textFaint: 'text-slate-400',
-    input: 'bg-slate-900/80',
-    inputBorder: 'border-slate-700',
-    tag: 'bg-slate-800',
-    label: 'text-slate-300',
-  },
-  medium: {
-    bg: 'bg-[#1a1f2e]',
-    sidebar: 'bg-[#1e2436]',
-    card: 'bg-[#222840]/50',
-    cardQualified: 'bg-[#222840]/80',
-    border: 'border-slate-600',
-    borderLight: 'border-slate-700',
-    header: 'bg-gradient-to-r from-[#1e2436] to-[#1a1f2e]',
-    text: 'text-white',
-    textMuted: 'text-slate-200',
-    textFaint: 'text-slate-400',
-    input: 'bg-[#1a1f2e]',
-    inputBorder: 'border-slate-600',
-    tag: 'bg-slate-700',
-    label: 'text-slate-300',
-  },
-    light: {
-    bg: 'bg-slate-50',
-    sidebar: 'bg-white',
-    card: 'bg-white',
-    cardQualified: 'bg-white',
-    border: 'border-slate-300',
-    borderLight: 'border-slate-200',
-    header: 'bg-gradient-to-r from-slate-800 to-slate-950',
-    text: 'text-slate-950',
-    textMuted: 'text-slate-900',
-    textFaint: 'text-slate-700',
-    input: 'bg-slate-50',
-    inputBorder: 'border-slate-400',
-    tag: 'bg-slate-100',
-    label: 'text-slate-950',
-  },
+  dark: { bg: 'bg-[#080c14]', sidebar: 'bg-[#0d1117]', card: 'bg-slate-900/30', cardQualified: 'bg-slate-900/60', border: 'border-slate-700', borderLight: 'border-slate-800', header: 'bg-gradient-to-r from-[#0d1117] to-[#080c14]', text: 'text-white', textMuted: 'text-slate-200', textFaint: 'text-slate-400', input: 'bg-slate-900/80', inputBorder: 'border-slate-700', tag: 'bg-slate-800', label: 'text-slate-300' },
+  medium: { bg: 'bg-[#1a1f2e]', sidebar: 'bg-[#1e2436]', card: 'bg-[#222840]/50', cardQualified: 'bg-[#222840]/80', border: 'border-slate-600', borderLight: 'border-slate-700', header: 'bg-gradient-to-r from-[#1e2436] to-[#1a1f2e]', text: 'text-white', textMuted: 'text-slate-200', textFaint: 'text-slate-400', input: 'bg-[#1a1f2e]', inputBorder: 'border-slate-600', tag: 'bg-slate-700', label: 'text-slate-300' },
+  light: { bg: 'bg-slate-50', sidebar: 'bg-white', card: 'bg-white', cardQualified: 'bg-white', border: 'border-slate-300', borderLight: 'border-slate-200', header: 'bg-gradient-to-r from-slate-800 to-slate-950', text: 'text-slate-950', textMuted: 'text-slate-900', textFaint: 'text-slate-700', input: 'bg-slate-50', inputBorder: 'border-slate-400', tag: 'bg-slate-100', label: 'text-slate-950' },
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
-interface CheckResult {
-  status: 'pass' | 'fail' | 'warn' | 'pending';
-  value: string;
-  reason: string;
-}
+interface CheckResult { status: 'pass' | 'fail' | 'warn' | 'pending'; value: string; reason: string; }
 interface SpreadCandidate {
   strategy: string; expiration: string; dte: number;
   shortStrike: number; longStrike: number; shortDelta: number;
@@ -78,22 +29,7 @@ interface SpreadCandidate {
 }
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
-  strategy: 'BPS' | 'BCS' | 'IC';
-  ma20: number; ma50: number; reason: string;
-  // Enhanced chart signals — computed from same API call, no extra requests
-  closes30: number[];           // last 30 daily closes for sparkline
-  trendStrength: 'strong' | 'weak' | 'choppy' | 'unknown';
-  rangePercent: number;         // recent high-low range as % of price (IC tightness)
-  hasLongWicks: boolean;        // avg wick > 45% of candle range on last 5 bars
-  isCoiling: boolean;           // last 3 candle ranges each smaller than prior
-  maDivergence: number;         // MA20 vs MA50 spread as % — conviction proxy
-  // Context override flags — route to Broken when true
-  recentReversalFlag: boolean;  // 6-month low within last 10 bars, bounce unconfirmed
-  brokenTrendFlag: boolean;     // dropped >28% from 6-month high set in first 2/3 of period
-  freshCrossoverFlag: boolean;  // MA20/MA50 crossed within last 5 bars — unreliable signal
-  recentPeakFlag: boolean;      // 6-month high hit within last 10 bars, dropped 5%+ since
-  earningsSpikeFlag: boolean;   // single candle >15% move in last 5 bars — event-driven
-  overrideReason: string;       // human-readable explanation when any flag is true
+  strategy: 'BPS' | 'BCS' | 'IC'; ma20: number; ma50: number; reason: string;
 }
 interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
@@ -111,96 +47,31 @@ interface LoadPromptState {
   show: boolean; name: string; type: 'strategy' | 'global'; onLoad?: (merge: boolean) => void;
 }
 
-// ── Index / ETF overrides ──────────────────────────────────────────────────
-const INDEX_TICKERS = new Set([
-  'SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD',
-  'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY',
-  'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX',
-]);
-const INDEX_IVR_MIN = 15;
-
-// ── Rules ──────────────────────────────────────────────────────────────────
-const DEFAULT_RULES = {
-  IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 200, BID_ASK_MAX: 0.10,
-  CREDIT_RATIO_MIN: 0.15, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
-  IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.25, DTE_MIN: 30, DTE_MAX: 45,
-  MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 30,
-};
-type RulesType = typeof DEFAULT_RULES;
-
-const RULE_LABELS: Record<string, string> = {
-  IVR_MIN: 'IVR Min %', IVR_IC_MAX: 'IVR IC Max %', OI_MIN: 'Min Open Interest',
-  BID_ASK_MAX: 'Max Bid-Ask $', CREDIT_RATIO_MIN: 'Min Credit Ratio',
-  SPREAD_DELTA_MIN: 'Spread Delta Min', SPREAD_DELTA_MAX: 'Spread Delta Max',
-  IC_DELTA_MIN: 'IC Delta Min', IC_DELTA_MAX: 'IC Delta Max',
-  DTE_MIN: 'DTE Min', DTE_MAX: 'DTE Max', MAX_SPREAD_WIDTH: 'Max Spread Width $',
-  ROC_MIN_SPREAD: 'Min ROC Spread %', ROC_MIN_IC: 'Min ROC IC %',
-};
-
-const LS_RULES = 'prosper-rules';
-const AUTO_TICKER_LIMIT = 20;
-const LS_BPS = 'prosper-tickers-bps';
-const LS_BCS = 'prosper-tickers-bcs';
-const LS_IC = 'prosper-tickers-ic';
-const LS_BROKEN = 'prosper-tickers-broken';   // ← NEW
-const LS_CAL = 'prosper-cal-scheduled';
-const LS_CAL_ENTRY = 'prosper-cal-entry';
-const DTE_ALERT_THRESHOLD = 25;
-const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
-
+// ── Helper Functions ───────────────────────────────────────────────────────
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr);
   const now = new Date();
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
+
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
-function getSavedRules(): RulesType {
-  try { const saved = localStorage.getItem(LS_RULES); return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES }; }
-  catch { return { ...DEFAULT_RULES }; }
-}
+
 function saveRulesToStorage(rules: RulesType) {
   try { localStorage.setItem(LS_RULES, JSON.stringify(rules)); } catch {}
 }
+
 function getSavedTheme(): Theme {
-  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; }
+  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; }
   catch { return 'dark'; }
 }
 
-// ── Business day calculator ────────────────────────────────────────────────
-function addBusinessDays(dateStr: string, days: number): Date {
-  const date = new Date(dateStr);
-  let added = 0;
-  while (added < days) { date.setDate(date.getDate() + 1); const dow = date.getDay(); if (dow !== 0 && dow !== 6) added++; }
-  return date;
-}
-function formatCalDate(date: Date): string {
-  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-}
-
-// ── Google Calendar URLs ───────────────────────────────────────────────────
-function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
-  const followUp = addBusinessDays(earningsDate, 2);
-  const end = new Date(followUp); end.setDate(end.getDate() + 1);
-  const title = encodeURIComponent(`Re-screen ${symbol} — earnings passed`);
-  const details = encodeURIComponent(`${symbol} was blocked by earnings on ${earningsDate}.\n\nStrategy: ${strategy}\nIVR at screen time: ${ivr != null ? ivr.toFixed(1) + '%' : 'N/A'}\n\nChecklist:\n• IVR still ≥ 30%\n• No new earnings within 30-45 DTE\n• Chain liquidity\n• Credit ratio and ROC\n\nRe-screen: ${HUNTER_URL}`);
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
-}
-function buildEntryCalUrl(result: ScreenResult, businessDays = 1): string {
-  const c = result.bestCandidate!;
-  const followUp = addBusinessDays(new Date().toISOString().split('T')[0], businessDays);
-  const end = new Date(followUp); end.setDate(end.getDate() + 1);
-  const title = encodeURIComponent(`Enter trade — ${result.symbol} ${result.strategy}`);
-  const details = encodeURIComponent(`Re-verify and enter if setup still valid:\n\nSymbol: ${result.symbol}\nStrategy: ${result.strategy}\nIVR: ${result.ivr?.toFixed(1)}%\nExpiration: ${c.expiration} (${c.dte}d)\nStrikes: ${c.shortStrike}/${c.longStrike} ·$${c.spreadWidth}·\nCredit: $${(c.totalCredit ?? c.credit).toFixed(2)}\nROC: ${c.roc.toFixed(0)}%\nDelta: ${c.shortDelta.toFixed(2)}\n\nChecklist:\n• IVR still ≥ 30%\n• No new earnings\n• Credit and ROC still qualify\n• Enter GTC at 50% profit immediately after fill\n\nRe-screen: ${HUNTER_URL}`);
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
-}
-
-// ── Width steps ────────────────────────────────────────────────────────────
 function getWidthSteps(maxWidth: number, price: number | null): number[] {
   const minWidth = price == null ? 5 : price >= 500 ? 25 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
   const steps: number[] = [];
   for (let w = minWidth; w <= maxWidth; w += minWidth) steps.push(w);
   return steps;
 }
+
 function getBidAskMax(price: number | null): number {
   if (price == null) return 1.50;
   if (price >= 500) return 3.00;
@@ -209,312 +80,267 @@ function getBidAskMax(price: number | null): number {
   return 0.10;
 }
 
-// ── Smart Suggestion Engine ────────────────────────────────────────────────
-function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
-  const disqualified = results.filter(r => !r.qualified);
-  if (disqualified.length === 0) return [];
-  const total = disqualified.length;
-  const suggestions: FilterSuggestion[] = [];
-  const dteFails = disqualified.filter(r => r.failReasons.some(f => f.includes('DTE') || f.includes('expirations'))).length;
-  const ivrFails = disqualified.filter(r => r.failReasons.some(f => f.includes('IVR'))).length;
-  const creditFails = disqualified.filter(r => r.checks.credit.status === 'fail' || r.failReasons.some(f => f.includes('qualifying strikes'))).length;
-  const rocFails = disqualified.filter(r => r.checks.roc.status === 'fail').length;
-  if (dteFails > 0 && rules.DTE_MAX < 60) {
-    const suggestedDTE = Math.min(60, rules.DTE_MAX + 10);
-    suggestions.push({ priority: 1, rule: 'DTE_MAX', currentValue: rules.DTE_MAX, suggestedValue: suggestedDTE, label: 'Expand DTE window', rationale: `${dteFails} of ${total} stocks have no expirations in your ${rules.DTE_MIN}–${rules.DTE_MAX} day window.`, tradeoff: 'Wider DTE captures monthly-only chains. Theta decay is slightly slower but risk profile is similar.', wouldQualify: dteFails });
+function addBusinessDays(dateStr: string, days: number): Date {
+  const date = new Date(dateStr);
+  let added = 0;
+  while (added < days) {
+    date.setDate(date.getDate() + 1);
+    const dow = date.getDay();
+    if (dow !== 0 && dow !== 6) added++;
   }
-  if (ivrFails > total * 0.5) suggestions.push({ priority: 2, rule: 'IVR_MIN', currentValue: rules.IVR_MIN, suggestedValue: 20, label: 'Lower IVR minimum', rationale: `${ivrFails} stocks failed IVR ≥ ${rules.IVR_MIN}%. Market volatility may be suppressed.`, tradeoff: 'Lower IVR means less premium collected. Reduce position size to compensate.', wouldQualify: ivrFails });
-  if (creditFails > 1 && rules.CREDIT_RATIO_MIN > 0.10) { const newRatio = Math.max(0.10, rules.CREDIT_RATIO_MIN - 0.05); suggestions.push({ priority: 3, rule: 'CREDIT_RATIO_MIN', currentValue: rules.CREDIT_RATIO_MIN, suggestedValue: newRatio, label: 'Relax credit ratio', rationale: `${creditFails} stocks couldn't generate enough credit relative to spread width.`, tradeoff: `Lowering to ${(newRatio * 100).toFixed(0)}% reduces minimum credit requirement. Only do this if IVR is elevated.`, wouldQualify: creditFails }); }
-  if (rocFails > 0 && rules.ROC_MIN_SPREAD > 10) { const newROC = Math.max(10, rules.ROC_MIN_SPREAD - 5); suggestions.push({ priority: 4, rule: 'ROC_MIN_SPREAD', currentValue: rules.ROC_MIN_SPREAD, suggestedValue: newROC, label: 'Lower ROC minimum', rationale: `${rocFails} spreads found valid strikes but couldn't reach ${rules.ROC_MIN_SPREAD}% ROC.`, tradeoff: `${newROC}% ROC still profitable but leaves less cushion. Only accept if POP is strong (>70%).`, wouldQualify: rocFails }); }
-  return suggestions.sort((a, b) => a.priority - b.priority);
+  return date;
 }
 
-// ── Saved Filters API ──────────────────────────────────────────────────────
-async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilters> {
-  try { const res = await fetch(`/api/filters?strategy=${strategy}`); const data = await res.json(); return data.filters ?? {}; }
-  catch { return {}; }
-}
-async function saveFilter(strategy: string, name: string, payload: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] }, replace = false): Promise<{ success?: boolean; conflict?: boolean; message?: string }> {
-  const res = await fetch('/api/filters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strategy, name, replace, ...payload }) });
-  return res.json();
-}
-async function deleteFilter(strategy: string, name: string): Promise<void> {
-  await fetch('/api/filters', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strategy, name }) });
+function formatCalDate(date: Date): string {
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
 }
 
-// ── Tesseract OCR ──────────────────────────────────────────────────────────
+function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
+  const followUp = addBusinessDays(earningsDate, 2);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
+  const title = encodeURIComponent(`Re-screen ${symbol}`);
+  const details = encodeURIComponent(`Re-screen after earnings`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
+}
+
+function buildEntryCalUrl(result: ScreenResult, businessDays: number, directDate?: Date): string {
+  const followUp = directDate ?? addBusinessDays(new Date().toISOString().split('T')[0], businessDays);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
+  const title = encodeURIComponent(`Enter ${result.symbol}`);
+  const details = encodeURIComponent(`Re-screen & enter ${result.symbol} — ${result.strategy} ${result.bestCandidate?.shortStrike}/${result.bestCandidate?.longStrike}`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
+}
+
+// OCR + merge helpers
 async function extractTickersFromImage(file: File): Promise<string[]> {
   const Tesseract = await import('tesseract.js');
   const { data: { text } } = await Tesseract.recognize(file, 'eng', { logger: () => {} });
   const blacklist = new Set(['USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ','BPS','BCS','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO','AI','AN','IS','IT','AT','OR','AS','BY','IN']);
   const tickers: string[] = [];
   const tickerPattern = /\b([A-Z]{2,5})\b/g;
-  for (const line of text.split('\n')) { let match; while ((match = tickerPattern.exec(line)) !== null) { if (!blacklist.has(match[1])) tickers.push(match[1]); } }
+  for (const line of text.split('\n')) {
+    let match;
+    while ((match = tickerPattern.exec(line)) !== null) {
+      if (!blacklist.has(match[1])) tickers.push(match[1]);
+    }
+  }
   return Array.from(new Set(tickers));
 }
+
 function mergeTickers(existing: string, newTickers: string[]): string {
   const existingList = existing.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
   const existingSet = new Set(existingList);
   const toAdd = newTickers.filter(t => !existingSet.has(t));
-  if (toAdd.length === 0) return existing;
   return [...existingList, ...toAdd].join(', ');
 }
+
 function tickersToString(tickers: string[]): string { return tickers.join(', '); }
 
-// ── Chart data via /api/chart proxy (Yahoo Finance, no API key required) ──
-async function getTrend(symbol: string): Promise<TrendResult> {
-  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error ?? `Chart fetch failed (${res.status})`);
-  }
-  const data = await res.json();
-  const bars: { o: number; h: number; l: number; c: number }[] = data.bars ?? [];
-  const EMPTY: TrendResult = {
-    trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
-    reason: 'Not enough price history', closes30: [], trendStrength: 'unknown',
-    rangePercent: 0, hasLongWicks: false, isCoiling: false, maDivergence: 0,
-    recentReversalFlag: false, brokenTrendFlag: false, freshCrossoverFlag: false,
-    recentPeakFlag: false, earningsSpikeFlag: false, overrideReason: '',
-  };
-  if (bars.length < 50) return EMPTY;
+function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
+  const suggestions: FilterSuggestion[] = [];
+  const disqualified = results.filter(r => !r.qualified);
+  if (disqualified.length === 0) return [];
 
-  console.log(`[getTrend] ${symbol} bars received:`, bars.length);
-  if (bars.length < 50) return EMPTY;
-  const closes = bars.map(b => b.c);
-  const highs  = bars.map(b => b.h);
-  const lows   = bars.map(b => b.l);
-  const n = closes.length;
+  // Count how many fail each specific rule (excluding earnings which is a hard gate)
+  const failedCredit = disqualified.filter(r => r.failReasons.some(f => f.includes('Credit') || f.includes('credit'))).length;
+  const failedOI = disqualified.filter(r => r.failReasons.some(f => f.includes('OI') || f.includes('qualifying strikes'))).length;
+  const failedROC = disqualified.filter(r => r.failReasons.some(f => f.includes('ROC') || f.includes('roc'))).length;
+  const failedIVR = disqualified.filter(r => r.failReasons.some(f => f.includes('IVR'))).length;
 
-  // ── MAs ───────────────────────────────────────────────────────────────────
-  const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
-  const currentPrice = closes[n - 1];
-  const maDiff = (ma20 - ma50) / ma50;
-  const priceVsMa50 = (currentPrice - ma50) / ma50;
-  const maDivergence = Math.abs(maDiff) * 100;
-
-  // ── Sparkline (last 30 closes) ────────────────────────────────────────────
-  const closes30 = closes.slice(-30);
-
-  // ── Range tightness (last 20 bars) ────────────────────────────────────────
-  const rangeHigh = Math.max(...highs.slice(-20));
-  const rangeLow  = Math.min(...lows.slice(-20));
-  const rangePercent = currentPrice > 0 ? ((rangeHigh - rangeLow) / currentPrice) * 100 : 0;
-
-  // ── Trend strength via swing high/low consistency ─────────────────────────
-  const recentH = highs.slice(-22), recentL = lows.slice(-22);
-  const swingHighs: number[] = [], swingLows: number[] = [];
-  for (let i = 1; i < recentH.length - 1; i++) {
-    if (recentH[i] > recentH[i - 1] && recentH[i] > recentH[i + 1]) swingHighs.push(recentH[i]);
-    if (recentL[i] < recentL[i - 1] && recentL[i] < recentL[i + 1]) swingLows.push(recentL[i]);
-  }
-  const ascending  = (arr: number[]) => arr.length >= 2 && arr.slice(-3).every((v, i, a) => i === 0 || v > a[i - 1]);
-  const descending = (arr: number[]) => arr.length >= 2 && arr.slice(-3).every((v, i, a) => i === 0 || v < a[i - 1]);
-
-  let trendStrength: TrendResult['trendStrength'];
-  if (maDiff > 0 && currentPrice > ma50) {
-    if (ascending(swingHighs) && ascending(swingLows))        trendStrength = 'strong';
-    else if (ascending(swingHighs) || ascending(swingLows))   trendStrength = 'weak';
-    else                                                       trendStrength = 'choppy';
-  } else if (maDiff < 0 && currentPrice < ma50) {
-    if (descending(swingHighs) && descending(swingLows))      trendStrength = 'strong';
-    else if (descending(swingHighs) || descending(swingLows)) trendStrength = 'weak';
-    else                                                       trendStrength = 'choppy';
-  } else {
-    trendStrength = rangePercent < 6 ? 'strong' : rangePercent < 12 ? 'weak' : 'choppy';
+  // Credit ratio suggestion
+  if (failedCredit > 0 && rules.CREDIT_RATIO_MIN > 0.20) {
+    const relaxed = rules.CREDIT_RATIO_MIN === 0.33 ? 0.25 : 0.20;
+    suggestions.push({
+      priority: 1,
+      rule: 'CREDIT_RATIO_MIN',
+      currentValue: rules.CREDIT_RATIO_MIN,
+      suggestedValue: relaxed,
+      label: `Relax credit ratio to ${(relaxed * 100).toFixed(0)}% of width`,
+      rationale: `${failedCredit} stock${failedCredit !== 1 ? 's' : ''} failed credit minimum. Current premium environment is thin — ${(relaxed * 100).toFixed(0)}% is the ${relaxed === 0.25 ? 'professional floor' : 'absolute minimum'}.`,
+      tradeoff: relaxed === 0.25 ? 'Slightly less cushion but mathematically sound. Still profitable if POP holds.' : 'Risk/reward becomes marginal. Only use in high IVR environments.',
+      wouldQualify: failedCredit,
+    });
   }
 
-  // ── Long wicks (last 5 candles) ───────────────────────────────────────────
-  const last5 = bars.slice(-5);
-  const avgWickRatio = last5.reduce((sum, b) => {
-    const body = Math.abs(b.c - b.o), range = b.h - b.l;
-    return sum + (range > 0 ? (range - body) / range : 0);
-  }, 0) / last5.length;
-  const hasLongWicks = avgWickRatio > 0.45;
+  // OI suggestion
+  if (failedOI > 0 && rules.OI_MIN > 200) {
+    const relaxed = rules.OI_MIN === 500 ? 300 : 200;
+    suggestions.push({
+      priority: 2,
+      rule: 'OI_MIN',
+      currentValue: rules.OI_MIN,
+      suggestedValue: relaxed,
+      label: `Relax OI minimum to ${relaxed}`,
+      rationale: `${failedOI} stock${failedOI !== 1 ? 's' : ''} failed OI check. Lower OI means wider bid-ask fills — acceptable for smaller position sizes.`,
+      tradeoff: 'Wider bid-ask spreads on entry/exit. Keep position size to 1 contract until liquidity improves.',
+      wouldQualify: failedOI,
+    });
+  }
 
-  // ── Coiling (each of last 3 candle ranges smaller than previous) ──────────
-  const last3ranges = bars.slice(-3).map(b => b.h - b.l);
-  const isCoiling = last3ranges.length === 3
-    && last3ranges[0] > last3ranges[1]
-    && last3ranges[1] > last3ranges[2]
-    && last3ranges[2] < currentPrice * 0.005;
+  // ROC suggestion
+  if (failedROC > 0 && rules.ROC_MIN_SPREAD > 15) {
+    const relaxed = Math.max(15, rules.ROC_MIN_SPREAD - 5);
+    suggestions.push({
+      priority: 3,
+      rule: 'ROC_MIN_SPREAD',
+      currentValue: rules.ROC_MIN_SPREAD,
+      suggestedValue: relaxed,
+      label: `Relax min ROC to ${relaxed}%`,
+      rationale: `${failedROC} stock${failedROC !== 1 ? 's' : ''} failed ROC minimum. Current market conditions compress returns.`,
+      tradeoff: 'Lower return per dollar at risk. Only worthwhile if POP is high (70%+).',
+      wouldQualify: failedROC,
+    });
+  }
 
-  // ── CONTEXT OVERRIDE FLAGS ────────────────────────────────────────────────
+  // IVR suggestion
+  if (failedIVR > 0 && rules.IVR_MIN > 20) {
+    const relaxed = Math.max(20, rules.IVR_MIN - 5);
+    suggestions.push({
+      priority: 4,
+      rule: 'IVR_MIN',
+      currentValue: rules.IVR_MIN,
+      suggestedValue: relaxed,
+      label: `Relax IVR floor to ${relaxed}%`,
+      rationale: `${failedIVR} stock${failedIVR !== 1 ? 's' : ''} failed IVR minimum. Low IV environment — less premium available across the board.`,
+      tradeoff: 'Selling premium when IV is low means less cushion and smaller credits. Use smaller position sizes.',
+      wouldQualify: failedIVR,
+    });
+  }
 
-  // Flag 1: Recent reversal — 6-month low hit within last 10 bars AND barely bounced.
-  // Threshold: bounce must be <10% off low to trigger (was 15%).
-  // Rationale: a stock 15%+ off its low has shown meaningful recovery — don't penalize it.
-  const allTimeLow6m = Math.min(...lows);
-  const allTimeLowIdx = lows.indexOf(allTimeLow6m);
-  const barsAgoLow = n - 1 - allTimeLowIdx;
-  const priceAboveLow = currentPrice > 0 ? (currentPrice - allTimeLow6m) / allTimeLow6m : 0;
-  const recentReversalFlag = barsAgoLow <= 10 && priceAboveLow < 0.10;
+  return suggestions.sort((a, b) => a.priority - b.priority);
+}
 
-  // Flag 2: Broken trend — the 6-month high was set early AND the stock dropped hard
-  // from it AND has NOT substantially recovered.
-  // Spike filter: the high must be sustained for at least 3 bars — a single-day spike
-  // (like ALLE's Feb event) shouldn't define the 6-month high for drawdown purposes.
-  const allTimeHigh6m = Math.max(...highs);
-  const allTimeHighIdx = highs.indexOf(allTimeHigh6m);
-  const highInFirstTwoThirds = allTimeHighIdx < (n * 2) / 3;
-  // Check if the high was a transient spike: look at the 3 bars around it
-  const spikeWindow = highs.slice(Math.max(0, allTimeHighIdx - 1), Math.min(n, allTimeHighIdx + 2));
-  const avgAroundHigh = spikeWindow.reduce((a, b) => a + b, 0) / spikeWindow.length;
-  const isTransientSpike = allTimeHigh6m > avgAroundHigh * 1.06; // high is 6%+ above its neighbors
-  // Use the sustained high (avg of top 5 highs) when the absolute high is a spike
-  const sustainedHigh = isTransientSpike
-    ? [...highs].sort((a, b) => b - a).slice(1, 6).reduce((a, b) => a + b, 0) / 5
-    : allTimeHigh6m;
-  const lowestAfterHigh = Math.min(...lows.slice(allTimeHighIdx));
-  const maxDrawdown = sustainedHigh > 0 ? (sustainedHigh - lowestAfterHigh) / sustainedHigh : 0;
-  const currentDropFromHigh = sustainedHigh > 0 ? (sustainedHigh - currentPrice) / sustainedHigh : 0;
-  // Trigger only if: high was early AND drawdown was severe AND stock hasn't recovered much
-  const brokenTrendFlag = highInFirstTwoThirds && maxDrawdown > 0.28 && currentDropFromHigh > 0.15;
+// ── Persistent Saved Filters (LocalStorage + API fallback) ─────────────────
+async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilters> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
+  try {
+    const saved = localStorage.getItem(lsKey);
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  try {
+    const res = await fetch(`/api/filters?strategy=${strategy}`);
+    const data = await res.json();
+    const filters = data.filters ?? {};
+    localStorage.setItem(lsKey, JSON.stringify(filters));
+    return filters;
+  } catch {
+    return {};
+  }
+}
 
-  // Flag 3: Fresh MA crossover — MA20 crossed MA50 within the last 5 bars only.
-  // Window tightened from 10 → 5 bars: if the crossover happened >1 week ago and price
-  // has continued in the same direction, that's confirmation not noise.
-  let freshCrossoverFlag = false;
-  const lookback = Math.min(5, n - 1);
-  for (let i = 1; i <= lookback; i++) {
-    const pastSlice   = closes.slice(-(20 + i), closes.length - i + 1 > 0 ? closes.length - i + 1 : undefined);
-    const pastSlice50 = closes.slice(-(50 + i), closes.length - i + 1 > 0 ? closes.length - i + 1 : undefined);
-    if (pastSlice.length < 20 || pastSlice50.length < 50) break;
-    const pastMa20 = pastSlice.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const pastMa50 = pastSlice50.slice(-50).reduce((a, b) => a + b, 0) / 50;
-    const pastDiff = pastMa20 - pastMa50;
-    if ((maDiff > 0 && pastDiff < 0) || (maDiff < 0 && pastDiff > 0)) {
-      freshCrossoverFlag = true;
-      break;
+async function saveFilter(
+  strategy: string,
+  name: string,
+  payload: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] },
+  replace = false
+): Promise<{ success?: boolean; conflict?: boolean; message?: string }> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
+  try {
+    const res = await fetch('/api/filters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy, name, replace, ...payload })
+    });
+    const result = await res.json();
+    if (result.success) {
+      const current = await loadFilters(strategy) as any;
+      if (strategy === 'global') {
+        current[name] = { bps: payload.bps || [], bcs: payload.bcs || [], ic: payload.ic || [] };
+      } else {
+        current[name] = payload.tickers || [];
+      }
+      localStorage.setItem(lsKey, JSON.stringify(current));
+    }
+    return result;
+  } catch {
+    try {
+      const current = await loadFilters(strategy) as any;
+      if (strategy === 'global') {
+        current[name] = { bps: payload.bps || [], bcs: payload.bcs || [], ic: payload.ic || [] };
+      } else {
+        current[name] = payload.tickers || [];
+      }
+      localStorage.setItem(lsKey, JSON.stringify(current));
+      return { success: true };
+    } catch (e) {
+      return { success: false, message: 'Failed to save' };
     }
   }
-
-  // Flag 4: Recent peak — 6-month high hit within last 10 bars AND dropped 5%+ since.
-  // Catches ETR/BKR pattern: strong uptrend that just rolled over at the top.
-  // The MA is still bullish (trend was real) but the stock just peaked — don't enter BPS now.
-  const barsAgoHigh = n - 1 - allTimeHighIdx;
-  const dropSincePeak = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
-  const recentPeakFlag = barsAgoHigh <= 20 && dropSincePeak > 0.04;
-
-  // Flag 5: Earnings / event spike — catches two patterns in the last 15 bars:
-  //   a) Single candle high-low range >12% (intraday spike)
-  //   b) Gap between consecutive bars >10% (gap-up/gap-down on earnings)
-  // Window is 15 bars (~3 weeks) to catch spikes that happened a few weeks ago
-  // but still dominate the chart (INTC spiked Apr, still 80%+ above MA50).
-  const eventSpikeWindow = bars.slice(-15);
-  const earningsSpikeFlag = eventSpikeWindow.some((b, i) => {
-    const intradayRange = (b.h - b.l) / (b.l || 1);
-    if (intradayRange > 0.12) return true;
-    if (i === 0) return false;
-    const prevClose = eventSpikeWindow[i - 1].c;
-    const gap = prevClose > 0 ? Math.abs(b.o - prevClose) / prevClose : 0;
-    return gap > 0.10;
-  });
-
-  // ── Build override reason string ──────────────────────────────────────────
-  const overrideReasons: string[] = [];
-  if (recentReversalFlag)  overrideReasons.push(`6-month low ${barsAgoLow}d ago — bounce unconfirmed (+${(priceAboveLow * 100).toFixed(0)}% off low)`);
-  if (brokenTrendFlag)     overrideReasons.push(`Dropped ${(maxDrawdown * 100).toFixed(0)}% from 6-month high, still ${(currentDropFromHigh * 100).toFixed(0)}% below peak`);
-  if (freshCrossoverFlag)  overrideReasons.push('MA20/MA50 crossed recently — signal unreliable');
-  if (recentPeakFlag)      overrideReasons.push(`6-month high ${barsAgoHigh}d ago — dropped ${(dropSincePeak * 100).toFixed(0)}% since peak, possible reversal`);
-  if (earningsSpikeFlag)   overrideReasons.push('Large single-day move (>15%) in last 5 bars — event-driven, wait for settlement');
-  const overrideReason = overrideReasons.join(' · ');
-
-  // ── Confirmed downtrend escape hatch ─────────────────────────────────────
-  // Allows brokenTrendFlag/freshCrossoverFlag stocks to route BCS instead of Review
-  // when the downtrend is structurally confirmed.
-  // Guards:
-  //   1. maDiff < -0.02 — MA20 meaningfully below MA50
-  //   2. currentPrice < ma50 OR price is >2% above MA50 (not consolidating AT the MA)
-  //      — CRM at $186.34 vs MA50 $186.63 = 0.15% away → consolidating → Review
-  //      — ADP at $214 vs MA50 $206.94 = 3.4% above → directional bounce → escape ok
-  //   3. priceAboveLow < 0.35 — hasn't bounced too far off the low
-  //   4. currentDropFromHigh > 0.20 — still meaningfully below the high
-  const priceVsMa50Pct = Math.abs((currentPrice - ma50) / ma50);
-  const consolidatingAtMa = priceVsMa50Pct < 0.025;
-  const notConsolidatingAtMa50 = !consolidatingAtMa;
-  // Short-term momentum: if MA10 > MA20, price is trending UP recently even if below MA50.
-  // PLTR: bouncing from lows with rising short-term MA → recovering, not downtrending → Review
-  // ADP/ACN: MA10 < MA20, price still grinding down → confirmed downtrend → BCS
-  const ma10 = closes.slice(-10).reduce((a, b) => a + b, 0) / 10;
-  const shortTermMomentumUp = ma10 > ma20;
-  // Recent 30-bar range as % of price — wide range means choppy, not trending
-  const recent30High = Math.max(...highs.slice(-30));
-  const recent30Low = Math.min(...lows.slice(-30));
-  const recent30RangePct = currentPrice > 0 ? (recent30High - recent30Low) / currentPrice : 0;
-  const recentlyChoppy = recent30RangePct > 0.28; // >28% range in last 30 bars = choppy
-  const confirmedDowntrend = maDiff < -0.015
-    && notConsolidatingAtMa50
-    && priceAboveLow < 0.35
-    && currentDropFromHigh > 0.12
-    && !shortTermMomentumUp
-    && !recentlyChoppy;           // wide recent range = not a directional downtrend
-  const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentPeakFlag && !earningsSpikeFlag
-    && (!recentReversalFlag || (maDiff < -0.03 && priceAboveLow < 0.08));
-  const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag || earningsSpikeFlag)
-    && !(downwardFlags && confirmedDowntrend && !consolidatingAtMa);
-
-  // ── Diagnostic logging ────────────────────────────────────────────────────
-  // ── Trend classification ──────────────────────────────────────────────────
-  const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
-  const sidewaysBand      = isIdx ? 0.06 : 0.03;
-  const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
-
-  const base = {
-    ma20, ma50, closes30, trendStrength, rangePercent, hasLongWicks, isCoiling, maDivergence,
-    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag, overrideReason,
-  };
-
-  // Override fires before MA classification — send to 'unknown' so routing sends to Broken
-  if (hasOverride)
-    return { ...base, trend: 'unknown', strategy: 'BCS', reason: overrideReason };
-
-  // ── Wide-range IC check ───────────────────────────────────────────────────
-  const high6m = Math.max(...highs);
-  const low6m  = Math.min(...lows);
-  const range6m = high6m - low6m;
-  const range6mPct = low6m > 0 ? range6m / low6m : 0;
-  const positionInRange = range6m > 0 ? (currentPrice - low6m) / range6m : 0.5;
-  const inMiddleOfRange = positionInRange >= 0.30 && positionInRange <= 0.70;
-  const recentHalf = Math.floor(n / 2);
-  const recentHighs = highs.slice(-recentHalf);
-  const recentLows  = lows.slice(-recentHalf);
-  const recentHigh  = Math.max(...recentHighs);
-  const recentLow   = Math.min(...recentLows);
-  const recentRange = recentHigh - recentLow;
-  const recentRangePct = recentLow > 0 ? recentRange / recentLow : 0;
-  const recentMa10 = closes.slice(-10).reduce((a, b) => a + b, 0) / 10;
-  const recentMa20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const recentTrending = Math.abs((recentMa10 - recentMa20) / recentMa20) > 0.06;
-  const recentIsRangeBound = recentRangePct > 0.08 && !recentTrending;
-
-  // Determine final result — brokenTrendFlag stocks bypass both IC checks
-  let finalResult: TrendResult;
-if (range6mPct > 0.25 && range6mPct < 0.40 && inMiddleOfRange && Math.abs(maDiff) < 0.08 && recentIsRangeBound && !brokenTrendFlag && currentDropFromHigh < 0.10)
-    finalResult = { ...base, trend: 'sideways', strategy: 'IC', reason: `Price in middle of ${(range6mPct * 100).toFixed(0)}% 6-month range ($${low6m.toFixed(0)}–$${high6m.toFixed(0)}) — range-bound` };
-else if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand && !brokenTrendFlag && currentDropFromHigh < 0.10 && range6mPct < 0.25)
-    finalResult = { ...base, trend: 'sideways', strategy: 'IC',  reason: `20MA $${ma20.toFixed(2)} ≈ 50MA $${ma50.toFixed(2)} — range-bound` };
-  else if (maDiff > 0 && currentPrice > ma50)
-    finalResult = { ...base, trend: 'uptrend',  strategy: 'BPS', reason: `20MA $${ma20.toFixed(2)} > 50MA $${ma50.toFixed(2)} — uptrend` };
-  else
-    finalResult = { ...base, trend: 'downtrend', strategy: 'BCS', reason: `20MA $${ma20.toFixed(2)} < 50MA $${ma50.toFixed(2)} — downtrend` };
-
-  console.log(`[getTrend] ${symbol}`, {
-    verdict: finalResult.strategy,
-    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag,
-    confirmedDowntrend, downwardFlags, hasOverride,
-    shortTermMomentumUp, recentlyChoppy,
-    recent30RangePct: (recent30RangePct * 100).toFixed(1) + '%',
-    priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
-    currentDropFromHigh: (currentDropFromHigh * 100).toFixed(1) + '%',
-    priceVsMa50Pct: (priceVsMa50Pct * 100).toFixed(2) + '%',
-    maDiff: (maDiff * 100).toFixed(2) + '%',
-    currentPrice: currentPrice.toFixed(2), ma50: ma50.toFixed(2),
-  });
-
-  return finalResult;
 }
+
+async function deleteFilter(strategy: string, name: string): Promise<void> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
+  try {
+    await fetch('/api/filters', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy, name })
+    });
+  } catch {}
+  try {
+    const current = await loadFilters(strategy);
+    delete current[name];
+    localStorage.setItem(lsKey, JSON.stringify(current));
+  } catch {}
+}
+
+// ── Index / ETF overrides ──────────────────────────────────────────────────
+const INDEX_TICKERS = new Set(['SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY', 'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX']);
+const INDEX_IVR_MIN = 15;
+
+// ── Rules ──────────────────────────────────────────────────────────────────
+// CHANGE 1: Added EARNINGS_BUFFER_DAYS and CREDIT_MIN_ABS
+const DEFAULT_RULES = {
+  IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 500, BID_ASK_MAX: 0.10,
+  CREDIT_RATIO_MIN: 0.33, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
+  IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.20, DTE_MIN: 30, DTE_MAX: 45,
+  MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30,
+  CREDIT_MIN_ABS: 0.15,
+};
+type RulesType = typeof DEFAULT_RULES;
+
+const RULE_LABELS: Record<string, string> = {
+  IVR_MIN: 'IVR Min % (floor)',
+  IVR_IC_MAX: 'IVR Max % (IC only)',
+  OI_MIN: 'Open Interest Min (per leg)',
+  BID_ASK_MAX: 'Bid-Ask Max $ (per leg)',
+  CREDIT_RATIO_MIN: 'Min Credit — % of Width  (0.33 = course · 0.25 = floor · 0.20 = danger)',
+  CREDIT_MIN_ABS: 'Min Credit — $ Absolute floor',
+  SPREAD_DELTA_MIN: 'Spread Delta Min',
+  SPREAD_DELTA_MAX: 'Spread Delta Max',
+  IC_DELTA_MIN: 'IC Delta Min',
+  IC_DELTA_MAX: 'IC Delta Max',
+  DTE_MIN: 'DTE Min (days)',
+  DTE_MAX: 'DTE Max (days)',
+  MAX_SPREAD_WIDTH: 'Max Spread Width $ (optimizer cap)',
+  ROC_MIN_SPREAD: 'Min ROC % (Spread)',
+  ROC_MIN_IC: 'Min ROC % (IC)',
+};
+
+const LS_RULES = 'prosper-rules';
+const LS_RULES_VERSION = 'prosper-rules-v2'; // bump this when defaults change
+function getSavedRules(): RulesType {
+  try {
+    // If this version key doesn't exist, wipe old saved rules so new defaults take effect
+    if (!localStorage.getItem(LS_RULES_VERSION)) {
+      localStorage.removeItem(LS_RULES);
+      localStorage.setItem(LS_RULES_VERSION, '1');
+    }
+    const saved = localStorage.getItem(LS_RULES);
+    return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES };
+  } catch { return { ...DEFAULT_RULES }; }
+}
+const AUTO_TICKER_LIMIT = 5;
+const LS_BPS = 'prosper-tickers-bps';
+const LS_BCS = 'prosper-tickers-bcs';
+const LS_IC = 'prosper-tickers-ic';
+const LS_BROKEN = 'prosper-tickers-broken';
+const LS_CAL = 'prosper-cal-scheduled';
+const LS_CAL_ENTRY = 'prosper-cal-entry';
+const DTE_ALERT_THRESHOLD = 25;
+const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
+const LS_SAVED_FILTERS = 'prosper-saved-filters';
+const LS_GLOBAL_SESSIONS = 'prosper-global-sessions';
 
 // ── TastyTrade API ─────────────────────────────────────────────────────────
 const BASE = 'https://api.tastytrade.com';
@@ -636,16 +462,32 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
   const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_IC) return null;
   return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true };
 }
+
 function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]> }, price: number | null, RULES: RulesType, trendResult?: TrendResult): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
   const isIndex = INDEX_TICKERS.has(symbol.toUpperCase());
   const effectiveIvrMin = isIndex ? INDEX_IVR_MIN : RULES.IVR_MIN;
   const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < effectiveIvrMin ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${effectiveIvrMin}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${effectiveIvrMin}% minimum${isIndex ? ' (index)' : ''}` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: isIndex ? `Above ${effectiveIvrMin}% (index floor)` : 'Above minimum' };
+
+  // Earnings buffer auto-derived: DTE_MAX + 5 days cushion
+  const earningsBuffer = RULES.DTE_MAX + 5;
   let earningsCheck: CheckResult;
   if (isIndex) {
     earningsCheck = { status: 'pass', value: 'N/A (index/ETF)', reason: 'No earnings events' };
-  } else if (!earningsDate) { earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' }; }
-  else { const d = daysUntil(earningsDate); if (d < 0) { earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' }; } else if (d < 30) { failReasons.push(`Earnings in ${d}d`); earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: 'Within expiry window' }; } else { earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: 'Outside expiry window' }; } }
+  } else if (!earningsDate) {
+    earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' };
+  } else {
+    const d = daysUntil(earningsDate);
+    if (d < 0) {
+      earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
+    } else if (d < earningsBuffer) {
+      failReasons.push(`Earnings in ${d}d`);
+      earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: `Within ${earningsBuffer}d buffer (DTE Max + 5)` };
+    } else {
+      earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: `Outside ${earningsBuffer}d buffer` };
+    }
+  }
+
   const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < RULES.DTE_MIN || dte > RULES.DTE_MAX) return false; if (!isIndex && earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, RULES) : findBestSpread(chainItems, strategy, exp, price, RULES); if (bestCandidate) break; } }
@@ -653,7 +495,16 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   else if (!bestCandidate && validExpirations.length > 0 && !failReasons.length) failReasons.push('No qualifying strikes found');
   const oiCheck: CheckResult = bestCandidate ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: `Both legs ≥ ${RULES.OI_MIN}` } : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
   const deltaCheck: CheckResult = bestCandidate ? { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Within target range' } : { status: 'pending', value: '—', reason: 'No candidate' };
-  const creditCheck: CheckResult = bestCandidate ? { status: 'pass', value: `$${(bestCandidate.totalCredit ?? bestCandidate.credit).toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` } : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  // CHANGE 2b: Credit check now enforces absolute dollar floor (CREDIT_MIN_ABS) in addition to ratio
+  const rawCredit = bestCandidate ? (bestCandidate.totalCredit ?? bestCandidate.credit) : 0;
+  const creditPassesAbs = rawCredit >= RULES.CREDIT_MIN_ABS;
+  const creditCheck: CheckResult = bestCandidate
+    ? creditPassesAbs
+      ? { status: 'pass', value: `$${rawCredit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` }
+      : (() => { failReasons.push(`Credit $${rawCredit.toFixed(2)} < $${RULES.CREDIT_MIN_ABS} floor`); return { status: 'fail' as const, value: `$${rawCredit.toFixed(2)}`, reason: `Below $${RULES.CREDIT_MIN_ABS} minimum` }; })()
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
   const rocMin = strategy === 'IC' ? RULES.ROC_MIN_IC : RULES.ROC_MIN_SPREAD;
   const rocCheck: CheckResult = bestCandidate ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` } : { status: 'pending', value: '—', reason: 'No candidate' };
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
@@ -699,17 +550,17 @@ function CalendarButton({ symbol, strategy, earningsDate, ivr, th }: { symbol: s
   if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ scheduled</span>;
   return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium`} title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up</button>;
 }
-function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme] }) {
+function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme]; rules: RulesType; }) {
   const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
   const [scheduled, setScheduled] = useState<string | null>(() => {
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; return all[key] || null; } catch { return null; }
   });
   const [open, setOpen] = useState(false);
-  const [customDate, setCustomDate] = useState('');
   const btnRef = useRef<HTMLButtonElement>(null);
-  const [popStyle, setPopStyle] = useState<React.CSSProperties>({});
+  const dateInputRef = useRef<HTMLInputElement>(null);
+  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
 
-  const presets = [
+  const presets: { label: string; days: number; hint: string }[] = [
     { label: '+2d',  days: 2,  hint: 'Revisit soon' },
     { label: '+1wk', days: 5,  hint: 'Post-spike settle' },
     { label: '+2wk', days: 10, hint: 'Post-earnings' },
@@ -719,63 +570,89 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
     e.stopPropagation();
     if (!open && btnRef.current) {
       const rect = btnRef.current.getBoundingClientRect();
-      setPopStyle({ position: 'fixed', top: rect.bottom + 6, left: rect.left, zIndex: 9999 });
+      setPopoverStyle({
+        position: 'fixed',
+        top: rect.bottom + 6,
+        left: rect.left,
+        zIndex: 9999,
+      });
     }
-    setOpen(o => !o);
+    setOpen(!open);
   };
 
   const handleSchedule = (days: number, label: string) => {
     window.open(buildEntryCalUrl(result, days), '_blank');
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = label; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
-    setScheduled(label); setOpen(false);
+    setScheduled(label);
+    setOpen(false);
   };
 
-  const handleCustomDate = () => {
-    if (!customDate) return;
-    const today = new Date(); today.setHours(0,0,0,0);
-    const picked = new Date(customDate + 'T00:00:00');
-    if (picked <= today) return;
-    // count business days from today to picked date
-    let bdays = 0; const cur = new Date(today);
-    while (cur < picked) { cur.setDate(cur.getDate() + 1); const d = cur.getDay(); if (d !== 0 && d !== 6) bdays++; }
-    handleSchedule(Math.max(1, bdays), customDate);
+  const handleDatePick = (dateStr: string) => {
+    if (!dateStr) return;
+    const d = new Date(dateStr + 'T12:00:00');
+    window.open(buildEntryCalUrl(result, 0, d), '_blank');
+    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = dateStr; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
+    setScheduled(dateStr);
+    setOpen(false);
   };
 
   useEffect(() => {
     if (!open) return;
-    const close = () => setOpen(false);
+    const close = (e: MouseEvent) => {
+      if (btnRef.current && btnRef.current.contains(e.target as Node)) return;
+      setOpen(false);
+    };
     document.addEventListener('click', close);
     return () => document.removeEventListener('click', close);
   }, [open]);
 
-  const todayStr = new Date().toISOString().split('T')[0];
-
-  if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ re-screen {scheduled}</span>;
+  if (scheduled) return (
+    <span
+      className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium cursor-pointer hover:border-emerald-400"
+      onClick={(e) => { e.stopPropagation(); setScheduled(null); }}
+      title="Click to reset"
+    >
+      ✓ re-screen {scheduled}
+    </span>
+  );
 
   return (
     <>
-      <button ref={btnRef} onClick={handleOpen}
-        className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors font-medium`}>
+      <button
+        ref={btnRef}
+        onClick={handleOpen}
+        className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors font-medium`}
+      >
         📅 re-screen
       </button>
       {open && (
-        <div onClick={e => e.stopPropagation()} style={popStyle}
-          className={`${th.sidebar} border ${th.border} rounded-lg shadow-2xl p-2 w-52`}>
+        <div
+          onClick={e => e.stopPropagation()}
+          style={popoverStyle}
+          className={`${th.sidebar} border ${th.border} rounded-lg shadow-2xl p-3 w-52`}
+        >
           <p className={`text-[8px] ${th.textFaint} tracking-widest mb-2 uppercase`}>Re-screen in:</p>
           {presets.map(p => (
-            <button key={p.label} onClick={() => handleSchedule(p.days, p.label)}
-              className={`w-full text-left px-2 py-1.5 rounded hover:bg-emerald-500/10 border border-transparent hover:border-emerald-700 transition-colors mb-1`}>
+            <button
+              key={p.label}
+              onClick={() => handleSchedule(p.days, p.label)}
+              className={`w-full text-left px-2 py-2 rounded hover:bg-emerald-500/10 border border-transparent hover:border-emerald-700 transition-colors mb-1`}
+            >
               <span className="text-emerald-400 font-bold text-xs">{p.label}</span>
               <span className={`text-[9px] ${th.textFaint} ml-2`}>{p.hint}</span>
             </button>
           ))}
-          <div className={`border-t ${th.border} mt-2 pt-2`}>
+          <div className={`mt-2 pt-2 border-t ${th.border}`}>
             <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5 uppercase`}>Pick a date:</p>
-            <div className="flex gap-1">
-              <input type="date" min={todayStr} value={customDate} onChange={e => setCustomDate(e.target.value)}
-                className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-1.5 py-1 text-[10px] ${th.text} focus:outline-none focus:border-emerald-500`} />
-              <button onClick={handleCustomDate} disabled={!customDate}
-                className="text-[9px] px-2 py-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white rounded font-bold transition-colors">→</button>
+            <div className="flex gap-1 items-center">
+              <input
+                ref={dateInputRef}
+                type="date"
+                min={new Date().toISOString().split('T')[0]}
+                onChange={e => handleDatePick(e.target.value)}
+                onClick={e => e.stopPropagation()}
+                className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} focus:outline-none focus:border-emerald-500 cursor-pointer`}
+              />
             </div>
           </div>
         </div>
@@ -806,146 +683,7 @@ function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
   );
 }
 
-// ── AI Analysis Panel ──────────────────────────────────────────────────────
-interface AIMessage { role: 'user' | 'assistant'; content: string; }
-function AIAnalysisPanel({ results, rules, th }: { results: ScreenResult[]; rules: RulesType; th: typeof THEMES[Theme] }) {
-  const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState<AIMessage[]>([]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => { if (open) bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, open]);
-
-  const buildContext = () => {
-    const qualified = results.filter(r => r.qualified);
-    const disqualified = results.filter(r => !r.qualified);
-    const lines: string[] = [
-      `Options screening results — ${new Date().toLocaleDateString()}`,
-      `Rules: IVR≥${rules.IVR_MIN}%, DTE ${rules.DTE_MIN}-${rules.DTE_MAX}d, Delta ${rules.SPREAD_DELTA_MIN}-${rules.SPREAD_DELTA_MAX}, Credit ratio≥${rules.CREDIT_RATIO_MIN}, ROC spread≥${rules.ROC_MIN_SPREAD}%, ROC IC≥${rules.ROC_MIN_IC}%`,
-      '',
-      `QUALIFIED (${qualified.length}):`,
-      ...qualified.map(r => {
-        const c = r.bestCandidate!;
-        return `  ${r.symbol} ${r.strategy} — IVR ${r.ivr?.toFixed(1)}% | ${c.expiration} (${c.dte}d) | ${c.shortStrike}/${c.longStrike} | Credit $${(c.totalCredit??c.credit).toFixed(2)} | ROC ${c.roc.toFixed(0)}% | POP ${c.pop?.toFixed(0)}% | δ ${c.shortDelta.toFixed(2)}${r.trendResult ? ` | trend:${r.trendResult.trend}` : ''}`;
-      }),
-      '',
-      `DISQUALIFIED (${disqualified.length}):`,
-      ...disqualified.map(r => `  ${r.symbol} ${r.strategy} — IVR ${r.ivr?.toFixed(1)}% | ${r.failReasons.join(', ')}`),
-    ];
-    return lines.join('\n');
-  };
-
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return;
-    const apiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY;
-    if (!apiKey) { setError('NEXT_PUBLIC_OPENAI_API_KEY not set in environment variables.'); return; }
-
-    const userMsg: AIMessage = { role: 'user', content: input.trim() };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setInput('');
-    setLoading(true);
-    setError('');
-
-    try {
-      const systemPrompt = `You are an expert options trading analyst specializing in credit spreads (BPS, BCS) and Iron Condors. You help traders evaluate screening results and make trading decisions based on the Prosper trading rules. Be concise and actionable. Here is the current screening context:\n\n${buildContext()}`;
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...newMessages.map(m => ({ role: m.role, content: m.content })),
-          ],
-          max_tokens: 600,
-          temperature: 0.3,
-        }),
-      });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message ?? `OpenAI error ${res.status}`); }
-      const data = await res.json();
-      const reply = data.choices?.[0]?.message?.content ?? 'No response.';
-      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (results.length === 0) return null;
-
-  return (
-    <div className={`border ${th.border} ${th.card} rounded-lg overflow-hidden`}>
-      <button onClick={() => setOpen(o => !o)} className={`w-full px-4 py-3 flex items-center justify-between hover:bg-purple-500/5 transition-colors`}>
-        <div className="flex items-center gap-2">
-          <span className="text-purple-400 text-sm">◈</span>
-          <div className="text-left">
-            <p className={`text-xs font-bold tracking-wider ${th.text}`}>AI ANALYSIS</p>
-            <p className={`text-[9px] ${th.textFaint}`}>Ask questions about your results · GPT-4o-mini · full context included</p>
-          </div>
-        </div>
-        <span className={`${th.textFaint} text-xs`}>{open ? '▲' : '▼'}</span>
-      </button>
-      {open && (
-        <div className={`border-t ${th.border}`}>
-          {/* Suggested prompts */}
-          {messages.length === 0 && (
-            <div className="px-4 pt-3 pb-2 flex flex-wrap gap-2">
-              {[
-                'Which qualified trade is highest priority today?',
-                'Summarize why each stock failed',
-                'Which setups have the best risk/reward?',
-                'Any red flags I should know about?',
-              ].map(q => (
-                <button key={q} onClick={() => { setInput(q); }}
-                  className={`text-[9px] px-2 py-1 border ${th.borderLight} rounded-full ${th.textFaint} hover:border-purple-500 hover:text-purple-400 transition-colors`}>
-                  {q}
-                </button>
-              ))}
-            </div>
-          )}
-          {/* Messages */}
-          <div className="max-h-80 overflow-y-auto px-4 py-2 space-y-3">
-            {messages.map((m, i) => (
-              <div key={i} className={`flex gap-2 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] rounded-lg px-3 py-2 text-[11px] leading-relaxed ${m.role === 'user' ? 'bg-purple-600/30 border border-purple-600/50 text-purple-100' : `${th.tag} border ${th.borderLight} ${th.textMuted}`}`}>
-                  {m.content}
-                </div>
-              </div>
-            ))}
-            {loading && (
-              <div className="flex gap-2 justify-start">
-                <div className={`${th.tag} border ${th.borderLight} rounded-lg px-3 py-2`}>
-                  <span className={`text-[11px] ${th.textFaint} animate-pulse`}>Analyzing...</span>
-                </div>
-              </div>
-            )}
-            {error && <p className="text-[10px] text-red-400">{error}</p>}
-            <div ref={bottomRef} />
-          </div>
-          {/* Input */}
-          <div className={`px-4 pb-3 pt-2 border-t ${th.border} flex gap-2`}>
-            <input
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-              placeholder="Ask about your results..."
-              className={`flex-1 ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-[11px] ${th.text} focus:outline-none focus:border-purple-500 placeholder-slate-500`}
-            />
-            <button onClick={sendMessage} disabled={loading || !input.trim()}
-              className="text-[10px] px-3 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white rounded-lg font-bold transition-colors">
-              {loading ? '...' : '→'}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
+// ── Smart Suggestions Panel ────────────────────────────────────────────────
 function SmartSuggestionsPanel({ results, rules, th, onApplyAndRerun }: { results: ScreenResult[]; rules: RulesType; th: typeof THEMES[Theme]; onApplyAndRerun: (r: RulesType) => void }) {
   const [expanded, setExpanded] = useState(false);
   const disqualified = results.filter(r => !r.qualified);
@@ -1028,242 +766,79 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-function SessionsModal({ bps, bcs, ic, broken, onClose, onLoadAll, onLoadPrompt, th }: {
-  bps: string; bcs: string; ic: string; broken: string;
-  onClose: () => void;
-  onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void;
-  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
-  th: typeof THEMES[Theme];
-}) {
-  const [tab, setTab] = useState<'load' | 'save'>('load');
+function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; onLoadAll: (bps: string, bcs: string, ic: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
+  const [showSave, setShowSave] = useState(false);
+  const [showLoad, setShowLoad] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveError, setSaveError] = useState('');
-  const [overwriteTarget, setOverwriteTarget] = useState('');
-  const [renamingName, setRenamingName] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState('');
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-  const refreshFilters = useCallback(async () => {
-    const f = await loadFilters('global') as GlobalFilters;
-    setGlobalFilters(f);
-  }, []);
+  const refreshFilters = useCallback(async () => { const f = await loadFilters('global') as GlobalFilters; setGlobalFilters(f); }, []);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
-
-  const filterNames = Object.keys(globalFilters);
-  const hasTickers = parseTickers(bps).length > 0 || parseTickers(bcs).length > 0 || parseTickers(ic).length > 0;
-
-  const handleSaveNew = async () => {
+  const handleSave = async (replace = false) => {
     if (!saveName.trim()) { setSaveError('Enter a session name'); return; }
-    setBusy(true);
-    const result = await saveFilter('global', saveName.trim(), { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, false);
-    setBusy(false);
-    if (result.conflict) { setSaveError(`"${saveName}" already exists — use Overwrite to replace it`); return; }
-    await refreshFilters(); setSaveName(''); setSaveError('');
+    const result = await saveFilter('global', saveName.trim(), { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, replace);
+    if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
+    await refreshFilters(); setShowSave(false); setSaveName(''); setSaveError('');
   };
-
-  const handleOverwrite = async () => {
-    if (!overwriteTarget) return;
-    setBusy(true);
-    await saveFilter('global', overwriteTarget, { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, true);
-    setBusy(false);
-    await refreshFilters(); setOverwriteTarget('');
+  const handleLoadSelect = (name: string) => {
+    const session = globalFilters[name]; if (!session) return; setShowLoad(false);
+    const allEmpty = !parseTickers(bps).length && !parseTickers(bcs).length && !parseTickers(ic).length;
+    if (allEmpty) { onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); return; }
+    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic)); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); } });
   };
-
-  const handleLoad = (name: string) => {
-    const session = globalFilters[name]; if (!session) return;
-    const isEmpty = !bps.trim() && !bcs.trim() && !ic.trim() && !broken.trim();
-    onClose();
-    if (isEmpty) {
-      onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
-    } else {
-      onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => {
-        if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken);
-        else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
-      }});
-    }
-  };
-
-  const handleRename = async (oldName: string) => {
-    const newName = renameValue.trim();
-    if (!newName || newName === oldName) { setRenamingName(null); return; }
-    const session = globalFilters[oldName]; if (!session) return;
-    setBusy(true);
-    await saveFilter('global', newName, { bps: session.bps, bcs: session.bcs, ic: session.ic }, false);
-    await deleteFilter('global', oldName);
-    setBusy(false);
-    await refreshFilters(); setRenamingName(null); setRenameValue('');
-  };
-
-  const handleDelete = async (name: string) => {
-    setBusy(true);
-    await deleteFilter('global', name);
-    setBusy(false);
-    await refreshFilters(); setDeleteConfirm(null);
-  };
-
+  const handleDelete = async (name: string) => { await deleteFilter('global', name); await refreshFilters(); };
+  const filterNames = Object.keys(globalFilters);
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-96 max-h-[80vh] flex flex-col overflow-hidden`}>
-
-        {/* Header */}
-        <div className={`flex items-center justify-between px-5 py-4 border-b ${th.border}`}>
-          <h2 className={`text-sm font-bold tracking-widest ${th.text}`}>SESSIONS</h2>
-          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg transition-colors`}>✕</button>
-        </div>
-
-        {/* Tabs */}
-        <div className={`flex border-b ${th.border}`}>
-          {(['load', 'save'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`flex-1 py-2.5 text-[10px] font-bold tracking-widest transition-colors ${tab === t ? 'text-blue-400 border-b-2 border-blue-500' : `${th.textFaint} hover:${th.textMuted}`}`}>
-              {t === 'load' ? '▶ LOAD' : '💾 SAVE'}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4">
-
-          {/* ── LOAD TAB ── */}
-          {tab === 'load' && (
-            <div className="space-y-2">
-              {filterNames.length === 0 && (
-                <p className={`text-[10px] ${th.textFaint} italic text-center py-6`}>No saved sessions yet — go to Save to create one</p>
-              )}
-              {filterNames.map(name => (
-                <div key={name} className={`border ${th.border} rounded-lg p-3`}>
-                  {renamingName === name ? (
-                    <div className="flex gap-2 items-center">
-                      <input autoFocus type="text" value={renameValue}
-                        onChange={e => setRenameValue(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') handleRename(name); if (e.key === 'Escape') setRenamingName(null); }}
-                        className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-[11px] ${th.text} focus:outline-none focus:border-blue-500`} />
-                      <button onClick={() => handleRename(name)} disabled={busy}
-                        className="text-[10px] px-2.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded font-bold disabled:opacity-40">✓</button>
-                      <button onClick={() => setRenamingName(null)}
-                        className={`text-[10px] px-2.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint}`}>✕</button>
-                    </div>
-                  ) : deleteConfirm === name ? (
-                    <div className="flex gap-2 items-center">
-                      <p className={`text-[10px] ${th.textMuted} flex-1`}>Delete "{name}"?</p>
-                      <button onClick={() => handleDelete(name)} disabled={busy}
-                        className="text-[10px] px-2.5 py-1.5 bg-red-700 hover:bg-red-600 text-white rounded font-bold disabled:opacity-40">Delete</button>
-                      <button onClick={() => setDeleteConfirm(null)}
-                        className={`text-[10px] px-2.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint}`}>Cancel</button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => handleLoad(name)}
-                        className={`flex-1 text-left text-[11px] ${th.text} font-medium hover:text-blue-400 transition-colors truncate`}>
-                        ▶ {name}
-                      </button>
-                      <div className="flex gap-1 shrink-0">
-                        <button onClick={() => { setRenamingName(name); setRenameValue(name); }}
-                          className={`text-[10px] px-2 py-1 border ${th.inputBorder} rounded ${th.textFaint} hover:border-blue-500 hover:text-blue-400 transition-colors`} title="Rename">✎</button>
-                        <button onClick={() => setDeleteConfirm(name)}
-                          className={`text-[10px] px-2 py-1 border border-red-900 rounded text-red-500 hover:border-red-500 transition-colors`} title="Delete">✕</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ── SAVE TAB ── */}
-          {tab === 'save' && (
-            <div className="space-y-5">
-              {!hasTickers && (
-                <div className={`text-[10px] ${th.textFaint} bg-yellow-500/10 border border-yellow-600/40 rounded-lg px-3 py-2`}>
-                  No tickers in scan lists — add tickers to BPS/BCS/IC boxes first
-                </div>
-              )}
-
-              {/* Save as new */}
-              <div>
-                <p className={`text-[10px] ${th.textMuted} font-bold tracking-wider mb-2`}>Save as new session</p>
-                <div className="flex gap-2">
-                  <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }}
-                    placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSaveNew()}
-                    className={`flex-1 ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-[11px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
-                  <button onClick={handleSaveNew} disabled={busy || !hasTickers || !saveName.trim()}
-                    className="text-[10px] px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg font-bold transition-colors">
-                    Save
-                  </button>
-                </div>
-                {saveError && <p className="text-[10px] text-red-400 mt-1.5">{saveError}</p>}
+    <div className={`border-t ${th.border} pt-3`}>
+      <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
+      <div className="flex gap-2">
+        <button onClick={() => onLoadAll('', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
+        <div className="relative flex-1">
+          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
+          {showSave && (
+            <div className={`absolute top-8 left-0 z-40 ${th.sidebar} border ${th.border} rounded-lg p-2 w-56 shadow-xl`}>
+              <p className={`text-[9px] ${th.textFaint} mb-1.5`}>Saves all three scan lists as one session</p>
+              <div className="flex gap-1 mb-1">
+                <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
+                  className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
+                <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition-colors">Save</button>
               </div>
-
-              {/* Overwrite existing */}
-              {filterNames.length > 0 && (
-                <div>
-                  <p className={`text-[10px] ${th.textMuted} font-bold tracking-wider mb-2`}>Overwrite existing session</p>
-                  <p className={`text-[9px] ${th.textFaint} mb-2`}>Replaces the selected session with your current scan lists</p>
-                  <div className="flex gap-2">
-                    <select value={overwriteTarget} onChange={e => setOverwriteTarget(e.target.value)}
-                      className={`flex-1 ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-[11px] ${th.text} focus:outline-none focus:border-yellow-500 bg-slate-900`}>
-                      <option value="">— select session —</option>
-                      {filterNames.map(n => <option key={n} value={n}>{n}</option>)}
-                    </select>
-                    <button onClick={handleOverwrite} disabled={busy || !hasTickers || !overwriteTarget}
-                      className="text-[10px] px-3 py-2 bg-yellow-700 hover:bg-yellow-600 disabled:opacity-40 text-white rounded-lg font-bold transition-colors">
-                      Overwrite
-                    </button>
-                  </div>
-                </div>
-              )}
+              {saveError && (<div className="flex gap-1 items-center mt-1"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-medium">Replace</button>}</div>)}
             </div>
           )}
         </div>
-
-        {/* Footer */}
-        <div className={`px-5 py-3 border-t ${th.border} flex justify-between items-center`}>
-          <button onClick={() => { onLoadAll('', '', '', ''); onClose(); }}
-            className="text-[10px] border border-red-800 text-red-500 hover:border-red-500 rounded-lg px-3 py-1.5 font-medium transition-colors">
-            ✕ Clear all lists
-          </button>
-          <button onClick={onClose} className={`text-[10px] ${th.textFaint} hover:${th.textMuted} transition-colors`}>Close</button>
+        <div className="relative flex-1">
+          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>▼ Load Session</button>
+          {showLoad && (
+            <div className={`absolute top-8 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg overflow-hidden w-56 shadow-xl`}>
+              {filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>No saved sessions yet</p>
+                : filterNames.map(name => (
+                  <div key={name} className={`flex items-center justify-between px-3 py-2 hover:bg-blue-500/10 group cursor-pointer`}>
+                    <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} hover:${th.text} text-left flex-1 font-medium`}>{name}</button>
+                    <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                  </div>
+                ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; broken: string; onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
-  const [showModal, setShowModal] = useState(false);
-  return (
-    <div className={`border-t ${th.border} pt-3`}>
-      <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
-      <button onClick={() => setShowModal(true)}
-        className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1.5`}>
-        💾 Save / Load Sessions
-      </button>
-      {showModal && (
-        <SessionsModal bps={bps} bcs={bcs} ic={ic} broken={broken}
-          onClose={() => setShowModal(false)}
-          onLoadAll={onLoadAll}
-          onLoadPrompt={onLoadPrompt}
-          th={th} />
-      )}
-    </div>
-  );
-}
-
 // ── Strategy Box ──────────────────────────────────────────────────────────
-function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: { 
-  label: string; 
-  badge: string; 
-  badgeColor: string; 
-  borderFocus: string; 
-  value: string; 
-  onChange: (v: string) => void; 
-  strategy: 'BPS' | 'BCS' | 'IC' | 'broken';   // ← updated type
-  disabled?: boolean; 
-  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; 
-  th: typeof THEMES[Theme] 
+function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: {
+  label: string;
+  badge: string;
+  badgeColor: string;
+  borderFocus: string;
+  value: string;
+  onChange: (v: string) => void;
+  strategy: 'BPS' | 'BCS' | 'IC' | 'broken';
+  disabled?: boolean;
+  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
+  th: typeof THEMES[Theme]
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingTickersRef = useRef<string[]>([]);
@@ -1280,7 +855,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
 
   const handleImgClick = () => {
     if (fileRef.current) fileRef.current.value = '';
-    setTimeout(() => fileRef.current?.click(), 100);
+    fileRef.current?.click();
   };
 
   const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1316,191 +891,62 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   };
   const handleLoadSelect = (name: string) => {
     const tickers = savedFilters[name] ?? []; setShowLoad(false);
+    if (!hasValue) { onChange(tickersToString(tickers)); return; }
     onLoadPrompt({ name, type: 'strategy', onLoad: (doMerge: boolean) => { if (doMerge) onChange(mergeTickers(value, tickers)); else onChange(tickersToString(tickers)); } });
   };
   const handleDelete = async (name: string) => { await deleteFilter(strategy, name); await refreshFilters(); };
   const filterNames = Object.keys(savedFilters);
   const hasValue = parseTickers(value).length > 0;
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="flex items-center gap-2">
-          <span className={`text-[9px] px-1.5 py-0.5 rounded-md tracking-wider border font-bold ${badgeColor}`}>{badge}</span>
-          <span className={`text-[11px] ${th.textMuted} tracking-wider font-medium`}>{label}</span>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[9px] px-1.5 py-0.5 border rounded-md tracking-wider font-bold ${badgeColor}`}>{badge}</span>
+          <span className={`text-[10px] ${th.textMuted} font-medium tracking-wider`}>{label}</span>
         </div>
         <div className="flex items-center gap-1">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
           <button onClick={handleImgClick} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
-          {hasValue && <button onClick={() => onChange('')} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border border-red-800 rounded text-red-500 hover:border-red-500 hover:text-red-400 transition-colors disabled:opacity-40`}>✕</button>}
-          <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>💾</button>
-          <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>▼</button>
-        </div>
-      </div>
-      {showSaveInput && (
-        <div className="mb-1.5 flex flex-col gap-1">
-          <div className="flex gap-1">
-            <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
-              className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
-            <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition-colors">Save</button>
-          </div>
-          {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-medium">Replace</button>}</div>)}
-        </div>
-      )}
-      {showLoad && (
-        <div className={`mb-1.5 ${th.input} border ${th.border} rounded-lg overflow-hidden`}>
-          {loadingFilters ? <p className={`text-[9px] ${th.textFaint} px-2 py-1.5`}>Loading...</p>
-            : filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-2 py-1.5`}>No saved filters</p>
-            : filterNames.map(name => (
-              <div key={name} className={`flex items-center justify-between px-2 py-1.5 hover:bg-blue-500/10 group`}>
-                <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} hover:${th.text} text-left flex-1 font-medium`}>{name}</button>
-                <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+          <div className="relative">
+            <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled || !hasValue} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>💾</button>
+            {showSaveInput && (
+              <div className={`absolute top-6 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg p-2 w-44 shadow-xl`}>
+                <div className="flex gap-1 mb-1">
+                  <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
+                    className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
+                  <button onClick={() => handleSave()} className="text-[9px] px-1.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium">Save</button>
+                </div>
+                {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1 py-0.5 bg-yellow-600 text-white rounded">Replace</button>}</div>)}
               </div>
-            ))}
-        </div>
-      )}
-      <textarea value={value} onChange={e => onChange(e.target.value)} placeholder="Tickers..."
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-[10px] ${th.text} h-12 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed`} />
-    </div>
-  );
-}
-
-// ── Sparkline ──────────────────────────────────────────────────────────────
-function Sparkline({ closes, strategy, width = 120, height = 32 }: {
-  closes: number[]; strategy: string; width?: number; height?: number;
-}) {
-  if (!closes || closes.length < 2) return null;
-  const min = Math.min(...closes), max = Math.max(...closes);
-  const range = max - min || 1;
-  const pts = closes.map((c, i) => {
-    const x = (i / (closes.length - 1)) * width;
-    const y = height - ((c - min) / range) * (height - 4) - 2;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const color = strategy === 'BPS' ? '#10b981' : strategy === 'BCS' ? '#ef4444' : strategy === 'OVERRIDE' ? '#f59e0b' : '#3b82f6';
-  const fillId = `sf-${strategy}`;
-  // Build fill path: line points + bottom-right + bottom-left corners
-  const firstX = 0, lastX = width;
-  const fillPts = `${pts} ${lastX},${height} ${firstX},${height}`;
-  return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">
-      <defs>
-        <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.18" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <polygon points={fillPts} fill={`url(#${fillId})`} />
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-// ── Trend Panel ────────────────────────────────────────────────────────────
-function TrendPanel({ t, strategy, th }: {
-  t: TrendResult; strategy: string; th: typeof THEMES[Theme];
-}) {
-  const hasOverride = t.recentReversalFlag || t.brokenTrendFlag || t.freshCrossoverFlag || t.earningsSpikeFlag;
-  const strengthColor = t.trendStrength === 'strong' ? 'text-emerald-400' : t.trendStrength === 'choppy' ? 'text-red-400' : 'text-yellow-400';
-  const strengthLabel = t.trendStrength === 'strong' ? 'STRONG' : t.trendStrength === 'choppy' ? 'CHOPPY' : t.trendStrength === 'weak' ? 'WEAK' : '—';
-  const rangeLabel = strategy === 'IC'
-    ? (t.rangePercent < 6 ? '✓ tight' : t.rangePercent < 12 ? '⚠ moderate' : '✗ wide')
-    : null;
-  const rangeLabelColor = strategy === 'IC'
-    ? (t.rangePercent < 6 ? 'text-emerald-400' : t.rangePercent < 12 ? 'text-yellow-400' : 'text-red-400')
-    : '';
-  const maLabel = `MA spread ${t.maDivergence.toFixed(1)}%`;
-  const maLabelColor = t.maDivergence > 4 ? 'text-emerald-400' : t.maDivergence > 1.5 ? 'text-yellow-400' : 'text-slate-400';
-
-  // Sparkline color: amber when overridden (context unclear), otherwise strategy color
-  const sparklineStrategy = hasOverride ? 'OVERRIDE' : strategy;
-
-  return (
-    <div className={`border-b ${th.border} px-4 pt-2 pb-3`}>
-      {/* Sparkline row */}
-      <div className="flex items-center gap-3 mb-2">
-        <div className="flex-1 min-w-0">
-          <Sparkline closes={t.closes30} strategy={sparklineStrategy} width={200} height={36} />
-        </div>
-        <div className="shrink-0 text-right space-y-0.5">
-          {hasOverride ? (
-            <div className="text-[9px] font-bold text-amber-400 tracking-widest">REVIEW CONTEXT</div>
-          ) : (
-            <div className="flex items-center justify-end gap-1.5">
-              <span className={`text-[9px] font-bold tracking-widest ${strengthColor}`}>{strengthLabel}</span>
-              <span className={`text-[9px] ${th.textFaint}`}>{trendIcon(t.trend)} {t.trend}</span>
-            </div>
-          )}
-          <div className={`text-[9px] ${maLabelColor}`}>{maLabel}</div>
-          {strategy === 'IC' && rangeLabel && (
-            <div className={`text-[9px] font-medium ${rangeLabelColor}`}>
-              Range ±{t.rangePercent.toFixed(1)}% {rangeLabel}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Override reason banner — shown when context flags fired */}
-      {hasOverride && t.overrideReason && (
-        <div className="mb-2 px-2 py-1.5 rounded border border-amber-600/50 bg-amber-500/10 flex items-start gap-1.5">
-          <span className="text-amber-400 text-[10px] mt-px shrink-0">⚠</span>
-          <div className="space-y-0.5">
-            {t.recentReversalFlag && <p className="text-[9px] text-amber-300 font-medium">Recent reversal — bounce unconfirmed. Verify chart before trading.</p>}
-            {t.brokenTrendFlag    && <p className="text-[9px] text-amber-300 font-medium">Broken trend — dropped significantly from 6-month high. Direction unclear.</p>}
-            {t.freshCrossoverFlag && <p className="text-[9px] text-amber-300 font-medium">Fresh MA crossover — signal just fired, not yet confirmed.</p>}
-            {t.earningsSpikeFlag  && <p className="text-[9px] text-amber-300 font-medium">Event spike detected — large single-day move, wait for price to settle.</p>}
-            <p className={`text-[9px] ${th.textFaint} italic`}>{t.overrideReason}</p>
+            )}
+          </div>
+          <div className="relative">
+            <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>▼</button>
+            {showLoad && (
+              <div className={`absolute top-6 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg overflow-hidden w-44 shadow-xl`}>
+                {loadingFilters ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>Loading...</p>
+                  : filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>No saved filters yet</p>
+                  : filterNames.map(name => (
+                    <div key={name} className={`flex items-center justify-between px-3 py-2 hover:bg-blue-500/10 group cursor-pointer`}>
+                      <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} text-left flex-1 font-medium`}>{name}</button>
+                      <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                    </div>
+                  ))}
+              </div>
+            )}
           </div>
         </div>
-      )}
-
-      {/* Standard warning flags row */}
-      {(t.hasLongWicks || t.isCoiling) && (
-        <div className="flex gap-2 flex-wrap">
-          {t.hasLongWicks && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded border border-yellow-600/60 bg-yellow-500/10 text-yellow-400 font-medium">
-              ⚠ long wicks — indecision
-            </span>
-          )}
-          {t.isCoiling && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded border border-purple-600/60 bg-purple-500/10 text-purple-400 font-medium">
-              ◈ coiling — breakout pending
-            </span>
-          )}
-        </div>
-      )}
+      </div>
+      <textarea
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder={`${label} tickers...`}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-14 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed disabled:opacity-40`}
+      />
     </div>
   );
-}
-
-// ── Review sub-label — explains WHY a ticker is in Review ─────────────────
-function getReviewSubLabel(t: TrendResult | undefined): {
-  badge: string; color: string; action: string;
-} | null {
-  if (!t) return null;
-  const { recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag } = t;
-  if (!recentReversalFlag && !brokenTrendFlag && !freshCrossoverFlag && !recentPeakFlag && !earningsSpikeFlag) return null;
-
-  const count = [recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag].filter(Boolean).length;
-
-  if (count > 1) {
-    return { badge: 'UNCLEAR', color: 'bg-red-500/15 text-red-400 border-red-500', action: 'Multiple signals — manual chart check required' };
-  }
-  if (earningsSpikeFlag) {
-    return { badge: 'EVENT', color: 'bg-purple-500/15 text-purple-400 border-purple-500', action: 'Large single-day move — wait 1–2 weeks for price to settle' };
-  }
-  if (recentPeakFlag) {
-    return { badge: 'PEAKED', color: 'bg-orange-500/15 text-orange-400 border-orange-500', action: 'Just hit 6-month high and rolling over — wait for direction confirmation' };
-  }
-  if (recentReversalFlag) {
-    return { badge: 'NEW LOW', color: 'bg-amber-500/15 text-amber-400 border-amber-500', action: 'Just hit 6-month low — re-screen in 1–2 weeks' };
-  }
-  if (brokenTrendFlag) {
-    return { badge: 'CRASHED', color: 'bg-orange-500/15 text-orange-400 border-orange-500', action: 'Dropped hard from peak — wait for direction confirmation' };
-  }
-  if (freshCrossoverFlag) {
-    return { badge: 'SIGNAL', color: 'bg-purple-500/15 text-purple-400 border-purple-500', action: 'MA crossover just fired — re-screen in 3–5 days' };
-  }
-  return null;
 }
 
 // ── Result Card ────────────────────────────────────────────────────────────
@@ -1512,31 +958,45 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
-function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme] }) {
+function ResultCard({ result, th, rules }: {
+  result: ScreenResult;
+  th: typeof THEMES[Theme];
+  rules: RulesType;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const c = result.bestCandidate, t = result.trendResult;
-  const stratBadge = result.strategy === 'BPS' ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500' : result.strategy === 'BCS' ? 'bg-red-500/15 border-red-500 text-red-500' : 'bg-blue-500/15 border-blue-500 text-blue-500';
-  const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
-  const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings')) && result.earningsDate && daysUntil(result.earningsDate) >= 0;
-  const cardBorder = result.qualified ? (isApproaching ? 'border-yellow-500/50' : th.border) : th.borderLight;
-  const reviewSubLabel = t?.trend === 'unknown' ? getReviewSubLabel(t) : null;
-  return (
-    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`} onClick={() => setExpanded(!expanded)}>
+  const [showBestFinder, setShowBestFinder] = useState(false);
 
-      {/* ── Header row: symbol / strategy / IVR / trade data ── */}
+  const c = result.bestCandidate;
+  const t = result.trendResult;
+  const stratBadge = result.strategy === 'BPS'
+    ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500'
+    : result.strategy === 'BCS'
+    ? 'bg-red-500/15 border-red-500 text-red-500'
+    : 'bg-blue-500/15 border-blue-500 text-blue-500';
+
+  const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
+  const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings'))
+    && result.earningsDate
+    && daysUntil(result.earningsDate) >= 0;
+
+  const cardBorder = result.qualified
+    ? (isApproaching ? 'border-yellow-500/50' : th.border)
+    : th.borderLight;
+
+  return (
+    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg cursor-pointer transition-all hover:shadow-md`}
+         onClick={() => setExpanded(!expanded)}>
+
+      {/* Header Row */}
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
         <div className="w-16 shrink-0">
           <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
           {result.price && <p className={`text-[10px] ${th.textFaint}`}>${result.price.toFixed(2)}</p>}
         </div>
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
-        {/* Review sub-label — only shown for tickers routed to the Review box */}
-        {reviewSubLabel && (
-          <span className={`text-[9px] px-1.5 py-0.5 border rounded-md shrink-0 font-bold ${reviewSubLabel.color}`}>
-            {reviewSubLabel.badge}
-          </span>
-        )}
+        {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
+
         {c && <>
           <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
           <StrikesDisplay c={c} th={th} />
@@ -1545,31 +1005,24 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
           {c.pop != null && <div className="text-xs shrink-0"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop.toFixed(0)}%</span></div>}
           <div className="text-xs shrink-0"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
           <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
-          {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} /></span>}
+          {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
           {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
         </>}
+
         {!result.qualified && result.failReasons.length > 0 && (
           <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
-            {/* Show action hint for review tickers instead of raw fail reasons */}
-            {reviewSubLabel
-              ? <span className={`text-[9px] font-medium ${reviewSubLabel.color.split(' ').find(c => c.startsWith('text-')) ?? 'text-slate-400'}`}>{reviewSubLabel.action}</span>
-              : <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
-            }
+            <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
             {hasEarningsBlock && result.earningsDate && <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>}
           </div>
         )}
         <div className={`ml-auto ${th.textFaint} text-xs shrink-0`}>{expanded ? '▲' : '▼'}</div>
       </div>
 
-      {/* ── Trend panel: sparkline + strength + flags — always visible when trend data exists ── */}
-      {t && t.closes30.length > 0 && (
-        <TrendPanel t={t} strategy={result.strategy} th={th} />
-      )}
-
-      {/* ── Expanded checklist ── */}
+      {/* Expanded Content */}
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
           {t && <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border}`}><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
+
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {Object.entries(result.checks).map(([key, check]) => (
               <div key={key} className="flex items-start gap-2">
@@ -1582,39 +1035,63 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
               </div>
             ))}
           </div>
+
           {hasEarningsBlock && result.earningsDate && (
             <div className={`pt-2 border-t ${th.border} flex items-center gap-3`}>
               <p className={`text-[10px] ${th.textFaint} flex-1`}>Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
               <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>
             </div>
           )}
-          {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && <div className={`pt-2 border-t ${th.border}`}><p className={`text-[10px] ${th.textMuted}`}>Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p></div>}
-          {result.failReasons.length > 0 && <div className={`pt-2 border-t ${th.border}`}><p className="text-[10px] text-red-500 font-medium">{result.failReasons.join(' · ')}</p></div>}
+
+          {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
+            <div className={`pt-2 border-t ${th.border}`}>
+              <p className={`text-[10px] ${th.textMuted}`}>Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p>
+            </div>
+          )}
+
+          {result.failReasons.length > 0 && (
+            <div className={`pt-2 border-t ${th.border}`}>
+              <p className="text-[10px] text-red-500 font-medium">{result.failReasons.join(' · ')}</p>
+            </div>
+          )}
+
+          {/* Best Opportunity Button */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
+            className="w-full py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-sm font-medium tracking-wider transition-colors mt-2"
+          >
+            🔍 FIND BEST OPPORTUNITY FOR {result.symbol}
+          </button>
         </div>
+      )}
+
+      {/* Best Opportunity Modal */}
+      {showBestFinder && (
+        <BestOpportunityFinder
+          symbol={result.symbol}
+          onClose={() => setShowBestFinder(false)}
+          th={th}
+          rules={rules}
+          preferredStrategy={result.strategy as 'BPS' | 'BCS' | 'IC'}
+        />
       )}
     </div>
   );
 }
 
-// ── Rules Modal Subcomponents (defined OUTSIDE RulesModal to prevent remount on render) ──
-function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, label, hint }: {
+// ── Rules Modal Subcomponents ──────────────────────────────────────────────
+function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }: {
   ruleKey: keyof RulesType;
   rawValues: Record<string, string>;
   editedRules: RulesType;
   onRawChange: (key: string, raw: string) => void;
   onBlur: (key: keyof RulesType, raw: string) => void;
   th: typeof THEMES[Theme];
-  label?: string;
-  hint?: string;
 }) {
   return (
-    <div className="flex flex-col">
-      <p className={`text-[9px] ${th.textFaint} tracking-wider uppercase font-medium leading-tight`}>
-        {label ?? RULE_LABELS[ruleKey]}
-      </p>
-      {/* Always reserve hint height — empty string keeps layout stable */}
-      <p className={`text-[8px] ${th.textFaint} opacity-60 mb-1 leading-tight min-h-[12px]`}>
-        {hint ?? ''}
+    <div>
+      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase`}>
+        {RULE_LABELS[ruleKey]}{ruleKey === 'MAX_SPREAD_WIDTH' && <span className={`${th.textFaint} ml-1 normal-case opacity-60`}>(optimizer cap)</span>}
       </p>
       <input
         type="text"
@@ -1631,23 +1108,17 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, l
 
 function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
   return (
-    <div className={`col-span-full pt-3 pb-1 border-b ${th.border}`}>
-      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold`}>{label}</p>
+    <div className={`col-span-2 pt-1 pb-0.5 border-b ${th.border}`}>
+      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
     </div>
   );
 }
 
 // ── Rules Modal ────────────────────────────────────────────────────────────
-const ETF_RULES: Partial<RulesType> = {
-  IVR_MIN: 15, OI_MIN: 100, BID_ASK_MAX: 0.25,
-  SPREAD_DELTA_MIN: 0.15, SPREAD_DELTA_MAX: 0.35,
-  IC_DELTA_MIN: 0.15, IC_DELTA_MAX: 0.25,
-};
-
+// CHANGE 3: Added Earnings Gate section, CREDIT_MIN_ABS field, IVR cap clarification note
 function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
   const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
-  const [preset, setPreset] = useState<'stock' | 'etf'>('stock');
 
   const handleChange = (key: string, raw: string) => setRawValues(prev => ({ ...prev, [key]: raw }));
   const handleBlur = (key: keyof RulesType, raw: string) => {
@@ -1655,96 +1126,66 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     if (!isNaN(val)) { const updated = { ...editedRules, [key]: val }; setEditedRules(updated); setRawValues(prev => ({ ...prev, [key]: String(val) })); }
     else setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
   };
-  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); setPreset('stock'); localStorage.removeItem(LS_RULES); };
-  const handlePreset = (p: 'stock' | 'etf') => {
-    setPreset(p);
-    const base = p === 'etf' ? { ...DEFAULT_RULES, ...ETF_RULES } : { ...DEFAULT_RULES };
-    setEditedRules(base);
-    setRawValues(Object.fromEntries(Object.entries(base).map(([k, v]) => [k, String(v)])));
-  };
+  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); localStorage.removeItem(LS_RULES); };
   const handleRun = () => { saveRulesToStorage(editedRules); onRun(editedRules); };
 
-  const ri = (key: keyof RulesType, label?: string, hint?: string) => (
-    <RuleInput ruleKey={key} rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} label={label} hint={hint} />
-  );
-
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-auto`}>
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[75vh] overflow-y-auto shadow-2xl`}>
+        <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
+        <p className={`text-[9px] ${th.textFaint} mb-3 tracking-wider leading-relaxed`}>
+          Defaults = course rules. Adjust to relax for thin markets. Reset restores course standards.
+          Earnings buffer auto = DTE Max + 5d. IVR cap applies to IC only.
+        </p>
 
-        {/* Header */}
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border}`}>
-          <div>
-            <h2 className="text-sm font-bold tracking-widest text-red-500">SCREENING RULES</h2>
-            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Defaults = course rules. Reset restores them. Earnings buffer = DTE Max + 5d.</p>
-          </div>
-          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg`}>✕</button>
-        </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-4">
 
-        {/* Stock / ETF toggle */}
-        <div className="px-6 pt-4 pb-2 flex gap-2">
-          {(['stock', 'etf'] as const).map(p => (
-            <button key={p} onClick={() => handlePreset(p)}
-              className={`px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest border transition-colors ${preset === p ? 'bg-blue-600 border-blue-500 text-white' : `${th.input} border ${th.inputBorder} ${th.textFaint} hover:border-blue-500`}`}>
-              {p === 'stock' ? '📈 STOCK' : '🏦 ETF / INDEX'}
-            </button>
-          ))}
-        </div>
+          {/* ── ENTRY GATES ── eliminates stock before looking at chain */}
+          <SectionHeader label="① Entry Gates" th={th} />
+          <RuleInput ruleKey="IVR_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="DTE_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="DTE_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
 
-        <div className="px-6 pb-4 space-y-4">
+          {/* ── LIQUIDITY ── chain must be tradeable */}
+          <SectionHeader label="② Liquidity" th={th} />
+          <RuleInput ruleKey="OI_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="BID_ASK_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
 
-          {/* ── Row 1: IVR + DTE ── */}
-          <div>
-            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>Volatility & Timing</p>
-            <div className="grid grid-cols-4 gap-3">
-              {ri('IVR_MIN',    'IVR Min %',        'Floor — all strategies')}
-              {ri('IVR_IC_MAX', 'IVR Max % (IC)',   'IC only — above = skip')}
-              {ri('DTE_MIN',    'DTE Min (days)')}
-              {ri('DTE_MAX',    'DTE Max (days)')}
-            </div>
-          </div>
+          {/* ── STRIKE SELECTION ── delta targets */}
+          <SectionHeader label="③ Strike Selection (Delta)" th={th} />
+          <RuleInput ruleKey="SPREAD_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="SPREAD_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="IC_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="IC_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
 
-          {/* ── Row 2: Delta ── */}
-          <div>
-            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>Strike Selection — Delta</p>
-            <div className="grid grid-cols-4 gap-3">
-              {ri('SPREAD_DELTA_MIN', 'Spread δ Min', 'BPS / BCS short strike')}
-              {ri('SPREAD_DELTA_MAX', 'Spread δ Max', 'BPS / BCS short strike')}
-              {ri('IC_DELTA_MIN',     'IC δ Min',     'Both IC short strikes')}
-              {ri('IC_DELTA_MAX',     'IC δ Max',     'Both IC short strikes')}
-            </div>
-          </div>
+          {/* ── CREDIT QUALITY ── are we getting paid enough */}
+          <SectionHeader label="④ Credit Quality" th={th} />
+          <RuleInput ruleKey="CREDIT_RATIO_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="CREDIT_MIN_ABS" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
 
-          {/* ── Row 3: Liquidity + Credit + ROC ── */}
-          <div>
-            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>Liquidity · Credit · Return</p>
-            <div className="grid grid-cols-3 gap-3">
-              {ri('OI_MIN',           'Min Open Interest', 'Per leg')}
-              {ri('BID_ASK_MAX',      'Max Bid-Ask $',     'Per leg')}
-              {ri('MAX_SPREAD_WIDTH', 'Max Spread Width $','Optimizer cap')}
-            </div>
-            <div className="grid grid-cols-3 gap-3 mt-3">
-              {ri('CREDIT_RATIO_MIN', 'Min Credit Ratio',  '0.33 = course · 0.25 = floor · 0.20 = danger')}
-              {ri('ROC_MIN_SPREAD',   'Min ROC % — Spread','BPS and BCS')}
-              {ri('ROC_MIN_IC',       'Min ROC % — IC',    'Iron Condor')}
-            </div>
-          </div>
+          {/* ── TRADE QUALITY ── return targets */}
+          <SectionHeader label="⑤ Return on Capital" th={th} />
+          <RuleInput ruleKey="ROC_MIN_SPREAD" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <RuleInput ruleKey="ROC_MIN_IC" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+
+          {/* ── OPTIMIZER ── width cap for spread finder */}
+          <SectionHeader label="⑥ Optimizer" th={th} />
+          <RuleInput ruleKey="MAX_SPREAD_WIDTH" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          <div />
 
         </div>
-
-        {/* Footer */}
-        <div className={`flex gap-3 px-6 py-4 border-t ${th.border}`}>
-          <button onClick={handleReset} className="border border-yellow-600 text-yellow-500 py-2 px-4 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
-          <div className="flex-1" />
-          <button onClick={onClose} className={`border ${th.border} ${th.textMuted} py-2 px-4 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
-          <button onClick={handleRun} className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-6 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
+        <div className="flex gap-3">
+          <button onClick={handleReset} className="flex-1 border border-yellow-600 text-yellow-500 py-2 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
+          <button onClick={onClose} className={`flex-1 border ${th.border} ${th.textMuted} py-2 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
+          <button onClick={handleRun} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
         </div>
       </div>
     </div>
   );
 }
 
-// ── NEW: Trend Detection & Auto-Assign (replaces old AUTO scanning behavior) ──
+// ── Trend Detection with Batch Processing (5 at a time) ─────────────────────
 async function runTrendDetection(
   autoTickers: string,
   bpsTickers: string,
@@ -1755,37 +1196,40 @@ async function runTrendDetection(
   handleBcsChange: (v: string) => void,
   handleIcChange: (v: string) => void,
   handleBrokenChange: (v: string) => void,
+  setAutoTickers: (v: string) => void,
   setError: (e: string) => void,
   setStatus: (s: string) => void,
   setLoading: (l: boolean) => void,
-  parseTickers: (s: string) => string[],
-  setAutoTickers: (v: string) => void
+  parseTickers: (s: string) => string[]
 ) {
-  const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
-  if (!autoList.length) { setError('Enter at least one ticker for trend detection.'); return; }
+  let autoList = parseTickers(autoTickers);
+  if (autoList.length === 0) {
+    setError('Enter at least one ticker for trend detection.');
+    return;
+  }
+
+  const batch = autoList.slice(0, 5);
+  const remaining = autoList.slice(5);
 
   setError('');
   setLoading(true);
+
   try {
-    setStatus('Analyzing trends...');
+    setStatus(`Analyzing batch of ${batch.length} tickers...`);
     const distributions: { bps: string[]; bcs: string[]; ic: string[]; broken: string[] } = { bps: [], bcs: [], ic: [], broken: [] };
 
-    for (let i = 0; i < autoList.length; i++) {
-      const symbol = autoList[i];
-      setStatus(`Analyzing trend for ${symbol} (${i + 1}/${autoList.length})...`);
+    for (let i = 0; i < batch.length; i++) {
+      const symbol = batch[i];
+      setStatus(`Analyzing ${symbol} (${i + 1}/${batch.length})...`);
       let trendResult: TrendResult | undefined;
       try {
         trendResult = await getTrend(symbol);
       } catch (e: any) {
-        // Surface the actual error so misconfiguration (missing API key, etc.) is visible
-        const msg = e?.message ?? String(e);
-        setStatus(`⚠ ${symbol}: ${msg}`);
-        console.warn(`getTrend(${symbol}):`, msg);
+        console.warn(e.message);
         distributions.broken.push(symbol);
-        await sleep(1500); // pause so the error is readable before moving to next ticker
         continue;
       }
-      if (i < autoList.length - 1) await sleep(1000);
+      if (i < batch.length - 1) await sleep(12000);
 
       if (trendResult?.trend === 'unknown' || !trendResult) {
         distributions.broken.push(symbol);
@@ -1800,20 +1244,264 @@ async function runTrendDetection(
       }
     }
 
-    // Auto-merge into target boxes (prevents accidental data loss)
     if (distributions.bps.length > 0) handleBpsChange(mergeTickers(bpsTickers, distributions.bps));
     if (distributions.bcs.length > 0) handleBcsChange(mergeTickers(bcsTickers, distributions.bcs));
     if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
     if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
 
-    // Clear the auto-detect box — tickers have been routed, no need to keep them here
-    setAutoTickers('');
-    setStatus(`✅ Assigned ${autoList.length} tickers to strategy / review boxes`);
+    setAutoTickers(tickersToString(remaining));
+    setStatus(`✅ Processed ${batch.length} tickers. ${remaining.length} remaining in AUTO box.`);
   } catch (e: any) {
     setError(e.message);
   } finally {
     setLoading(false);
   }
+}
+
+// ── Polygon getTrend ───────────────────────────────────────────────────────
+async function getTrend(symbol: string): Promise<TrendResult> {
+  const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
+  if (!apiKey) throw new Error('NEXT_PUBLIC_POLYGON_API_KEY not set');
+
+  const to = new Date();
+  const from = new Date();
+  from.setMonth(from.getMonth() - 6);
+
+  const res = await fetch(
+    `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`
+  );
+
+  if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
+
+  const data = await res.json();
+  const bars: { c: number }[] = data.results ?? [];
+
+  if (bars.length < 50)
+    return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough price history' };
+
+  const closes = bars.map(b => b.c);
+  const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+  const currentPrice = closes[closes.length - 1];
+
+  const maDiff = (ma20 - ma50) / ma50;
+  const priceVsMa50 = (currentPrice - ma50) / ma50;
+
+  const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
+  const sidewaysBand = isIdx ? 0.06 : 0.03;
+  const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
+
+  if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand) {
+    return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA ≈ 50MA — range-bound` };
+  }
+  if (maDiff > 0 && currentPrice > ma50) {
+    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `Uptrend` };
+  }
+  return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `Downtrend` };
+}
+
+// ── Best Opportunity Finder ────────────────────────────────────────────────
+interface BestSetup {
+  strategy: string;
+  grade: 'A+' | 'A' | 'B' | 'C';
+  setup: SpreadCandidate;
+  score: number;
+  notes: string[];
+  result: ScreenResult;
+}
+
+function BestOpportunityFinder({
+  symbol,
+  onClose,
+  th,
+  rules,
+  preferredStrategy,
+}: {
+  symbol: string;
+  onClose: () => void;
+  th: typeof THEMES[Theme];
+  rules: RulesType;
+  preferredStrategy?: 'BPS' | 'BCS' | 'IC';
+}) {
+  const [loading, setLoading] = useState(false);
+  const [best, setBest] = useState<BestSetup | null>(null);
+  const [failDetails, setFailDetails] = useState<{ strategy: string; reasons: string[] }[]>([]);
+  const [error, setError] = useState('');
+
+  const findBest = async () => {
+    setLoading(true); setError(''); setBest(null); setFailDetails([]);
+    try {
+      const token = await getAccessToken();
+      const [metricsArray, price] = await Promise.all([
+        getMarketMetrics([symbol], token),
+        getQuote(symbol, token)
+      ]);
+      const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
+      const chainData = await getChain(symbol, token, rules);
+
+      // Try preferred strategy first, then others
+      const strategies: ('BPS' | 'BCS' | 'IC')[] = preferredStrategy
+        ? [preferredStrategy, ...(['BPS', 'BCS', 'IC'] as const).filter(s => s !== preferredStrategy)]
+        : ['BPS', 'BCS', 'IC'];
+
+      const candidates: BestSetup[] = [];
+      const failures: { strategy: string; reasons: string[] }[] = [];
+
+      for (const strat of strategies) {
+        const result = runChecklist(symbol, strat, metrics, chainData, price, rules);
+
+        if (!result.qualified || !result.bestCandidate) {
+          // Hard fail — record exactly why
+          failures.push({ strategy: strat, reasons: result.failReasons.length > 0 ? result.failReasons : ['No qualifying strikes found'] });
+          continue;
+        }
+
+        const c = result.bestCandidate;
+
+        // Score based purely on quality metrics
+        let score = (c.roc || 0) * 0.45 + ((c.pop || 70) * 0.35) + (c.creditRatio * 100 * 0.2);
+        if (strat === 'IC') score += 12;
+        if (strat === preferredStrategy) score += 20; // boost preferred direction
+
+        let grade: BestSetup['grade'] = 'C';
+        if (score > 88) grade = 'A+';
+        else if (score > 75) grade = 'A';
+        else if (score > 60) grade = 'B';
+
+        // Notes are genuine observations only — not rule violations
+        const notes: string[] = [];
+        if (c.dte < 35) notes.push(`DTE is ${c.dte} — on the shorter side, watch 21 DTE closely`);
+        if (metrics.ivRank && metrics.ivRank > 60) notes.push(`IVR ${metrics.ivRank.toFixed(0)}% is elevated — rich premium but verify no binary event`);
+        if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
+        if (notes.length === 0) notes.push('Clean setup — all rules pass');
+
+        candidates.push({ strategy: strat, grade, setup: c, score, notes, result });
+      }
+
+      setFailDetails(failures);
+
+      if (candidates.length === 0) {
+        setError(`No qualifying setups found for ${symbol} with current rules. See details below.`);
+      } else {
+        setBest(candidates.sort((a, b) => b.score - a.score)[0]);
+      }
+    } catch (e: any) {
+      setError(e.message || "Failed to analyze chain");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
+  const gradeBorder = (g: string) => g === 'A+' || g === 'A' ? 'border-emerald-500 bg-emerald-950/40' : 'border-yellow-500 bg-yellow-950/20';
+
+  return (
+    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
+        <div className="flex justify-between mb-2">
+          <div>
+            <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity Finder — {symbol}</h2>
+            {preferredStrategy && <p className={`text-[10px] ${th.textFaint} mt-0.5`}>Preferred direction: <span className="text-blue-400 font-bold">{preferredStrategy}</span> · Adjust rules in Screening Rules modal to relax filters</p>}
+          </div>
+          <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white">✕</button>
+        </div>
+
+        <p className={`text-[9px] ${th.textFaint} mb-4 tracking-wider`}>
+          Uses your current screening rules as hard gates. To find more results, open Screening Rules and relax parameters.
+        </p>
+
+        <button
+          onClick={findBest}
+          disabled={loading}
+          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors"
+        >
+          {loading ? "SCANNING OPTIONS CHAIN..." : "FIND BEST SETUP FOR THIS STOCK"}
+        </button>
+
+        {error && (
+          <div className="mt-4 p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm">{error}</div>
+        )}
+
+        {/* Fail details — shown when no candidate found */}
+        {!best && failDetails.length > 0 && (
+          <div className={`mt-4 border ${th.border} rounded-xl p-4 space-y-2`}>
+            <p className={`text-[10px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>Why each strategy failed</p>
+            {failDetails.map(f => (
+              <div key={f.strategy} className="flex items-start gap-3">
+                <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${f.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : f.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{f.strategy}</span>
+                <p className="text-[10px] text-red-400">{f.reasons.join(' · ')}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {best && (
+          <div className="mt-6 space-y-4">
+            <div className={`p-5 rounded-2xl border ${gradeBorder(best.grade)}`}>
+
+              {/* Grade + Strategy + Credit */}
+              <div className="flex justify-between items-start mb-4">
+                <div className="flex items-baseline gap-3">
+                  <span className={`text-5xl font-black ${gradeColor(best.grade)}`}>{best.grade}</span>
+                  <span className={`text-2xl font-semibold ${th.text}`}>{best.strategy}</span>
+                </div>
+                <div className="text-right">
+                  <div className="text-3xl font-bold text-emerald-400">${(best.setup.totalCredit ?? best.setup.credit).toFixed(2)}</div>
+                  <div className="text-sm text-slate-400">{best.setup.roc.toFixed(0)}% ROC · {best.setup.pop?.toFixed(0)}% POP</div>
+                </div>
+              </div>
+
+              {/* Key trade details */}
+              <div className={`grid grid-cols-2 gap-3 p-3 rounded-lg ${th.card} border ${th.borderLight} mb-4`}>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiration</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{best.setup.expiration} <span className="text-yellow-400">({best.setup.dte}d)</span></p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{best.setup.shortStrike} / {best.setup.longStrike} <span className={`${th.textFaint}`}>(${best.setup.spreadWidth} wide)</span></p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Short Delta</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{best.setup.shortDelta.toFixed(2)}</p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit Ratio</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{(best.setup.creditRatio * 100).toFixed(0)}% of width</p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>50% Close Target</p>
+                  <p className="text-sm font-bold text-emerald-400">${((best.setup.totalCredit ?? best.setup.credit) * 0.5).toFixed(2)}</p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI (Short/Long)</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{best.setup.shortOI} / {best.setup.longOI}</p>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div className={`pt-3 border-t ${th.border}`}>
+                <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Notes</p>
+                <ul className="space-y-1">
+                  {best.notes.map((n, i) => <li key={i} className={`text-xs ${th.textMuted}`}>· {n}</li>)}
+                </ul>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                alert(`${best.strategy} ${symbol}\nExp: ${best.setup.expiration} (${best.setup.dte}d)\nStrikes: ${best.setup.shortStrike}/${best.setup.longStrike}\nCredit: $${(best.setup.totalCredit ?? best.setup.credit).toFixed(2)}\n50% target: $${((best.setup.totalCredit ?? best.setup.credit) * 0.5).toFixed(2)}`);
+                onClose();
+              }}
+              className="w-full py-4 bg-white text-black font-bold rounded-2xl hover:bg-slate-100 text-base"
+            >
+              TRADE THIS SETUP IN TASTYTRADE →
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ── Main App ───────────────────────────────────────────────────────────────
@@ -1828,7 +1516,7 @@ export default function Home() {
   const [bpsTickers, setBpsTickers] = useState('');
   const [bcsTickers, setBcsTickers] = useState('');
   const [icTickers, setIcTickers] = useState('');
-  const [brokenTickers, setBrokenTickers] = useState('');   // ← NEW 4th box
+  const [brokenTickers, setBrokenTickers] = useState('');
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -1839,19 +1527,19 @@ export default function Home() {
   const [lastRunRules, setLastRunRules] = useState<RulesType | null>(null);
 
   useEffect(() => {
-    try { 
-      setBpsTickers(localStorage.getItem(LS_BPS) || ''); 
-      setBcsTickers(localStorage.getItem(LS_BCS) || ''); 
-      setIcTickers(localStorage.getItem(LS_IC) || ''); 
-      setBrokenTickers(localStorage.getItem(LS_BROKEN) || '');   // ← NEW
+    try {
+      setBpsTickers(localStorage.getItem(LS_BPS) || '');
+      setBcsTickers(localStorage.getItem(LS_BCS) || '');
+      setIcTickers(localStorage.getItem(LS_IC) || '');
+      setBrokenTickers(localStorage.getItem(LS_BROKEN) || '');
     } catch {}
   }, []);
 
   const handleBpsChange = (v: string) => { setBpsTickers(v); try { localStorage.setItem(LS_BPS, v); } catch {} };
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
-  const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };   // ← NEW
-  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); };
+  const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
+  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -1865,75 +1553,103 @@ export default function Home() {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
   };
 
-  // ── UPDATED: AUTO now only does trend detection + assignment (no full scan) ──
   const runTrendDetectionWrapper = () => {
     runTrendDetection(
-      autoTickers,
-      bpsTickers,
-      bcsTickers,
-      icTickers,
-      brokenTickers,
-      handleBpsChange,
-      handleBcsChange,
-      handleIcChange,
-      handleBrokenChange,
-      setError,
-      setStatus,
-      setLoading,
-      parseTickers,
-      setAutoTickers
+      autoTickers, bpsTickers, bcsTickers, icTickers, brokenTickers,
+      handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
+      setAutoTickers, setError, setStatus, setLoading, parseTickers
     );
   };
 
   const runScreen = async (rules: RulesType) => {
-    setError(''); setResults([]);
+    setError('');
+    setResults([]);
+
     const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
-    const bps = parseTickers(bpsTickers), bcs = parseTickers(bcsTickers), ic = parseTickers(icTickers);
-    const review = parseTickers(brokenTickers);
-    if (!autoList.length && !bps.length && !bcs.length && !ic.length && !review.length) { setError('Enter at least one ticker.'); return; }
-    if (autoOverLimit) { setError(`AUTO box limited to ${AUTO_TICKER_LIMIT} tickers.`); return; }
+    const bps = parseTickers(bpsTickers);
+    const bcs = parseTickers(bcsTickers);
+    const ic = parseTickers(icTickers);
+
+    if (!autoList.length && !bps.length && !bcs.length && !ic.length) {
+      setError('Enter at least one ticker.');
+      return;
+    }
+
     setRuntimeRules(rules);
     setLastRunRules(rules);
     setLoading(true);
+
     try {
-      setStatus('Getting access token...'); const token = await getAccessToken();
-      const allSymbols = Array.from(new Set([...autoList,...bps,...bcs,...ic,...review]));
-      setStatus('Fetching market metrics...'); const metricsArray = await getMarketMetrics(allSymbols, token);
+      setStatus('Getting access token...');
+      const token = await getAccessToken();
+
+      const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic]));
+      setStatus('Fetching market metrics...');
+      const metricsArray = await getMarketMetrics(allSymbols, token);
       const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
+
       const screenResults: ScreenResult[] = [];
-      const errResult = (symbol: string, strategy: string, msg: string, trendResult?: TrendResult): ScreenResult => ({ symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null, failReasons: [msg], trendResult, checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' } } });
+
+      const errResult = (symbol: string, strategy: string, msg: string, trendResult?: TrendResult): ScreenResult => ({
+        symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+        failReasons: [msg], trendResult,
+        checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' } }
+      });
+
+      // Scan AUTO tickers (with trend detection)
       for (let i = 0; i < autoList.length; i++) {
-        const symbol = autoList[i]; setStatus(`Fetching trend: ${symbol} (${i+1}/${autoList.length})...`);
-        let trendResult: TrendResult | undefined;
-        try { trendResult = await getTrend(symbol); } catch (e: any) { console.error(`[getTrend] ${symbol} CRASHED:`, e); }
-        if (i < autoList.length - 1) await sleep(1000);
+        const symbol = autoList[i];
         setStatus(`Scanning ${symbol} (${i+1}/${autoList.length})...`);
+        let trendResult: TrendResult | undefined;
+        try { trendResult = await getTrend(symbol); } catch (e) { console.warn(e); }
+        if (i < autoList.length - 1) await sleep(12000);
+
         const strategy = trendResult?.strategy ?? 'BCS';
-        try { const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null }; const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]); screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult)); }
-        catch (e: any) { screenResults.push(errResult(symbol, strategy, e.message, trendResult)); }
-      }
-      for (const { symbols, strategy } of [{ symbols: bps, strategy: 'BPS' as const }, { symbols: bcs, strategy: 'BCS' as const }, { symbols: ic, strategy: 'IC' as const }]) {
-        for (const symbol of symbols) {
-          setStatus(`Scanning ${symbol}...`);
-          try { const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null }; const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]); screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules)); }
-          catch (e: any) { screenResults.push(errResult(symbol, strategy, e.message)); }
+        try {
+          const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
+          const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
+          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult));
+        } catch (e: any) {
+          screenResults.push(errResult(symbol, strategy, e.message, trendResult));
         }
       }
-      // Review box — fetch trend data so sub-labels render, but strategy stays as-is from trend
-      for (const symbol of review) {
-        setStatus(`Scanning Review: ${symbol}...`);
-        let trendResult: TrendResult | undefined;
-        try { trendResult = await getTrend(symbol); } catch (e: any) { console.warn(e.message); }
-        await sleep(1000);
-        // Use trend-detected strategy if available, otherwise default to BCS for review items
-        const strategy = (trendResult && trendResult.trend !== 'unknown') ? trendResult.strategy : 'BCS';
-        try { const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null }; const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]); screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult)); }
-        catch (e: any) { screenResults.push(errResult(symbol, strategy, e.message, trendResult)); }
+
+      // Scan manual boxes
+      for (const { symbols, strategy } of [
+        { symbols: bps, strategy: 'BPS' as const },
+        { symbols: bcs, strategy: 'BCS' as const },
+        { symbols: ic, strategy: 'IC' as const }
+      ]) {
+        for (const symbol of symbols) {
+          setStatus(`Scanning ${symbol}...`);
+          try {
+            const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
+            const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
+            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules));
+          } catch (e: any) {
+            screenResults.push(errResult(symbol, strategy, e.message));
+          }
+        }
       }
-      screenResults.sort((a, b) => { if (a.qualified && !b.qualified) return -1; if (!a.qualified && b.qualified) return 1; return (b.ivr ?? 0) - (a.ivr ?? 0); });
-      setResults(screenResults);
-    } catch (e: any) { setError(e.message); }
-    setStatus(''); setLoading(false);
+
+      // Remove duplicates and sort
+      const uniqueResults = screenResults.filter((r, index, self) =>
+        index === self.findIndex(t => t.symbol === r.symbol && t.strategy === r.strategy)
+      );
+
+      uniqueResults.sort((a, b) => {
+        if (a.qualified && !b.qualified) return -1;
+        if (!a.qualified && b.qualified) return 1;
+        return (b.ivr ?? 0) - (a.ivr ?? 0);
+      });
+
+      setResults(uniqueResults);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setStatus('');
+      setLoading(false);
+    }
   };
 
   const qualified = results.filter(r => r.qualified);
@@ -1949,9 +1665,9 @@ export default function Home() {
         </div>
         <img src="/header-bg.png" alt="" className="flex-1 mx-6 hidden sm:block" style={{height: '57px', marginTop: '-1rem', marginBottom: '-1rem', objectFit: 'cover'}} />
         <div className="flex items-center gap-3">
-        <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
-        <ThemeToggle theme={theme} setTheme={setTheme} />
-      </div>
+          <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
+          <ThemeToggle theme={theme} setTheme={setTheme} />
+        </div>
       </div>
 
       <div className="flex h-[calc(100vh-57px)]">
@@ -1988,7 +1704,7 @@ export default function Home() {
                   } catch (err) { console.error(err); }
                   setAutoScanning(false);
                 }} />
-                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; setTimeout(() => autoFileRef.current?.click(), 100); }} disabled={loading || autoScanning}
+                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; autoFileRef.current?.click(); }} disabled={loading || autoScanning}
                   className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>
                   {autoScanning ? '⟳' : '↑ img'}
                 </button>
@@ -1996,10 +1712,10 @@ export default function Home() {
               </div>
             </div>
             <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
-              className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-[10px] ${th.text} h-12 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
+              className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
             {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
             <div className="flex items-center justify-between mt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 2}s analysis</p>
+              <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 12}s analysis</p>
               <div className="flex items-center gap-1">
                 {autoTickerList.length > 0 && (
                   <button
@@ -2019,34 +1735,26 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            {/* Status line — shows errors and progress during trend detection */}
-            {status && (
-              <p className={`text-[9px] mt-1 leading-relaxed break-all ${status.startsWith('⚠') ? 'text-red-400' : status.startsWith('✅') ? 'text-emerald-400' : 'text-purple-300'}`}>
-                {status}
-              </p>
-            )}
           </div>
 
-          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} broken={brokenTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
 
           <div className={`border-t ${th.border} pt-3 space-y-4`}>
             <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
             <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
-            
-            {/* ← NEW 4th box */}
-            <StrategyBox 
-              label="Review" 
-              badge="REVIEW" 
-              badgeColor="bg-amber-500/15 text-amber-500 border-amber-500" 
-              borderFocus="focus:border-amber-500" 
-              value={brokenTickers} 
-              onChange={handleBrokenChange} 
-              strategy="broken" 
-              disabled={loading} 
-              onLoadPrompt={showLoadPrompt} 
-              th={th} 
+            <StrategyBox
+              label="Broken (Review)"
+              badge="REVIEW"
+              badgeColor="bg-amber-500/15 text-amber-500 border-amber-500"
+              borderFocus="focus:border-amber-500"
+              value={brokenTickers}
+              onChange={handleBrokenChange}
+              strategy="broken"
+              disabled={loading}
+              onLoadPrompt={showLoadPrompt}
+              th={th}
             />
           </div>
 
@@ -2062,9 +1770,22 @@ export default function Home() {
             <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>LAST RULES USED</p>
             {lastRunRules === null
               ? <p className={`${th.textFaint} italic`}>No screen run yet</p>
-              : [['IVR',`≥ ${lastRunRules.IVR_MIN}%`],['DTE',`${lastRunRules.DTE_MIN}–${lastRunRules.DTE_MAX} days`],['BPS/BCS delta',`${lastRunRules.SPREAD_DELTA_MIN}–${lastRunRules.SPREAD_DELTA_MAX}`],['IC delta',`${lastRunRules.IC_DELTA_MIN}–${lastRunRules.IC_DELTA_MAX}`],['Credit ratio',`≥ ${(lastRunRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],['OI per leg',`≥ ${lastRunRules.OI_MIN}`],['Bid-Ask',`≤ $${lastRunRules.BID_ASK_MAX}`],['Max width',`$${lastRunRules.MAX_SPREAD_WIDTH} (opt)`],['Min ROC spread',`${lastRunRules.ROC_MIN_SPREAD}%`],['Min ROC IC',`${lastRunRules.ROC_MIN_IC}%`]].map(([k,v]) => (
-                <div key={k} className="flex justify-between"><span className={th.textFaint}>{k}</span><span className={`${th.textMuted} font-medium`}>{v}</span></div>
-              ))
+              : [
+                  ['IVR', `≥ ${lastRunRules.IVR_MIN}%`],
+                  ['DTE', `${lastRunRules.DTE_MIN}–${lastRunRules.DTE_MAX} days`],
+                  ['Earnings buffer', `${lastRunRules.DTE_MAX + 5}d (auto)`],
+                  ['BPS/BCS delta', `${lastRunRules.SPREAD_DELTA_MIN}–${lastRunRules.SPREAD_DELTA_MAX}`],
+                  ['IC delta', `${lastRunRules.IC_DELTA_MIN}–${lastRunRules.IC_DELTA_MAX}`],
+                  ['Credit ratio', `≥ ${(lastRunRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
+                  ['Min credit $', `≥ $${lastRunRules.CREDIT_MIN_ABS}`],
+                  ['OI per leg', `≥ ${lastRunRules.OI_MIN}`],
+                  ['Bid-Ask', `≤ $${lastRunRules.BID_ASK_MAX}`],
+                  ['Max width', `$${lastRunRules.MAX_SPREAD_WIDTH} (opt)`],
+                  ['Min ROC spread', `${lastRunRules.ROC_MIN_SPREAD}%`],
+                  ['Min ROC IC', `${lastRunRules.ROC_MIN_IC}%`],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex justify-between"><span className={th.textFaint}>{k}</span><span className={`${th.textMuted} font-medium`}>{v}</span></div>
+                ))
             }
           </div>
         </div>
@@ -2087,7 +1808,6 @@ export default function Home() {
                   <span className={th.textFaint}>{disqualified.length} DISQUALIFIED</span>
                   <span className={th.textFaint}>{results.length} SCANNED</span>
                 </div>
-                {/* Original CSV button replaced with div below */}
                 <div className="flex items-center gap-2">
                   {results.some(r => !r.qualified && r.earningsDate && daysUntil(r.earningsDate) >= 0 && r.failReasons.some(f => f.includes('Earnings'))) && (
                     <button onClick={() => {
@@ -2103,7 +1823,7 @@ export default function Home() {
                       try { localStorage.setItem(LS_CAL, JSON.stringify(stored)); } catch {}
                     }}
                     className={`text-[10px] px-3 py-1.5 border border-blue-700 rounded-lg text-blue-400 hover:border-blue-500 hover:text-blue-300 transition-colors tracking-wider`}>
-                      📅 Schedule All
+                      📅 Schedule All Earnings Follow-ups
                     </button>
                   )}
                   <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
@@ -2111,9 +1831,18 @@ export default function Home() {
               </div>
               <DTEAlertBanner results={results} />
               <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={runScreen} />
-              <AIAnalysisPanel results={results} rules={runtimeRules} th={th} />
-              {qualified.length > 0 && <div><p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p><div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} />)}</div></div>}
-              {disqualified.length > 0 && <div><p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p><div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} />)}</div></div>}
+              {qualified.length > 0 && (
+                <div>
+                  <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
+                  <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div>
+                </div>
+              )}
+              {disqualified.length > 0 && (
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
+                  <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div>
+                </div>
+              )}
             </div>
           )}
         </div>
