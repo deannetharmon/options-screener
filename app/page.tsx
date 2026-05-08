@@ -1603,11 +1603,14 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, l
   hint?: string;
 }) {
   return (
-    <div>
-      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-0.5 uppercase font-medium`}>
+    <div className="flex flex-col">
+      <p className={`text-[9px] ${th.textFaint} tracking-wider uppercase font-medium leading-tight`}>
         {label ?? RULE_LABELS[ruleKey]}
       </p>
-      {hint && <p className={`text-[8px] ${th.textFaint} opacity-60 mb-1`}>{hint}</p>}
+      {/* Always reserve hint height — empty string keeps layout stable */}
+      <p className={`text-[8px] ${th.textFaint} opacity-60 mb-1 leading-tight min-h-[12px]`}>
+        {hint ?? ''}
+      </p>
       <input
         type="text"
         inputMode="decimal"
