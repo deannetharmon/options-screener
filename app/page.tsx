@@ -350,14 +350,22 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
   // Flag 2: Broken trend — the 6-month high was set early AND the stock dropped hard
   // from it AND has NOT substantially recovered.
-  // Key fix: measure drop to the *lowest point*, not to current price.
-  // A stock that crashed 35% then recovered back to within 12% of its high is NOT broken.
+  // Spike filter: the high must be sustained for at least 3 bars — a single-day spike
+  // (like ALLE's Feb event) shouldn't define the 6-month high for drawdown purposes.
   const allTimeHigh6m = Math.max(...highs);
   const allTimeHighIdx = highs.indexOf(allTimeHigh6m);
   const highInFirstTwoThirds = allTimeHighIdx < (n * 2) / 3;
-  const lowestAfterHigh = Math.min(...lows.slice(allTimeHighIdx));  // worst point after the peak
-  const maxDrawdown = allTimeHigh6m > 0 ? (allTimeHigh6m - lowestAfterHigh) / allTimeHigh6m : 0;
-  const currentDropFromHigh = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
+  // Check if the high was a transient spike: look at the 3 bars around it
+  const spikeWindow = highs.slice(Math.max(0, allTimeHighIdx - 1), Math.min(n, allTimeHighIdx + 2));
+  const avgAroundHigh = spikeWindow.reduce((a, b) => a + b, 0) / spikeWindow.length;
+  const isTransientSpike = allTimeHigh6m > avgAroundHigh * 1.08; // high is 8%+ above its neighbors
+  // Use the sustained high (avg of top 5 highs) when the absolute high is a spike
+  const sustainedHigh = isTransientSpike
+    ? [...highs].sort((a, b) => b - a).slice(1, 6).reduce((a, b) => a + b, 0) / 5
+    : allTimeHigh6m;
+  const lowestAfterHigh = Math.min(...lows.slice(allTimeHighIdx));
+  const maxDrawdown = sustainedHigh > 0 ? (sustainedHigh - lowestAfterHigh) / sustainedHigh : 0;
+  const currentDropFromHigh = sustainedHigh > 0 ? (sustainedHigh - currentPrice) / sustainedHigh : 0;
   // Trigger only if: high was early AND drawdown was severe AND stock hasn't recovered much
   const brokenTrendFlag = highInFirstTwoThirds && maxDrawdown > 0.28 && currentDropFromHigh > 0.15;
 
@@ -385,7 +393,16 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   if (brokenTrendFlag)    overrideReasons.push(`Dropped ${(maxDrawdown * 100).toFixed(0)}% from 6-month high, still ${(currentDropFromHigh * 100).toFixed(0)}% below peak`);
   if (freshCrossoverFlag) overrideReasons.push('MA20/MA50 crossed recently — signal unreliable');
   const overrideReason = overrideReasons.join(' · ');
-  const hasOverride = recentReversalFlag || brokenTrendFlag || freshCrossoverFlag;
+
+  // ── Confirmed downtrend escape hatch ─────────────────────────────────────
+  // If brokenTrendFlag is the ONLY flag firing, but the stock is still near its 6-month
+  // low (hasn't bounced) and MA20 < MA50 (confirmed downtrend direction), it's not
+  // "broken" — it's just a big downtrend. Route to BCS instead of Broken.
+  // This fixes ACN, APTV: clean sustained downtrends that never had a V-recovery.
+  const onlyBrokenFlag = brokenTrendFlag && !recentReversalFlag && !freshCrossoverFlag;
+  const confirmedDowntrend = maDiff < 0 && currentPrice < ma50 && priceAboveLow < 0.20;
+  const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag)
+    && !(onlyBrokenFlag && confirmedDowntrend);
 
   // ── Trend classification ──────────────────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
