@@ -422,18 +422,19 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const overrideReason = overrideReasons.join(' · ');
 
   // ── Confirmed downtrend escape hatch ─────────────────────────────────────
-  // Allows stocks with brokenTrendFlag or freshCrossoverFlag to route BCS instead of Review
-  // when the downtrend is clearly confirmed by MA alignment AND the bounce is modest.
+  // Allows brokenTrendFlag/freshCrossoverFlag stocks to route BCS instead of Review
+  // when the downtrend is structurally confirmed.
   // Guards:
   //   1. maDiff < -0.02 — MA20 meaningfully below MA50
-  //   2. currentPrice < ma50 AND currentPrice < ma20 — price below BOTH MAs (not bouncing)
+  //   2. currentPrice < ma50 OR price is >2% above MA50 (not consolidating AT the MA)
+  //      — CRM at $186.34 vs MA50 $186.63 = 0.15% away → consolidating → Review
+  //      — ADP at $214 vs MA50 $206.94 = 3.4% above → directional bounce → escape ok
   //   3. priceAboveLow < 0.35 — hasn't bounced too far off the low
   //   4. currentDropFromHigh > 0.20 — still meaningfully below the high
-  // CRM fails guard 2: price ~= MA50 and above MA20 → bouncing, stay Review
-  // ACN passes all guards: price < MA20 < MA50, only 3.8% off low → confirmed downtrend
+  const priceVsMa50Pct = Math.abs((currentPrice - ma50) / ma50);
+  const notConsolidatingAtMa50 = currentPrice < ma50 || priceVsMa50Pct > 0.02;
   const confirmedDowntrend = maDiff < -0.02
-    && currentPrice < ma50
-    && currentPrice < ma20
+    && notConsolidatingAtMa50
     && priceAboveLow < 0.35
     && currentDropFromHigh > 0.20;
   const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentPeakFlag && !earningsSpikeFlag
@@ -449,6 +450,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag,
     confirmedDowntrend, downwardFlags, hasOverride,
     priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
+    priceVsMa50Pct: (priceVsMa50Pct * 100).toFixed(2) + '%',
     maDiff: (maDiff * 100).toFixed(2) + '%',
     currentPrice: currentPrice.toFixed(2), ma50: ma50.toFixed(2),
   });
