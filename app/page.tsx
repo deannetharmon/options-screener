@@ -431,16 +431,18 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   //   3. priceAboveLow < 0.35 — hasn't bounced too far off the low
   //   4. currentDropFromHigh > 0.20 — still meaningfully below the high
   const priceVsMa50Pct = Math.abs((currentPrice - ma50) / ma50);
-  // Consolidating AT the MA50 means price is hugging it closely from either side —
-  // this indicates choppy indecision, not a confirmed directional trend.
-  // CRM: price $186.34 vs MA50 $186.63 = 0.15% → consolidating → block escape to BCS
-  // ADP: price $214.09 vs MA50 $206.94 = 3.46% → not consolidating → allow escape
   const consolidatingAtMa = priceVsMa50Pct < 0.025;
   const notConsolidatingAtMa50 = !consolidatingAtMa;
+  // Short-term momentum: if MA10 > MA20, price is trending UP recently even if below MA50.
+  // PLTR: bouncing from lows with rising short-term MA → recovering, not downtrending → Review
+  // ADP/ACN: MA10 < MA20, price still grinding down → confirmed downtrend → BCS
+  const ma10 = closes.slice(-10).reduce((a, b) => a + b, 0) / 10;
+  const shortTermMomentumUp = ma10 > ma20;
   const confirmedDowntrend = maDiff < -0.015
     && notConsolidatingAtMa50
     && priceAboveLow < 0.35
-    && currentDropFromHigh > 0.12;
+    && currentDropFromHigh > 0.12
+    && !shortTermMomentumUp;           // if price is rising short-term, it's recovering not downtrending
   const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentPeakFlag && !earningsSpikeFlag
     && (!recentReversalFlag || (maDiff < -0.03 && priceAboveLow < 0.08));
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag || earningsSpikeFlag)
