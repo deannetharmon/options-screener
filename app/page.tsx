@@ -1438,6 +1438,7 @@ export default function Home() {
             <p className={`text-[9px] mt-1 ${process.env.NEXT_PUBLIC_FINNHUB_API_KEY ? 'text-emerald-600' : 'text-red-500 font-bold'}`}>
               Finnhub key: {process.env.NEXT_PUBLIC_FINNHUB_API_KEY ? `✓ set (${process.env.NEXT_PUBLIC_FINNHUB_API_KEY.slice(0,4)}…)` : '✗ MISSING — set NEXT_PUBLIC_FINNHUB_API_KEY in Vercel'}
             </p>
+          </div>
 
           <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
 
