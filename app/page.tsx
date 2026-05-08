@@ -259,36 +259,24 @@ function mergeTickers(existing: string, newTickers: string[]): string {
 }
 function tickersToString(tickers: string[]): string { return tickers.join(', '); }
 
-// ── Finnhub API (replaces Polygon for chart data — 60 calls/min free tier) ──
+// ── Chart data via /api/chart proxy (Yahoo Finance, no API key required) ──
 async function getTrend(symbol: string): Promise<TrendResult> {
-  const apiKey = process.env.NEXT_PUBLIC_FINNHUB_API_KEY;
-  if (!apiKey) throw new Error('NEXT_PUBLIC_FINNHUB_API_KEY not set');
-
-  const to   = Math.floor(Date.now() / 1000);
-  const from = Math.floor((Date.now() - 180 * 24 * 60 * 60 * 1000) / 1000); // 6 months in unix seconds
-
-  const res = await fetch(
-    `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=D&from=${from}&to=${to}&token=${apiKey}`
-  );
-  if (!res.ok) throw new Error(`Finnhub fetch failed (${res.status})`);
-  const data = await res.json();
-
-  // Finnhub returns { s: 'ok'|'no_data', t: [], o: [], h: [], l: [], c: [], v: [] }
-  if (data.s !== 'ok' || !data.c || data.c.length < 50) {
-    return {
-      trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
-      reason: data.s === 'no_data' ? 'No data from Finnhub' : 'Not enough price history',
-      closes30: [], trendStrength: 'unknown', rangePercent: 0,
-      hasLongWicks: false, isCoiling: false, maDivergence: 0,
-      recentReversalFlag: false, brokenTrendFlag: false, freshCrossoverFlag: false,
-      overrideReason: '',
-    };
+  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? `Chart fetch failed (${res.status})`);
   }
+  const data = await res.json();
+  const bars: { o: number; h: number; l: number; c: number }[] = data.bars ?? [];
 
-  // Map Finnhub parallel arrays → bar objects identical to what the rest of the function expects
-  const bars: { o: number; h: number; l: number; c: number }[] = data.c.map((_: number, i: number) => ({
-    o: data.o[i], h: data.h[i], l: data.l[i], c: data.c[i],
-  }));
+  const EMPTY: TrendResult = {
+    trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0,
+    reason: 'Not enough price history', closes30: [], trendStrength: 'unknown',
+    rangePercent: 0, hasLongWicks: false, isCoiling: false, maDivergence: 0,
+    recentReversalFlag: false, brokenTrendFlag: false, freshCrossoverFlag: false,
+    overrideReason: '',
+  };
+  if (bars.length < 50) return EMPTY;
 
   const closes = bars.map(b => b.c);
   const highs  = bars.map(b => b.h);
@@ -1434,10 +1422,6 @@ export default function Home() {
                 {status}
               </p>
             )}
-            {/* API key diagnostics — always visible so misconfiguration is obvious */}
-            <p className={`text-[9px] mt-1 ${process.env.NEXT_PUBLIC_FINNHUB_API_KEY ? 'text-emerald-600' : 'text-red-500 font-bold'}`}>
-              Finnhub key: {process.env.NEXT_PUBLIC_FINNHUB_API_KEY ? `✓ set (${process.env.NEXT_PUBLIC_FINNHUB_API_KEY.slice(0,4)}…)` : '✗ MISSING — set NEXT_PUBLIC_FINNHUB_API_KEY in Vercel'}
-            </p>
           </div>
 
           <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
