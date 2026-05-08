@@ -1198,8 +1198,12 @@ async function runTrendDetection(
       try {
         trendResult = await getTrend(symbol);
       } catch (e: any) {
-        console.warn(e.message);
+        // Surface the actual error so misconfiguration (missing API key, etc.) is visible
+        const msg = e?.message ?? String(e);
+        setStatus(`⚠ ${symbol}: ${msg}`);
+        console.warn(`getTrend(${symbol}):`, msg);
         distributions.broken.push(symbol);
+        await sleep(1500); // pause so the error is readable before moving to next ticker
         continue;
       }
       if (i < autoList.length - 1) await sleep(1000);
@@ -1424,7 +1428,16 @@ export default function Home() {
                 </button>
               </div>
             </div>
-          </div>
+            {/* Status line — shows errors and progress during trend detection */}
+            {status && (
+              <p className={`text-[9px] mt-1 leading-relaxed break-all ${status.startsWith('⚠') ? 'text-red-400' : status.startsWith('✅') ? 'text-emerald-400' : 'text-purple-300'}`}>
+                {status}
+              </p>
+            )}
+            {/* API key diagnostics — always visible so misconfiguration is obvious */}
+            <p className={`text-[9px] mt-1 ${process.env.NEXT_PUBLIC_FINNHUB_API_KEY ? 'text-emerald-600' : 'text-red-500 font-bold'}`}>
+              Finnhub key: {process.env.NEXT_PUBLIC_FINNHUB_API_KEY ? `✓ set (${process.env.NEXT_PUBLIC_FINNHUB_API_KEY.slice(0,4)}…)` : '✗ MISSING — set NEXT_PUBLIC_FINNHUB_API_KEY in Vercel'}
+            </p>
 
           <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
 
