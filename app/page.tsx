@@ -358,7 +358,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // Check if the high was a transient spike: look at the 3 bars around it
   const spikeWindow = highs.slice(Math.max(0, allTimeHighIdx - 1), Math.min(n, allTimeHighIdx + 2));
   const avgAroundHigh = spikeWindow.reduce((a, b) => a + b, 0) / spikeWindow.length;
-  const isTransientSpike = allTimeHigh6m > avgAroundHigh * 1.08; // high is 8%+ above its neighbors
+  const isTransientSpike = allTimeHigh6m > avgAroundHigh * 1.06; // high is 6%+ above its neighbors
   // Use the sustained high (avg of top 5 highs) when the absolute high is a spike
   const sustainedHigh = isTransientSpike
     ? [...highs].sort((a, b) => b - a).slice(1, 6).reduce((a, b) => a + b, 0) / 5
@@ -399,21 +399,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentReversalFlag;
   const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag)
     && !(downwardFlags && confirmedDowntrend);
-
-  // ── Diagnostic logging — open browser console to read ────────────────────
-  console.log(`[getTrend] ${symbol}`, {
-    currentPrice: currentPrice.toFixed(2),
-    ma20: ma20.toFixed(2), ma50: ma50.toFixed(2),
-    maDiff: (maDiff * 100).toFixed(2) + '%',
-    priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
-    maxDrawdown: (maxDrawdown * 100).toFixed(1) + '%',
-    currentDropFromHigh: (currentDropFromHigh * 100).toFixed(1) + '%',
-    highInFirstTwoThirds, isTransientSpike,
-    sustainedHigh: sustainedHigh.toFixed(2),
-    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag,
-    confirmedDowntrend, downwardFlags, hasOverride,
-    verdict: hasOverride ? 'BROKEN' : maDiff < 0 ? 'BCS' : maDiff > 0 ? 'BPS' : 'IC',
-  });
 
   // ── Trend classification ──────────────────────────────────────────────────
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
@@ -915,7 +900,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
         </div>
       )}
       <textarea value={value} onChange={e => onChange(e.target.value)} placeholder="Tickers..."
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed`} />
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-10 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed`} />
     </div>
   );
 }
@@ -1027,6 +1012,32 @@ function TrendPanel({ t, strategy, th }: {
   );
 }
 
+// ── Review sub-label — explains WHY a ticker is in Review ─────────────────
+function getReviewSubLabel(t: TrendResult | undefined): {
+  badge: string; color: string; action: string;
+} | null {
+  if (!t) return null;
+  const { recentReversalFlag, brokenTrendFlag, freshCrossoverFlag } = t;
+  if (!recentReversalFlag && !brokenTrendFlag && !freshCrossoverFlag) return null;
+
+  const count = [recentReversalFlag, brokenTrendFlag, freshCrossoverFlag].filter(Boolean).length;
+
+  if (count > 1) {
+    // Multiple flags — genuinely unclear
+    return { badge: 'UNCLEAR', color: 'bg-red-500/15 text-red-400 border-red-500', action: 'Multiple signals — manual chart check required' };
+  }
+  if (recentReversalFlag) {
+    return { badge: 'NEW LOW', color: 'bg-amber-500/15 text-amber-400 border-amber-500', action: 'Just hit 6-month low — re-screen in 1–2 weeks' };
+  }
+  if (brokenTrendFlag) {
+    return { badge: 'CRASHED', color: 'bg-orange-500/15 text-orange-400 border-orange-500', action: 'Dropped hard from peak — wait for direction confirmation' };
+  }
+  if (freshCrossoverFlag) {
+    return { badge: 'SIGNAL', color: 'bg-purple-500/15 text-purple-400 border-purple-500', action: 'MA crossover just fired — re-screen in 3–5 days' };
+  }
+  return null;
+}
+
 // ── Result Card ────────────────────────────────────────────────────────────
 function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme] }) {
   const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>·${w}·</span>;
@@ -1043,6 +1054,7 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
   const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
   const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings')) && result.earningsDate && daysUntil(result.earningsDate) >= 0;
   const cardBorder = result.qualified ? (isApproaching ? 'border-yellow-500/50' : th.border) : th.borderLight;
+  const reviewSubLabel = t?.trend === 'unknown' ? getReviewSubLabel(t) : null;
   return (
     <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg overflow-hidden cursor-pointer transition-all hover:shadow-md`} onClick={() => setExpanded(!expanded)}>
 
@@ -1053,6 +1065,12 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
           {result.price && <p className={`text-[10px] ${th.textFaint}`}>${result.price.toFixed(2)}</p>}
         </div>
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
+        {/* Review sub-label — only shown for tickers routed to the Review box */}
+        {reviewSubLabel && (
+          <span className={`text-[9px] px-1.5 py-0.5 border rounded-md shrink-0 font-bold ${reviewSubLabel.color}`}>
+            {reviewSubLabel.badge}
+          </span>
+        )}
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
         {c && <>
           <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
@@ -1067,7 +1085,11 @@ function ResultCard({ result, th }: { result: ScreenResult; th: typeof THEMES[Th
         </>}
         {!result.qualified && result.failReasons.length > 0 && (
           <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
-            <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
+            {/* Show action hint for review tickers instead of raw fail reasons */}
+            {reviewSubLabel
+              ? <span className={`text-[9px] font-medium ${reviewSubLabel.color.split(' ').find(c => c.startsWith('text-')) ?? 'text-slate-400'}`}>{reviewSubLabel.action}</span>
+              : <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
+            }
             {hasEarningsBlock && result.earningsDate && <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>}
           </div>
         )}
@@ -1435,7 +1457,7 @@ export default function Home() {
               </div>
             </div>
             <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
-              className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
+              className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-10 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
             {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
             <div className="flex items-center justify-between mt-1">
               <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 2}s analysis</p>
@@ -1476,7 +1498,7 @@ export default function Home() {
             
             {/* ← NEW 4th box */}
             <StrategyBox 
-              label="Broken (Review)" 
+              label="Review" 
               badge="REVIEW" 
               badgeColor="bg-amber-500/15 text-amber-500 border-amber-500" 
               borderFocus="focus:border-amber-500" 
