@@ -1080,18 +1080,23 @@ function ResultCard({ result, th, rules }: {
 }
 
 // ── Rules Modal Subcomponents ──────────────────────────────────────────────
-function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }: {
+function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, label, hint }: {
   ruleKey: keyof RulesType;
   rawValues: Record<string, string>;
   editedRules: RulesType;
   onRawChange: (key: string, raw: string) => void;
   onBlur: (key: keyof RulesType, raw: string) => void;
   th: typeof THEMES[Theme];
+  label?: string;
+  hint?: string;
 }) {
   return (
-    <div>
-      <p className={`text-[9px] ${th.textFaint} tracking-wider mb-1 uppercase`}>
-        {RULE_LABELS[ruleKey]}{ruleKey === 'MAX_SPREAD_WIDTH' && <span className={`${th.textFaint} ml-1 normal-case opacity-60`}>(optimizer cap)</span>}
+    <div className="flex flex-col">
+      <p className={`text-[9px] ${th.textFaint} tracking-wider uppercase font-medium leading-tight`}>
+        {label ?? RULE_LABELS[ruleKey]}
+      </p>
+      <p className={`text-[8px] ${th.textFaint} opacity-60 mb-1 leading-tight min-h-[12px]`}>
+        {hint ?? ''}
       </p>
       <input
         type="text"
@@ -1100,7 +1105,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
         onChange={e => onRawChange(ruleKey, e.target.value)}
         onBlur={e => onBlur(ruleKey, e.target.value)}
         onFocus={e => e.target.select()}
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-sm ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-1.5 text-xs ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
       />
     </div>
   );
@@ -1108,17 +1113,23 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 
 function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
   return (
-    <div className={`col-span-2 pt-1 pb-0.5 border-b ${th.border}`}>
+    <div className={`col-span-full pt-3 pb-1 border-b ${th.border}`}>
       <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold`}>{label}</p>
     </div>
   );
 }
 
 // ── Rules Modal ────────────────────────────────────────────────────────────
-// CHANGE 3: Added Earnings Gate section, CREDIT_MIN_ABS field, IVR cap clarification note
+const ETF_RULES: Partial<RulesType> = {
+  IVR_MIN: 15, OI_MIN: 100, BID_ASK_MAX: 0.25,
+  SPREAD_DELTA_MIN: 0.15, SPREAD_DELTA_MAX: 0.35,
+  IC_DELTA_MIN: 0.15, IC_DELTA_MAX: 0.25,
+};
+
 function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
   const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
+  const [preset, setPreset] = useState<'stock' | 'etf'>('stock');
 
   const handleChange = (key: string, raw: string) => setRawValues(prev => ({ ...prev, [key]: raw }));
   const handleBlur = (key: keyof RulesType, raw: string) => {
@@ -1126,59 +1137,93 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     if (!isNaN(val)) { const updated = { ...editedRules, [key]: val }; setEditedRules(updated); setRawValues(prev => ({ ...prev, [key]: String(val) })); }
     else setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
   };
-  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); localStorage.removeItem(LS_RULES); };
+  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); setPreset('stock'); localStorage.removeItem(LS_RULES); };
+  const handlePreset = (p: 'stock' | 'etf') => {
+    setPreset(p);
+    const base = p === 'etf' ? { ...DEFAULT_RULES, ...ETF_RULES } : { ...DEFAULT_RULES };
+    setEditedRules(base);
+    setRawValues(Object.fromEntries(Object.entries(base).map(([k, v]) => [k, String(v)])));
+  };
   const handleRun = () => { saveRulesToStorage(editedRules); onRun(editedRules); };
 
+  const ri = (key: keyof RulesType, label?: string, hint?: string) => (
+    <RuleInput ruleKey={key} rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} label={label} hint={hint} />
+  );
+
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[92vh] overflow-y-auto shadow-2xl`}>
-        <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
-        <p className={`text-[9px] ${th.textFaint} mb-3 tracking-wider leading-relaxed`}>
-          Defaults = course rules. Adjust to relax for thin markets. Reset restores course standards.
-          Earnings buffer auto = DTE Max + 5d. IVR cap applies to IC only.
-        </p>
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-auto`}>
 
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-4">
+        {/* Header */}
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border}`}>
+          <div>
+            <h2 className="text-sm font-bold tracking-widest text-red-500">SCREENING RULES</h2>
+            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Defaults = course rules. Reset restores them. Earnings buffer = DTE Max + 5d. IVR cap = IC only.</p>
+          </div>
+          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg`}>✕</button>
+        </div>
 
-          {/* ── ENTRY GATES ── eliminates stock before looking at chain */}
-          <SectionHeader label="① Entry Gates" th={th} />
-          <RuleInput ruleKey="IVR_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="IVR_IC_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="DTE_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="DTE_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+        {/* Stock / ETF toggle */}
+        <div className="px-6 pt-4 pb-2 flex gap-2">
+          {(['stock', 'etf'] as const).map(p => (
+            <button key={p} onClick={() => handlePreset(p)}
+              className={`px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest border transition-colors ${preset === p ? 'bg-blue-600 border-blue-500 text-white' : `${th.input} border ${th.inputBorder} ${th.textFaint} hover:border-blue-500`}`}>
+              {p === 'stock' ? '📈 STOCK' : '🏦 ETF / INDEX'}
+            </button>
+          ))}
+        </div>
 
-          {/* ── LIQUIDITY ── chain must be tradeable */}
-          <SectionHeader label="② Liquidity" th={th} />
-          <RuleInput ruleKey="OI_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="BID_ASK_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+        <div className="px-6 pb-4 space-y-4">
 
-          {/* ── STRIKE SELECTION ── delta targets */}
-          <SectionHeader label="③ Strike Selection (Delta)" th={th} />
-          <RuleInput ruleKey="SPREAD_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="SPREAD_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="IC_DELTA_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="IC_DELTA_MAX" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          {/* ── Row 1: IVR + DTE ── */}
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>① Volatility & Timing</p>
+            <div className="grid grid-cols-4 gap-3">
+              {ri('IVR_MIN',    'IVR Min %',       'Floor — all strategies')}
+              {ri('IVR_IC_MAX', 'IVR Max % (IC)',  'IC only — above = skip')}
+              {ri('DTE_MIN',    'DTE Min (days)')}
+              {ri('DTE_MAX',    'DTE Max (days)')}
+            </div>
+          </div>
 
-          {/* ── CREDIT QUALITY ── are we getting paid enough */}
-          <SectionHeader label="④ Credit Quality" th={th} />
-          <RuleInput ruleKey="CREDIT_RATIO_MIN" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="CREDIT_MIN_ABS" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
+          {/* ── Row 2: Delta ── */}
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>② Strike Selection — Delta</p>
+            <div className="grid grid-cols-4 gap-3">
+              {ri('SPREAD_DELTA_MIN', 'Spread δ Min', 'BPS / BCS short strike')}
+              {ri('SPREAD_DELTA_MAX', 'Spread δ Max', 'BPS / BCS short strike')}
+              {ri('IC_DELTA_MIN',     'IC δ Min',     'Both IC short strikes')}
+              {ri('IC_DELTA_MAX',     'IC δ Max',     'Both IC short strikes')}
+            </div>
+          </div>
 
-          {/* ── TRADE QUALITY ── return targets */}
-          <SectionHeader label="⑤ Return on Capital" th={th} />
-          <RuleInput ruleKey="ROC_MIN_SPREAD" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <RuleInput ruleKey="ROC_MIN_IC" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-
-          {/* ── OPTIMIZER ── width cap for spread finder */}
-          <SectionHeader label="⑥ Optimizer" th={th} />
-          <RuleInput ruleKey="MAX_SPREAD_WIDTH" rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} />
-          <div />
+          {/* ── Row 3: Liquidity + Credit + ROC ── */}
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>③ Liquidity · Credit · Return</p>
+            <div className="grid grid-cols-3 gap-3">
+              {ri('OI_MIN',           'Min Open Interest', 'Per leg')}
+              {ri('BID_ASK_MAX',      'Max Bid-Ask $',     'Per leg')}
+              {ri('MAX_SPREAD_WIDTH', 'Max Spread Width $','Optimizer cap')}
+            </div>
+            <div className="grid grid-cols-3 gap-3 mt-3">
+              {ri('CREDIT_RATIO_MIN', 'Min Credit Ratio',  '0.33 = course · 0.25 = floor · 0.20 = danger')}
+              {ri('CREDIT_MIN_ABS',   'Min Credit $',      'Absolute dollar floor')}
+              {ri('ROC_MIN_SPREAD',   'Min ROC % — Spread','BPS and BCS')}
+            </div>
+            <div className="grid grid-cols-3 gap-3 mt-3">
+              {ri('ROC_MIN_IC', 'Min ROC % — IC', 'Iron Condor')}
+              <div /><div />
+            </div>
+          </div>
 
         </div>
-        <div className="flex gap-3">
-          <button onClick={handleReset} className="flex-1 border border-yellow-600 text-yellow-500 py-2 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
-          <button onClick={onClose} className={`flex-1 border ${th.border} ${th.textMuted} py-2 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
-          <button onClick={handleRun} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
+
+        {/* Footer */}
+        <div className={`flex gap-3 px-6 py-4 border-t ${th.border}`}>
+          <button onClick={handleReset} className="border border-yellow-600 text-yellow-500 py-2 px-4 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
+          <div className="flex-1" />
+          <button onClick={onClose} className={`border ${th.border} ${th.textMuted} py-2 px-4 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
+          <button onClick={handleRun} className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-6 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
         </div>
       </div>
     </div>
