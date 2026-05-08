@@ -351,36 +351,36 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
   // ── CONTEXT OVERRIDE FLAGS ────────────────────────────────────────────────
 
-  // Flag 1: Recent reversal — 6-month low hit within last 15 bars, bounce unconfirmed.
-  // A stock bouncing off a multi-month low for <3 weeks hasn't earned a BPS label yet.
+  // Flag 1: Recent reversal — 6-month low hit within last 10 bars AND barely bounced.
+  // Threshold: bounce must be <10% off low to trigger (was 15%).
+  // Rationale: a stock 15%+ off its low has shown meaningful recovery — don't penalize it.
   const allTimeLow6m = Math.min(...lows);
   const allTimeLowIdx = lows.indexOf(allTimeLow6m);
   const barsAgoLow = n - 1 - allTimeLowIdx;
   const priceAboveLow = currentPrice > 0 ? (currentPrice - allTimeLow6m) / allTimeLow6m : 0;
-  // Triggered if: low was recent AND price hasn't bounced far enough to confirm new trend
-  const recentReversalFlag = barsAgoLow <= 15 && priceAboveLow < 0.15;
+  const recentReversalFlag = barsAgoLow <= 10 && priceAboveLow < 0.10;
 
-  // Flag 2: Broken trend — dropped >20% from 6-month high, and that high was set
-  // in the first 2/3 of the lookback period (so it's not just a recent pullback).
+  // Flag 2: Broken trend — dropped >28% from 6-month high set in first 2/3 of period.
+  // Threshold raised from 20% → 28%: a 20-25% drop during a broad market correction
+  // (like April 2025) is normal and recoverable. 28%+ indicates a stock-specific breakdown.
   const allTimeHigh6m = Math.max(...highs);
   const allTimeHighIdx = highs.indexOf(allTimeHigh6m);
   const highInFirstTwoThirds = allTimeHighIdx < (n * 2) / 3;
   const dropFromHigh = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
-  const brokenTrendFlag = highInFirstTwoThirds && dropFromHigh > 0.20;
+  const brokenTrendFlag = highInFirstTwoThirds && dropFromHigh > 0.28;
 
-  // Flag 3: Fresh MA crossover — MA20 crossed MA50 within the last 10 bars.
-  // Crossovers are lagging signals; a very recent one means the "trend" just flipped
-  // and hasn't been confirmed by sustained price action.
+  // Flag 3: Fresh MA crossover — MA20 crossed MA50 within the last 5 bars only.
+  // Window tightened from 10 → 5 bars: if the crossover happened >1 week ago and price
+  // has continued in the same direction, that's confirmation not noise.
   let freshCrossoverFlag = false;
-  const lookback = Math.min(10, n - 1);
+  const lookback = Math.min(5, n - 1);
   for (let i = 1; i <= lookback; i++) {
-    const pastSlice = closes.slice(-(20 + i), closes.length - i + 1 > 0 ? closes.length - i + 1 : undefined);
+    const pastSlice   = closes.slice(-(20 + i), closes.length - i + 1 > 0 ? closes.length - i + 1 : undefined);
     const pastSlice50 = closes.slice(-(50 + i), closes.length - i + 1 > 0 ? closes.length - i + 1 : undefined);
     if (pastSlice.length < 20 || pastSlice50.length < 50) break;
     const pastMa20 = pastSlice.slice(-20).reduce((a, b) => a + b, 0) / 20;
     const pastMa50 = pastSlice50.slice(-50).reduce((a, b) => a + b, 0) / 50;
     const pastDiff = pastMa20 - pastMa50;
-    // If sign flipped between then and now, crossover happened in this window
     if ((maDiff > 0 && pastDiff < 0) || (maDiff < 0 && pastDiff > 0)) {
       freshCrossoverFlag = true;
       break;
@@ -802,7 +802,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
 
   const handleImgClick = () => {
     if (fileRef.current) fileRef.current.value = '';
-    fileRef.current?.click();
+    setTimeout(() => fileRef.current?.click(), 50);
   };
 
   const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1389,7 +1389,7 @@ export default function Home() {
                   } catch (err) { console.error(err); }
                   setAutoScanning(false);
                 }} />
-                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; autoFileRef.current?.click(); }} disabled={loading || autoScanning}
+                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; setTimeout(() => autoFileRef.current?.click(), 50); }} disabled={loading || autoScanning}
                   className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>
                   {autoScanning ? '⟳' : '↑ img'}
                 </button>
