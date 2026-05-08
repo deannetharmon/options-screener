@@ -851,7 +851,7 @@ function AIAnalysisPanel({ results, rules, th }: { results: ScreenResult[]; rule
 
     try {
       const systemPrompt = `You are an expert options trading analyst specializing in credit spreads (BPS, BCS) and Iron Condors. You help traders evaluate screening results and make trading decisions based on the Prosper trading rules. Be concise and actionable. Here is the current screening context:\n\n${buildContext()}`;
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const res = await fetch('/api/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify({
