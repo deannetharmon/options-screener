@@ -1479,8 +1479,7 @@ export default function Home() {
       const errResult = (symbol: string, strategy: string, msg: string, trendResult?: TrendResult): ScreenResult => ({
         symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
         failReasons: [msg], trendResult,
-        checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' } }
-      });
+        checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' }, trend: { status: 'pending', value: '—', reason: '—' } }      });
 
       // Scan AUTO tickers (with trend detection)
       for (let i = 0; i < autoList.length; i++) {
