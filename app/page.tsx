@@ -401,12 +401,12 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   //   b) Gap between consecutive bars >10% (gap-up/gap-down on earnings)
   // Window is 15 bars (~3 weeks) to catch spikes that happened a few weeks ago
   // but still dominate the chart (INTC spiked Apr, still 80%+ above MA50).
-  const spikeWindow = bars.slice(-15);
-  const earningsSpikeFlag = spikeWindow.some((b, i) => {
+  const eventSpikeWindow = bars.slice(-15);
+  const earningsSpikeFlag = eventSpikeWindow.some((b, i) => {
     const intradayRange = (b.h - b.l) / (b.l || 1);
     if (intradayRange > 0.12) return true;
     if (i === 0) return false;
-    const prevClose = spikeWindow[i - 1].c;
+    const prevClose = eventSpikeWindow[i - 1].c;
     const gap = prevClose > 0 ? Math.abs(b.o - prevClose) / prevClose : 0;
     return gap > 0.10;
   });
