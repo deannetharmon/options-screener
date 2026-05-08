@@ -92,6 +92,7 @@ interface TrendResult {
   brokenTrendFlag: boolean;     // dropped >28% from 6-month high set in first 2/3 of period
   freshCrossoverFlag: boolean;  // MA20/MA50 crossed within last 5 bars — unreliable signal
   recentPeakFlag: boolean;      // 6-month high hit within last 10 bars, dropped 5%+ since
+  earningsSpikeFlag: boolean;   // single candle >15% move in last 5 bars — event-driven
   overrideReason: string;       // human-readable explanation when any flag is true
 }
 interface ScreenResult {
@@ -275,7 +276,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     reason: 'Not enough price history', closes30: [], trendStrength: 'unknown',
     rangePercent: 0, hasLongWicks: false, isCoiling: false, maDivergence: 0,
     recentReversalFlag: false, brokenTrendFlag: false, freshCrossoverFlag: false,
-    recentPeakFlag: false, overrideReason: '',
+    recentPeakFlag: false, earningsSpikeFlag: false, overrideReason: '',
   };
   if (bars.length < 50) return EMPTY;
 
@@ -395,24 +396,44 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const dropSincePeak = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
   const recentPeakFlag = barsAgoHigh <= 10 && dropSincePeak > 0.05;
 
+  // Flag 5: Earnings / event spike — a single candle in the last 5 bars moved >15% of price.
+  // Catches DDOG-style post-earnings gap-ups: the chart shows a clear trend but the most
+  // recent bar is a massive event candle, not a tradeable trend signal.
+  // These stocks need to settle before entering — route to Review regardless of MA direction.
+  const last5Bars = bars.slice(-5);
+  const earningsSpikeFlag = last5Bars.some(b => {
+    const move = (b.h - b.l) / (b.l || 1);
+    return move > 0.15;
+  });
+
   // ── Build override reason string ──────────────────────────────────────────
   const overrideReasons: string[] = [];
-  if (recentReversalFlag) overrideReasons.push(`6-month low ${barsAgoLow}d ago — bounce unconfirmed (+${(priceAboveLow * 100).toFixed(0)}% off low)`);
-  if (brokenTrendFlag)    overrideReasons.push(`Dropped ${(maxDrawdown * 100).toFixed(0)}% from 6-month high, still ${(currentDropFromHigh * 100).toFixed(0)}% below peak`);
-  if (freshCrossoverFlag) overrideReasons.push('MA20/MA50 crossed recently — signal unreliable');
-  if (recentPeakFlag)     overrideReasons.push(`6-month high ${barsAgoHigh}d ago — dropped ${(dropSincePeak * 100).toFixed(0)}% since peak, possible reversal`);
+  if (recentReversalFlag)  overrideReasons.push(`6-month low ${barsAgoLow}d ago — bounce unconfirmed (+${(priceAboveLow * 100).toFixed(0)}% off low)`);
+  if (brokenTrendFlag)     overrideReasons.push(`Dropped ${(maxDrawdown * 100).toFixed(0)}% from 6-month high, still ${(currentDropFromHigh * 100).toFixed(0)}% below peak`);
+  if (freshCrossoverFlag)  overrideReasons.push('MA20/MA50 crossed recently — signal unreliable');
+  if (recentPeakFlag)      overrideReasons.push(`6-month high ${barsAgoHigh}d ago — dropped ${(dropSincePeak * 100).toFixed(0)}% since peak, possible reversal`);
+  if (earningsSpikeFlag)   overrideReasons.push('Large single-day move (>15%) in last 5 bars — event-driven, wait for settlement');
   const overrideReason = overrideReasons.join(' · ');
 
   // ── Confirmed downtrend escape hatch ─────────────────────────────────────
-  const confirmedDowntrend = maDiff < 0 && currentPrice < ma50 && priceAboveLow < 0.20;
-  const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentReversalFlag && !recentPeakFlag;
-  const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag)
+  // Allows stocks with brokenTrendFlag or freshCrossoverFlag to route BCS instead of Review
+  // when the downtrend is clearly confirmed by MA alignment AND the bounce is modest.
+  // Guards:
+  //   1. MA20 < MA50 AND price < MA50 — structure is bearish (primary signal)
+  //   2. priceAboveLow < 0.35 — hasn't bounced too far off the low (keeps CRM/choppy out)
+  //   3. currentDropFromHigh > 0.20 — still meaningfully below the high (not recovering)
+  //   4. maDiff < -0.02 — MA separation is meaningfully negative (not just crossed)
+  const confirmedDowntrend = maDiff < -0.02 && currentPrice < ma50
+    && priceAboveLow < 0.35
+    && currentDropFromHigh > 0.20;
+  const downwardFlags = (brokenTrendFlag || freshCrossoverFlag) && !recentReversalFlag && !recentPeakFlag && !earningsSpikeFlag;
+  const hasOverride = (recentReversalFlag || brokenTrendFlag || freshCrossoverFlag || recentPeakFlag || earningsSpikeFlag)
     && !(downwardFlags && confirmedDowntrend);
 
   // ── Diagnostic logging ────────────────────────────────────────────────────
   console.log(`[getTrend] ${symbol}`, {
     verdict: hasOverride ? 'REVIEW' : maDiff < 0 ? 'BCS' : maDiff > 0 ? 'BPS' : 'IC',
-    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag,
+    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag,
     confirmedDowntrend, downwardFlags, hasOverride,
     priceAboveLow: (priceAboveLow * 100).toFixed(1) + '%',
     maDiff: (maDiff * 100).toFixed(2) + '%',
@@ -426,7 +447,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
   const base = {
     ma20, ma50, closes30, trendStrength, rangePercent, hasLongWicks, isCoiling, maDivergence,
-    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, overrideReason,
+    recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag, overrideReason,
   };
 
   // Override fires before MA classification — send to 'unknown' so routing sends to Broken
@@ -976,7 +997,7 @@ function Sparkline({ closes, strategy, width = 120, height = 32 }: {
 function TrendPanel({ t, strategy, th }: {
   t: TrendResult; strategy: string; th: typeof THEMES[Theme];
 }) {
-  const hasOverride = t.recentReversalFlag || t.brokenTrendFlag || t.freshCrossoverFlag;
+  const hasOverride = t.recentReversalFlag || t.brokenTrendFlag || t.freshCrossoverFlag || t.earningsSpikeFlag;
   const strengthColor = t.trendStrength === 'strong' ? 'text-emerald-400' : t.trendStrength === 'choppy' ? 'text-red-400' : 'text-yellow-400';
   const strengthLabel = t.trendStrength === 'strong' ? 'STRONG' : t.trendStrength === 'choppy' ? 'CHOPPY' : t.trendStrength === 'weak' ? 'WEAK' : '—';
   const rangeLabel = strategy === 'IC'
@@ -1024,6 +1045,7 @@ function TrendPanel({ t, strategy, th }: {
             {t.recentReversalFlag && <p className="text-[9px] text-amber-300 font-medium">Recent reversal — bounce unconfirmed. Verify chart before trading.</p>}
             {t.brokenTrendFlag    && <p className="text-[9px] text-amber-300 font-medium">Broken trend — dropped significantly from 6-month high. Direction unclear.</p>}
             {t.freshCrossoverFlag && <p className="text-[9px] text-amber-300 font-medium">Fresh MA crossover — signal just fired, not yet confirmed.</p>}
+            {t.earningsSpikeFlag  && <p className="text-[9px] text-amber-300 font-medium">Event spike detected — large single-day move, wait for price to settle.</p>}
             <p className={`text-[9px] ${th.textFaint} italic`}>{t.overrideReason}</p>
           </div>
         </div>
@@ -1053,13 +1075,16 @@ function getReviewSubLabel(t: TrendResult | undefined): {
   badge: string; color: string; action: string;
 } | null {
   if (!t) return null;
-  const { recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag } = t;
-  if (!recentReversalFlag && !brokenTrendFlag && !freshCrossoverFlag && !recentPeakFlag) return null;
+  const { recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag } = t;
+  if (!recentReversalFlag && !brokenTrendFlag && !freshCrossoverFlag && !recentPeakFlag && !earningsSpikeFlag) return null;
 
-  const count = [recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag].filter(Boolean).length;
+  const count = [recentReversalFlag, brokenTrendFlag, freshCrossoverFlag, recentPeakFlag, earningsSpikeFlag].filter(Boolean).length;
 
   if (count > 1) {
     return { badge: 'UNCLEAR', color: 'bg-red-500/15 text-red-400 border-red-500', action: 'Multiple signals — manual chart check required' };
+  }
+  if (earningsSpikeFlag) {
+    return { badge: 'EVENT', color: 'bg-purple-500/15 text-purple-400 border-purple-500', action: 'Large single-day move — wait 1–2 weeks for price to settle' };
   }
   if (recentPeakFlag) {
     return { badge: 'PEAKED', color: 'bg-orange-500/15 text-orange-400 border-orange-500', action: 'Just hit 6-month high and rolling over — wait for direction confirmation' };
