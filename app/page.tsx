@@ -394,7 +394,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // The MA is still bullish (trend was real) but the stock just peaked — don't enter BPS now.
   const barsAgoHigh = n - 1 - allTimeHighIdx;
   const dropSincePeak = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
-  const recentPeakFlag = barsAgoHigh <= 10 && dropSincePeak > 0.05;
+  const recentPeakFlag = barsAgoHigh <= 20 && dropSincePeak > 0.05;
 
   // Flag 5: Earnings / event spike — catches two patterns in the last 15 bars:
   //   a) Single candle high-low range >12% (intraday spike)
