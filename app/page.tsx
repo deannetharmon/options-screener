@@ -1362,14 +1362,15 @@ export default function Home() {
     setError(''); setResults([]);
     const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
     const bps = parseTickers(bpsTickers), bcs = parseTickers(bcsTickers), ic = parseTickers(icTickers);
-    if (!autoList.length && !bps.length && !bcs.length && !ic.length) { setError('Enter at least one ticker.'); return; }
+    const review = parseTickers(brokenTickers);
+    if (!autoList.length && !bps.length && !bcs.length && !ic.length && !review.length) { setError('Enter at least one ticker.'); return; }
     if (autoOverLimit) { setError(`AUTO box limited to ${AUTO_TICKER_LIMIT} tickers.`); return; }
     setRuntimeRules(rules);
     setLastRunRules(rules);
     setLoading(true);
     try {
       setStatus('Getting access token...'); const token = await getAccessToken();
-      const allSymbols = Array.from(new Set([...autoList,...bps,...bcs,...ic]));
+      const allSymbols = Array.from(new Set([...autoList,...bps,...bcs,...ic,...review]));
       setStatus('Fetching market metrics...'); const metricsArray = await getMarketMetrics(allSymbols, token);
       const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
       const screenResults: ScreenResult[] = [];
@@ -1390,6 +1391,17 @@ export default function Home() {
           try { const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null }; const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]); screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules)); }
           catch (e: any) { screenResults.push(errResult(symbol, strategy, e.message)); }
         }
+      }
+      // Review box — fetch trend data so sub-labels render, but strategy stays as-is from trend
+      for (const symbol of review) {
+        setStatus(`Scanning Review: ${symbol}...`);
+        let trendResult: TrendResult | undefined;
+        try { trendResult = await getTrend(symbol); } catch (e: any) { console.warn(e.message); }
+        await sleep(1000);
+        // Use trend-detected strategy if available, otherwise default to BCS for review items
+        const strategy = (trendResult && trendResult.trend !== 'unknown') ? trendResult.strategy : 'BCS';
+        try { const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null }; const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]); screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult)); }
+        catch (e: any) { screenResults.push(errResult(symbol, strategy, e.message, trendResult)); }
       }
       screenResults.sort((a, b) => { if (a.qualified && !b.qualified) return -1; if (!a.qualified && b.qualified) return 1; return (b.ivr ?? 0) - (a.ivr ?? 0); });
       setResults(screenResults);
