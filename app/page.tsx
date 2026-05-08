@@ -1341,7 +1341,7 @@ async function runTrendDetection(
         // Surface the actual error so misconfiguration (missing API key, etc.) is visible
         const msg = e?.message ?? String(e);
         setStatus(`⚠ ${symbol}: ${msg}`);
-        console.warn(`getTrend(${symbol}):`, msg);
+        console.error(`[getTrend CRASH] ${symbol}:`, e);
         distributions.broken.push(symbol);
         await sleep(1500); // pause so the error is readable before moving to next ticker
         continue;
