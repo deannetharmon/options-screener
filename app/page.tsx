@@ -396,18 +396,17 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const dropSincePeak = allTimeHigh6m > 0 ? (allTimeHigh6m - currentPrice) / allTimeHigh6m : 0;
   const recentPeakFlag = barsAgoHigh <= 10 && dropSincePeak > 0.05;
 
-  // Flag 5: Earnings / event spike — catches two patterns:
+  // Flag 5: Earnings / event spike — catches two patterns in the last 15 bars:
   //   a) Single candle high-low range >12% (intraday spike)
-  //   b) Gap between consecutive closes >10% (gap-up/gap-down on earnings)
-  // DDOG gapped up ~25% open-to-open on May 7 — the candle body itself may be smaller
-  // but the gap from prev close is the tell.
-  const last5Bars = bars.slice(-5);
-  const last5Closes = closes.slice(-6); // one extra for gap calculation
-  const earningsSpikeFlag = last5Bars.some((b, i) => {
+  //   b) Gap between consecutive bars >10% (gap-up/gap-down on earnings)
+  // Window is 15 bars (~3 weeks) to catch spikes that happened a few weeks ago
+  // but still dominate the chart (INTC spiked Apr, still 80%+ above MA50).
+  const spikeWindow = bars.slice(-15);
+  const earningsSpikeFlag = spikeWindow.some((b, i) => {
     const intradayRange = (b.h - b.l) / (b.l || 1);
     if (intradayRange > 0.12) return true;
-    // Gap check: compare this bar's open to previous bar's close
-    const prevClose = i > 0 ? last5Bars[i - 1].c : last5Closes[last5Closes.length - 6 + i];
+    if (i === 0) return false;
+    const prevClose = spikeWindow[i - 1].c;
     const gap = prevClose > 0 ? Math.abs(b.o - prevClose) / prevClose : 0;
     return gap > 0.10;
   });
