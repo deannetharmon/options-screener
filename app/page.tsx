@@ -1109,7 +1109,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th }:
 function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
   return (
     <div className={`col-span-2 pt-1 pb-0.5 border-b ${th.border}`}>
-      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-medium`}>{label}</p>
+      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold`}>{label}</p>
     </div>
   );
 }
@@ -1131,7 +1131,7 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[75vh] overflow-y-auto shadow-2xl`}>
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-4 w-[500px] max-h-[92vh] overflow-y-auto shadow-2xl`}>
         <h2 className="text-sm font-bold tracking-widest text-red-500 mb-1">SCREENING RULES</h2>
         <p className={`text-[9px] ${th.textFaint} mb-3 tracking-wider leading-relaxed`}>
           Defaults = course rules. Adjust to relax for thin markets. Reset restores course standards.
