@@ -900,17 +900,18 @@ function SessionsPanel({ bps, bcs, ic, review, onLoadAll, onLoadPrompt, th }: { 
 }
 
 // ── Strategy Box ──────────────────────────────────────────────────────────
-function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: {
+function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, onClear, strategy, disabled, onLoadPrompt, th }: {
   label: string;
   badge: string;
   badgeColor: string;
   borderFocus: string;
   value: string;
   onChange: (v: string) => void;
+  onClear?: () => void;
   strategy: 'BPS' | 'BCS' | 'IC' | 'broken';
   disabled?: boolean;
   onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
-  th: typeof THEMES[Theme]
+  th: typeof THEMES[Theme];
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingTickersRef = useRef<string[]>([]);
@@ -2239,7 +2240,7 @@ export default function Home() {
               value={brokenTickers}
               onChange={handleBrokenChange}
               onClear={() => handleBrokenChange('')}
-              strategy="BROKEN"
+              strategy="broken"
               disabled={loading}
               onLoadPrompt={showLoadPrompt}
               th={th}
