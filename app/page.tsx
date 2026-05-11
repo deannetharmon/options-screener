@@ -838,7 +838,7 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; onLoadAll: (bps: string, bcs: string, ic: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
+function SessionsPanel({ bps, bcs, ic, review, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; review: string; onLoadAll: (bps: string, bcs: string, ic: string, review?: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
   const [showSave, setShowSave] = useState(false);
   const [showLoad, setShowLoad] = useState(false);
@@ -855,7 +855,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
   };
   const handleLoadSelect = (name: string) => {
     const session = globalFilters[name]; if (!session) return; setShowLoad(false);
-    const allEmpty = !parseTickers(bps).length && !parseTickers(bcs).length && !parseTickers(ic).length;
+    const allEmpty = !parseTickers(bps).length && !parseTickers(bcs).length && !parseTickers(ic).length && !parseTickers(review).length;
     if (allEmpty) { onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); return; }
     onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic)); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); } });
   };
@@ -865,7 +865,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
     <div className={`border-t ${th.border} pt-3`}>
       <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
       <div className="flex gap-2">
-        <button onClick={() => onLoadAll('', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
+        <button onClick={() => onLoadAll('', '', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>↻ Reset</button>
         <div className="relative flex-1">
           <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
           {showSave && (
@@ -2190,6 +2190,7 @@ export default function Home() {
               disabled={loading}
               onLoadPrompt={showLoadPrompt}
               th={th}
+              review={review}
             />
           </div>
 
