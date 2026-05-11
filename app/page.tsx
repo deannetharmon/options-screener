@@ -1400,7 +1400,10 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const max = (values: number[]) => Math.max(...values);
   const min = (values: number[]) => Math.min(...values);
   const clamp = (value: number, low = 0, high = 100) => Math.max(low, Math.min(high, value));
-  const scaled = (value: number, fullAt: number, maxPoints: number) => Math.min(1, Math.abs(value) / fullAt) * maxPoints;
+  const signedScale = (value: number, fullAt: number, maxPoints: number) => {
+    const sign = value >= 0 ? 1 : -1;
+    return sign * Math.min(1, Math.abs(value) / fullAt) * maxPoints;
+  };
 
   const currentPrice = closes[closes.length - 1];
   const ma20 = avg(closes.slice(-20));
@@ -1411,56 +1414,120 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
   const ma20Slope = pct(ma20, ma20Prev);
   const ma50Slope = pct(ma50, ma50Prev);
+  const momentum10 = pct(currentPrice, closes[closes.length - 11]);
   const momentum20 = pct(currentPrice, closes[closes.length - 21]);
+  const momentum40 = pct(currentPrice, closes[closes.length - 41]);
   const momentum60 = pct(currentPrice, closes[closes.length - 61]);
   const momentum90 = pct(currentPrice, closes[closes.length - 91]);
 
+  const last10 = closes.slice(-10);
   const last20 = closes.slice(-20);
   const prior20 = closes.slice(-40, -20);
+  const last40 = closes.slice(-40);
+  const prior40 = closes.slice(-80, -40);
   const last60 = closes.slice(-60);
-  const range60 = pct(max(last60), min(last60));
+  const prior60 = closes.slice(-120, -60);
+  const last90 = closes.slice(-90);
+
+  const high20 = max(last20), low20 = min(last20);
+  const high40 = max(last40), low40 = min(last40);
+  const high60 = max(last60), low60 = min(last60);
+  const high90 = max(last90), low90 = min(last90);
+  const priorHigh20 = max(prior20), priorLow20 = min(prior20);
+  const priorHigh40 = max(prior40), priorLow40 = min(prior40);
+  const priorHigh60 = prior60.length ? max(prior60) : priorHigh40;
+  const priorLow60 = prior60.length ? min(prior60) : priorLow40;
+
+  const range60 = pct(high60, low60);
   const net60 = Math.abs(momentum60);
   const chopRatio = net60 < 0.01 ? 99 : range60 / net60;
+  const distFromMa20 = pct(currentPrice, ma20);
+  const distFromMa50 = pct(currentPrice, ma50);
+  const drawdownFrom60High = pct(currentPrice, high60); // negative number
+  const drawdownFrom90High = pct(currentPrice, high90); // negative number
+  const reboundFrom60Low = pct(currentPrice, low60);
+  const reboundFrom90Low = pct(currentPrice, low90);
+  const near60High = currentPrice >= high60 * 0.96;
+  const near60Low = currentPrice <= low60 * 1.04;
 
-  const higherLows = min(last20) > min(prior20) * 0.985;
-  const higherHighs = max(last20) > max(prior20) * 1.005;
-  const lowerHighs = max(last20) < max(prior20) * 1.015;
-  const lowerLows = min(last20) < min(prior20) * 0.995;
+  const higherLows = low20 > priorLow20 * 0.985;
+  const higherHighs = high20 > priorHigh20 * 1.005;
+  const lowerHighs = high20 < priorHigh20 * 1.015;
+  const lowerLows = low20 < priorLow20 * 0.995;
+  const regimeHigherLows = low40 > priorLow40 * 0.985;
+  const regimeHigherHighs = high40 > priorHigh40 * 1.005;
+  const regimeLowerHighs = high40 < priorHigh40 * 1.015;
+  const regimeLowerLows = low40 < priorLow40 * 0.995;
+  const brokePriorSupport = currentPrice < priorLow60 * 0.985 || currentPrice < priorLow40 * 0.985;
+  const brokePriorResistance = currentPrice > priorHigh60 * 1.015 || currentPrice > priorHigh40 * 1.015;
 
   const isIdx = INDEX_TICKERS.has(cleanSymbol.toUpperCase());
-  const highVolName = Math.abs(momentum60) > 0.14 || range60 > 0.30;
-  const maxHealthyRange60 = isIdx ? 0.22 : highVolName ? 0.42 : 0.34;
-  const maxChaoticRange60 = isIdx ? 0.30 : highVolName ? 0.62 : 0.48;
+  const highVolName = Math.abs(momentum60) > 0.18 || range60 > 0.34 || Math.abs(momentum90) > 0.30;
+  const maxHealthyRange60 = isIdx ? 0.22 : highVolName ? 0.48 : 0.34;
+  const maxChaoticRange60 = isIdx ? 0.30 : highVolName ? 0.72 : 0.52;
 
   let momentumScore = 0;
-  momentumScore += momentum20 > 0 ? scaled(momentum20, 0.08, 18) : -scaled(momentum20, 0.08, 18);
-  momentumScore += momentum60 > 0 ? scaled(momentum60, 0.16, 22) : -scaled(momentum60, 0.16, 22);
+  momentumScore += signedScale(momentum20, 0.10, 18);
+  momentumScore += signedScale(momentum60, 0.22, 22);
+  // A small 90-day memory prevents a few right-edge candles from fully reversing the regime.
+  momentumScore += signedScale(momentum90, 0.35, 8);
 
   let maAlignmentScore = 0;
-  if (currentPrice > ma20) maAlignmentScore += 10; else maAlignmentScore -= 10;
-  if (currentPrice > ma50) maAlignmentScore += 12; else maAlignmentScore -= 12;
-  if (ma20 > ma50) maAlignmentScore += 12; else maAlignmentScore -= 12;
+  if (currentPrice > ma20) maAlignmentScore += 8; else maAlignmentScore -= 8;
+  if (currentPrice > ma50) maAlignmentScore += 10; else maAlignmentScore -= 10;
+  if (ma20 > ma50) maAlignmentScore += 10; else maAlignmentScore -= 10;
+  // Distance from the 50MA matters, but too much distance is handled by maturity/exhaustion below.
+  maAlignmentScore += signedScale(distFromMa50, 0.12, 6);
 
   let slopeScore = 0;
-  slopeScore += ma20Slope > 0 ? scaled(ma20Slope, 0.025, 14) : -scaled(ma20Slope, 0.025, 14);
-  slopeScore += ma50Slope > 0 ? scaled(ma50Slope, 0.015, 10) : -scaled(ma50Slope, 0.015, 10);
+  slopeScore += signedScale(ma20Slope, 0.035, 13);
+  slopeScore += signedScale(ma50Slope, 0.025, 9);
 
   let structureScore = 0;
-  if (higherHighs) structureScore += 9;
-  if (higherLows) structureScore += 11;
-  if (lowerHighs) structureScore -= 11;
-  if (lowerLows) structureScore -= 9;
+  if (higherHighs) structureScore += 7;
+  if (higherLows) structureScore += 9;
+  if (regimeHigherHighs) structureScore += 8;
+  if (regimeHigherLows) structureScore += 10;
+  if (lowerHighs) structureScore -= 9;
+  if (lowerLows) structureScore -= 7;
+  if (regimeLowerHighs) structureScore -= 10;
+  if (regimeLowerLows) structureScore -= 8;
 
-  const rawDirectionalScore = momentumScore + maAlignmentScore + slopeScore + structureScore;
+  let regimeScore = 0;
+  if (brokePriorResistance && momentum40 > 0) regimeScore += 12;
+  if (brokePriorSupport && momentum40 < 0) regimeScore -= 12;
+  if (currentPrice > high90 * 0.98 && momentum60 > 0.08) regimeScore += 8;
+  if (currentPrice < low90 * 1.04 && momentum60 < -0.08) regimeScore -= 8;
+  // Failed trend behavior: prior strength followed by a decisive break is bearish even if the long chart was once bullish.
+  if (momentum90 > 0.10 && momentum20 < -0.07 && currentPrice < ma20 && drawdownFrom60High < -0.12) regimeScore -= 16;
+  // Recovery behavior: prior weakness followed by reclaiming averages can be a bullish reversal.
+  if (momentum90 < -0.10 && momentum20 > 0.07 && currentPrice > ma20 && reboundFrom60Low > 0.12) regimeScore += 14;
+
+  const rawDirectionalScore = momentumScore + maAlignmentScore + slopeScore + structureScore + regimeScore;
 
   let volatilityPenalty = 0;
-  if (range60 > maxHealthyRange60) volatilityPenalty += range60 > maxChaoticRange60 ? 20 : 8;
+  if (range60 > maxHealthyRange60) volatilityPenalty += range60 > maxChaoticRange60 ? 22 : 9;
 
   let chopPenalty = 0;
-  if (chopRatio > 5.0) chopPenalty += 15;
-  else if (chopRatio > 3.5) chopPenalty += 8;
+  if (chopRatio > 6.0) chopPenalty += 18;
+  else if (chopRatio > 4.0) chopPenalty += 10;
+  else if (chopRatio > 3.0) chopPenalty += 5;
 
-  const penalty = volatilityPenalty + chopPenalty;
+  // Trend maturity / exhaustion: direction may be right, but trade quality is poor when the move is vertical.
+  let maturityPenalty = 0;
+  const upsideExhausted =
+    (momentum10 > 0.18 && momentum20 > 0.28) ||
+    (distFromMa50 > 0.28 && reboundFrom60Low > 0.55) ||
+    (near60High && reboundFrom60Low > 0.75 && range60 > 0.55);
+  const downsideExhausted =
+    (momentum10 < -0.18 && momentum20 < -0.28) ||
+    (distFromMa50 < -0.25 && Math.abs(drawdownFrom60High) > 0.45) ||
+    (near60Low && Math.abs(drawdownFrom60High) > 0.55 && range60 > 0.55);
+
+  if (upsideExhausted || downsideExhausted) maturityPenalty += highVolName ? 16 : 24;
+  if (Math.abs(momentum20) > 0.40) maturityPenalty += 12;
+
+  const penalty = volatilityPenalty + chopPenalty + maturityPenalty;
   const directionalScore = rawDirectionalScore > 0
     ? rawDirectionalScore - penalty
     : rawDirectionalScore + penalty;
@@ -1469,9 +1536,9 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     momentum: Math.round(momentumScore),
     maAlignment: Math.round(maAlignmentScore),
     slope: Math.round(slopeScore),
-    structure: Math.round(structureScore),
+    structure: Math.round(structureScore + regimeScore),
     chop: Math.round(chopPenalty),
-    volatility: Math.round(volatilityPenalty),
+    volatility: Math.round(volatilityPenalty + maturityPenalty),
     total: Math.round(directionalScore),
   };
 
@@ -1480,24 +1547,40 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     ma20,
     ma50,
     ma200,
+    momentum10,
     momentum20,
+    momentum40,
     momentum60,
     momentum90,
     ma20Slope,
     ma50Slope,
     range60,
     chopRatio,
+    distFromMa20,
+    distFromMa50,
+    drawdownFrom60High,
+    drawdownFrom90High,
+    reboundFrom60Low,
+    reboundFrom90Low,
     higherHighs,
     higherLows,
     lowerHighs,
     lowerLows,
+    regimeHigherHighs,
+    regimeHigherLows,
+    regimeLowerHighs,
+    regimeLowerLows,
+    brokePriorSupport,
+    brokePriorResistance,
+    upsideExhausted,
+    downsideExhausted,
   };
 
   const absScore = Math.abs(directionalScore);
-  const conflictPenalty = Math.abs(momentumScore) > 10 && Math.abs(maAlignmentScore) > 10 && Math.sign(momentumScore) !== Math.sign(maAlignmentScore) ? 10 : 0;
-  const confidence = Math.round(clamp(absScore - conflictPenalty - penalty * 0.5, 0, 100));
+  const conflictPenalty = Math.abs(momentumScore) > 12 && Math.abs(maAlignmentScore) > 12 && Math.sign(momentumScore) !== Math.sign(maAlignmentScore) ? 12 : 0;
+  const confidence = Math.round(clamp(absScore - conflictPenalty - penalty * 0.35, 0, 100));
 
-  const isChaotic = range60 > maxChaoticRange60 || (chopRatio > 5.5 && absScore < 45);
+  const isChaotic = range60 > maxChaoticRange60 || (chopRatio > 6.0 && absScore < 50);
   if (isChaotic) {
     return {
       trend: 'sideways',
@@ -1513,35 +1596,54 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
+  // If the move is directional but very mature/vertical, keep it out of automatic spread assignment.
+  // These names can be directionally correct but poor option-selling entries because pullback risk is high.
+  if ((upsideExhausted && directionalScore > 45) || (downsideExhausted && directionalScore < -45)) {
+    return {
+      trend: directionalScore > 0 ? 'uptrend' : 'downtrend',
+      strategy: 'NO_TRADE',
+      subtype: 'UNKNOWN',
+      confidence: Math.max(42, Math.min(58, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `REVIEW EXTENDED: ${directionalScore > 0 ? 'bullish' : 'bearish'} direction, but move is mature/vertical. 20-day momentum ${(momentum20 * 100).toFixed(1)}%, distance from 50MA ${(distFromMa50 * 100).toFixed(1)}%, 60-day range ${(range60 * 100).toFixed(1)}%.`,
+    };
+  }
+
   const bullishContinuation =
-    directionalScore >= 70 &&
+    directionalScore >= 68 &&
     ma20 > ma50 &&
     currentPrice > ma20 &&
-    momentum60 > 0.06 &&
-    higherLows;
+    momentum60 > 0.07 &&
+    (higherLows || regimeHigherLows) &&
+    !upsideExhausted;
 
   const bearishContinuation =
-    directionalScore <= -70 &&
-    ma20 < ma50 &&
+    directionalScore <= -62 &&
     currentPrice < ma20 &&
-    momentum60 < -0.06 &&
-    lowerHighs;
+    (ma20 < ma50 || ma20Slope < -0.015) &&
+    (momentum60 < -0.06 || momentum20 < -0.08) &&
+    (lowerHighs || lowerLows || brokePriorSupport);
 
   const bullishReversal =
-    directionalScore >= 50 &&
+    directionalScore >= 48 &&
     currentPrice > ma20 &&
-    momentum20 > 0.025 &&
-    momentum60 > 0.035 &&
-    higherLows &&
-    momentum90 > -0.30;
+    momentum20 > 0.035 &&
+    momentum60 > 0.045 &&
+    (higherLows || regimeHigherLows) &&
+    momentum90 > -0.35 &&
+    !upsideExhausted;
 
   const bearishReversal =
-    directionalScore <= -50 &&
+    directionalScore <= -48 &&
     currentPrice < ma20 &&
-    momentum20 < -0.025 &&
-    (momentum60 < -0.035 || ma20Slope < -0.012) &&
-    (lowerHighs || lowerLows) &&
-    momentum90 < 0.30;
+    momentum20 < -0.035 &&
+    (momentum60 < -0.035 || ma20Slope < -0.012 || brokePriorSupport) &&
+    (lowerHighs || lowerLows || regimeLowerHighs || regimeLowerLows) &&
+    !downsideExhausted;
 
   if (bullishContinuation) {
     return {
@@ -1554,7 +1656,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       ma200,
       scores,
       metrics,
-      reason: `BPS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure ${scores.structure}.`,
+      reason: `BPS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.`,
     };
   }
 
@@ -1569,7 +1671,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       ma200,
       scores,
       metrics,
-      reason: `BCS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure ${scores.structure}.`,
+      reason: `BCS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.`,
     };
   }
 
@@ -1584,7 +1686,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       ma200,
       scores,
       metrics,
-      reason: `BPS REVERSAL: 2–3 month recovery, score ${scores.total}, 20-day momentum ${(momentum20 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%.`,
+      reason: `BPS REVERSAL: recovery with improving structure. Score ${scores.total}, 20-day momentum ${(momentum20 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%.`,
     };
   }
 
@@ -1599,22 +1701,24 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       ma200,
       scores,
       metrics,
-      reason: `BCS REVERSAL: 2–3 month deterioration, score ${scores.total}, 20-day momentum ${(momentum20 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%.`,
+      reason: `BCS REVERSAL: deterioration/failure after prior strength or failed rebound. Score ${scores.total}, 20-day momentum ${(momentum20 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%.`,
     };
   }
 
-  if (absScore <= 25 || chopRatio > 3.2) {
+  // True IC range: not just weak signal, but overlapping movement or poor directional persistence.
+  const rangeLike = absScore <= 28 || chopRatio > 3.0 || (range60 > 0.22 && Math.abs(momentum60) < 0.06);
+  if (rangeLike) {
     return {
       trend: 'sideways',
       strategy: 'IC',
       subtype: 'RANGE',
-      confidence: Math.max(55, Math.min(78, 100 - absScore - Math.round(penalty * 0.5))),
+      confidence: Math.max(55, Math.min(78, 100 - absScore - Math.round(penalty * 0.35))),
       ma20,
       ma50,
       ma200,
       scores,
       metrics,
-      reason: `IC RANGE: no clean directional edge; score ${scores.total}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}.`,
+      reason: `IC RANGE: overlapping/mixed structure; score ${scores.total}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}.`,
     };
   }
 
@@ -1628,7 +1732,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     ma200,
     scores,
     metrics,
-    reason: `REVIEW: mixed signals; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure ${scores.structure}.`,
+    reason: `REVIEW: mixed or immature signal; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.`,
   };
 }
 
