@@ -54,8 +54,6 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
-
 function saveRulesToStorage(rules: RulesType) {
   try { localStorage.setItem(LS_RULES, JSON.stringify(rules)); } catch {}
 }
@@ -328,7 +326,7 @@ function getSavedRules(): RulesType {
     return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES };
   } catch { return { ...DEFAULT_RULES }; }
 }
-const AUTO_TICKER_LIMIT = 5;
+const TREND_DETECTION_CONCURRENCY = 8;
 const LS_BPS = 'prosper-tickers-bps';
 const LS_BCS = 'prosper-tickers-bcs';
 const LS_IC = 'prosper-tickers-ic';
@@ -1220,7 +1218,7 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
   );
 }
 
-// ── Trend Detection with Batch Processing (5 at a time) ─────────────────────
+// ── Trend Detection with Yahoo Finance ──────────────────────────────────────
 async function runTrendDetection(
   autoTickers: string,
   bpsTickers: string,
@@ -1237,46 +1235,46 @@ async function runTrendDetection(
   setLoading: (l: boolean) => void,
   parseTickers: (s: string) => string[]
 ) {
-  let autoList = parseTickers(autoTickers);
+  const autoList = Array.from(new Set(parseTickers(autoTickers)));
   if (autoList.length === 0) {
     setError('Enter at least one ticker for trend detection.');
     return;
   }
 
-  const batch = autoList.slice(0, 5);
-  const remaining = autoList.slice(5);
-
   setError('');
   setLoading(true);
 
   try {
-    setStatus(`Analyzing batch of ${batch.length} tickers...`);
+    setStatus(`Analyzing ${autoList.length} ticker${autoList.length === 1 ? '' : 's'} with Yahoo Finance...`);
     const distributions: { bps: string[]; bcs: string[]; ic: string[]; broken: string[] } = { bps: [], bcs: [], ic: [], broken: [] };
+    let completed = 0;
 
-    for (let i = 0; i < batch.length; i++) {
-      const symbol = batch[i];
-      setStatus(`Analyzing ${symbol} (${i + 1}/${batch.length})...`);
-      let trendResult: TrendResult | undefined;
+    const analyzeSymbol = async (symbol: string) => {
       try {
-        trendResult = await getTrend(symbol);
+        const trendResult = await getTrend(symbol);
+        if (trendResult?.trend === 'unknown') {
+          distributions.broken.push(symbol);
+        } else if (trendResult.strategy === 'BPS') {
+          distributions.bps.push(symbol);
+        } else if (trendResult.strategy === 'BCS') {
+          distributions.bcs.push(symbol);
+        } else if (trendResult.strategy === 'IC') {
+          distributions.ic.push(symbol);
+        } else {
+          distributions.broken.push(symbol);
+        }
       } catch (e: any) {
-        console.warn(e.message);
+        console.warn(e?.message ?? e);
         distributions.broken.push(symbol);
-        continue;
+      } finally {
+        completed += 1;
+        setStatus(`Analyzed ${completed}/${autoList.length} tickers...`);
       }
-      if (i < batch.length - 1) await sleep(12000);
+    };
 
-      if (trendResult?.trend === 'unknown' || !trendResult) {
-        distributions.broken.push(symbol);
-      } else if (trendResult.strategy === 'BPS') {
-        distributions.bps.push(symbol);
-      } else if (trendResult.strategy === 'BCS') {
-        distributions.bcs.push(symbol);
-      } else if (trendResult.strategy === 'IC') {
-        distributions.ic.push(symbol);
-      } else {
-        distributions.broken.push(symbol);
-      }
+    for (let i = 0; i < autoList.length; i += TREND_DETECTION_CONCURRENCY) {
+      const chunk = autoList.slice(i, i + TREND_DETECTION_CONCURRENCY);
+      await Promise.all(chunk.map(analyzeSymbol));
     }
 
     if (distributions.bps.length > 0) handleBpsChange(mergeTickers(bpsTickers, distributions.bps));
@@ -1284,8 +1282,8 @@ async function runTrendDetection(
     if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
     if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
 
-    setAutoTickers(tickersToString(remaining));
-    setStatus(`✅ Processed ${batch.length} tickers. ${remaining.length} remaining in AUTO box.`);
+    setAutoTickers('');
+    setStatus(`✅ Trend detection complete: ${distributions.bps.length} BPS, ${distributions.bcs.length} BCS, ${distributions.ic.length} IC, ${distributions.broken.length} broken/unknown.`);
   } catch (e: any) {
     setError(e.message);
   } finally {
@@ -1293,28 +1291,22 @@ async function runTrendDetection(
   }
 }
 
-// ── Polygon getTrend ───────────────────────────────────────────────────────
+// ── Yahoo Finance getTrend ─────────────────────────────────────────────────
 async function getTrend(symbol: string): Promise<TrendResult> {
-  const apiKey = process.env.NEXT_PUBLIC_POLYGON_API_KEY;
-  if (!apiKey) throw new Error('NEXT_PUBLIC_POLYGON_API_KEY not set');
+  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
 
-  const to = new Date();
-  const from = new Date();
-  from.setMonth(from.getMonth() - 6);
-
-  const res = await fetch(
-    `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/day/${from.toISOString().split('T')[0]}/${to.toISOString().split('T')[0]}?adjusted=true&sort=asc&limit=150&apiKey=${apiKey}`
-  );
-
-  if (!res.ok) throw new Error(`Polygon fetch failed (${res.status})`);
+  if (!res.ok) throw new Error(`Yahoo chart fetch failed for ${symbol} (${res.status})`);
 
   const data = await res.json();
-  const bars: { c: number }[] = data.results ?? [];
+  const bars: { c: number }[] = data?.bars ?? [];
 
   if (bars.length < 50)
     return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough price history' };
 
-  const closes = bars.map(b => b.c);
+  const closes = bars.map(b => b.c).filter((c): c is number => Number.isFinite(c));
+  if (closes.length < 50)
+    return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough valid closing prices' };
+
   const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
   const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
   const currentPrice = closes[closes.length - 1];
@@ -1579,7 +1571,6 @@ export default function Home() {
 
   const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
   const autoTickerList = parseTickers(autoTickers);
-  const autoOverLimit = autoTickerList.length > AUTO_TICKER_LIMIT;
 
   const downloadCSV = () => {
     const headers = ['Symbol','Strategy','Trend','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Earnings Date','Fail Reasons'];
@@ -1600,7 +1591,7 @@ export default function Home() {
     setError('');
     setResults([]);
 
-    const autoList = parseTickers(autoTickers).slice(0, AUTO_TICKER_LIMIT);
+    const autoList = parseTickers(autoTickers);
     const bps = parseTickers(bpsTickers);
     const bcs = parseTickers(bcsTickers);
     const ic = parseTickers(icTickers);
@@ -1637,8 +1628,6 @@ export default function Home() {
         setStatus(`Scanning ${symbol} (${i+1}/${autoList.length})...`);
         let trendResult: TrendResult | undefined;
         try { trendResult = await getTrend(symbol); } catch (e) { console.warn(e); }
-        if (i < autoList.length - 1) await sleep(12000);
-
         const strategy = trendResult?.strategy ?? 'BCS';
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
@@ -1743,14 +1732,13 @@ export default function Home() {
                   className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>
                   {autoScanning ? '⟳' : '↑ img'}
                 </button>
-                <span className={`text-[9px] font-medium ${autoOverLimit ? 'text-red-500' : th.textFaint}`}>{autoTickerList.length}/{AUTO_TICKER_LIMIT}</span>
+                <span className={`text-[9px] font-medium ${th.textFaint}`}>{autoTickerList.length}</span>
               </div>
             </div>
             <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
-              className={`w-full ${th.input} border ${autoOverLimit ? 'border-red-500' : th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
-            {autoOverLimit && <p className="text-[9px] text-red-500 mt-1 font-medium">Max {AUTO_TICKER_LIMIT} tickers</p>}
+              className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
             <div className="flex items-center justify-between mt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>~{autoTickerList.length * 12}s analysis</p>
+              <p className={`text-[9px] ${th.textFaint}`}>Yahoo trend detection</p>
               <div className="flex items-center gap-1">
                 {autoTickerList.length > 0 && (
                   <button
@@ -1763,7 +1751,7 @@ export default function Home() {
                 )}
                 <button
                   onClick={runTrendDetectionWrapper}
-                  disabled={loading || autoOverLimit || autoTickerList.length === 0}
+                  disabled={loading || autoTickerList.length === 0}
                   className="text-[9px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
                 >
                   {loading ? '...' : 'ANALYZE TRENDS'}
@@ -1795,7 +1783,7 @@ export default function Home() {
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
-          <button onClick={() => setShowRulesModal(true)} disabled={loading || autoOverLimit}
+          <button onClick={() => setShowRulesModal(true)} disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
