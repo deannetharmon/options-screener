@@ -29,12 +29,39 @@ interface SpreadCandidate {
 }
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
-  strategy: 'BPS' | 'BCS' | 'IC';
+  strategy: 'BPS' | 'BCS' | 'IC' | 'NO_TRADE';
+  subtype: 'CONTINUATION' | 'REVERSAL' | 'RANGE' | 'CHOP' | 'UNKNOWN';
+  confidence: number; // 0-100
   ma20: number;
   ma50: number;
+  ma200?: number;
   reason: string;
-  subtype?: 'continuation' | 'reversal' | 'range' | 'chaotic' | 'unknown';
-  confidence?: number;
+  scores?: {
+    momentum: number;
+    maAlignment: number;
+    slope: number;
+    structure: number;
+    chop: number;
+    volatility: number;
+    total: number;
+  };
+  metrics?: {
+    price: number;
+    ma20: number;
+    ma50: number;
+    ma200: number;
+    momentum20: number;
+    momentum60: number;
+    momentum90: number;
+    ma20Slope: number;
+    ma50Slope: number;
+    range60: number;
+    chopRatio: number;
+    higherHighs: boolean;
+    higherLows: boolean;
+    lowerHighs: boolean;
+    lowerLows: boolean;
+  };
 }
 interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
@@ -178,9 +205,10 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
 }
 
 function mergeTickers(existing: string, newTickers: string[]): string {
-  const existingList = existing.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  const existingList = normalizeTickerInput(existing);
+  const normalizedNew = newTickers.map(normalizeTickerToken).filter((t): t is string => Boolean(t));
   const existingSet = new Set(existingList);
-  const toAdd = newTickers.filter(t => !existingSet.has(t));
+  const toAdd = normalizedNew.filter(t => !existingSet.has(t));
   return [...existingList, ...toAdd].join(', ');
 }
 
@@ -1304,9 +1332,7 @@ async function runTrendDetection(
     const analyzeSymbol = async (symbol: string) => {
       try {
         const trendResult = await getTrend(symbol);
-        if (trendResult?.trend === 'unknown') {
-          distributions.broken.push(symbol);
-        } else if (trendResult.strategy === 'BPS') {
+        if (trendResult.strategy === 'BPS') {
           distributions.bps.push(symbol);
         } else if (trendResult.strategy === 'BCS') {
           distributions.bcs.push(symbol);
@@ -1343,7 +1369,7 @@ async function runTrendDetection(
   }
 }
 
-// ── Yahoo Finance getTrend ─────────────────────────────────────────────────
+// ── Yahoo Finance getTrend vNext ────────────────────────────────────────────
 async function getTrend(symbol: string): Promise<TrendResult> {
   const cleanSymbol = normalizeTickerToken(symbol) ?? symbol.toUpperCase();
   const res = await fetch(`/api/chart?symbol=${encodeURIComponent(cleanSymbol)}`, { cache: 'no-store' });
@@ -1354,142 +1380,256 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const bars: { c: number }[] = data?.bars ?? [];
   const closes = bars.map(b => b.c).filter((c): c is number => Number.isFinite(c));
 
-  if (closes.length < 70) {
-    return {
-      trend: 'unknown',
-      strategy: 'IC',
-      ma20: 0,
-      ma50: 0,
-      subtype: 'unknown',
-      confidence: 0,
-      reason: 'Not enough valid Yahoo daily closing prices for reliable trend detection',
-    };
+  const unknownResult = (reason: string): TrendResult => ({
+    trend: 'unknown',
+    strategy: 'NO_TRADE',
+    subtype: 'UNKNOWN',
+    confidence: 0,
+    ma20: 0,
+    ma50: 0,
+    ma200: 0,
+    reason,
+  });
+
+  if (closes.length < 90) {
+    return unknownResult('Not enough valid Yahoo daily closing prices for vNext trend detection');
   }
 
   const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
   const pct = (current: number, prior: number) => prior === 0 ? 0 : (current - prior) / prior;
   const max = (values: number[]) => Math.max(...values);
   const min = (values: number[]) => Math.min(...values);
-  const clamp = (value: number, low = 0, high = 1) => Math.max(low, Math.min(high, value));
-  const points = (value: number, fullAt: number, maxPoints: number) => clamp(value / fullAt) * maxPoints;
+  const clamp = (value: number, low = 0, high = 100) => Math.max(low, Math.min(high, value));
+  const scaled = (value: number, fullAt: number, maxPoints: number) => Math.min(1, Math.abs(value) / fullAt) * maxPoints;
 
   const currentPrice = closes[closes.length - 1];
   const ma20 = avg(closes.slice(-20));
   const ma50 = avg(closes.slice(-50));
+  const ma200 = closes.length >= 200 ? avg(closes.slice(-200)) : avg(closes);
   const ma20Prev = avg(closes.slice(-40, -20));
-  const ma50Prev = closes.length >= 100 ? avg(closes.slice(-100, -50)) : avg(closes.slice(-70, -20));
+  const ma50Prev = closes.length >= 100 ? avg(closes.slice(-100, -50)) : avg(closes.slice(-90, -40));
 
   const ma20Slope = pct(ma20, ma20Prev);
   const ma50Slope = pct(ma50, ma50Prev);
-  const priceVsMa20 = pct(currentPrice, ma20);
-  const priceVsMa50 = pct(currentPrice, ma50);
   const momentum20 = pct(currentPrice, closes[closes.length - 21]);
   const momentum60 = pct(currentPrice, closes[closes.length - 61]);
-  const momentum90 = closes.length >= 91 ? pct(currentPrice, closes[closes.length - 91]) : momentum60;
+  const momentum90 = pct(currentPrice, closes[closes.length - 91]);
 
   const last20 = closes.slice(-20);
   const prior20 = closes.slice(-40, -20);
   const last60 = closes.slice(-60);
-  const last90 = closes.slice(-90);
   const range60 = pct(max(last60), min(last60));
   const net60 = Math.abs(momentum60);
   const chopRatio = net60 < 0.01 ? 99 : range60 / net60;
 
-  const higherLow = min(last20) > min(prior20) * 0.985;
-  const lowerHigh = max(last20) < max(prior20) * 1.015;
-  const lowerLow = min(last20) < min(prior20) * 0.995;
-  const higherHigh = max(last20) > max(prior20) * 1.005;
+  const higherLows = min(last20) > min(prior20) * 0.985;
+  const higherHighs = max(last20) > max(prior20) * 1.005;
+  const lowerHighs = max(last20) < max(prior20) * 1.015;
+  const lowerLows = min(last20) < min(prior20) * 0.995;
 
   const isIdx = INDEX_TICKERS.has(cleanSymbol.toUpperCase());
-  const maxHealthyRange60 = isIdx ? 0.22 : 0.34;
-  const maxChaoticRange60 = isIdx ? 0.30 : 0.48;
+  const highVolName = Math.abs(momentum60) > 0.14 || range60 > 0.30;
+  const maxHealthyRange60 = isIdx ? 0.22 : highVolName ? 0.42 : 0.34;
+  const maxChaoticRange60 = isIdx ? 0.30 : highVolName ? 0.62 : 0.48;
 
-  // Score both directions instead of using only hard gates. This allows valid 2–3 month reversals
-  // without letting every short bounce become BPS or every dip become BCS.
-  let bullScore = 0;
-  let bearScore = 0;
+  let momentumScore = 0;
+  momentumScore += momentum20 > 0 ? scaled(momentum20, 0.08, 18) : -scaled(momentum20, 0.08, 18);
+  momentumScore += momentum60 > 0 ? scaled(momentum60, 0.16, 22) : -scaled(momentum60, 0.16, 22);
 
-  if (currentPrice > ma20) bullScore += 12; else bearScore += 12;
-  if (currentPrice > ma50) bullScore += 16; else bearScore += 16;
-  bullScore += points(Math.max(0, priceVsMa20), 0.06, 8);
-  bullScore += points(Math.max(0, priceVsMa50), 0.08, 10);
-  bearScore += points(Math.max(0, -priceVsMa20), 0.06, 8);
-  bearScore += points(Math.max(0, -priceVsMa50), 0.08, 10);
+  let maAlignmentScore = 0;
+  if (currentPrice > ma20) maAlignmentScore += 10; else maAlignmentScore -= 10;
+  if (currentPrice > ma50) maAlignmentScore += 12; else maAlignmentScore -= 12;
+  if (ma20 > ma50) maAlignmentScore += 12; else maAlignmentScore -= 12;
 
-  if (ma20 > ma50) bullScore += 12; else bearScore += 12;
-  bullScore += points(Math.max(0, ma20Slope), 0.025, 12);
-  bullScore += points(Math.max(0, ma50Slope), 0.015, 8);
-  bearScore += points(Math.max(0, -ma20Slope), 0.025, 12);
-  bearScore += points(Math.max(0, -ma50Slope), 0.015, 8);
+  let slopeScore = 0;
+  slopeScore += ma20Slope > 0 ? scaled(ma20Slope, 0.025, 14) : -scaled(ma20Slope, 0.025, 14);
+  slopeScore += ma50Slope > 0 ? scaled(ma50Slope, 0.015, 10) : -scaled(ma50Slope, 0.015, 10);
 
-  bullScore += points(Math.max(0, momentum20), 0.08, 12);
-  bullScore += points(Math.max(0, momentum60), 0.16, 16);
-  bearScore += points(Math.max(0, -momentum20), 0.08, 12);
-  bearScore += points(Math.max(0, -momentum60), 0.16, 16);
+  let structureScore = 0;
+  if (higherHighs) structureScore += 9;
+  if (higherLows) structureScore += 11;
+  if (lowerHighs) structureScore -= 11;
+  if (lowerLows) structureScore -= 9;
 
-  if (higherLow) bullScore += 8;
-  if (higherHigh) bullScore += 6;
-  if (lowerHigh) bearScore += 8;
-  if (lowerLow) bearScore += 6;
+  const rawDirectionalScore = momentumScore + maAlignmentScore + slopeScore + structureScore;
 
-  // Penalize chaotic price action, but do not over-penalize high-IV names like PLTR.
-  const chopPenalty = range60 > maxChaoticRange60 ? 22 : range60 > maxHealthyRange60 ? 10 : chopRatio > 4.0 ? 8 : 0;
-  bullScore -= chopPenalty;
-  bearScore -= chopPenalty;
+  let volatilityPenalty = 0;
+  if (range60 > maxHealthyRange60) volatilityPenalty += range60 > maxChaoticRange60 ? 20 : 8;
 
-  const directionalScore = bullScore - bearScore;
-  const absDirectionalScore = Math.abs(directionalScore);
-  const dominantScore = Math.max(bullScore, bearScore);
-  const confidence = clamp(0.45 + (dominantScore / 100) * 0.45 - (chopPenalty / 100));
+  let chopPenalty = 0;
+  if (chopRatio > 5.0) chopPenalty += 15;
+  else if (chopRatio > 3.5) chopPenalty += 8;
 
-  const bullishContinuation = directionalScore >= 35 && ma20 > ma50 && currentPrice > ma20 && momentum60 > 0.04;
-  const bearishContinuation = directionalScore <= -35 && ma20 < ma50 && currentPrice < ma20 && momentum60 < -0.04;
+  const penalty = volatilityPenalty + chopPenalty;
+  const directionalScore = rawDirectionalScore > 0
+    ? rawDirectionalScore - penalty
+    : rawDirectionalScore + penalty;
+
+  const scores = {
+    momentum: Math.round(momentumScore),
+    maAlignment: Math.round(maAlignmentScore),
+    slope: Math.round(slopeScore),
+    structure: Math.round(structureScore),
+    chop: Math.round(chopPenalty),
+    volatility: Math.round(volatilityPenalty),
+    total: Math.round(directionalScore),
+  };
+
+  const metrics = {
+    price: currentPrice,
+    ma20,
+    ma50,
+    ma200,
+    momentum20,
+    momentum60,
+    momentum90,
+    ma20Slope,
+    ma50Slope,
+    range60,
+    chopRatio,
+    higherHighs,
+    higherLows,
+    lowerHighs,
+    lowerLows,
+  };
+
+  const absScore = Math.abs(directionalScore);
+  const conflictPenalty = Math.abs(momentumScore) > 10 && Math.abs(maAlignmentScore) > 10 && Math.sign(momentumScore) !== Math.sign(maAlignmentScore) ? 10 : 0;
+  const confidence = Math.round(clamp(absScore - conflictPenalty - penalty * 0.5, 0, 100));
+
+  const isChaotic = range60 > maxChaoticRange60 || (chopRatio > 5.5 && absScore < 45);
+  if (isChaotic) {
+    return {
+      trend: 'sideways',
+      strategy: 'NO_TRADE',
+      subtype: 'CHOP',
+      confidence: Math.max(25, Math.min(48, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `NO_TRADE CHOP: 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}.`,
+    };
+  }
+
+  const bullishContinuation =
+    directionalScore >= 70 &&
+    ma20 > ma50 &&
+    currentPrice > ma20 &&
+    momentum60 > 0.06 &&
+    higherLows;
+
+  const bearishContinuation =
+    directionalScore <= -70 &&
+    ma20 < ma50 &&
+    currentPrice < ma20 &&
+    momentum60 < -0.06 &&
+    lowerHighs;
 
   const bullishReversal =
-    directionalScore >= 18 &&
+    directionalScore >= 50 &&
     currentPrice > ma20 &&
     momentum20 > 0.025 &&
-    momentum60 > 0.04 &&
-    higherLow &&
-    momentum90 > -0.25;
+    momentum60 > 0.035 &&
+    higherLows &&
+    momentum90 > -0.30;
 
   const bearishReversal =
-    directionalScore <= -18 &&
+    directionalScore <= -50 &&
     currentPrice < ma20 &&
     momentum20 < -0.025 &&
-    (momentum60 < -0.04 || ma20Slope < -0.012) &&
-    (lowerHigh || lowerLow) &&
-    momentum90 < 0.25;
+    (momentum60 < -0.035 || ma20Slope < -0.012) &&
+    (lowerHighs || lowerLows) &&
+    momentum90 < 0.30;
 
   if (bullishContinuation) {
-    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, subtype: 'continuation', confidence,
-      reason: `BPS continuation: bullish score ${bullScore.toFixed(0)} vs bearish ${bearScore.toFixed(0)}, 60-day momentum ${(momentum60 * 100).toFixed(1)}%, confidence ${(confidence * 100).toFixed(0)}%` };
+    return {
+      trend: 'uptrend',
+      strategy: 'BPS',
+      subtype: 'CONTINUATION',
+      confidence,
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BPS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure ${scores.structure}.`,
+    };
   }
 
   if (bearishContinuation) {
-    return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, subtype: 'continuation', confidence,
-      reason: `BCS continuation: bearish score ${bearScore.toFixed(0)} vs bullish ${bullScore.toFixed(0)}, 60-day momentum ${(momentum60 * 100).toFixed(1)}%, confidence ${(confidence * 100).toFixed(0)}%` };
+    return {
+      trend: 'downtrend',
+      strategy: 'BCS',
+      subtype: 'CONTINUATION',
+      confidence,
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BCS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure ${scores.structure}.`,
+    };
   }
 
   if (bullishReversal) {
-    const c = Math.max(0.55, confidence - 0.06);
-    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, subtype: 'reversal', confidence: c,
-      reason: `BPS reversal: recovery score ${bullScore.toFixed(0)} vs bearish ${bearScore.toFixed(0)}, reclaimed short-term trend with improving lows, confidence ${(c * 100).toFixed(0)}%` };
+    return {
+      trend: 'uptrend',
+      strategy: 'BPS',
+      subtype: 'REVERSAL',
+      confidence: Math.max(55, Math.min(74, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BPS REVERSAL: 2–3 month recovery, score ${scores.total}, 20-day momentum ${(momentum20 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%.`,
+    };
   }
 
   if (bearishReversal) {
-    const c = Math.max(0.55, confidence - 0.06);
-    return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, subtype: 'reversal', confidence: c,
-      reason: `BCS reversal: deterioration score ${bearScore.toFixed(0)} vs bullish ${bullScore.toFixed(0)}, lost short-term trend with lower-high/lower-low structure, confidence ${(c * 100).toFixed(0)}%` };
+    return {
+      trend: 'downtrend',
+      strategy: 'BCS',
+      subtype: 'REVERSAL',
+      confidence: Math.max(55, Math.min(74, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BCS REVERSAL: 2–3 month deterioration, score ${scores.total}, 20-day momentum ${(momentum20 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%.`,
+    };
   }
 
-  if (range60 > maxChaoticRange60) {
-    return { trend: 'sideways', strategy: 'IC', ma20, ma50, subtype: 'chaotic', confidence: 0.45,
-      reason: `Review/IC: volatile mixed trend; 60-day range ${(range60 * 100).toFixed(1)}% is too wide for a clean directional label` };
+  if (absScore <= 25 || chopRatio > 3.2) {
+    return {
+      trend: 'sideways',
+      strategy: 'IC',
+      subtype: 'RANGE',
+      confidence: Math.max(55, Math.min(78, 100 - absScore - Math.round(penalty * 0.5))),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `IC RANGE: no clean directional edge; score ${scores.total}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}.`,
+    };
   }
 
-  return { trend: 'sideways', strategy: 'IC', ma20, ma50, subtype: absDirectionalScore < 18 ? 'range' : 'unknown', confidence: absDirectionalScore < 18 ? 0.58 : 0.50,
-    reason: `IC candidate: no clean directional edge; bullish score ${bullScore.toFixed(0)}, bearish score ${bearScore.toFixed(0)}, 60-day range ${(range60 * 100).toFixed(1)}%` };
+  return {
+    trend: 'unknown',
+    strategy: 'NO_TRADE',
+    subtype: 'UNKNOWN',
+    confidence: Math.max(35, Math.min(54, confidence)),
+    ma20,
+    ma50,
+    ma200,
+    scores,
+    metrics,
+    reason: `REVIEW: mixed signals; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure ${scores.structure}.`,
+  };
 }
 
 // ── Best Opportunity Finder ────────────────────────────────────────────────
@@ -1739,7 +1879,7 @@ export default function Home() {
 
   const downloadCSV = () => {
     const headers = ['Symbol','Strategy','Trend','Trend Subtype','Trend Confidence','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Earnings Date','Fail Reasons'];
-    const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.trendResult?.subtype||'',r.trendResult?.confidence!=null?(r.trendResult.confidence*100).toFixed(0)+'%':'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
+    const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.trendResult?.subtype||'',r.trendResult?.confidence!=null?r.trendResult.confidence.toFixed(0)+'%':'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
     const blob = new Blob([[headers.join(','),...rows].join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
   };
@@ -1793,7 +1933,10 @@ export default function Home() {
         setStatus(`Scanning ${symbol} (${i+1}/${autoList.length})...`);
         let trendResult: TrendResult | undefined;
         try { trendResult = await getTrend(symbol); } catch (e) { console.warn(e); }
-        const strategy = trendResult?.strategy ?? 'BCS';
+        const strategy: 'BPS' | 'BCS' | 'IC' =
+          trendResult?.strategy === 'BPS' || trendResult?.strategy === 'BCS' || trendResult?.strategy === 'IC'
+            ? trendResult.strategy
+            : 'IC';
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
