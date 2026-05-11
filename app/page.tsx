@@ -29,7 +29,12 @@ interface SpreadCandidate {
 }
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
-  strategy: 'BPS' | 'BCS' | 'IC'; ma20: number; ma50: number; reason: string;
+  strategy: 'BPS' | 'BCS' | 'IC';
+  ma20: number;
+  ma50: number;
+  reason: string;
+  subtype?: 'continuation' | 'reversal' | 'range' | 'chaotic' | 'unknown';
+  confidence?: number;
 }
 interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
@@ -1299,32 +1304,185 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
   const data = await res.json();
   const bars: { c: number }[] = data?.bars ?? [];
-
-  if (bars.length < 50)
-    return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough price history' };
-
   const closes = bars.map(b => b.c).filter((c): c is number => Number.isFinite(c));
-  if (closes.length < 50)
-    return { trend: 'unknown', strategy: 'BCS', ma20: 0, ma50: 0, reason: 'Not enough valid closing prices' };
 
-  const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const ma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+  if (closes.length < 70) {
+    return {
+      trend: 'unknown',
+      strategy: 'IC',
+      ma20: 0,
+      ma50: 0,
+      subtype: 'unknown',
+      confidence: 0,
+      reason: 'Not enough valid Yahoo daily closing prices for reliable trend detection',
+    };
+  }
+
+  const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
+  const pct = (current: number, prior: number) => prior === 0 ? 0 : (current - prior) / prior;
+  const max = (values: number[]) => Math.max(...values);
+  const min = (values: number[]) => Math.min(...values);
+  const clamp = (value: number, low = 0, high = 1) => Math.max(low, Math.min(high, value));
+
   const currentPrice = closes[closes.length - 1];
+  const ma20 = avg(closes.slice(-20));
+  const ma50 = avg(closes.slice(-50));
 
-  const maDiff = (ma20 - ma50) / ma50;
-  const priceVsMa50 = (currentPrice - ma50) / ma50;
+  const ma20Prev = avg(closes.slice(-40, -20));
+  const ma50Prev = closes.length >= 100 ? avg(closes.slice(-100, -50)) : avg(closes.slice(-70, -20));
+
+  const ma20Slope = pct(ma20, ma20Prev);
+  const ma50Slope = pct(ma50, ma50Prev);
+  const priceVsMa20 = pct(currentPrice, ma20);
+  const priceVsMa50 = pct(currentPrice, ma50);
+  const momentum20 = pct(currentPrice, closes[closes.length - 21]);
+  const momentum60 = pct(currentPrice, closes[closes.length - 61]);
+  const momentum90 = closes.length >= 91 ? pct(currentPrice, closes[closes.length - 91]) : momentum60;
+
+  const last20 = closes.slice(-20);
+  const prior20 = closes.slice(-40, -20);
+  const last60 = closes.slice(-60);
+  const last90 = closes.slice(-90);
+
+  const higherLow = min(last20) > min(prior20) * 0.985;
+  const lowerHigh = max(last20) < max(prior20) * 1.015;
+  const range60 = pct(max(last60), min(last60));
+  const range90 = last90.length > 0 ? pct(max(last90), min(last90)) : range60;
+  const net60 = Math.abs(momentum60);
+  const chopRatio = net60 < 0.01 ? 99 : range60 / net60;
 
   const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
-  const sidewaysBand = isIdx ? 0.06 : 0.03;
-  const sidewaysPriceBand = isIdx ? 0.12 : 0.07;
+  const continuationSlope20 = isIdx ? 0.003 : 0.006;
+  const continuationSlope50 = isIdx ? 0.001 : 0.003;
+  const reversalSlope20 = isIdx ? 0.006 : 0.010;
+  const reversalMomentum60 = isIdx ? 0.050 : 0.080;
+  const reversalMomentum20 = isIdx ? 0.015 : 0.025;
+  const maxHealthyRange60 = isIdx ? 0.22 : 0.30;
+  const maxHealthyRange90 = isIdx ? 0.30 : 0.42;
 
-  if (Math.abs(maDiff) < sidewaysBand && Math.abs(priceVsMa50) < sidewaysPriceBand) {
-    return { trend: 'sideways', strategy: 'IC', ma20, ma50, reason: `20MA ≈ 50MA — range-bound` };
+  const continuationBullish =
+    ma20 > ma50 &&
+    currentPrice > ma20 &&
+    currentPrice > ma50 &&
+    ma20Slope > continuationSlope20 &&
+    ma50Slope > continuationSlope50 &&
+    momentum60 > 0.04 &&
+    momentum20 > -0.03 &&
+    range60 < maxHealthyRange60;
+
+  const continuationBearish =
+    ma20 < ma50 &&
+    currentPrice < ma20 &&
+    currentPrice < ma50 &&
+    ma20Slope < -continuationSlope20 &&
+    ma50Slope < -continuationSlope50 &&
+    momentum60 < -0.04 &&
+    momentum20 < 0.03 &&
+    range60 < maxHealthyRange60;
+
+  if (continuationBullish) {
+    const confidence = clamp(0.72 + momentum60 + ma20Slope + ma50Slope - Math.max(0, range60 - 0.18));
+    return {
+      trend: 'uptrend',
+      strategy: 'BPS',
+      ma20,
+      ma50,
+      subtype: 'continuation',
+      confidence,
+      reason: `BPS continuation: price above rising 20/50MA, 60-day momentum ${(momentum60 * 100).toFixed(1)}%, confidence ${(confidence * 100).toFixed(0)}%`,
+    };
   }
-  if (maDiff > 0 && currentPrice > ma50) {
-    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, reason: `Uptrend` };
+
+  if (continuationBearish) {
+    const confidence = clamp(0.72 + Math.abs(momentum60) + Math.abs(ma20Slope) + Math.abs(ma50Slope) - Math.max(0, range60 - 0.18));
+    return {
+      trend: 'downtrend',
+      strategy: 'BCS',
+      ma20,
+      ma50,
+      subtype: 'continuation',
+      confidence,
+      reason: `BCS continuation: price below falling 20/50MA, 60-day momentum ${(momentum60 * 100).toFixed(1)}%, confidence ${(confidence * 100).toFixed(0)}%`,
+    };
   }
-  return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, reason: `Downtrend` };
+
+  // Reversal logic: allows a 2–3 month bounce after a long decline, or a 2–3 month rollover after a long advance.
+  // This is intentionally stricter than a simple MA cross so short-term bounces do not all become directional trades.
+  const bullishReversal =
+    currentPrice > ma20 &&
+    currentPrice > ma50 &&
+    ma20Slope > reversalSlope20 &&
+    momentum20 > reversalMomentum20 &&
+    momentum60 > reversalMomentum60 &&
+    higherLow &&
+    range60 < maxHealthyRange60 &&
+    range90 < maxHealthyRange90 &&
+    momentum90 > -0.20;
+
+  const bearishReversal =
+    currentPrice < ma20 &&
+    currentPrice < ma50 &&
+    ma20Slope < -reversalSlope20 &&
+    momentum20 < -reversalMomentum20 &&
+    momentum60 < -reversalMomentum60 &&
+    lowerHigh &&
+    range60 < maxHealthyRange60 &&
+    range90 < maxHealthyRange90 &&
+    momentum90 < 0.20;
+
+  if (bullishReversal) {
+    const confidence = clamp(0.58 + momentum60 + ma20Slope - Math.max(0, range60 - 0.18));
+    return {
+      trend: 'uptrend',
+      strategy: 'BPS',
+      ma20,
+      ma50,
+      subtype: 'reversal',
+      confidence,
+      reason: `BPS reversal: 2–3 month recovery, reclaimed 20/50MA, higher-low structure, confidence ${(confidence * 100).toFixed(0)}%`,
+    };
+  }
+
+  if (bearishReversal) {
+    const confidence = clamp(0.58 + Math.abs(momentum60) + Math.abs(ma20Slope) - Math.max(0, range60 - 0.18));
+    return {
+      trend: 'downtrend',
+      strategy: 'BCS',
+      ma20,
+      ma50,
+      subtype: 'reversal',
+      confidence,
+      reason: `BCS reversal: 2–3 month rollover, lost 20/50MA, lower-high structure, confidence ${(confidence * 100).toFixed(0)}%`,
+    };
+  }
+
+  const clearlyChoppy =
+    chopRatio > 3.5 ||
+    range60 > maxHealthyRange60 ||
+    (Math.abs(priceVsMa50) < 0.06 && Math.abs(momentum60) < 0.06);
+
+  if (clearlyChoppy) {
+    return {
+      trend: 'sideways',
+      strategy: 'IC',
+      ma20,
+      ma50,
+      subtype: range60 > maxHealthyRange60 ? 'chaotic' : 'range',
+      confidence: 0.55,
+      reason: `IC candidate: mixed/choppy trend; 60-day range ${(range60 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%`,
+    };
+  }
+
+  // Final fallback: if the signal is directional but not strong enough, do not force it into BPS/BCS.
+  return {
+    trend: 'sideways',
+    strategy: 'IC',
+    ma20,
+    ma50,
+    subtype: 'range',
+    confidence: 0.50,
+    reason: `No clean directional edge: price/MA/momentum signals are mixed; defaulting to IC review`,
+  };
 }
 
 // ── Best Opportunity Finder ────────────────────────────────────────────────
@@ -1573,8 +1731,8 @@ export default function Home() {
   const autoTickerList = parseTickers(autoTickers);
 
   const downloadCSV = () => {
-    const headers = ['Symbol','Strategy','Trend','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Earnings Date','Fail Reasons'];
-    const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
+    const headers = ['Symbol','Strategy','Trend','Trend Subtype','Trend Confidence','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Earnings Date','Fail Reasons'];
+    const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.trendResult?.subtype||'',r.trendResult?.confidence!=null?(r.trendResult.confidence*100).toFixed(0)+'%':'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
     const blob = new Blob([[headers.join(','),...rows].join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
   };
