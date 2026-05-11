@@ -1975,7 +1975,12 @@ export default function Home() {
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
-  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
+  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newReview = '') => {
+    handleBpsChange(newBps);
+    handleBcsChange(newBcs);
+    handleIcChange(newIc);
+    handleBrokenChange(newReview);
+  };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
   const parseTickers = normalizeTickerInput;
@@ -2172,13 +2177,60 @@ export default function Home() {
             </div>
           </div>
 
-          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
-
+          <SessionsPanel
+            bps={bpsTickers}
+            bcs={bcsTickers}
+            ic={icTickers}
+            review={brokenTickers}
+            onLoadAll={handleGlobalLoad}
+            onLoadPrompt={showLoadPrompt}
+            th={th}
+          />
+          
           <div className={`border-t ${th.border} pt-3 space-y-4`}>
             <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
-            <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
-            <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
-            <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox
+              label="BPS"
+              badge="BULLISH"
+              badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500"
+              borderFocus="focus:border-emerald-500"
+              value={bpsTickers}
+              onChange={handleBpsChange}
+              onClear={() => handleBpsChange('')}
+              strategy="BPS"
+              disabled={loading}
+              onLoadPrompt={showLoadPrompt}
+              th={th}
+            />
+            
+            <StrategyBox
+              label="BCS"
+              badge="BEARISH"
+              badgeColor="bg-red-500/15 text-red-500 border-red-500"
+              borderFocus="focus:border-red-500"
+              value={bcsTickers}
+              onChange={handleBcsChange}
+              onClear={() => handleBcsChange('')}
+              strategy="BCS"
+              disabled={loading}
+              onLoadPrompt={showLoadPrompt}
+              th={th}
+            />
+            
+            <StrategyBox
+              label="IC"
+              badge="NEUTRAL"
+              badgeColor="bg-blue-500/15 text-blue-500 border-blue-500"
+              borderFocus="focus:border-blue-500"
+              value={icTickers}
+              onChange={handleIcChange}
+              onClear={() => handleIcChange('')}
+              strategy="IC"
+              disabled={loading}
+              onLoadPrompt={showLoadPrompt}
+              th={th}
+            />
+            
             <StrategyBox
               label="Broken (Review)"
               badge="REVIEW"
@@ -2186,11 +2238,11 @@ export default function Home() {
               borderFocus="focus:border-amber-500"
               value={brokenTickers}
               onChange={handleBrokenChange}
-              strategy="broken"
+              onClear={() => handleBrokenChange('')}
+              strategy="BROKEN"
               disabled={loading}
               onLoadPrompt={showLoadPrompt}
               th={th}
-              review={review}
             />
           </div>
 
