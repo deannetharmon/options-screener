@@ -900,19 +900,61 @@ function SessionsPanel({ bps, bcs, ic, review, onLoadAll, onLoadPrompt, th }: { 
 }
 
 // ── Strategy Box ──────────────────────────────────────────────────────────
-function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, onClear, strategy, disabled, onLoadPrompt, th }: {
-  label: string;
-  badge: string;
-  badgeColor: string;
-  borderFocus: string;
-  value: string;
-  onChange: (v: string) => void;
-  onClear?: () => void;
-  strategy: 'BPS' | 'BCS' | 'IC' | 'broken';
-  disabled?: boolean;
-  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
-  th: typeof THEMES[Theme];
-}) {
+<StrategyBox
+  label="BPS"
+  badge="BULLISH"
+  badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500"
+  borderFocus="focus:border-emerald-500"
+  value={bpsTickers}
+  onChange={handleBpsChange}
+  onClear={() => handleBpsChange('')}
+  strategy="BPS"
+  disabled={loading}
+  onLoadPrompt={showLoadPrompt}
+  th={th}
+/>
+
+<StrategyBox
+  label="BCS"
+  badge="BEARISH"
+  badgeColor="bg-red-500/15 text-red-500 border-red-500"
+  borderFocus="focus:border-red-500"
+  value={bcsTickers}
+  onChange={handleBcsChange}
+  onClear={() => handleBcsChange('')}
+  strategy="BCS"
+  disabled={loading}
+  onLoadPrompt={showLoadPrompt}
+  th={th}
+/>
+
+<StrategyBox
+  label="IC"
+  badge="NEUTRAL"
+  badgeColor="bg-blue-500/15 text-blue-500 border-blue-500"
+  borderFocus="focus:border-blue-500"
+  value={icTickers}
+  onChange={handleIcChange}
+  onClear={() => handleIcChange('')}
+  strategy="IC"
+  disabled={loading}
+  onLoadPrompt={showLoadPrompt}
+  th={th}
+/>
+
+<StrategyBox
+  label="Broken (Review)"
+  badge="REVIEW"
+  badgeColor="bg-amber-500/15 text-amber-500 border-amber-500"
+  borderFocus="focus:border-amber-500"
+  value={brokenTickers}
+  onChange={handleBrokenChange}
+  onClear={() => handleBrokenChange('')}
+  strategy="broken"
+  disabled={loading}
+  onLoadPrompt={showLoadPrompt}
+  th={th}
+/>
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingTickersRef = useRef<string[]>([]);
   const [scanning, setScanning] = useState(false);
@@ -923,6 +965,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, o
   const [showLoad, setShowLoad] = useState(false);
   const [loadingFilters, setLoadingFilters] = useState(false);
   const parseTickers = normalizeTickerInput;
+  const hasValue = value.trim().length > 0;  
   const refreshFilters = useCallback(async () => { setLoadingFilters(true); const f = await loadFilters(strategy) as SavedFilters; setSavedFilters(f); setLoadingFilters(false); }, [strategy]);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
 
@@ -975,7 +1018,22 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, o
     <div>
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-1.5">
-          <span className={`text-[9px] px-1.5 py-0.5 border rounded-md tracking-wider font-bold ${badgeColor}`}>{badge}</span>
+        <div className="flex items-center gap-2">
+          <span className={`text-[9px] px-1.5 py-0.5 border rounded-md tracking-wider font-bold ${badgeColor}`}>
+            {badge}
+          </span>
+        
+          {onClear && hasValue && (
+            <button
+              type="button"
+              onClick={onClear}
+              className="text-[9px] px-1.5 py-0.5 border border-red-800 rounded-md text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-bold"
+              title={`Clear ${label}`}
+            >
+              ✕
+            </button>
+          )}
+        </div>
           <span className={`text-[10px] ${th.textMuted} font-medium tracking-wider`}>{label}</span>
         </div>
         <div className="flex items-center gap-1">
