@@ -955,6 +955,7 @@ function SessionsPanel({ bps, bcs, ic, review, onLoadAll, onLoadPrompt, th }: { 
   onLoadPrompt={showLoadPrompt}
   th={th}
 />
+
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingTickersRef = useRef<string[]>([]);
   const [scanning, setScanning] = useState(false);
