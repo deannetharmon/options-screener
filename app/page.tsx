@@ -2263,17 +2263,17 @@ export default function Home() {
             />
             
             <StrategyBox
-              label="BCS"
-              badge="BEARISH"
-              badgeColor="bg-red-500/15 text-red-500 border-red-500"
-              borderFocus="focus:border-red-500"
-              value={bcsTickers}
-              onChange={handleBcsChange}
-              onClear={() => handleBcsChange('')}
-              strategy="BCS"
-              disabled={loading}
-              onLoadPrompt={showLoadPrompt}
-              th={th}
+            label="BCS"
+            badge="BEARISH"
+            badgeColor="bg-red-500/15 text-red-500 border-red-500"
+            borderFocus="focus:border-red-500"
+            value={bcsTickers}
+            onChange={handleBcsChange}
+            onClear={() => handleBcsChange('')}
+            strategy="BCS"
+            disabled={loading}
+            onLoadPrompt={showLoadPrompt}
+            th={th}
             />
             
             <StrategyBox
