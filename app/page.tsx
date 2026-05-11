@@ -115,18 +115,65 @@ function buildEntryCalUrl(result: ScreenResult, businessDays: number, directDate
 }
 
 // OCR + merge helpers
+const OCR_TICKER_BLACKLIST = new Set([
+  // Common Finviz / UI / financial-label fragments that OCR mistakes for tickers
+  'USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ',
+  'BPS','BCS','IC','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO',
+  'AI','AN','IS','IT','AT','OR','AS','BY','IN','ON','TO','OF','NO','ANY','ALL',
+  'EPS','TTM','EV','LT','TA','SMA','SMASC','SMA50','SMA200','RSI','PEG','P/E','PE','PB','PS',
+  'BETA','AVG','PRICE','VOLUME','FLOAT','GAP','NEWS','BASIC','CUSTOM','FILTER','SIGNAL','TICKERS'
+]);
+
+function normalizeTickerToken(raw: string): string | null {
+  const token = raw.trim().toUpperCase().replace(/[–—]/g, '-').replace(/\.$/, '');
+  if (!token) return null;
+
+  // Yahoo Finance uses hyphen for Berkshire class B. Finviz/TradingView/OCR may show BRK.B, BRK-B, or BRK B.
+  const normalized = token.replace('.', '-');
+  if (normalized === 'BRK-B' || normalized === 'BRK/B') return 'BRK-B';
+
+  // Basic US ticker shape with optional class suffix, e.g. BRK-B, BF-B.
+  if (!/^[A-Z]{1,5}(-[A-Z])?$/.test(normalized)) return null;
+  if (OCR_TICKER_BLACKLIST.has(normalized)) return null;
+  return normalized;
+}
+
+function normalizeTickerInput(input: string): string[] {
+  const cleaned = input
+    .toUpperCase()
+    .replace(/[–—]/g, '-')
+    .replace(/\bBRK\s*[-.]?\s*B\b/g, 'BRK-B')
+    .replace(/\bBF\s*[-.]?\s*B\b/g, 'BF-B');
+
+  return Array.from(new Set(
+    cleaned
+      .split(/[,\s]+/)
+      .map(normalizeTickerToken)
+      .filter((t): t is string => Boolean(t))
+  ));
+}
+
 async function extractTickersFromImage(file: File): Promise<string[]> {
   const Tesseract = await import('tesseract.js');
   const { data: { text } } = await Tesseract.recognize(file, 'eng', { logger: () => {} });
-  const blacklist = new Set(['USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ','BPS','BCS','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO','AI','AN','IS','IT','AT','OR','AS','BY','IN']);
+
+  const normalizedText = text
+    .toUpperCase()
+    .replace(/[–—]/g, '-')
+    .replace(/\bBRK\s*[-.]?\s*B\b/g, 'BRK-B')
+    .replace(/\bBF\s*[-.]?\s*B\b/g, 'BF-B');
+
   const tickers: string[] = [];
-  const tickerPattern = /\b([A-Z]{2,5})\b/g;
-  for (const line of text.split('\n')) {
+  const tickerPattern = /\b([A-Z]{1,5}(?:[-.][A-Z])?)\b/g;
+
+  for (const line of normalizedText.split('\n')) {
     let match;
     while ((match = tickerPattern.exec(line)) !== null) {
-      if (!blacklist.has(match[1])) tickers.push(match[1]);
+      const ticker = normalizeTickerToken(match[1]);
+      if (ticker) tickers.push(ticker);
     }
   }
+
   return Array.from(new Set(tickers));
 }
 
@@ -769,7 +816,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
   const [showLoad, setShowLoad] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveError, setSaveError] = useState('');
-  const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  const parseTickers = normalizeTickerInput;
   const refreshFilters = useCallback(async () => { const f = await loadFilters('global') as GlobalFilters; setGlobalFilters(f); }, []);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
   const handleSave = async (replace = false) => {
@@ -846,7 +893,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
   const [saveError, setSaveError] = useState('');
   const [showLoad, setShowLoad] = useState(false);
   const [loadingFilters, setLoadingFilters] = useState(false);
-  const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  const parseTickers = normalizeTickerInput;
   const refreshFilters = useCallback(async () => { setLoadingFilters(true); const f = await loadFilters(strategy) as SavedFilters; setSavedFilters(f); setLoadingFilters(false); }, [strategy]);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
 
@@ -1298,9 +1345,10 @@ async function runTrendDetection(
 
 // ── Yahoo Finance getTrend ─────────────────────────────────────────────────
 async function getTrend(symbol: string): Promise<TrendResult> {
-  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+  const cleanSymbol = normalizeTickerToken(symbol) ?? symbol.toUpperCase();
+  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(cleanSymbol)}`, { cache: 'no-store' });
 
-  if (!res.ok) throw new Error(`Yahoo chart fetch failed for ${symbol} (${res.status})`);
+  if (!res.ok) throw new Error(`Yahoo chart fetch failed for ${cleanSymbol} (${res.status})`);
 
   const data = await res.json();
   const bars: { c: number }[] = data?.bars ?? [];
@@ -1323,11 +1371,11 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const max = (values: number[]) => Math.max(...values);
   const min = (values: number[]) => Math.min(...values);
   const clamp = (value: number, low = 0, high = 1) => Math.max(low, Math.min(high, value));
+  const points = (value: number, fullAt: number, maxPoints: number) => clamp(value / fullAt) * maxPoints;
 
   const currentPrice = closes[closes.length - 1];
   const ma20 = avg(closes.slice(-20));
   const ma50 = avg(closes.slice(-50));
-
   const ma20Prev = avg(closes.slice(-40, -20));
   const ma50Prev = closes.length >= 100 ? avg(closes.slice(-100, -50)) : avg(closes.slice(-70, -20));
 
@@ -1343,146 +1391,105 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const prior20 = closes.slice(-40, -20);
   const last60 = closes.slice(-60);
   const last90 = closes.slice(-90);
-
-  const higherLow = min(last20) > min(prior20) * 0.985;
-  const lowerHigh = max(last20) < max(prior20) * 1.015;
   const range60 = pct(max(last60), min(last60));
-  const range90 = last90.length > 0 ? pct(max(last90), min(last90)) : range60;
   const net60 = Math.abs(momentum60);
   const chopRatio = net60 < 0.01 ? 99 : range60 / net60;
 
-  const isIdx = INDEX_TICKERS.has(symbol.toUpperCase());
-  const continuationSlope20 = isIdx ? 0.003 : 0.006;
-  const continuationSlope50 = isIdx ? 0.001 : 0.003;
-  const reversalSlope20 = isIdx ? 0.006 : 0.010;
-  const reversalMomentum60 = isIdx ? 0.050 : 0.080;
-  const reversalMomentum20 = isIdx ? 0.015 : 0.025;
-  const maxHealthyRange60 = isIdx ? 0.22 : 0.30;
-  const maxHealthyRange90 = isIdx ? 0.30 : 0.42;
+  const higherLow = min(last20) > min(prior20) * 0.985;
+  const lowerHigh = max(last20) < max(prior20) * 1.015;
+  const lowerLow = min(last20) < min(prior20) * 0.995;
+  const higherHigh = max(last20) > max(prior20) * 1.005;
 
-  const continuationBullish =
-    ma20 > ma50 &&
-    currentPrice > ma20 &&
-    currentPrice > ma50 &&
-    ma20Slope > continuationSlope20 &&
-    ma50Slope > continuationSlope50 &&
-    momentum60 > 0.04 &&
-    momentum20 > -0.03 &&
-    range60 < maxHealthyRange60;
+  const isIdx = INDEX_TICKERS.has(cleanSymbol.toUpperCase());
+  const maxHealthyRange60 = isIdx ? 0.22 : 0.34;
+  const maxChaoticRange60 = isIdx ? 0.30 : 0.48;
 
-  const continuationBearish =
-    ma20 < ma50 &&
-    currentPrice < ma20 &&
-    currentPrice < ma50 &&
-    ma20Slope < -continuationSlope20 &&
-    ma50Slope < -continuationSlope50 &&
-    momentum60 < -0.04 &&
-    momentum20 < 0.03 &&
-    range60 < maxHealthyRange60;
+  // Score both directions instead of using only hard gates. This allows valid 2–3 month reversals
+  // without letting every short bounce become BPS or every dip become BCS.
+  let bullScore = 0;
+  let bearScore = 0;
 
-  if (continuationBullish) {
-    const confidence = clamp(0.72 + momentum60 + ma20Slope + ma50Slope - Math.max(0, range60 - 0.18));
-    return {
-      trend: 'uptrend',
-      strategy: 'BPS',
-      ma20,
-      ma50,
-      subtype: 'continuation',
-      confidence,
-      reason: `BPS continuation: price above rising 20/50MA, 60-day momentum ${(momentum60 * 100).toFixed(1)}%, confidence ${(confidence * 100).toFixed(0)}%`,
-    };
-  }
+  if (currentPrice > ma20) bullScore += 12; else bearScore += 12;
+  if (currentPrice > ma50) bullScore += 16; else bearScore += 16;
+  bullScore += points(Math.max(0, priceVsMa20), 0.06, 8);
+  bullScore += points(Math.max(0, priceVsMa50), 0.08, 10);
+  bearScore += points(Math.max(0, -priceVsMa20), 0.06, 8);
+  bearScore += points(Math.max(0, -priceVsMa50), 0.08, 10);
 
-  if (continuationBearish) {
-    const confidence = clamp(0.72 + Math.abs(momentum60) + Math.abs(ma20Slope) + Math.abs(ma50Slope) - Math.max(0, range60 - 0.18));
-    return {
-      trend: 'downtrend',
-      strategy: 'BCS',
-      ma20,
-      ma50,
-      subtype: 'continuation',
-      confidence,
-      reason: `BCS continuation: price below falling 20/50MA, 60-day momentum ${(momentum60 * 100).toFixed(1)}%, confidence ${(confidence * 100).toFixed(0)}%`,
-    };
-  }
+  if (ma20 > ma50) bullScore += 12; else bearScore += 12;
+  bullScore += points(Math.max(0, ma20Slope), 0.025, 12);
+  bullScore += points(Math.max(0, ma50Slope), 0.015, 8);
+  bearScore += points(Math.max(0, -ma20Slope), 0.025, 12);
+  bearScore += points(Math.max(0, -ma50Slope), 0.015, 8);
 
-  // Reversal logic: allows a 2–3 month bounce after a long decline, or a 2–3 month rollover after a long advance.
-  // This is intentionally stricter than a simple MA cross so short-term bounces do not all become directional trades.
+  bullScore += points(Math.max(0, momentum20), 0.08, 12);
+  bullScore += points(Math.max(0, momentum60), 0.16, 16);
+  bearScore += points(Math.max(0, -momentum20), 0.08, 12);
+  bearScore += points(Math.max(0, -momentum60), 0.16, 16);
+
+  if (higherLow) bullScore += 8;
+  if (higherHigh) bullScore += 6;
+  if (lowerHigh) bearScore += 8;
+  if (lowerLow) bearScore += 6;
+
+  // Penalize chaotic price action, but do not over-penalize high-IV names like PLTR.
+  const chopPenalty = range60 > maxChaoticRange60 ? 22 : range60 > maxHealthyRange60 ? 10 : chopRatio > 4.0 ? 8 : 0;
+  bullScore -= chopPenalty;
+  bearScore -= chopPenalty;
+
+  const directionalScore = bullScore - bearScore;
+  const absDirectionalScore = Math.abs(directionalScore);
+  const dominantScore = Math.max(bullScore, bearScore);
+  const confidence = clamp(0.45 + (dominantScore / 100) * 0.45 - (chopPenalty / 100));
+
+  const bullishContinuation = directionalScore >= 35 && ma20 > ma50 && currentPrice > ma20 && momentum60 > 0.04;
+  const bearishContinuation = directionalScore <= -35 && ma20 < ma50 && currentPrice < ma20 && momentum60 < -0.04;
+
   const bullishReversal =
+    directionalScore >= 18 &&
     currentPrice > ma20 &&
-    currentPrice > ma50 &&
-    ma20Slope > reversalSlope20 &&
-    momentum20 > reversalMomentum20 &&
-    momentum60 > reversalMomentum60 &&
+    momentum20 > 0.025 &&
+    momentum60 > 0.04 &&
     higherLow &&
-    range60 < maxHealthyRange60 &&
-    range90 < maxHealthyRange90 &&
-    momentum90 > -0.20;
+    momentum90 > -0.25;
 
   const bearishReversal =
+    directionalScore <= -18 &&
     currentPrice < ma20 &&
-    currentPrice < ma50 &&
-    ma20Slope < -reversalSlope20 &&
-    momentum20 < -reversalMomentum20 &&
-    momentum60 < -reversalMomentum60 &&
-    lowerHigh &&
-    range60 < maxHealthyRange60 &&
-    range90 < maxHealthyRange90 &&
-    momentum90 < 0.20;
+    momentum20 < -0.025 &&
+    (momentum60 < -0.04 || ma20Slope < -0.012) &&
+    (lowerHigh || lowerLow) &&
+    momentum90 < 0.25;
+
+  if (bullishContinuation) {
+    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, subtype: 'continuation', confidence,
+      reason: `BPS continuation: bullish score ${bullScore.toFixed(0)} vs bearish ${bearScore.toFixed(0)}, 60-day momentum ${(momentum60 * 100).toFixed(1)}%, confidence ${(confidence * 100).toFixed(0)}%` };
+  }
+
+  if (bearishContinuation) {
+    return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, subtype: 'continuation', confidence,
+      reason: `BCS continuation: bearish score ${bearScore.toFixed(0)} vs bullish ${bullScore.toFixed(0)}, 60-day momentum ${(momentum60 * 100).toFixed(1)}%, confidence ${(confidence * 100).toFixed(0)}%` };
+  }
 
   if (bullishReversal) {
-    const confidence = clamp(0.58 + momentum60 + ma20Slope - Math.max(0, range60 - 0.18));
-    return {
-      trend: 'uptrend',
-      strategy: 'BPS',
-      ma20,
-      ma50,
-      subtype: 'reversal',
-      confidence,
-      reason: `BPS reversal: 2–3 month recovery, reclaimed 20/50MA, higher-low structure, confidence ${(confidence * 100).toFixed(0)}%`,
-    };
+    const c = Math.max(0.55, confidence - 0.06);
+    return { trend: 'uptrend', strategy: 'BPS', ma20, ma50, subtype: 'reversal', confidence: c,
+      reason: `BPS reversal: recovery score ${bullScore.toFixed(0)} vs bearish ${bearScore.toFixed(0)}, reclaimed short-term trend with improving lows, confidence ${(c * 100).toFixed(0)}%` };
   }
 
   if (bearishReversal) {
-    const confidence = clamp(0.58 + Math.abs(momentum60) + Math.abs(ma20Slope) - Math.max(0, range60 - 0.18));
-    return {
-      trend: 'downtrend',
-      strategy: 'BCS',
-      ma20,
-      ma50,
-      subtype: 'reversal',
-      confidence,
-      reason: `BCS reversal: 2–3 month rollover, lost 20/50MA, lower-high structure, confidence ${(confidence * 100).toFixed(0)}%`,
-    };
+    const c = Math.max(0.55, confidence - 0.06);
+    return { trend: 'downtrend', strategy: 'BCS', ma20, ma50, subtype: 'reversal', confidence: c,
+      reason: `BCS reversal: deterioration score ${bearScore.toFixed(0)} vs bullish ${bullScore.toFixed(0)}, lost short-term trend with lower-high/lower-low structure, confidence ${(c * 100).toFixed(0)}%` };
   }
 
-  const clearlyChoppy =
-    chopRatio > 3.5 ||
-    range60 > maxHealthyRange60 ||
-    (Math.abs(priceVsMa50) < 0.06 && Math.abs(momentum60) < 0.06);
-
-  if (clearlyChoppy) {
-    return {
-      trend: 'sideways',
-      strategy: 'IC',
-      ma20,
-      ma50,
-      subtype: range60 > maxHealthyRange60 ? 'chaotic' : 'range',
-      confidence: 0.55,
-      reason: `IC candidate: mixed/choppy trend; 60-day range ${(range60 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%`,
-    };
+  if (range60 > maxChaoticRange60) {
+    return { trend: 'sideways', strategy: 'IC', ma20, ma50, subtype: 'chaotic', confidence: 0.45,
+      reason: `Review/IC: volatile mixed trend; 60-day range ${(range60 * 100).toFixed(1)}% is too wide for a clean directional label` };
   }
 
-  // Final fallback: if the signal is directional but not strong enough, do not force it into BPS/BCS.
-  return {
-    trend: 'sideways',
-    strategy: 'IC',
-    ma20,
-    ma50,
-    subtype: 'range',
-    confidence: 0.50,
-    reason: `No clean directional edge: price/MA/momentum signals are mixed; defaulting to IC review`,
-  };
+  return { trend: 'sideways', strategy: 'IC', ma20, ma50, subtype: absDirectionalScore < 18 ? 'range' : 'unknown', confidence: absDirectionalScore < 18 ? 0.58 : 0.50,
+    reason: `IC candidate: no clean directional edge; bullish score ${bullScore.toFixed(0)}, bearish score ${bearScore.toFixed(0)}, 60-day range ${(range60 * 100).toFixed(1)}%` };
 }
 
 // ── Best Opportunity Finder ────────────────────────────────────────────────
@@ -1727,7 +1734,7 @@ export default function Home() {
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
-  const parseTickers = (input: string) => input.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  const parseTickers = normalizeTickerInput;
   const autoTickerList = parseTickers(autoTickers);
 
   const downloadCSV = () => {
