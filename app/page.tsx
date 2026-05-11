@@ -924,7 +924,6 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, o
   const [showLoad, setShowLoad] = useState(false);
   const [loadingFilters, setLoadingFilters] = useState(false);
   const parseTickers = normalizeTickerInput;
-  const hasValue = value.trim().length > 0;
   const refreshFilters = useCallback(async () => { setLoadingFilters(true); const f = await loadFilters(strategy) as SavedFilters; setSavedFilters(f); setLoadingFilters(false); }, [strategy]);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
 
