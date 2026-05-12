@@ -867,7 +867,7 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; onLoadAll: (bps: string, bcs: string, ic: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
+function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; broken: string; onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
   const [showSave, setShowSave] = useState(false);
   const [showLoad, setShowLoad] = useState(false);
@@ -885,8 +885,8 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
   const handleLoadSelect = (name: string) => {
     const session = globalFilters[name]; if (!session) return; setShowLoad(false);
     const allEmpty = !parseTickers(bps).length && !parseTickers(bcs).length && !parseTickers(ic).length;
-    if (allEmpty) { onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); return; }
-    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic)); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); } });
+    if (allEmpty) { onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), ''); return; }
+    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), ''); } });
   };
   const handleDelete = async (name: string) => { await deleteFilter('global', name); await refreshFilters(); };
   const filterNames = Object.keys(globalFilters);
@@ -894,7 +894,7 @@ function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: str
     <div className={`border-t ${th.border} pt-3`}>
       <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
       <div className="flex gap-2">
-        <button onClick={() => onLoadAll('', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
+        <button onClick={() => onLoadAll('', '', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
         <div className="relative flex-1">
           <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
           {showSave && (
@@ -2350,7 +2350,7 @@ export default function Home() {
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
-  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
+  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
   const parseTickers = normalizeTickerInput;
@@ -2554,7 +2554,7 @@ export default function Home() {
             </div>
           </div>
 
-          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} broken={brokenTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
 
           <div className={`border-t ${th.border} pt-3 space-y-4`}>
             <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
