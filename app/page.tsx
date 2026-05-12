@@ -212,7 +212,10 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 1000,
@@ -1003,8 +1006,15 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
         } else {
           onChange(tickersToString(tickers));
         }
+      } else {
+        onChange('⚠ No tickers found in image');
+        setTimeout(() => onChange(''), 2500);
       }
-    } catch (err) { console.error(err); }
+    } catch (err: any) {
+      console.error(err);
+      onChange(`⚠ OCR error: ${err?.message ?? 'unknown'}`);
+      setTimeout(() => onChange(''), 3500);
+    }
     setScanning(false);
   };
 
@@ -2452,8 +2462,13 @@ export default function Home() {
                       } else {
                         setAutoTickers(tickersToString(tickers));
                       }
+                    } else {
+                      setError('No tickers found in image');
                     }
-                  } catch (err) { console.error(err); }
+                  } catch (err: any) {
+                    console.error(err);
+                    setError(`OCR error: ${err?.message ?? 'unknown'}`);
+                  }
                   setAutoScanning(false);
                 }} />
                 <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; autoFileRef.current?.click(); }} disabled={loading || autoScanning}
