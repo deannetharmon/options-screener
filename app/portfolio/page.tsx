@@ -40,7 +40,6 @@ async function loadPositions(): Promise<Position[]> {
 
   const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
   const rawPositions = positionsData?.data?.items ?? [];
-  console.log('RAW POSITION:', JSON.stringify(rawPositions[0], null, 2));
   const optionPositions = rawPositions.filter((p: any) =>
     p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
   );
@@ -71,12 +70,22 @@ async function loadPositions(): Promise<Position[]> {
     } catch { /* prices optional */ }
   }
 
+  // Parse OCC option symbol: e.g. APP260618P410 → type=P, strike=410
+  function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
+    const match = sym.match(/([A-Z]+)(\d{6})([CP])(\d+)$/);
+    if (!match) return { optionType: 'C', strikePrice: 0 };
+    return {
+      optionType: match[3] as 'P' | 'C',
+      strikePrice: parseInt(match[4], 10) / 1000,
+    };
+  }
+
   const today = new Date();
   const positions: Position[] = Object.entries(groups).map(([key, legs]) => {
     const [symbol, expDate] = key.split('::');
     const dte = Math.round((new Date(expDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    const putLegs  = legs.filter((l: any) => l['option-type'] === 'P');
-    const callLegs = legs.filter((l: any) => l['option-type'] === 'C');
+    const putLegs  = legs.filter((l: any) => parseOptionSymbol(l.symbol).optionType === 'P');
+    const callLegs = legs.filter((l: any) => parseOptionSymbol(l.symbol).optionType === 'C');
     let strategy = 'UNKNOWN';
     if      (putLegs.length >= 2 && callLegs.length === 0) strategy = 'BPS';
     else if (callLegs.length >= 2 && putLegs.length === 0) strategy = 'BCS';
@@ -109,15 +118,18 @@ async function loadPositions(): Promise<Position[]> {
 
     return {
       key, symbol, expDate, dte, strategy,
-      legs: legs.map((l: any) => ({
-        symbol: l.symbol,
-        optionType: l['option-type'] as 'P' | 'C',
-        strikePrice: parseFloat(l['strike-price'] ?? '0'),
-        direction: l['quantity-direction'] as 'Short' | 'Long',
-        quantity: parseInt(l['quantity'] ?? '1', 10),
-        avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
-        currentPrice: currentPrices[l.symbol] ?? null,
-      })),
+      legs: legs.map((l: any) => {
+        const parsed = parseOptionSymbol(l.symbol);
+        return {
+          symbol: l.symbol,
+          optionType: parsed.optionType,
+          strikePrice: parsed.strikePrice,
+          direction: l['quantity-direction'] as 'Short' | 'Long',
+          quantity: parseInt(l['quantity'] ?? '1', 10),
+          avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
+          currentPrice: currentPrices[l.symbol] ?? null,
+        };
+      }),
       creditReceived: Math.abs(creditReceived),
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, hitTarget,
