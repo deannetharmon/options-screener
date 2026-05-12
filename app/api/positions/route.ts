@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getValidAccessToken } from '@/lib/tokenStore';
 
 const BASE_URL = 'https://api.tastytrade.com';
 
 async function ttFetch(path: string, token: string) {
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { Authorization: token },
+    headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });
   if (!res.ok) {
@@ -15,9 +14,21 @@ async function ttFetch(path: string, token: string) {
   return res.json();
 }
 
+async function getToken(): Promise<string> {
+  // Try NEXT_PUBLIC first (this is what the screener uses successfully)
+  const pubToken = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
+  if (pubToken) return pubToken;
+
+  // Fall back to non-public
+  const token = process.env.TASTYTRADE_REFRESH_TOKEN;
+  if (token) return token;
+
+  throw new Error('No TastyTrade token configured');
+}
+
 export async function GET() {
   try {
-    const token = await getValidAccessToken();
+    const token = await getToken();
 
     const accountsData = await ttFetch('/customers/me/accounts', token);
     const accounts = accountsData?.data?.items ?? [];
