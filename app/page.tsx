@@ -62,6 +62,12 @@ interface TrendResult {
     higherLows: boolean;
     lowerHighs: boolean;
     lowerLows: boolean;
+    regimeHigherHighs: boolean;
+    regimeHigherLows: boolean;
+    regimeLowerHighs: boolean;
+    regimeLowerLows: boolean;
+    brokePriorSupport: boolean;
+    drawdownFrom60High: number;
   };
 }
 interface AutoTrendEntry {
@@ -1275,8 +1281,15 @@ function AutoTrendDebugPanel({ entries, th }: { entries: AutoTrendEntry[]; th: t
                         ['Range 60d', `${(result.metrics.range60 * 100).toFixed(1)}%`],
                         ['Chop ratio', result.metrics.chopRatio.toFixed(1)],
                         ['Dist MA50', `${(result.metrics.distFromMa50 * 100).toFixed(1)}%`],
+                        ['DD 60High', `${(result.metrics.drawdownFrom60High * 100).toFixed(1)}%`],
                         ['↑Hi/↑Lo', `${result.metrics.higherHighs ? '✓' : '✗'}/${result.metrics.higherLows ? '✓' : '✗'}`],
                         ['↓Hi/↓Lo', `${result.metrics.lowerHighs ? '✓' : '✗'}/${result.metrics.lowerLows ? '✓' : '✗'}`],
+                        ['Brk Sup', `${result.metrics.brokePriorSupport ? '✓' : '✗'}`],
+                        ['R↑Hi/R↑Lo', `${result.metrics.regimeHigherHighs ? '✓' : '✗'}/${result.metrics.regimeHigherLows ? '✓' : '✗'}`],
+                        ['R↓Hi/R↓Lo', `${result.metrics.regimeLowerHighs ? '✓' : '✗'}/${result.metrics.regimeLowerLows ? '✓' : '✗'}`],
+                        ['Brk Sup', `${result.metrics.brokePriorSupport ? '✓' : '✗'}`],
+                        ['R↑Hi/R↑Lo', `${result.metrics.regimeHigherHighs ? '✓' : '✗'}/${result.metrics.regimeHigherLows ? '✓' : '✗'}`],
+                        ['R↓Hi/R↓Lo', `${result.metrics.regimeLowerHighs ? '✓' : '✗'}/${result.metrics.regimeLowerLows ? '✓' : '✗'}`],
                       ].map(([k, v]) => (
                         <div key={k} className="flex justify-between">
                           <span className={`text-[9px] ${th.textFaint}`}>{k}</span>
@@ -1768,9 +1781,12 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // Pre-compute bearish/bullish structure here so isChaotic can respect it.
   const clearBearishStructure =
     (lowerHighs || regimeLowerHighs) &&
-    (lowerLows || regimeLowerLows || brokePriorSupport) &&
+    (lowerLows || regimeLowerLows || brokePriorSupport ||
+      // Allow lower highs alone when slope and drawdown confirm — catches SPGI/VMC-type
+      // post-bounce names where price hasn't made new lows yet but is clearly rolling over
+      (ma20Slope < -0.008 && drawdownFrom60High < -0.15)) &&
     (ma20Slope < -0.005 || momentum40 < -0.03) &&
-    drawdownFrom60High < -0.10;  // score gate removed — rangy bearish names can have near-zero directional score
+    drawdownFrom60High < -0.10;
 
   const clearBullishStructure =
     (higherLows || regimeHigherLows) &&
@@ -1792,7 +1808,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       subtype: 'CHOP',
       confidence: Math.max(25, Math.min(48, confidence)),
       ma20, ma50, ma200, scores, metrics,
-      reason: `NO_TRADE CHOP: 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}.`,
+      reason: `NO_TRADE CHOP: 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}. | ${diagCBS} | ${diagBMS} | ${diagBMW}`,
     };
   }
 
@@ -1964,6 +1980,22 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     (ma20Slope > 0.008 || momentum40 > 0.05) &&
     !(momentum20 < -0.06 && currentPrice < ma20);
 
+  // ── Diagnostic strings — embedded into reason for IC/Review paths ─────────
+  const diagLowerHighs = lowerHighs || regimeLowerHighs;
+  const diagLowerLows = lowerLows || regimeLowerLows || brokePriorSupport || (ma20Slope < -0.008 && drawdownFrom60High < -0.15);
+  const diagSlope = ma20Slope < -0.005 || momentum40 < -0.03;
+  const diagDD = drawdownFrom60High < -0.10;
+  const diagNoBounceBear = !(momentum20 > 0.06 && currentPrice > ma20);
+  const diagCBS = `clearBearish[↓Hi=${diagLowerHighs ? '✓' : '✗'} ↓Lo=${diagLowerLows ? '✓' : '✗'} slope=${diagSlope ? '✓' : '✗'} dd=${diagDD ? '✓' : '✗'}]=${clearBearishStructure ? '✓' : '✗'}`;
+
+  const diagBMSLowHighs = lowerHighs || regimeLowerHighs;
+  const diagBMSLowLows = lowerLows || regimeLowerLows || brokePriorSupport;
+  const diagBMSMA50 = currentPrice < ma50 || (lowerHighs && regimeLowerHighs && ma20Slope < -0.005);
+  const diagBMSSlope = ma20Slope < -0.005 || momentum40 < -0.03 || momentum60 < -0.05;
+  const diagBMSNoBounce = !(momentum20 > 0.08 && currentPrice > ma20 && reboundFrom60Low > 0.20);
+  const diagBMS = `bearishStrong[score≤-15=${directionalScore <= -15 ? '✓' : '✗'} ↓Hi=${diagBMSLowHighs ? '✓' : '✗'} ↓Lo=${diagBMSLowLows ? '✓' : '✗'} MA50=${diagBMSMA50 ? '✓' : '✗'} slope=${diagBMSSlope ? '✓' : '✗'} noBounce=${diagBMSNoBounce ? '✓' : '✗'}]=${bearishMemoryStrong ? '✓' : '✗'}`;
+  const diagBMW = `bearishWeak[CBS=${clearBearishStructure ? '✓' : '✗'} dd=${diagDD ? '✓' : '✗'} noBounce=${diagNoBounceBear ? '✓' : '✗'}]=${bearishMemoryWeak ? '✓' : '✗'}`;
+
   // True IC range: only if no directional memory gate fires.
   const rangeLike = absScore <= 28 || chopRatio > 3.0 || (range60 > 0.22 && Math.abs(momentum60) < 0.06);
 
@@ -2021,7 +2053,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       ma200,
       scores,
       metrics,
-      reason: `IC RANGE: overlapping/mixed structure; score ${scores.total}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}.`,
+      reason: `IC RANGE: overlapping/mixed structure; score ${scores.total}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}. | ${diagCBS} | ${diagBMS} | ${diagBMW}`,
     };
   }
 
@@ -2068,7 +2100,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     ma200,
     scores,
     metrics,
-    reason: `REVIEW: genuinely conflicting signals; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}. No clear directional or range pattern.`,
+    reason: `REVIEW: genuinely conflicting signals; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}. No clear directional or range pattern. | ${diagCBS} | ${diagBMS} | ${diagBMW}`,
   };
 }
 
