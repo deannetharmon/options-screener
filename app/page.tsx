@@ -13,9 +13,9 @@ const THEMES: Record<Theme, {
   input: string; inputBorder: string; tag: string;
   label: string;
 }> = {
-  dark: { bg: 'bg-[#080c14]', sidebar: 'bg-[#0d1117]', card: 'bg-slate-900/30', cardQualified: 'bg-slate-900/60', border: 'border-slate-700', borderLight: 'border-slate-800', header: 'bg-gradient-to-r from-[#0d1117] to-[#080c14]', text: 'text-white', textMuted: 'text-slate-200', textFaint: 'text-slate-400', input: 'bg-slate-900/80', inputBorder: 'border-slate-700', tag: 'bg-slate-800', label: 'text-slate-300' },
-  medium: { bg: 'bg-[#1a1f2e]', sidebar: 'bg-[#1e2436]', card: 'bg-[#222840]/50', cardQualified: 'bg-[#222840]/80', border: 'border-slate-600', borderLight: 'border-slate-700', header: 'bg-gradient-to-r from-[#1e2436] to-[#1a1f2e]', text: 'text-white', textMuted: 'text-slate-200', textFaint: 'text-slate-400', input: 'bg-[#1a1f2e]', inputBorder: 'border-slate-600', tag: 'bg-slate-700', label: 'text-slate-300' },
-  light: { bg: 'bg-slate-50', sidebar: 'bg-white', card: 'bg-white', cardQualified: 'bg-white', border: 'border-slate-300', borderLight: 'border-slate-200', header: 'bg-gradient-to-r from-slate-800 to-slate-950', text: 'text-slate-950', textMuted: 'text-slate-900', textFaint: 'text-slate-700', input: 'bg-slate-50', inputBorder: 'border-slate-400', tag: 'bg-slate-100', label: 'text-slate-950' },
+  dark: { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#111111]', card: 'bg-[#1a1a1a]', cardQualified: 'bg-[#1f1f1f]', border: 'border-[#2a2a2a]', borderLight: 'border-[#222222]', header: 'bg-[#111111]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#888888]', input: 'bg-[#1a1a1a]', inputBorder: 'border-[#333333]', tag: 'bg-[#252525]', label: 'text-[#cccccc]' },
+  medium: { bg: 'bg-[#161616]', sidebar: 'bg-[#1c1c1c]', card: 'bg-[#222222]', cardQualified: 'bg-[#272727]', border: 'border-[#333333]', borderLight: 'border-[#2a2a2a]', header: 'bg-[#1c1c1c]', text: 'text-white', textMuted: 'text-[#d8d8d8]', textFaint: 'text-[#777777]', input: 'bg-[#222222]', inputBorder: 'border-[#3a3a3a]', tag: 'bg-[#2e2e2e]', label: 'text-[#bbbbbb]' },
+  light: { bg: 'bg-white', sidebar: 'bg-white', card: 'bg-white', cardQualified: 'bg-[#fafafa]', border: 'border-[#e5e5e5]', borderLight: 'border-[#efefef]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#222222]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#d0d0d0]', tag: 'bg-[#f2f2f2]', label: 'text-[#333333]' },
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -673,7 +673,7 @@ const strategyAccent = (s: string) => s === 'BPS' ? 'border-l-4 border-l-emerald
 function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
   const options: { value: Theme; icon: string; label: string }[] = [
     { value: 'light', icon: '☀', label: 'Light' },
-    { value: 'medium', icon: '◐', label: 'Medium' },
+    { value: 'medium', icon: '◐', label: 'Dim' },
     { value: 'dark', icon: '☾', label: 'Dark' },
   ];
   return (
