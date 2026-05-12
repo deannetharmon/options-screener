@@ -338,24 +338,24 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
 
   const effectiveAction = selectedAction ?? rec.action;
 
-  const actionConfig: Record<ActionType, { label: string; btnClass: string; show: boolean }> = {
-    HOLD:        { label: '● Hold',          btnClass: '', show: false },
-    WATCH:       { label: '⚠ Watch',         btnClass: '', show: false },
-    MANAGE:      { label: '⚡ Manage',        btnClass: 'border-orange-600 text-orange-400 hover:bg-orange-600/10', show: true },
-    TAKE_PROFIT: { label: '✓ Take Profit',   btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/10', show: true },
-    CUT_LOSSES:  { label: '✕ Cut Losses',    btnClass: 'border-red-600 text-red-400 hover:bg-red-600/10', show: true },
-    CLOSE_ROLL:  { label: '↻ Close / Roll',  btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/10', show: true },
+  const actionConfig: Record<ActionType, { label: string; btnClass: string; pillClass: string; show: boolean }> = {
+    HOLD:        { label: '● Hold',         btnClass: '', pillClass: 'border-blue-700 text-blue-400 bg-blue-500/10',      show: false },
+    WATCH:       { label: '⚠ Watch',        btnClass: '', pillClass: 'border-yellow-700 text-yellow-400 bg-yellow-500/10', show: false },
+    MANAGE:      { label: '⚡ Manage',       btnClass: 'border-orange-600 text-orange-400 hover:bg-orange-600/10',  pillClass: '', show: true },
+    TAKE_PROFIT: { label: '✓ Take Profit',  btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/10', pillClass: '', show: true },
+    CUT_LOSSES:  { label: '✕ Cut Losses',   btnClass: 'border-red-600 text-red-400 hover:bg-red-600/10',           pillClass: '', show: true },
+    CLOSE_ROLL:  { label: '↻ Close / Roll', btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/10',  pillClass: '', show: true },
   };
 
   const actionDef = actionConfig[effectiveAction];
 
-  const actions: { key: ActionType; label: string; activeColor: string; ringColor: string }[] = [
-    { key: 'HOLD',        label: 'Hold',         activeColor: 'bg-blue-500 border-blue-500',    ringColor: 'ring-blue-500' },
-    { key: 'WATCH',       label: 'Watch',        activeColor: 'bg-yellow-500 border-yellow-500', ringColor: 'ring-yellow-500' },
-    { key: 'MANAGE',      label: 'Manage',       activeColor: 'bg-orange-500 border-orange-500', ringColor: 'ring-orange-500' },
-    { key: 'TAKE_PROFIT', label: 'Take profit',  activeColor: 'bg-emerald-500 border-emerald-500', ringColor: 'ring-emerald-500' },
-    { key: 'CUT_LOSSES',  label: 'Cut losses',   activeColor: 'bg-red-500 border-red-500',       ringColor: 'ring-red-500' },
-    { key: 'CLOSE_ROLL',  label: 'Close / roll', activeColor: 'bg-purple-500 border-purple-500', ringColor: 'ring-purple-500' },
+  const actions: { key: ActionType; label: string; activeColor: string; ringColor: string; labelColor: string }[] = [
+    { key: 'HOLD',        label: 'Hold',         activeColor: 'bg-blue-500 border-blue-500',      ringColor: 'ring-blue-500',    labelColor: 'text-blue-400' },
+    { key: 'WATCH',       label: 'Watch',        activeColor: 'bg-yellow-500 border-yellow-500',  ringColor: 'ring-yellow-500',  labelColor: 'text-yellow-400' },
+    { key: 'MANAGE',      label: 'Manage',       activeColor: 'bg-orange-500 border-orange-500',  ringColor: 'ring-orange-500',  labelColor: 'text-orange-400' },
+    { key: 'TAKE_PROFIT', label: 'Take profit',  activeColor: 'bg-emerald-500 border-emerald-500', ringColor: 'ring-emerald-500', labelColor: 'text-emerald-400' },
+    { key: 'CUT_LOSSES',  label: 'Cut losses',   activeColor: 'bg-red-500 border-red-500',        ringColor: 'ring-red-500',     labelColor: 'text-red-400' },
+    { key: 'CLOSE_ROLL',  label: 'Close / roll', activeColor: 'bg-purple-500 border-purple-500',  ringColor: 'ring-purple-500',  labelColor: 'text-purple-400' },
   ];
 
   return (
@@ -434,15 +434,16 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
               {actions.map(a => {
                 const isSelected = selectedAction === a.key;
                 const isRec = rec.action === a.key && selectedAction === null;
+                const labelColor = isSelected || isRec ? a.labelColor : th.textFaint;
                 return (
                   <div
                     key={a.key}
                     onClick={() => onToggleSelect(pos.key, a.key)}
-                    className={`flex flex-col items-center justify-center px-2.5 py-2 gap-1.5 border-r ${th.borderLight} min-w-[46px] cursor-pointer hover:bg-white/5 transition-colors`}
+                    className={`flex flex-col items-center justify-center px-3 py-2 gap-1.5 border-r ${th.borderLight} w-[70px] cursor-pointer hover:bg-white/5 transition-colors`}
                   >
-                    <span className={`text-[9px] text-center leading-tight whitespace-nowrap ${isSelected || isRec ? th.textMuted : th.textFaint}`}>{a.label}</span>
+                    <span className={`text-[9px] text-center leading-tight whitespace-nowrap font-medium ${labelColor}`}>{a.label}</span>
                     <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center transition-all
-                      ${isSelected ? a.activeColor + ' text-white' : isRec ? 'border-slate-500 ' + a.ringColor + ' ring-1' : 'border-slate-700'}`}>
+                      ${isSelected ? a.activeColor : isRec ? 'border-slate-500 ring-1 ' + a.ringColor : 'border-slate-700'}`}>
                       {(isSelected || isRec) && <span className="text-[8px] font-bold text-white">✓</span>}
                     </div>
                   </div>
@@ -450,15 +451,15 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
               })}
 
               {/* Action button */}
-              <div className="flex items-center px-3">
+              <div className="flex items-center px-3 min-w-[110px]">
                 {actionDef.show ? (
                   <button
                     onClick={() => onToggleSelect(pos.key, effectiveAction)}
-                    className={`text-[9px] px-2.5 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors ${actionDef.btnClass}`}>
+                    className={`text-[9px] px-3 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors w-full text-center ${actionDef.btnClass}`}>
                     {actionDef.label}
                   </button>
                 ) : (
-                  <span className={`text-[9px] px-2.5 py-1.5 border ${th.borderLight} rounded ${th.textFaint} whitespace-nowrap`}>
+                  <span className={`text-[9px] px-3 py-1.5 border rounded whitespace-nowrap w-full text-center font-medium ${actionDef.pillClass}`}>
                     {actionDef.label}
                   </span>
                 )}
@@ -694,7 +695,7 @@ export default function PortfolioPage() {
   const normal     = positions.filter(p => !p.needsClose && !p.hitTarget);
 
   return (
-    <div className={`min-h-screen ${th.bg} transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+    <div className={`min-h-screen ${th.bg} transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minWidth: '1200px' }}>
 
       {/* Header */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
