@@ -1458,7 +1458,8 @@ async function runTrendDetection(
   setStatus: (s: string) => void,
   setLoading: (l: boolean) => void,
   parseTickers: (s: string) => string[],
-  setAutoTrendEntries: (entries: AutoTrendEntry[]) => void
+  setAutoTrendEntries: (entries: AutoTrendEntry[]) => void,
+  showLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void
 ) {
   const autoList = Array.from(new Set(parseTickers(autoTickers)));
   if (autoList.length === 0) {
@@ -1508,13 +1509,42 @@ async function runTrendDetection(
     entries.sort((a, b) => order.indexOf(a.result.strategy) - order.indexOf(b.result.strategy));
     setAutoTrendEntries(entries);
 
-    if (distributions.bps.length > 0) handleBpsChange(mergeTickers(bpsTickers, distributions.bps));
-    if (distributions.bcs.length > 0) handleBcsChange(mergeTickers(bcsTickers, distributions.bcs));
-    if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
-    if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
+    const statusMsg = `✅ Trend detection complete: ${distributions.bps.length} BPS, ${distributions.bcs.length} BCS, ${distributions.ic.length} IC, ${distributions.broken.length} broken/unknown.`;
+
+    const applyDistributions = (doMerge: boolean) => {
+      if (doMerge) {
+        if (distributions.bps.length > 0) handleBpsChange(mergeTickers(bpsTickers, distributions.bps));
+        if (distributions.bcs.length > 0) handleBcsChange(mergeTickers(bcsTickers, distributions.bcs));
+        if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
+        if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
+      } else {
+        handleBpsChange(tickersToString(distributions.bps));
+        handleBcsChange(tickersToString(distributions.bcs));
+        handleIcChange(tickersToString(distributions.ic));
+        handleBrokenChange(tickersToString(distributions.broken));
+      }
+    };
+
+    // Check if any box already has tickers — if so, prompt replace vs merge
+    const hasExisting =
+      parseTickers(bpsTickers).length > 0 ||
+      parseTickers(bcsTickers).length > 0 ||
+      parseTickers(icTickers).length > 0 ||
+      parseTickers(brokenTickers).length > 0;
 
     setAutoTickers('');
-    setStatus(`✅ Trend detection complete: ${distributions.bps.length} BPS, ${distributions.bcs.length} BCS, ${distributions.ic.length} IC, ${distributions.broken.length} broken/unknown.`);
+    setStatus(statusMsg);
+
+    if (hasExisting) {
+      const total = distributions.bps.length + distributions.bcs.length + distributions.ic.length + distributions.broken.length;
+      showLoadPrompt({
+        name: `${total} ticker${total !== 1 ? 's' : ''} from trend detection`,
+        type: 'strategy',
+        onLoad: applyDistributions,
+      });
+    } else {
+      applyDistributions(false);
+    }
   } catch (e: any) {
     setError(e.message);
   } finally {
@@ -2368,7 +2398,7 @@ export default function Home() {
       autoTickers, bpsTickers, bcsTickers, icTickers, brokenTickers,
       handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
       setAutoTickers, setError, setStatus, setLoading, parseTickers,
-      setAutoTrendEntries
+      setAutoTrendEntries, showLoadPrompt
     );
   };
 
