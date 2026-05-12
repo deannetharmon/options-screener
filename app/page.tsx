@@ -2287,7 +2287,7 @@ interface LevelResult {
   presetColor: string;
   rulesUsed: RulesType;
   ruleDiffs: string[];
-  best: BestSetup | null;
+  ranked: BestSetup[];
   failures: { strategy: string; reasons: string[] }[];
 }
 
@@ -2326,9 +2326,7 @@ function BestOpportunityFinder({
   const scoreCandidate = (result: ScreenResult, strat: string): BestSetup | null => {
     if (!result.qualified || !result.bestCandidate) return null;
     const c = result.bestCandidate;
-    let score = (c.roc || 0) * 0.45 + ((c.pop || 70) * 0.35) + (c.creditRatio * 100 * 0.2);
-    if (strat === 'IC') score += 12;
-    if (strat === preferredStrategy) score += 20;
+    const score = (c.roc || 0) * 0.45 + ((c.pop || 70) * 0.35) + (c.creditRatio * 100 * 0.2);
     let grade: BestSetup['grade'] = 'C';
     if (score > 88) grade = 'A+'; else if (score > 75) grade = 'A'; else if (score > 60) grade = 'B';
     const notes: string[] = [];
@@ -2361,7 +2359,7 @@ function BestOpportunityFinder({
           if (setup) candidates.push(setup);
           else failures.push({ strategy: strat, reasons: result.failReasons.length > 0 ? result.failReasons : ['No qualifying strikes found'] });
         }
-        results.push({ presetKey: level.presetKey, presetLabel: level.presetLabel, presetColor: level.presetColor, rulesUsed: mergedRules, ruleDiffs, best: candidates.length > 0 ? candidates.sort((a, b) => b.score - a.score)[0] : null, failures });
+        results.push({ presetKey: level.presetKey, presetLabel: level.presetLabel, presetColor: level.presetColor, rulesUsed: mergedRules, ruleDiffs, ranked: candidates.sort((a, b) => b.score - a.score), failures });
       }
       setLevelResults(results);
     } catch (e: any) {
@@ -2408,31 +2406,41 @@ function BestOpportunityFinder({
                     <span className="text-[9px] text-yellow-400">Relaxed vs Course: {level.ruleDiffs.join(' · ')}</span>
                   )}
                 </div>
-                {level.best
-                  ? <span className={`text-xs font-bold ${gradeColor(level.best.grade)}`}>Grade {level.best.grade} · {level.best.strategy}</span>
+                {level.ranked.length > 0
+                  ? <span className={`text-[10px] ${th.textFaint}`}>{level.ranked.length} setup{level.ranked.length !== 1 ? 's' : ''} found</span>
                   : <span className="text-[10px] text-slate-500">No setup found</span>}
               </div>
 
-              {level.best ? (
-                <div className="p-4">
-                  <div className="grid grid-cols-4 gap-3 mb-3">
-                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p><p className={`text-xs font-bold ${th.text}`}>{level.best.setup.expiration} <span className="text-slate-500">({level.best.setup.dte}d)</span></p></div>
-                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p><p className={`text-xs font-bold ${th.text}`}>{level.best.setup.shortStrike}/{level.best.setup.longStrike}</p></div>
-                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit</p><p className="text-xs font-bold text-emerald-400">${(level.best.setup.totalCredit ?? level.best.setup.credit).toFixed(2)}</p></div>
-                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>ROC / POP</p><p className={`text-xs font-bold ${th.text}`}>{level.best.setup.roc.toFixed(0)}% / {level.best.setup.pop?.toFixed(0) ?? '—'}%</p></div>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3 mb-3">
-                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>50% Target</p><p className="text-xs font-bold text-emerald-400">${((level.best.setup.totalCredit ?? level.best.setup.credit) * 0.5).toFixed(2)}</p></div>
-                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit Ratio</p><p className={`text-xs font-bold ${th.text}`}>{(level.best.setup.creditRatio * 100).toFixed(0)}% of width</p></div>
-                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI Short/Long</p><p className={`text-xs font-bold ${th.text}`}>{level.best.setup.shortOI} / {level.best.setup.longOI}</p></div>
-                  </div>
-                  <div className={`pt-2 border-t ${th.border} flex items-center justify-between`}>
-                    <p className={`text-[9px] ${th.textFaint}`}>{level.best.notes[0]}</p>
-                    <button
-                      onClick={() => { const s = level.best!; alert(`${s.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${s.setup.expiration} (${s.setup.dte}d)\nStrikes: ${s.setup.shortStrike}/${s.setup.longStrike}\nCredit: $${(s.setup.totalCredit ?? s.setup.credit).toFixed(2)}\n50% target: $${((s.setup.totalCredit ?? s.setup.credit) * 0.5).toFixed(2)}`); }}
-                      className="text-[9px] px-2 py-1 border border-emerald-600 text-emerald-400 rounded hover:bg-emerald-600/10 transition-colors font-medium tracking-wider"
-                    >TRADE IN TASTYTRADE →</button>
-                  </div>
+              {level.ranked.length > 0 ? (
+                <div className="divide-y divide-[inherit]" style={{ borderColor: 'inherit' }}>
+                  {level.ranked.map((setup, idx) => (
+                    <div key={setup.strategy} className={`p-4 ${idx === 0 ? '' : 'opacity-80'}`}>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border ${idx === 0 ? 'border-emerald-500 text-emerald-400' : idx === 1 ? 'border-slate-500 text-slate-400' : 'border-slate-700 text-slate-500'}`}>{idx + 1}</span>
+                          <span className={`text-xs font-bold px-2 py-0.5 border rounded ${setup.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : setup.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{setup.strategy}</span>
+                          <span className={`text-xs font-bold ${gradeColor(setup.grade)}`}>Grade {setup.grade}</span>
+                          <span className={`text-[9px] ${th.textFaint}`}>score {setup.score.toFixed(1)}</span>
+                        </div>
+                        <button
+                          onClick={() => { alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${setup.setup.shortStrike}/${setup.setup.longStrike}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`); }}
+                          className="text-[9px] px-2 py-1 border border-emerald-600 text-emerald-400 rounded hover:bg-emerald-600/10 transition-colors font-medium tracking-wider"
+                        >TRADE →</button>
+                      </div>
+                      <div className="grid grid-cols-4 gap-3 mb-2">
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.expiration} <span className="text-slate-500">({setup.setup.dte}d)</span></p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortStrike}/{setup.setup.longStrike}</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit</p><p className="text-xs font-bold text-emerald-400">${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>ROC / POP</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.roc.toFixed(0)}% / {setup.setup.pop?.toFixed(0) ?? '—'}%</p></div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3 mb-2">
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>50% Target</p><p className="text-xs font-bold text-emerald-400">${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit Ratio</p><p className={`text-xs font-bold ${th.text}`}>{(setup.setup.creditRatio * 100).toFixed(0)}% of width</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI Short/Long</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortOI} / {setup.setup.longOI}</p></div>
+                      </div>
+                      <p className={`text-[9px] ${th.textFaint}`}>{setup.notes[0]}</p>
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div className="px-4 py-3 space-y-1.5">
