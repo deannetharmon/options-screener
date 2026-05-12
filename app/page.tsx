@@ -1856,7 +1856,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     momentum60 > 0.07 &&
     (higherLows || regimeHigherLows) &&
     !upsideExhausted &&
-    range60 < 0.32;  // CYTK-fix: wide-range choppy stocks score high but aren't clean BPS
+    drawdownFrom60High > -0.20;  // post-crash bounces (ARES/APO/TSLA) are 25-40% off highs; clean uptrends (NVDA/PANW/AAPL/BAC) are not
 
   const bearishContinuation =
     directionalScore <= -62 &&
@@ -1874,7 +1874,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     regimeHigherLows &&            // require regime-level higher lows, not just 20-bar — rules out UBER-type ranges
     momentum90 > -0.35 &&
     !upsideExhausted &&
-    range60 < 0.35;  // PTCT-fix: don't call BPS on post-crash wide-range recoveries
+    drawdownFrom60High > -0.25;  // PTCT/ETSY still 30%+ off 6mo high — not a clean reversal setup
 
   const bearishReversal =
     directionalScore <= -48 &&
@@ -2001,7 +2001,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     drawdownFrom60High < -0.06 &&
     !(momentum20 > 0.06 && currentPrice > ma20) &&
     !(momentum60 > 0.12 && currentPrice > ma50) &&  // block strong 60d recoveries — HOOD-type V-bounces back above MA50
-    momentum20 < 0.04;  // BROS/HALO-fix: if 20d is flat/positive the stock is bouncing, not continuing down
+    momentum60 < 0.02;  // BROS/HALO/ORLY/KHC fix: only fire if 60d trend is still negative/flat — recovering stocks have positive momentum60
 
   const bullishMemoryStrong =
     directionalScore >= 22 &&
@@ -2071,7 +2071,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  if (rangeLike) {
+  if (rangeLike && !(clearBearishStructure && drawdownFrom60High < -0.18 && directionalScore <= -8)) {
     return {
       trend: 'sideways',
       strategy: 'IC',
