@@ -432,6 +432,7 @@ const RULE_LABELS: Record<string, string> = {
 
 const LS_RULES = 'prosper-rules';
 const LS_RULES_PRESET = 'prosper-rules-preset';
+const LS_ACTIVE_PRESET = 'prosper-active-preset';
 const LS_RULES_VERSION = 'prosper-rules-v2'; // bump this when defaults change
 function getSavedRules(): RulesType {
   try {
@@ -1394,7 +1395,9 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
   const [preset, setPreset] = useState<'stock' | 'etf'>(() => {
     try { const p = localStorage.getItem(LS_RULES_PRESET); return p === 'etf' ? 'etf' : 'stock'; } catch { return 'stock'; }
   });
-  const [activeRulePreset, setActiveRulePreset] = useState<string | null>(null);
+  const [activeRulePreset, setActiveRulePreset] = useState<string | null>(() => {
+    try { return localStorage.getItem(LS_ACTIVE_PRESET) || null; } catch { return null; }
+  });
 
   const handleChange = (key: string, raw: string) => setRawValues(prev => ({ ...prev, [key]: raw }));
   const handleBlur = (key: keyof RulesType, raw: string) => {
@@ -1402,10 +1405,11 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     if (!isNaN(val)) { const updated = { ...editedRules, [key]: val }; setEditedRules(updated); setRawValues(prev => ({ ...prev, [key]: String(val) })); }
     else setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
   };
-  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); setPreset('stock'); localStorage.removeItem(LS_RULES); try { localStorage.removeItem(LS_RULES_PRESET); } catch {} };
+  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); setPreset('stock'); setActiveRulePreset(null); localStorage.removeItem(LS_RULES); try { localStorage.removeItem(LS_RULES_PRESET); localStorage.removeItem(LS_ACTIVE_PRESET); } catch {} };
   const handlePreset = (p: 'stock' | 'etf') => {
     setPreset(p);
-    try { localStorage.setItem(LS_RULES_PRESET, p); } catch {}
+    setActiveRulePreset(null);
+    try { localStorage.setItem(LS_RULES_PRESET, p); localStorage.removeItem(LS_ACTIVE_PRESET); } catch {}
     const base = p === 'etf' ? { ...DEFAULT_RULES, ...ETF_RULES } : { ...DEFAULT_RULES };
     setEditedRules(base);
     setRawValues(Object.fromEntries(Object.entries(base).map(([k, v]) => [k, String(v)])));
@@ -1418,6 +1422,7 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     setEditedRules(merged);
     setRawValues(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
     setActiveRulePreset(p.key);
+    try { localStorage.setItem(LS_ACTIVE_PRESET, p.key); } catch {}
   };
   const handleRun = () => { saveRulesToStorage(editedRules); onRun(editedRules); };
 
