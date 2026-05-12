@@ -692,6 +692,10 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
   const btnRef = useRef<HTMLButtonElement>(null);
   const dateInputRef = useRef<HTMLInputElement>(null);
   const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const d = addBusinessDays(new Date().toISOString().split('T')[0], 2);
+    return d.toISOString().split('T')[0];
+  });
 
   const presets: { label: string; days: number; hint: string }[] = [
     { label: '+2d',  days: 2,  hint: 'Revisit soon' },
@@ -725,6 +729,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
 
   const handleDatePick = (dateStr: string) => {
     if (!dateStr) return;
+    setSelectedDate(dateStr);
     const d = new Date(dateStr + 'T12:00:00');
     const url = buildEntryCalUrl(result, 0, d);
     const a = document.createElement('a');
@@ -788,6 +793,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
                 ref={dateInputRef}
                 type="date"
                 min={new Date().toISOString().split('T')[0]}
+                value={selectedDate}
                 onChange={e => handleDatePick(e.target.value)}
                 className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} focus:outline-none focus:border-emerald-500 cursor-pointer`}
               />
