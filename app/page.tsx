@@ -43,7 +43,6 @@ interface TrendResult {
     structure: number;
     chop: number;
     volatility: number;
-    range?: number;
     total: number;
   };
   metrics?: {
@@ -62,7 +61,6 @@ interface TrendResult {
     higherLows: boolean;
     lowerHighs: boolean;
     lowerLows: boolean;
-    [key: string]: any;
   };
 }
 interface ScreenResult {
@@ -840,7 +838,7 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-function SessionsPanel({ bps, bcs, ic, review, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; review: string; onLoadAll: (bps: string, bcs: string, ic: string, review?: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
+function SessionsPanel({ bps, bcs, ic, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; onLoadAll: (bps: string, bcs: string, ic: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
   const [showSave, setShowSave] = useState(false);
   const [showLoad, setShowLoad] = useState(false);
@@ -857,7 +855,7 @@ function SessionsPanel({ bps, bcs, ic, review, onLoadAll, onLoadPrompt, th }: { 
   };
   const handleLoadSelect = (name: string) => {
     const session = globalFilters[name]; if (!session) return; setShowLoad(false);
-    const allEmpty = !parseTickers(bps).length && !parseTickers(bcs).length && !parseTickers(ic).length && !parseTickers(review).length;
+    const allEmpty = !parseTickers(bps).length && !parseTickers(bcs).length && !parseTickers(ic).length;
     if (allEmpty) { onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); return; }
     onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic)); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic)); } });
   };
@@ -867,7 +865,7 @@ function SessionsPanel({ bps, bcs, ic, review, onLoadAll, onLoadPrompt, th }: { 
     <div className={`border-t ${th.border} pt-3`}>
       <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
       <div className="flex gap-2">
-        <button onClick={() => onLoadAll('', '', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>↻ Reset</button>
+        <button onClick={() => onLoadAll('', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
         <div className="relative flex-1">
           <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
           {showSave && (
@@ -902,14 +900,13 @@ function SessionsPanel({ bps, bcs, ic, review, onLoadAll, onLoadPrompt, th }: { 
 }
 
 // ── Strategy Box ──────────────────────────────────────────────────────────
-function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, onClear, strategy, disabled, onLoadPrompt, th }: {
+function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: {
   label: string;
   badge: string;
   badgeColor: string;
   borderFocus: string;
   value: string;
   onChange: (v: string) => void;
-  onClear?: () => void;
   strategy: 'BPS' | 'BCS' | 'IC' | 'broken';
   disabled?: boolean;
   onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
@@ -925,16 +922,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, o
   const [showLoad, setShowLoad] = useState(false);
   const [loadingFilters, setLoadingFilters] = useState(false);
   const parseTickers = normalizeTickerInput;
-  const filterNames = Object.keys(savedFilters);
-  const hasValue = parseTickers(value).length > 0;
-
-  const refreshFilters = useCallback(async () => {
-    setLoadingFilters(true);
-    const f = await loadFilters(strategy) as SavedFilters;
-    setSavedFilters(f);
-    setLoadingFilters(false);
-  }, [strategy]);
-
+  const refreshFilters = useCallback(async () => { setLoadingFilters(true); const f = await loadFilters(strategy) as SavedFilters; setSavedFilters(f); setLoadingFilters(false); }, [strategy]);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
 
   const handleImgClick = () => {
@@ -943,13 +931,12 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, o
   };
 
   const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setScanning(true);
+    const file = e.target.files?.[0]; if (!file) return; setScanning(true);
     try {
       const tickers = await extractTickersFromImage(file);
       if (tickers.length > 0) {
-        if (hasValue) {
+        const hasExisting = parseTickers(value).length > 0;
+        if (hasExisting) {
           pendingTickersRef.current = tickers;
           onLoadPrompt({
             name: `${tickers.length} ticker${tickers.length !== 1 ? 's' : ''} from image`,
@@ -963,61 +950,31 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, o
           onChange(tickersToString(tickers));
         }
       }
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (err) { console.error(err); }
     setScanning(false);
   };
 
   const handleSave = async (replace = false) => {
     if (!saveName.trim()) { setSaveError('Enter a name'); return; }
-    const tickers = parseTickers(value);
-    if (tickers.length === 0) { setSaveError('No tickers to save'); return; }
+    const tickers = parseTickers(value); if (tickers.length === 0) { setSaveError('No tickers to save'); return; }
     const result = await saveFilter(strategy, saveName.trim(), { tickers }, replace);
     if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
-    await refreshFilters();
-    setShowSaveInput(false);
-    setSaveName('');
-    setSaveError('');
+    await refreshFilters(); setShowSaveInput(false); setSaveName(''); setSaveError('');
   };
-
   const handleLoadSelect = (name: string) => {
-    const tickers = savedFilters[name] ?? [];
-    setShowLoad(false);
-    if (!hasValue) {
-      onChange(tickersToString(tickers));
-      return;
-    }
-    onLoadPrompt({
-      name,
-      type: 'strategy',
-      onLoad: (doMerge: boolean) => {
-        if (doMerge) onChange(mergeTickers(value, tickers));
-        else onChange(tickersToString(tickers));
-      },
-    });
+    const tickers = savedFilters[name] ?? []; setShowLoad(false);
+    if (!hasValue) { onChange(tickersToString(tickers)); return; }
+    onLoadPrompt({ name, type: 'strategy', onLoad: (doMerge: boolean) => { if (doMerge) onChange(mergeTickers(value, tickers)); else onChange(tickersToString(tickers)); } });
   };
-
-  const handleDelete = async (name: string) => {
-    await deleteFilter(strategy, name);
-    await refreshFilters();
-  };
+  const handleDelete = async (name: string) => { await deleteFilter(strategy, name); await refreshFilters(); };
+  const filterNames = Object.keys(savedFilters);
+  const hasValue = parseTickers(value).length > 0;
 
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-1.5">
           <span className={`text-[9px] px-1.5 py-0.5 border rounded-md tracking-wider font-bold ${badgeColor}`}>{badge}</span>
-          {onClear && hasValue && (
-            <button
-              type="button"
-              onClick={onClear}
-              className="text-[9px] px-1.5 py-0.5 border border-red-800 rounded-md text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-bold"
-              title={`Clear ${label}`}
-            >
-              ✕
-            </button>
-          )}
           <span className={`text-[10px] ${th.textMuted} font-medium tracking-wider`}>{label}</span>
         </div>
         <div className="flex items-center gap-1">
@@ -1058,8 +1015,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, o
         onChange={e => onChange(e.target.value)}
         disabled={disabled}
         placeholder={`${label} tickers...`}
-        rows={Math.max(3, value.split('\n').length + 1, Math.ceil(value.length / 26))}
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} min-h-14 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed disabled:opacity-40 overflow-hidden`}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-14 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed disabled:opacity-40`}
       />
     </div>
   );
@@ -1494,7 +1450,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const near60High = currentPrice >= high60 * 0.96;
   const near60Low = currentPrice <= low60 * 1.04;
 
-
   const higherLows = low20 > priorLow20 * 0.985;
   const higherHighs = high20 > priorHigh20 * 1.005;
   const lowerHighs = high20 < priorHigh20 * 1.015;
@@ -1510,37 +1465,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const highVolName = Math.abs(momentum60) > 0.18 || range60 > 0.34 || Math.abs(momentum90) > 0.30;
   const maxHealthyRange60 = isIdx ? 0.22 : highVolName ? 0.48 : 0.34;
   const maxChaoticRange60 = isIdx ? 0.30 : highVolName ? 0.72 : 0.52;
-
-  // Phase 2: explicit range / IC detection primitives.
-  const range20 = pct(high20, low20);
-  const range90 = pct(high90, low90);
-  const returns30 = closes.slice(-31).map((v, i, arr) => i === 0 ? 0 : pct(v, arr[i - 1])).slice(1);
-  const directionChanges30 = returns30.reduce((count, r, i, arr) => {
-    if (i === 0) return count;
-    const prev = arr[i - 1];
-    return r !== 0 && prev !== 0 && Math.sign(r) !== Math.sign(prev) ? count + 1 : count;
-  }, 0);
-  const reversalDensity = directionChanges30 / Math.max(1, returns30.length - 1);
-  const flatSlope = Math.abs(ma20Slope) < 0.025 && Math.abs(ma50Slope) < 0.035;
-  const lowDirectionalPersistence = Math.abs(momentum60) < 0.075 && Math.abs(momentum20) < 0.07;
-  const compressionScore = clamp((1 - (range20 / Math.max(range60, 0.001))) * 100, 0, 100);
-  const overlapScore = clamp((reversalDensity / 0.48) * 100, 0, 100);
-  const rangeContainmentScore = clamp((1 - Math.abs(momentum60) / Math.max(range60, 0.001)) * 100, 0, 100);
-  const upperRejections = last20.filter(c => c > high60 * 0.92 && c < high60 * 0.985).length;
-  const lowerRejections = last20.filter(c => c < low60 * 1.08 && c > low60 * 1.015).length;
-  const breakoutFailureScore = clamp((upperRejections + lowerRejections) * 8, 0, 100);
-  const rangeScore = Math.round(clamp(
-    (flatSlope ? 22 : 0) +
-    (lowDirectionalPersistence ? 22 : 0) +
-    compressionScore * 0.22 +
-    overlapScore * 0.22 +
-    rangeContainmentScore * 0.20 +
-    breakoutFailureScore * 0.14,
-    0,
-    100
-  ));
-  const isRangeBound = rangeScore >= 58 && range60 < maxHealthyRange60 * 1.18 && Math.abs(momentum60) < 0.12;
-
 
   let momentumScore = 0;
   momentumScore += signedScale(momentum20, 0.10, 18);
@@ -1615,7 +1539,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     structure: Math.round(structureScore + regimeScore),
     chop: Math.round(chopPenalty),
     volatility: Math.round(volatilityPenalty + maturityPenalty),
-    range: rangeScore,
     total: Math.round(directionalScore),
   };
 
@@ -1649,15 +1572,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     regimeLowerLows,
     brokePriorSupport,
     brokePriorResistance,
-    range20,
-    range90,
-    rangeScore,
-    compressionScore: Math.round(compressionScore),
-    overlapScore: Math.round(overlapScore),
-    breakoutFailureScore: Math.round(breakoutFailureScore),
-    reversalDensity,
-    flatSlope,
-    isRangeBound,
     upsideExhausted,
     downsideExhausted,
   };
@@ -1666,32 +1580,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const conflictPenalty = Math.abs(momentumScore) > 12 && Math.abs(maAlignmentScore) > 12 && Math.sign(momentumScore) !== Math.sign(maAlignmentScore) ? 12 : 0;
   const confidence = Math.round(clamp(absScore - conflictPenalty - penalty * 0.35, 0, 100));
 
-  const brokenStructureScore = Math.round(clamp(
-    (range60 > maxChaoticRange60 ? 35 : 0) +
-    (range20 > range60 * 0.82 && Math.abs(momentum20) > 0.14 ? 18 : 0) +
-    (chopRatio > 7.5 && range60 > maxHealthyRange60 ? 18 : 0) +
-    (Math.abs(momentum20) > 0.24 && Math.sign(momentum20) !== Math.sign(momentum60 || momentum20) ? 12 : 0),
-    0,
-    100
-  ));
-
-  // Phase 2: Range-bound charts should route to IC before REVIEW unless truly chaotic/broken.
-  if (isRangeBound && brokenStructureScore < 55 && absScore < 52) {
-    return {
-      trend: 'sideways',
-      strategy: 'IC',
-      subtype: 'RANGE',
-      confidence: Math.max(56, Math.min(82, rangeScore)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics: { ...metrics, brokenStructureScore },
-      reason: `IC RANGE: range score ${rangeScore}, compression ${Math.round(compressionScore)}, overlap ${Math.round(overlapScore)}, 60-day range ${(range60 * 100).toFixed(1)}%, momentum60 ${(momentum60 * 100).toFixed(1)}%.`,
-    };
-  }
-
-  const isChaotic = brokenStructureScore >= 65;
+  const isChaotic = range60 > maxChaoticRange60 || (chopRatio > 6.0 && absScore < 50);
   if (isChaotic) {
     return {
       trend: 'sideways',
@@ -1702,12 +1591,27 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       ma50,
       ma200,
       scores,
-      metrics: { ...metrics, brokenStructureScore },
-      reason: `REVIEW BROKEN: broken score ${brokenStructureScore}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}.`,
+      metrics,
+      reason: `NO_TRADE CHOP: 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}.`,
     };
   }
 
-  // Extension is now treated as a risk flag in the reason text, not as an automatic REVIEW override.
+  // If the move is directional but very mature/vertical, keep it out of automatic spread assignment.
+  // These names can be directionally correct but poor option-selling entries because pullback risk is high.
+  if ((upsideExhausted && directionalScore > 45) || (downsideExhausted && directionalScore < -45)) {
+    return {
+      trend: directionalScore > 0 ? 'uptrend' : 'downtrend',
+      strategy: 'NO_TRADE',
+      subtype: 'UNKNOWN',
+      confidence: Math.max(42, Math.min(58, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `REVIEW EXTENDED: ${directionalScore > 0 ? 'bullish' : 'bearish'} direction, but move is mature/vertical. 20-day momentum ${(momentum20 * 100).toFixed(1)}%, distance from 50MA ${(distFromMa50 * 100).toFixed(1)}%, 60-day range ${(range60 * 100).toFixed(1)}%.`,
+    };
+  }
 
   const bullishContinuation =
     directionalScore >= 68 &&
@@ -1801,20 +1705,20 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  // True IC range: not just weak signal, but overlapping movement, flat slope, compression, or poor directional persistence.
-  const rangeLike = rangeScore >= 48 || absScore <= 30 || (chopRatio > 3.0 && Math.abs(momentum60) < 0.12) || (range60 > 0.18 && Math.abs(momentum60) < 0.07);
-  if (rangeLike && brokenStructureScore < 60) {
+  // True IC range: not just weak signal, but overlapping movement or poor directional persistence.
+  const rangeLike = absScore <= 28 || chopRatio > 3.0 || (range60 > 0.22 && Math.abs(momentum60) < 0.06);
+  if (rangeLike) {
     return {
       trend: 'sideways',
       strategy: 'IC',
       subtype: 'RANGE',
-      confidence: Math.max(55, Math.min(80, Math.max(rangeScore, 100 - absScore - Math.round(penalty * 0.25)))),
+      confidence: Math.max(55, Math.min(78, 100 - absScore - Math.round(penalty * 0.35))),
       ma20,
       ma50,
       ma200,
       scores,
-      metrics: { ...metrics, brokenStructureScore },
-      reason: `IC RANGE: range score ${rangeScore}, directional score ${scores.total}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}.`,
+      metrics,
+      reason: `IC RANGE: overlapping/mixed structure; score ${scores.total}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}.`,
     };
   }
 
@@ -1828,7 +1732,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     ma200,
     scores,
     metrics,
-    reason: `REVIEW: mixed/immature or genuinely broken; score ${scores.total}, range score ${rangeScore}, broken score ${brokenStructureScore}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.`,
+    reason: `REVIEW: mixed or immature signal; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.`,
   };
 }
 
@@ -2071,12 +1975,7 @@ export default function Home() {
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
-  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newReview = '') => {
-    handleBpsChange(newBps);
-    handleBcsChange(newBcs);
-    handleIcChange(newIc);
-    handleBrokenChange(newReview);
-  };
+  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
   const parseTickers = normalizeTickerInput;
@@ -2273,60 +2172,13 @@ export default function Home() {
             </div>
           </div>
 
-          <SessionsPanel
-            bps={bpsTickers}
-            bcs={bcsTickers}
-            ic={icTickers}
-            review={brokenTickers}
-            onLoadAll={handleGlobalLoad}
-            onLoadPrompt={showLoadPrompt}
-            th={th}
-          />
-          
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
+
           <div className={`border-t ${th.border} pt-3 space-y-4`}>
             <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
-            <StrategyBox
-              label="BPS"
-              badge="BULLISH"
-              badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500"
-              borderFocus="focus:border-emerald-500"
-              value={bpsTickers}
-              onChange={handleBpsChange}
-              onClear={() => handleBpsChange('')}
-              strategy="BPS"
-              disabled={loading}
-              onLoadPrompt={showLoadPrompt}
-              th={th}
-            />
-            
-            <StrategyBox
-            label="BCS"
-            badge="BEARISH"
-            badgeColor="bg-red-500/15 text-red-500 border-red-500"
-            borderFocus="focus:border-red-500"
-            value={bcsTickers}
-            onChange={handleBcsChange}
-            onClear={() => handleBcsChange('')}
-            strategy="BCS"
-            disabled={loading}
-            onLoadPrompt={showLoadPrompt}
-            th={th}
-            />
-            
-            <StrategyBox
-              label="IC"
-              badge="NEUTRAL"
-              badgeColor="bg-blue-500/15 text-blue-500 border-blue-500"
-              borderFocus="focus:border-blue-500"
-              value={icTickers}
-              onChange={handleIcChange}
-              onClear={() => handleIcChange('')}
-              strategy="IC"
-              disabled={loading}
-              onLoadPrompt={showLoadPrompt}
-              th={th}
-            />
-            
+            <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox
               label="Broken (Review)"
               badge="REVIEW"
@@ -2334,7 +2186,6 @@ export default function Home() {
               borderFocus="focus:border-amber-500"
               value={brokenTickers}
               onChange={handleBrokenChange}
-              onClear={() => handleBrokenChange('')}
               strategy="broken"
               disabled={loading}
               onLoadPrompt={showLoadPrompt}
