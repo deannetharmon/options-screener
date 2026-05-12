@@ -13,7 +13,125 @@ if (typeof document !== 'undefined') {
   }
 }
 
-// ── Theme (matches screener) ───────────────────────────────────────────────
+// ── TastyTrade (client-side, mirrors screener) ────────────────────────────
+const BASE = 'https://api.tastytrade.com';
+async function ttFetch(path: string, token: string) {
+  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`); }
+  return res.json();
+}
+async function getAccessToken(): Promise<string> {
+  const r = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
+  const s = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
+  const c = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
+  if (!r || !s || !c) throw new Error('TastyTrade credentials not configured');
+  const res = await fetch(`${BASE}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: r.trim(), client_id: c.trim(), client_secret: s.trim() }) });
+  if (!res.ok) { const text = await res.text(); throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 200)}`); }
+  return (await res.json()).access_token;
+}
+
+async function loadPositions(): Promise<Position[]> {
+  const token = await getAccessToken();
+  const accountsData = await ttFetch('/customers/me/accounts', token);
+  const accounts = accountsData?.data?.items ?? [];
+  if (accounts.length === 0) throw new Error('No accounts found');
+  const accountNumber = accounts[0]?.account?.['account-number'];
+  if (!accountNumber) throw new Error('Could not read account number');
+
+  const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
+  const rawPositions = positionsData?.data?.items ?? [];
+  const optionPositions = rawPositions.filter((p: any) =>
+    p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
+  );
+
+  const groups: Record<string, any[]> = {};
+  for (const pos of optionPositions) {
+    const symbol = pos['underlying-symbol'];
+    const expDate = pos['expires-at']?.slice(0, 10) ?? 'unknown';
+    const key = `${symbol}::${expDate}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(pos);
+  }
+
+  const allOptionSymbols = optionPositions.map((p: any) => p.symbol).filter(Boolean);
+  const currentPrices: Record<string, number> = {};
+  if (allOptionSymbols.length > 0) {
+    try {
+      for (let i = 0; i < allOptionSymbols.length; i += 50) {
+        const chunk = allOptionSymbols.slice(i, i + 50);
+        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
+        const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
+        for (const item of priceData?.data?.items ?? []) {
+          const bid = parseFloat(item.bid ?? '0');
+          const ask = parseFloat(item.ask ?? '0');
+          currentPrices[item.symbol] = (bid + ask) / 2;
+        }
+      }
+    } catch { /* prices optional */ }
+  }
+
+  const today = new Date();
+  const positions: Position[] = Object.entries(groups).map(([key, legs]) => {
+    const [symbol, expDate] = key.split('::');
+    const dte = Math.round((new Date(expDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const putLegs  = legs.filter((l: any) => l['option-type'] === 'P');
+    const callLegs = legs.filter((l: any) => l['option-type'] === 'C');
+    let strategy = 'UNKNOWN';
+    if      (putLegs.length >= 2 && callLegs.length === 0) strategy = 'BPS';
+    else if (callLegs.length >= 2 && putLegs.length === 0) strategy = 'BCS';
+    else if (putLegs.length >= 2 && callLegs.length >= 2)  strategy = 'IC';
+    else if (putLegs.length === 1 && callLegs.length === 0) strategy = 'PUT';
+    else if (callLegs.length === 1 && putLegs.length === 0) strategy = 'CALL';
+
+    let creditReceived = 0;
+    for (const leg of legs) {
+      const qty = parseInt(leg['quantity'] ?? '1', 10);
+      const avgPrice = parseFloat(leg['average-open-price'] ?? '0');
+      creditReceived += leg['quantity-direction'] === 'Short' ? avgPrice * qty : -(avgPrice * qty);
+    }
+    creditReceived = creditReceived * 100;
+
+    let currentValue = 0;
+    let hasCurrentPrices = true;
+    for (const leg of legs) {
+      const qty = parseInt(leg['quantity'] ?? '1', 10);
+      const price = currentPrices[leg.symbol];
+      if (price == null) { hasCurrentPrices = false; break; }
+      currentValue += leg['quantity-direction'] === 'Short' ? price * qty : -(price * qty);
+    }
+    currentValue = currentValue * 100;
+
+    const pnl = hasCurrentPrices ? creditReceived + currentValue : null;
+    const pnlPct = creditReceived !== 0 && pnl != null ? (pnl / Math.abs(creditReceived)) * 100 : null;
+    const targetPrice = Math.abs(creditReceived) * 0.5;
+    const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * 0.5;
+
+    return {
+      key, symbol, expDate, dte, strategy,
+      legs: legs.map((l: any) => ({
+        symbol: l.symbol,
+        optionType: l['option-type'] as 'P' | 'C',
+        strikePrice: parseFloat(l['strike-price'] ?? '0'),
+        direction: l['quantity-direction'] as 'Short' | 'Long',
+        quantity: parseInt(l['quantity'] ?? '1', 10),
+        avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
+        currentPrice: currentPrices[l.symbol] ?? null,
+      })),
+      creditReceived: Math.abs(creditReceived),
+      currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
+      pnl, pnlPct, targetPrice, hitTarget,
+      needsClose: dte <= 21,
+      accountNumber,
+    };
+  });
+
+  positions.sort((a, b) => {
+    if (a.needsClose && !b.needsClose) return -1;
+    if (!a.needsClose && b.needsClose) return 1;
+    return a.dte - b.dte;
+  });
+  return positions;
+}
 type Theme = 'dark' | 'medium' | 'light';
 const LS_THEME = 'prosper-theme';
 
@@ -273,10 +391,8 @@ export default function PortfolioPage() {
   const fetchPositions = async () => {
     setLoading(true); setError('');
     try {
-      const res = await fetch('/api/positions', { cache: 'no-store' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to fetch positions');
-      setPositions(data.positions ?? []);
+      const data = await loadPositions();
+      setPositions(data);
       setLastRefresh(new Date());
     } catch (e: any) {
       setError(e.message);
