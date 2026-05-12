@@ -1830,8 +1830,9 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     directionalScore >= 48 &&
     currentPrice > ma20 &&
     momentum20 > 0.035 &&
-    momentum60 > 0.045 &&
+    momentum60 > 0.07 &&           // raised from 0.045 — filters out flat/ranging stocks with marginal 60d momentum
     (higherLows || regimeHigherLows) &&
+    regimeHigherLows &&            // require regime-level higher lows, not just 20-bar — rules out UBER-type ranges
     momentum90 > -0.35 &&
     !upsideExhausted;
 
@@ -1958,7 +1959,8 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     clearBearishStructure &&
     (lowerHighs || regimeLowerHighs) &&
     drawdownFrom60High < -0.06 &&
-    !(momentum20 > 0.06 && currentPrice > ma20);
+    !(momentum20 > 0.06 && currentPrice > ma20) &&
+    !(momentum60 > 0.12 && currentPrice > ma50);  // block strong 60d recoveries — HOOD-type V-bounces back above MA50
 
   const bullishMemoryStrong =
     directionalScore >= 22 &&
