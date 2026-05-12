@@ -57,6 +57,7 @@ interface TrendResult {
     ma50Slope: number;
     range60: number;
     chopRatio: number;
+    distFromMa50: number;
     higherHighs: boolean;
     higherLows: boolean;
     lowerHighs: boolean;
