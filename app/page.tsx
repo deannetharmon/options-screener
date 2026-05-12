@@ -1768,7 +1768,14 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // ── CDW fix: catastrophic recent drop = event-driven, not a tradeable setup ──
   // If price crashed >25% in the last 10 bars, the chart is broken regardless of direction.
   const recentCatastrophicDrop = pct(currentPrice, max(closes.slice(-11, -1))) < -0.25;
-  if (recentCatastrophicDrop) {
+  // Only block on catastrophic drop if the stock wasn't already in a confirmed downtrend.
+  // TMDX-type: sustained downtrend all 6mo with an accelerating final flush — that's BCS, not Review.
+  const preCatastrophicDowntrend =
+    (lowerHighs || regimeLowerHighs) &&
+    (lowerLows || regimeLowerLows) &&
+    drawdownFrom60High < -0.30 &&
+    momentum60 < -0.10;
+  if (recentCatastrophicDrop && !preCatastrophicDowntrend) {
     return {
       trend: 'unknown',
       strategy: 'NO_TRADE',
@@ -1848,7 +1855,8 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     currentPrice > ma20 &&
     momentum60 > 0.07 &&
     (higherLows || regimeHigherLows) &&
-    !upsideExhausted;
+    !upsideExhausted &&
+    range60 < 0.32;  // CYTK-fix: wide-range choppy stocks score high but aren't clean BPS
 
   const bearishContinuation =
     directionalScore <= -62 &&
@@ -1865,7 +1873,8 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     (higherLows || regimeHigherLows) &&
     regimeHigherLows &&            // require regime-level higher lows, not just 20-bar — rules out UBER-type ranges
     momentum90 > -0.35 &&
-    !upsideExhausted;
+    !upsideExhausted &&
+    range60 < 0.35;  // PTCT-fix: don't call BPS on post-crash wide-range recoveries
 
   const bearishReversal =
     directionalScore <= -48 &&
@@ -1991,7 +2000,8 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     (lowerHighs || regimeLowerHighs) &&
     drawdownFrom60High < -0.06 &&
     !(momentum20 > 0.06 && currentPrice > ma20) &&
-    !(momentum60 > 0.12 && currentPrice > ma50);  // block strong 60d recoveries — HOOD-type V-bounces back above MA50
+    !(momentum60 > 0.12 && currentPrice > ma50) &&  // block strong 60d recoveries — HOOD-type V-bounces back above MA50
+    momentum20 < 0.04;  // BROS/HALO-fix: if 20d is flat/positive the stock is bouncing, not continuing down
 
   const bullishMemoryStrong =
     directionalScore >= 22 &&
@@ -2094,7 +2104,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows) && momentum60 > 0.05 && !rangeLike) {
+  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows) && momentum60 > 0.08 && !rangeLike) {
     return {
       trend: 'uptrend',
       strategy: 'BPS',
