@@ -502,7 +502,7 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
       if (putSym) { allOCCSymbols.push(putSym); symbolMeta[putSym] = { expDate, strike: strikePrice, optionType: 'P' }; }
     }
   }
-  if (allOCCSymbols.length === 0) return { expirations, chains };
+  if (allOCCSymbols.length === 0) return { expirations, chains, isEtfOrIndex };
   for (let i = 0; i < allOCCSymbols.length; i += 100) {
     const chunk = allOCCSymbols.slice(i, i + 100);
     const qs = chunk.map(s => `equity-option=${encodeURIComponent(s)}`).join('&');
