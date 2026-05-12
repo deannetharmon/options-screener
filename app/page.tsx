@@ -1416,7 +1416,17 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     try { const p = localStorage.getItem(LS_RULES_PRESET); return p === 'etf' ? 'etf' : 'stock'; } catch { return 'stock'; }
   });
   const [activeRulePreset, setActiveRulePreset] = useState<string | null>(() => {
-    try { return localStorage.getItem(LS_ACTIVE_PRESET) || null; } catch { return null; }
+    try {
+      // Use saved preset key if present
+      const saved = localStorage.getItem(LS_ACTIVE_PRESET);
+      if (saved) return saved;
+      // Otherwise detect which preset the loaded rules match
+      const keys: (keyof RulesType)[] = ['IVR_MIN', 'OI_MIN', 'BID_ASK_MAX', 'CREDIT_RATIO_MIN', 'ROC_MIN_SPREAD', 'ROC_MIN_IC'];
+      const match = RULE_PRESETS.find(p =>
+        keys.every(k => (p.rules as any)[k] === undefined || (p.rules as any)[k] === rules[k])
+      );
+      return match?.key ?? null;
+    } catch { return null; }
   });
 
   const handleChange = (key: string, raw: string) => setRawValues(prev => ({ ...prev, [key]: raw }));
