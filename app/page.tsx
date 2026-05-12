@@ -540,10 +540,10 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
     candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop: (1 - absDelta) * 100, optimized: true });
   }
   if (candidates.length === 0) return null;
-  // Pick best POP; use ROC as tiebreaker when POP is within 2%
+  // Pick best POP; use ROC as tiebreaker when POP difference is < 5%
   return candidates.sort((a, b) => {
     const popDiff = (b.pop ?? 0) - (a.pop ?? 0);
-    if (Math.abs(popDiff) > 2) return popDiff;
+    if (Math.abs(popDiff) >= 5) return popDiff;
     return b.roc - a.roc;
   })[0];
 }
@@ -555,10 +555,10 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
     if (c) allCandidates.push(c);
   }
   if (allCandidates.length === 0) return null;
-  // Pick best POP across all widths; ROC tiebreaker within 2% POP
+  // Pick best POP across all widths; ROC tiebreaker when POP difference is < 5%
   return allCandidates.sort((a, b) => {
     const popDiff = (b.pop ?? 0) - (a.pop ?? 0);
-    if (Math.abs(popDiff) > 2) return popDiff;
+    if (Math.abs(popDiff) >= 5) return popDiff;
     return b.roc - a.roc;
   })[0];
 }
