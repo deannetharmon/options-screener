@@ -40,7 +40,6 @@ async function loadPositions(): Promise<Position[]> {
 
   const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
   const rawPositions = positionsData?.data?.items ?? [];
-  console.log('SYMBOLS:', rawPositions.slice(0,3).map((p: any) => p.symbol));
   const optionPositions = rawPositions.filter((p: any) =>
     p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
   );
@@ -73,13 +72,11 @@ async function loadPositions(): Promise<Position[]> {
 
   // Parse OCC option symbol: e.g. APP260618P410 → type=P, strike=410
   function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
-    const match = sym.match(/^([A-Z/]+)(\d{6})([CP])(\d+)$/);
+    // TastyTrade format: "APP  260618P00410000" — ticker + spaces + YYMMDD + C/P + 8-digit strike
+    const match = sym.trim().replace(/\s+/g, '').match(/^([A-Z/]+)(\d{6})([CP])(\d{8})$/);
     if (!match) return { optionType: 'C', strikePrice: 0 };
-    // Full OCC: 8-digit strike in 1/1000 dollars (e.g. 00585000 = $585.00)
-    // Short TastyTrade symbols omit leading zeros: 585000 = $585.00, 5500000 = $5500.00
-    const raw = parseInt(match[4], 10);
-    // If 6+ digits, divide by 1000; if fewer, it's already the dollar value
-    const strikePrice = match[4].length >= 6 ? raw / 1000 : raw;
+    // 00410000 = $410.00, 00045000 = $45.00
+    const strikePrice = parseInt(match[4], 10) / 1000;
     return { optionType: match[3] as 'P' | 'C', strikePrice };
   }
 
