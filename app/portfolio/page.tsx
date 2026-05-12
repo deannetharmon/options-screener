@@ -268,7 +268,7 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   };
 }
 
-
+function getSavedTheme(): Theme {
   try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
 }
 
