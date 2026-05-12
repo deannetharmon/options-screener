@@ -524,8 +524,8 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
 // ── HUNTER Logic ─────────────────────────────────────────────────────────
 function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string, width: number, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const bidAskMax = getBidAskMax(price);
-  const sorted = strategy === 'BPS' ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice) : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
-  for (const shortLeg of sorted) {
+  const candidates: SpreadCandidate[] = [];
+  for (const shortLeg of legs) {
     const delta = shortLeg.delta; if (delta == null) continue;
     const absDelta = Math.abs(delta);
     if (absDelta < RULES.SPREAD_DELTA_MIN || absDelta > RULES.SPREAD_DELTA_MAX) continue;
@@ -536,15 +536,30 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
     const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_SPREAD) continue;
-    return { strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop: (1 - absDelta) * 100, optimized: true };
+    candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop: (1 - absDelta) * 100, optimized: true });
   }
-  return null;
+  if (candidates.length === 0) return null;
+  // Pick best POP; use ROC as tiebreaker when POP is within 2%
+  return candidates.sort((a, b) => {
+    const popDiff = (b.pop ?? 0) - (a.pop ?? 0);
+    if (Math.abs(popDiff) > 2) return popDiff;
+    return b.roc - a.roc;
+  })[0];
 }
 function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === (strategy === 'BPS' ? 'P' : 'C'));
-  let best: SpreadCandidate | null = null;
-  for (const width of getWidthSteps(RULES.MAX_SPREAD_WIDTH, price)) { const c = trySpreadAtWidth(legs, strategy, expDate, width, price, RULES); if (c && (best === null || c.roc > best.roc)) best = c; }
-  return best;
+  const allCandidates: SpreadCandidate[] = [];
+  for (const width of getWidthSteps(RULES.MAX_SPREAD_WIDTH, price)) {
+    const c = trySpreadAtWidth(legs, strategy, expDate, width, price, RULES);
+    if (c) allCandidates.push(c);
+  }
+  if (allCandidates.length === 0) return null;
+  // Pick best POP across all widths; ROC tiebreaker within 2% POP
+  return allCandidates.sort((a, b) => {
+    const popDiff = (b.pop ?? 0) - (a.pop ?? 0);
+    if (Math.abs(popDiff) > 2) return popDiff;
+    return b.roc - a.roc;
+  })[0];
 }
 function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, price: number | null, RULES: RulesType, minCallStrike?: number): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number } | null {
   const bidAskMax = getBidAskMax(price);
@@ -703,10 +718,10 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
   const handleSchedule = (days: number, label: string) => {
     const url = buildEntryCalUrl(result, days);
     const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    document.body.appendChild(a); a.click(); setTimeout(() => document.body.removeChild(a), 100);
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = label; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
     setScheduled(label);
-    setOpen(false);
+    setTimeout(() => setOpen(false), 150);
   };
 
   const handleDatePick = (dateStr: string) => {
@@ -714,11 +729,12 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
     setSelectedDate(dateStr);
     const d = new Date(dateStr + 'T12:00:00');
     const url = buildEntryCalUrl(result, 0, d);
+    // Create anchor, append, click, then defer removal so the tab opens before DOM cleanup
     const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    document.body.appendChild(a); a.click(); setTimeout(() => document.body.removeChild(a), 100);
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = dateStr; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
     setScheduled(dateStr);
-    setOpen(false);
+    setTimeout(() => setOpen(false), 150);
   };
 
   useEffect(() => {
@@ -2652,10 +2668,17 @@ export default function Home() {
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
-          <button onClick={() => setShowRulesModal(true)} disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
-            {loading ? 'SCANNING...' : 'RUN HUNTER'}
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => runScreen(runtimeRules)} disabled={loading}
+              className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
+              {loading ? 'SCANNING...' : 'RUN HUNTER'}
+            </button>
+            <button onClick={() => setShowRulesModal(true)} disabled={loading}
+              title="Edit screening rules"
+              className={`px-3 py-2.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40 text-sm`}>
+              ⚙
+            </button>
+          </div>
 
           {/* Last Rules Used */}
           <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
