@@ -2638,6 +2638,12 @@ export default function Home() {
         <div>
           <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
           <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
+        </div> 
+        <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Current</p>
+            <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}
+            </p>
         </div>
         <img src="/header-bg.png" alt="" className="flex-1 mx-6 hidden sm:block" style={{height: '57px', marginTop: '-1rem', marginBottom: '-1rem', objectFit: 'cover'}} />
         <div className="flex items-center gap-3">
