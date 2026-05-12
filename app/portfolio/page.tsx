@@ -336,9 +336,30 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
     ? 'border-emerald-500/60'
     : th.border;
 
+  const effectiveAction = selectedAction ?? rec.action;
+
+  const actionConfig: Record<ActionType, { label: string; btnClass: string; show: boolean }> = {
+    HOLD:        { label: '● Hold',          btnClass: '', show: false },
+    WATCH:       { label: '⚠ Watch',         btnClass: '', show: false },
+    MANAGE:      { label: '⚡ Manage',        btnClass: 'border-orange-600 text-orange-400 hover:bg-orange-600/10', show: true },
+    TAKE_PROFIT: { label: '✓ Take Profit',   btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/10', show: true },
+    CUT_LOSSES:  { label: '✕ Cut Losses',    btnClass: 'border-red-600 text-red-400 hover:bg-red-600/10', show: true },
+    CLOSE_ROLL:  { label: '↻ Close / Roll',  btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/10', show: true },
+  };
+
+  const actionDef = actionConfig[effectiveAction];
+
+  const actions: { key: ActionType; label: string; activeColor: string; ringColor: string }[] = [
+    { key: 'HOLD',        label: 'Hold',         activeColor: 'bg-blue-500 border-blue-500',    ringColor: 'ring-blue-500' },
+    { key: 'WATCH',       label: 'Watch',        activeColor: 'bg-yellow-500 border-yellow-500', ringColor: 'ring-yellow-500' },
+    { key: 'MANAGE',      label: 'Manage',       activeColor: 'bg-orange-500 border-orange-500', ringColor: 'ring-orange-500' },
+    { key: 'TAKE_PROFIT', label: 'Take profit',  activeColor: 'bg-emerald-500 border-emerald-500', ringColor: 'ring-emerald-500' },
+    { key: 'CUT_LOSSES',  label: 'Cut losses',   activeColor: 'bg-red-500 border-red-500',       ringColor: 'ring-red-500' },
+    { key: 'CLOSE_ROLL',  label: 'Close / roll', activeColor: 'bg-purple-500 border-purple-500', ringColor: 'ring-purple-500' },
+  ];
+
   return (
     <div className={`border ${borderClass} ${th.card} rounded-lg overflow-hidden transition-all`}>
-      {/* Alert banner */}
       {pos.needsClose && (
         <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
           <span className="text-red-400 text-xs">⚠</span>
@@ -352,109 +373,102 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
         </div>
       )}
 
-      {/* Main row */}
-      <div className="px-4 py-3 flex items-center gap-4 flex-wrap cursor-pointer" onClick={() => setExpanded(!expanded)}>
-        {/* Symbol + strategy */}
-        <div className="w-20 shrink-0">
-          <p className={`font-bold ${th.text} text-sm`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
-          <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
+      <div className="flex items-stretch">
+        {/* Expand toggle — left edge */}
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className={`px-3 flex items-center border-r ${th.borderLight} ${th.textFaint} hover:${th.textMuted} transition-colors shrink-0`}>
+          <span className="text-[10px]">{expanded ? '▲' : '▼'}</span>
+        </button>
+
+        {/* Data columns — fixed grid for vertical alignment */}
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 110px 110px 80px 80px 90px 80px', gap: '0 12px', alignItems: 'center' }}>
+          <div>
+            <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
+            <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Expiry / DTE</p>
+            <p className="text-xs" style={{ fontFamily: "'DM Mono', monospace" }}>
+              <span className={th.text}>{pos.expDate}</span>
+              <span className={`ml-1 ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
+            </p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
+            <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
+            <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Current</p>
+            <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}
+            </p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>P&L</p>
+            <p className={`text-xs font-bold ${pnlColor(pos.pnl)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)}` : '—'}
+              {pos.pnlPct != null && <span className="ml-1 text-[10px] font-normal">({pos.pnlPct.toFixed(0)}%)</span>}
+            </p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>50% Target</p>
+            <p className={`text-xs ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
+            </p>
+          </div>
         </div>
 
-        {/* Expiry + DTE */}
-        <div className="shrink-0">
-          <p className={`text-[10px] ${th.textFaint}`}>Expiry</p>
-          <p className="text-xs font-medium" style={{ fontFamily: "'DM Mono', monospace" }}>
-            <span className={th.text}>{pos.expDate}</span>
-            <span className={`ml-1.5 ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
-          </p>
-        </div>
-
-        {/* Strikes */}
-        <div className="shrink-0">
-          <p className={`text-[10px] ${th.textFaint}`}>Strikes</p>
-          <p className={`text-xs font-medium ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
-        </div>
-
-        {/* Credit received */}
-        <div className="shrink-0">
-          <p className={`text-[10px] ${th.textFaint}`}>Credit</p>
-          <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
-        </div>
-
-        {/* Current value */}
-        <div className="shrink-0">
-          <p className={`text-[10px] ${th.textFaint}`}>Current</p>
-          <p className={`text-xs font-medium ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-            {pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}
-          </p>
-        </div>
-
-        {/* P&L */}
-        <div className="shrink-0">
-          <p className={`text-[10px] ${th.textFaint}`}>P&L</p>
-          <p className={`text-xs font-bold ${pnlColor(pos.pnl)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-            {pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)}` : '—'}
-            {pos.pnlPct != null && <span className="ml-1 text-[10px]">({pos.pnlPct.toFixed(0)}%)</span>}
-          </p>
-        </div>
-
-        {/* 50% target */}
-        <div className="shrink-0">
-          <p className={`text-[10px] ${th.textFaint}`}>50% Target</p>
-          <p className={`text-xs font-medium ${pos.hitTarget ? 'text-emerald-400' : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-            ${pos.targetPrice.toFixed(2)}
-            {pos.hitTarget && <span className="ml-1 text-emerald-400">✓</span>}
-          </p>
-        </div>
-
-        {/* Action columns */}
-        {(() => {
-          const actions: { key: ActionType; label: string; color: string }[] = [
-            { key: 'HOLD',        label: 'Hold',        color: 'bg-blue-500 border-blue-500' },
-            { key: 'WATCH',       label: 'Watch',       color: 'bg-yellow-500 border-yellow-500' },
-            { key: 'MANAGE',      label: 'Manage',      color: 'bg-orange-500 border-orange-500' },
-            { key: 'TAKE_PROFIT', label: 'Take profit', color: 'bg-emerald-500 border-emerald-500' },
-            { key: 'CUT_LOSSES',  label: 'Cut losses',  color: 'bg-red-500 border-red-500' },
-            { key: 'CLOSE_ROLL',  label: 'Close / roll', color: 'bg-purple-500 border-purple-500' },
-          ];
-          return (
-            <div className={`ml-auto flex items-stretch border-l ${th.border} shrink-0`} onClick={e => e.stopPropagation()}>
-              {trendLoading ? (
-                <div className="flex items-center px-4">
-                  <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
-                </div>
-              ) : (
-                actions.map(a => (
-                  <div key={a.key} className={`flex flex-col items-center justify-center px-3 py-2 gap-1.5 border-r last:border-r-0 ${th.borderLight} min-w-[52px]`}>
-                    <span className={`text-[9px] text-center leading-tight ${rec.action === a.key ? th.textMuted : th.textFaint}`}>{a.label}</span>
-                    <div
-                      onClick={() => onToggleSelect(pos.key, a.key)}
-                      className={`w-4 h-4 rounded border-2 flex items-center justify-center cursor-pointer transition-all
-                        ${selectedAction === a.key ? a.color + ' text-white' : 'border-slate-600 hover:border-slate-400'}
-                        ${rec.action === a.key && selectedAction === null ? 'ring-1 ring-offset-1 ring-offset-transparent ' + a.color.split(' ')[0].replace('bg-', 'ring-') : ''}`}
-                    >
-                      {(selectedAction === a.key || (rec.action === a.key && selectedAction === null)) && (
-                        <span className={`text-[9px] font-bold ${selectedAction === a.key ? 'text-white' : a.color.replace('bg-', 'text-').split(' ')[0]}`}>✓</span>
-                      )}
+        {/* Action columns + button */}
+        <div className={`flex items-stretch border-l ${th.border} shrink-0`} onClick={e => e.stopPropagation()}>
+          {trendLoading ? (
+            <div className="flex items-center px-4">
+              <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
+            </div>
+          ) : (
+            <>
+              {actions.map(a => {
+                const isSelected = selectedAction === a.key;
+                const isRec = rec.action === a.key && selectedAction === null;
+                return (
+                  <div
+                    key={a.key}
+                    onClick={() => onToggleSelect(pos.key, a.key)}
+                    className={`flex flex-col items-center justify-center px-2.5 py-2 gap-1.5 border-r ${th.borderLight} min-w-[46px] cursor-pointer hover:bg-white/5 transition-colors`}
+                  >
+                    <span className={`text-[9px] text-center leading-tight whitespace-nowrap ${isSelected || isRec ? th.textMuted : th.textFaint}`}>{a.label}</span>
+                    <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center transition-all
+                      ${isSelected ? a.activeColor + ' text-white' : isRec ? 'border-slate-500 ' + a.ringColor + ' ring-1' : 'border-slate-700'}`}>
+                      {(isSelected || isRec) && <span className="text-[8px] font-bold text-white">✓</span>}
                     </div>
                   </div>
-                ))
-              )}
-            </div>
-          );
-        })()}
+                );
+              })}
 
-        {/* Expand + TT link */}
-        <div className="flex flex-col items-center gap-2 px-3 shrink-0" onClick={e => e.stopPropagation()}>
-          <a href={ttLink} target="_blank" rel="noopener noreferrer"
-            className="text-[9px] px-2 py-1 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/10 transition-colors font-medium tracking-wider whitespace-nowrap">
-            TRADE →
-          </a>
-          <span className={`text-xs ${th.textFaint} cursor-pointer`} onClick={() => setExpanded(!expanded)}>{expanded ? '▲' : '▼'}</span>
+              {/* Action button */}
+              <div className="flex items-center px-3">
+                {actionDef.show ? (
+                  <button
+                    onClick={() => onToggleSelect(pos.key, effectiveAction)}
+                    className={`text-[9px] px-2.5 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors ${actionDef.btnClass}`}>
+                    {actionDef.label}
+                  </button>
+                ) : (
+                  <span className={`text-[9px] px-2.5 py-1.5 border ${th.borderLight} rounded ${th.textFaint} whitespace-nowrap`}>
+                    {actionDef.label}
+                  </span>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Expanded legs detail */}
+      {/* Expanded legs */}
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3`}>
           <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Legs</p>
@@ -462,7 +476,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
             {pos.legs.map((leg, i) => (
               <div key={i} className="flex items-center gap-4 flex-wrap">
                 <span className={`text-[10px] w-10 font-bold ${leg.direction === 'Short' ? 'text-red-400' : 'text-emerald-400'}`}>{leg.direction}</span>
-                <span className={`text-[10px] font-medium ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                <span className={`text-[10px] ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                   {leg.quantity}x {leg.strikePrice} {leg.optionType === 'P' ? 'Put' : 'Call'}
                 </span>
                 <span className={`text-[10px] ${th.textFaint}`}>Avg open: <span className={th.text}>${leg.avgOpenPrice.toFixed(2)}</span></span>
