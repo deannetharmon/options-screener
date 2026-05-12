@@ -204,21 +204,18 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
   // Close now — DTE urgency
   if (pos.needsClose) return {
-    action: 'CLOSE_NOW', label: 'CLOSE NOW', color: 'text-red-400 border-red-600',
+    action: 'CLOSE_NOW', label: 'CLOSE NOW', color: 'text-red-400 border-red-600 bg-red-500/10',
     detail: `${pos.dte} DTE — mandatory close regardless of P&L`,
   };
 
-  // Profit target hit
   if (pos.hitTarget) return {
-    action: 'CLOSE_PROFIT', label: 'TAKE PROFIT', color: 'text-emerald-400 border-emerald-600',
+    action: 'CLOSE_PROFIT', label: 'TAKE PROFIT', color: 'text-emerald-400 border-emerald-600 bg-emerald-500/10',
     detail: '50% profit target reached — lock in gains',
   };
 
-  const pnlPct = pos.pnlPct ?? 0;
+  const pnlPct = pos.pnl != null && pos.creditReceived !== 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
 
-  // Position moving against us
   if (pnlPct < -15) {
-    // Check if trend confirms the bad direction
     const trendAgainst = trend && (
       (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
       (pos.strategy === 'BCS' && trend.trend === 'uptrend')
@@ -226,20 +223,18 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     return {
       action: trendAgainst ? 'CLOSE_NOW' : 'MANAGE',
       label: trendAgainst ? 'CLOSE / ROLL' : 'MANAGE',
-      color: 'text-orange-400 border-orange-600',
+      color: trendAgainst ? 'text-red-400 border-red-600 bg-red-500/10' : 'text-orange-400 border-orange-600 bg-orange-500/10',
       detail: trendAgainst
         ? `Down ${Math.abs(pnlPct).toFixed(0)}% and trend confirms — consider closing or rolling`
         : `Down ${Math.abs(pnlPct).toFixed(0)}% but trend not confirmed — watch closely`,
     };
   }
 
-  // Approaching target
   if (pnlPct >= 35) return {
-    action: 'WATCH', label: 'NEAR TARGET', color: 'text-yellow-400 border-yellow-600',
+    action: 'WATCH', label: 'NEAR TARGET', color: 'text-yellow-400 border-yellow-600 bg-yellow-500/10',
     detail: `${pnlPct.toFixed(0)}% profit — approaching 50% target, watch for close`,
   };
 
-  // Trend aligns with strategy — healthy
   const trendAligns = trend && (
     (pos.strategy === 'BPS' && trend.trend === 'uptrend') ||
     (pos.strategy === 'BCS' && trend.trend === 'downtrend') ||
@@ -249,26 +244,29 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   if (trendAligns) return {
     action: pnlPct < 0 ? 'WATCH' : 'HOLD',
     label: pnlPct < 0 ? 'WATCH' : 'HOLD',
-    color: pnlPct < 0 ? 'text-yellow-400 border-yellow-600' : 'text-emerald-400 border-emerald-700',
+    color: pnlPct < 0 ? 'text-yellow-400 border-yellow-600 bg-yellow-500/10' : 'text-blue-400 border-blue-600 bg-blue-500/10',
     detail: pnlPct < 0
       ? `Trend still confirms ${pos.strategy} but position is down ${Math.abs(pnlPct).toFixed(0)}% — monitor`
       : `Trend confirms ${pos.strategy} — ${trend!.trend}, ${pnlPct.toFixed(0)}% profit so far`,
   };
 
-  // Trend working against but not yet a loss
   const trendAgainst = trend && (
     (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
     (pos.strategy === 'BCS' && trend.trend === 'uptrend')
   );
 
   if (trendAgainst) return {
-    action: 'WATCH', label: 'WATCH', color: 'text-yellow-400 border-yellow-600',
+    action: 'WATCH', label: 'WATCH', color: 'text-yellow-400 border-yellow-600 bg-yellow-500/10',
     detail: `Trend shifted to ${trend!.trend} — monitor ${pos.symbol} closely`,
   };
 
   return {
-    action: 'HOLD', label: 'HOLD', color: 'text-slate-400 border-slate-600',
-    detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining, on track`,
+    action: pnlPct < 0 ? 'WATCH' : 'HOLD',
+    label: pnlPct < 0 ? 'WATCH' : 'HOLD',
+    color: pnlPct < 0 ? 'text-yellow-400 border-yellow-600 bg-yellow-500/10' : 'text-blue-400 border-blue-600 bg-blue-500/10',
+    detail: pnlPct < 0
+      ? `Down ${Math.abs(pnlPct).toFixed(0)}% — monitor, ${pos.dte} DTE remaining`
+      : `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining, on track`,
   };
 }
 
