@@ -204,12 +204,12 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
   // Close now — DTE urgency
   if (pos.needsClose) return {
-    action: 'CLOSE_NOW', label: 'CLOSE NOW', color: 'text-red-400 border-red-600 bg-red-500/10',
+    action: 'CLOSE_NOW', label: '✕ CLOSE NOW', color: 'text-red-400 border-red-600 bg-red-500/10',
     detail: `${pos.dte} DTE — mandatory close regardless of P&L`,
   };
 
   if (pos.hitTarget) return {
-    action: 'CLOSE_PROFIT', label: 'TAKE PROFIT', color: 'text-emerald-400 border-emerald-600 bg-emerald-500/10',
+    action: 'CLOSE_PROFIT', label: '✓ TAKE PROFIT', color: 'text-emerald-400 border-emerald-600 bg-emerald-500/10',
     detail: '50% profit target reached — lock in gains',
   };
 
@@ -222,7 +222,7 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     );
     return {
       action: trendAgainst ? 'CLOSE_NOW' : 'MANAGE',
-      label: trendAgainst ? 'CLOSE / ROLL' : 'MANAGE',
+      label: trendAgainst ? '✕ CLOSE / ROLL' : '⚡ MANAGE',
       color: trendAgainst ? 'text-red-400 border-red-600 bg-red-500/10' : 'text-orange-400 border-orange-600 bg-orange-500/10',
       detail: trendAgainst
         ? `Down ${Math.abs(pnlPct).toFixed(0)}% and trend confirms — consider closing or rolling`
@@ -231,7 +231,7 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   }
 
   if (pnlPct >= 35) return {
-    action: 'WATCH', label: 'NEAR TARGET', color: 'text-yellow-400 border-yellow-600 bg-yellow-500/10',
+    action: 'WATCH', label: '◎ NEAR TARGET', color: 'text-yellow-400 border-yellow-600 bg-yellow-500/10',
     detail: `${pnlPct.toFixed(0)}% profit — approaching 50% target, watch for close`,
   };
 
@@ -243,7 +243,7 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
 
   if (trendAligns) return {
     action: pnlPct < 0 ? 'WATCH' : 'HOLD',
-    label: pnlPct < 0 ? 'WATCH' : 'HOLD',
+    label: pnlPct < 0 ? '⚠ WATCH' : '● HOLD',
     color: pnlPct < 0 ? 'text-yellow-400 border-yellow-600 bg-yellow-500/10' : 'text-blue-400 border-blue-600 bg-blue-500/10',
     detail: pnlPct < 0
       ? `Trend still confirms ${pos.strategy} but position is down ${Math.abs(pnlPct).toFixed(0)}% — monitor`
@@ -256,13 +256,13 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   );
 
   if (trendAgainst) return {
-    action: 'WATCH', label: 'WATCH', color: 'text-yellow-400 border-yellow-600 bg-yellow-500/10',
+    action: 'WATCH', label: '⚠ WATCH', color: 'text-yellow-400 border-yellow-600 bg-yellow-500/10',
     detail: `Trend shifted to ${trend!.trend} — monitor ${pos.symbol} closely`,
   };
 
   return {
     action: pnlPct < 0 ? 'WATCH' : 'HOLD',
-    label: pnlPct < 0 ? 'WATCH' : 'HOLD',
+    label: pnlPct < 0 ? '⚠ WATCH' : '● HOLD',
     color: pnlPct < 0 ? 'text-yellow-400 border-yellow-600 bg-yellow-500/10' : 'text-blue-400 border-blue-600 bg-blue-500/10',
     detail: pnlPct < 0
       ? `Down ${Math.abs(pnlPct).toFixed(0)}% — monitor, ${pos.dte} DTE remaining`
