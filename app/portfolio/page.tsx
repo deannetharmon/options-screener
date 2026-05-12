@@ -313,21 +313,17 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
 
   const ttLink = `https://trade.tastytrade.com/trade?symbol=${pos.symbol}`;
 
-  // Build a TastyTrade deep-link appropriate to the action
-  const ttActionUrl = (action: ActionType): string => {
-    const base = `https://trade.tastytrade.com`;
-    const sym = pos.symbol;
+  const ttActionUrl = (_action: ActionType): string =>
+    `https://my.tastytrade.com/app.html#/trading/positions`;
+
+  const ttActionTooltip = (action: ActionType): string => {
     switch (action) {
-      case 'TAKE_PROFIT':
-      case 'CUT_LOSSES':
-      case 'CLOSE_ROLL':
-      case 'MANAGE':
-        return `${base}/positions?symbol=${sym}`;
-      case 'WATCH':
-        return `${base}/quote?symbol=${sym}`;
-      case 'HOLD':
-      default:
-        return `${base}/trade?symbol=${sym}`;
+      case 'TAKE_PROFIT':  return `Open TastyTrade Positions → close ${pos.symbol} at 50% profit`;
+      case 'CUT_LOSSES':   return `Open TastyTrade Positions → close ${pos.symbol} to cut losses`;
+      case 'CLOSE_ROLL':   return `Open TastyTrade Positions → close or roll ${pos.symbol}`;
+      case 'MANAGE':       return `Open TastyTrade Positions → manage ${pos.symbol}`;
+      case 'WATCH':        return `Open TastyTrade Positions → monitor ${pos.symbol}`;
+      default:             return `Open TastyTrade Positions`;
     }
   };
 
@@ -486,7 +482,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-[8px] text-white/30 hover:text-white/70 tracking-wider transition-colors whitespace-nowrap"
-                  title={`Open ${pos.symbol} in TastyTrade`}>
+                  title={ttActionTooltip(effectiveAction)}>
                   → TastyTrade ↗
                 </a>
               </div>
