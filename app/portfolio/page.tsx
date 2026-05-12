@@ -498,24 +498,26 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
   const totalCredit = positions.reduce((sum, p) => sum + p.creditReceived, 0);
   const totalPnl = positions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
   const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
-  const needsClose = positions.filter(p => p.needsClose).length;
-  const hitTarget = positions.filter(p => p.hitTarget && !p.needsClose).length;
 
-  // Max loss = spread width × 100 × qty - credit received, per position
   const totalAtRisk = positions.reduce((sum, p) => {
     const shorts = p.legs.filter(l => l.direction === 'Short');
     const longs  = p.legs.filter(l => l.direction === 'Long' && l.optionType === shorts[0]?.optionType);
     if (shorts[0] && longs[0]) {
       const width = Math.abs(shorts[0].strikePrice - longs[0].strikePrice);
       const qty = shorts[0].quantity;
-      const maxLoss = (width * 100 * qty) - p.creditReceived;
-      return sum + Math.max(0, maxLoss);
+      return sum + Math.max(0, (width * 100 * qty) - p.creditReceived);
     }
     return sum;
   }, 0);
 
+  // Est. theta/day = sum of (current_value / DTE) per position — daily decay working in our favor
+  const totalTheta = positions.reduce((sum, p) => {
+    if (p.currentValue != null && p.dte > 0) return sum + (p.currentValue / p.dte);
+    return sum;
+  }, 0);
+
   return (
-    <div className={`grid grid-cols-2 sm:grid-cols-4 border-b ${th.border}`}>
+    <div className={`grid grid-cols-4 border-b ${th.border}`}>
       <div className={`p-5 border-r ${th.border}`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Open Positions</p>
         <p className={`text-3xl font-bold ${th.text}`}>{positions.length}</p>
@@ -527,26 +529,26 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
         <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
           {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(0)}
         </p>
-        <p className={`text-[10px] ${th.textFaint} mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          of ${totalCredit.toFixed(0)} collected · <span className={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{capturedPct.toFixed(0)}%</span>
+        <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
+          <span className={`font-bold ${th.textMuted}`}>of ${totalCredit.toFixed(0)} collected</span>
+          <span className={`ml-1 ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>· {capturedPct.toFixed(0)}%</span>
         </p>
       </div>
 
       <div className={`p-5 border-r ${th.border}`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>At Risk</p>
-        <p className="text-3xl font-bold text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+        <p className={`text-3xl font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>
           ${totalAtRisk.toFixed(0)}
         </p>
-        <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all spreads expire worthless</p>
+        <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all expire worthless</p>
       </div>
 
       <div className="p-5">
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Action Needed</p>
-        <div className="flex flex-col gap-1">
-          {needsClose > 0 && <span className="text-sm font-bold text-red-400">⚠ {needsClose} must close</span>}
-          {hitTarget > 0 && <span className="text-sm font-bold text-emerald-400">✓ {hitTarget} at target</span>}
-          {needsClose === 0 && hitTarget === 0 && <span className={`text-3xl font-bold ${th.textFaint}`}>—</span>}
-        </div>
+        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Est. Theta / Day</p>
+        <p className="text-3xl font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+          +${totalTheta.toFixed(2)}
+        </p>
+        <p className={`text-[10px] ${th.textFaint} mt-1`}>est. daily decay across all positions</p>
       </div>
     </div>
   );
@@ -750,7 +752,7 @@ export default function PortfolioPage() {
             {/* Needs close */}
             {needsClose.length > 0 && (
               <div>
-                <p className="text-[9px] text-red-400 tracking-widest mb-2 font-medium uppercase">⚠ Close Now — 21 DTE or Less</p>
+                <p className="text-[10px] text-red-400 tracking-widest mb-3 font-bold uppercase">⚠ Close Now — 21 DTE or Less</p>
                 <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
@@ -758,7 +760,7 @@ export default function PortfolioPage() {
             {/* Hit target */}
             {hitTarget.length > 0 && (
               <div>
-                <p className="text-[9px] text-emerald-400 tracking-widest mb-2 font-medium uppercase">✓ 50% Profit Target Hit</p>
+                <p className="text-[10px] text-emerald-400 tracking-widest mb-3 font-bold uppercase">✓ 50% Profit Target Hit</p>
                 <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
@@ -766,7 +768,7 @@ export default function PortfolioPage() {
             {/* Active positions */}
             {normal.length > 0 && (
               <div>
-                <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium uppercase`}>Active Positions</p>
+                <p className={`text-[10px] ${th.textFaint} tracking-widest mb-3 font-bold uppercase`}>Active Positions</p>
                 <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
