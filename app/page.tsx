@@ -74,7 +74,7 @@ interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
   qualified: boolean; bestCandidate: SpreadCandidate | null;
   failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
-  checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; };
+  checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; };
 }
 interface FilterSuggestion {
   priority: number; rule: keyof RulesType; currentValue: number; suggestedValue: number;
@@ -402,7 +402,7 @@ const DEFAULT_RULES = {
   IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 500, BID_ASK_MAX: 0.10,
   CREDIT_RATIO_MIN: 0.33, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
   IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.20, DTE_MIN: 30, DTE_MAX: 45,
-  MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30,
+  MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30, POP_MIN: 65,
 };
 type RulesType = typeof DEFAULT_RULES;
 
@@ -428,12 +428,13 @@ const RULE_LABELS: Record<string, string> = {
   MAX_SPREAD_WIDTH: 'Max Spread Width $ (optimizer cap)',
   ROC_MIN_SPREAD: 'Min ROC % (Spread)',
   ROC_MIN_IC: 'Min ROC % (IC)',
+  POP_MIN: 'Min POP % (Probability of Profit)',
 };
 
 const LS_RULES = 'prosper-rules';
 const LS_RULES_PRESET = 'prosper-rules-preset';
 const LS_ACTIVE_PRESET = 'prosper-active-preset';
-const LS_RULES_VERSION = 'prosper-rules-v2'; // bump this when defaults change
+const LS_RULES_VERSION = 'prosper-rules-v3'; // bump this when defaults change
 function getSavedRules(): RulesType {
   try {
     // If this version key doesn't exist, wipe old saved rules so new defaults take effect
@@ -537,7 +538,8 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
     const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_SPREAD) continue;
-    candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop: (1 - absDelta) * 100, optimized: true });
+    const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
+    candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop, optimized: true });
   }
   if (candidates.length === 0) return null;
   // Pick best POP; use ROC as tiebreaker when POP difference is < 5%
@@ -562,10 +564,10 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
     return b.roc - a.roc;
   })[0];
 }
-function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, price: number | null, RULES: RulesType, minCallStrike?: number): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number } | null {
+function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, price: number | null, RULES: RulesType, minCallStrike?: number): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number; pop: number } | null {
   const bidAskMax = getBidAskMax(price);
-  const sorted = side === 'put' ? [...legs].sort((a, b) => b.strikePrice - a.strikePrice) : [...legs].sort((a, b) => a.strikePrice - b.strikePrice);
-  for (const shortLeg of sorted) {
+  const candidates: { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number; pop: number }[] = [];
+  for (const shortLeg of legs) {
     if (side === 'call' && minCallStrike != null && shortLeg.strikePrice <= minCallStrike) continue;
     const delta = shortLeg.delta; if (delta == null) continue;
     const absDelta = Math.abs(delta);
@@ -577,9 +579,16 @@ function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, pric
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
     const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
-    return { shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, credit, creditRatio, roc, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest };
+    const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
+    candidates.push({ shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, credit, creditRatio, roc, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, pop });
   }
-  return null;
+  if (candidates.length === 0) return null;
+  // Pick best POP; ROC tiebreaker within 5%
+  return candidates.sort((a, b) => {
+    const popDiff = b.pop - a.pop;
+    if (Math.abs(popDiff) >= 5) return popDiff;
+    return b.roc - a.roc;
+  })[0];
 }
 function findBestIC(chain: any[], expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P');
@@ -639,8 +648,14 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
 
   const rocMin = strategy === 'IC' ? effectiveRules.ROC_MIN_IC : effectiveRules.ROC_MIN_SPREAD;
   const rocCheck: CheckResult = bestCandidate ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` } : { status: 'pending', value: '—', reason: 'No candidate' };
-  const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck } };
+  const candidatePop = bestCandidate ? (bestCandidate.pop ?? 0) : 0;
+  const popMin = effectiveRules.POP_MIN;
+  const popCheck: CheckResult = bestCandidate
+    ? { status: candidatePop >= popMin ? 'pass' : 'fail', value: `${candidatePop.toFixed(0)}%`, reason: `Min ${popMin}%` }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+  if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
+  const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
@@ -1387,6 +1402,7 @@ const ETF_RULES: Partial<RulesType> = {
   IVR_MIN: 15, OI_MIN: 100, BID_ASK_MAX: 0.25,
   SPREAD_DELTA_MIN: 0.15, SPREAD_DELTA_MAX: 0.35,
   IC_DELTA_MIN: 0.15, IC_DELTA_MAX: 0.25,
+  CREDIT_RATIO_MIN: 0.20, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 20, POP_MIN: 68,
 };
 
 function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
@@ -1507,6 +1523,7 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
               {ri('CREDIT_RATIO_MIN', 'Min Credit Ratio',  '0.33 = course · 0.25 = floor · 0.20 = danger')}
               {ri('ROC_MIN_SPREAD',   'Min ROC % — Spread','BPS and BCS')}
               {ri('ROC_MIN_IC',       'Min ROC % — IC',    'Iron Condor')}
+              {ri('POP_MIN',          'Min POP %',         '65 = course · 68 = ETF floor')}
             </div>
           </div>
 
@@ -2501,7 +2518,7 @@ export default function Home() {
       const errResult = (symbol: string, strategy: string, msg: string, trendResult?: TrendResult): ScreenResult => ({
         symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
         failReasons: [msg], trendResult,
-        checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' } }
+        checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' }, pop: { status: 'pending', value: '—', reason: '—' } }
       });
 
       // Scan AUTO tickers (with trend detection)
