@@ -209,49 +209,20 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
   });
 
   const mediaType = file.type || 'image/png';
-  const dataUrl = `data:${mediaType};base64,${base64}`;
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetch('/api/ocr', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.NEXT_PUBLIC_OPENAI_API_KEY ?? ''}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o',
-      max_tokens: 500,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'image_url',
-            image_url: { url: dataUrl, detail: 'low' },
-          },
-          {
-            type: 'text',
-            text: `This is a screenshot containing US stock ticker symbols. Extract every ticker symbol you can see.
-
-Rules:
-- Return ONLY the ticker symbols, one per line, nothing else
-- Tickers are 2-5 uppercase letters (e.g. AAPL, MSFT, BRK-B)
-- Do NOT include: single letters, common words, UI labels, column headers, numbers, percentages
-- Do NOT include: ETF, BPS, BCS, IC, IVR, DTE, ROC, POP, NYSE, NASDAQ, or any other non-ticker text
-- Preserve hyphens for tickers like BRK-B
-- If you are uncertain whether something is a ticker, omit it
-- Return nothing except the ticker symbols, one per line`,
-          },
-        ],
-      }],
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base64, mediaType }),
   });
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(`OpenAI Vision API error: ${response.status} — ${err?.error?.message ?? 'unknown'}`);
+    throw new Error(err?.error ?? `OCR request failed: ${response.status}`);
   }
 
   const data = await response.json();
-  const rawText: string = data?.choices?.[0]?.message?.content ?? '';
+  const rawText: string = data?.text ?? '';
 
   const tickers: string[] = [];
   for (const line of rawText.split('\n')) {
