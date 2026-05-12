@@ -454,6 +454,7 @@ const RULE_LABELS: Record<string, string> = {
 };
 
 const LS_RULES = 'prosper-rules';
+const LS_RULES_PRESET = 'prosper-rules-preset';
 const LS_RULES_VERSION = 'prosper-rules-v2'; // bump this when defaults change
 function getSavedRules(): RulesType {
   try {
@@ -1386,7 +1387,9 @@ const ETF_RULES: Partial<RulesType> = {
 function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
   const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
-  const [preset, setPreset] = useState<'stock' | 'etf'>('stock');
+  const [preset, setPreset] = useState<'stock' | 'etf'>(() => {
+    try { const p = localStorage.getItem(LS_RULES_PRESET); return p === 'etf' ? 'etf' : 'stock'; } catch { return 'stock'; }
+  });
   const [activeRulePreset, setActiveRulePreset] = useState<string | null>(null);
 
   const handleChange = (key: string, raw: string) => setRawValues(prev => ({ ...prev, [key]: raw }));
@@ -1395,9 +1398,10 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     if (!isNaN(val)) { const updated = { ...editedRules, [key]: val }; setEditedRules(updated); setRawValues(prev => ({ ...prev, [key]: String(val) })); }
     else setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
   };
-  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); setPreset('stock'); localStorage.removeItem(LS_RULES); };
+  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); setPreset('stock'); localStorage.removeItem(LS_RULES); try { localStorage.removeItem(LS_RULES_PRESET); } catch {} };
   const handlePreset = (p: 'stock' | 'etf') => {
     setPreset(p);
+    try { localStorage.setItem(LS_RULES_PRESET, p); } catch {}
     const base = p === 'etf' ? { ...DEFAULT_RULES, ...ETF_RULES } : { ...DEFAULT_RULES };
     setEditedRules(base);
     setRawValues(Object.fromEntries(Object.entries(base).map(([k, v]) => [k, String(v)])));
@@ -2347,7 +2351,7 @@ function BestOpportunityFinder({
   const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
 
   return (
-    <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
+    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] p-4">
       <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
 
         {/* Header */}
