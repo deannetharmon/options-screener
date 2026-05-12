@@ -153,20 +153,30 @@ const OCR_TICKER_BLACKLIST = new Set([
   'USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ',
   'BPS','BCS','IC','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO',
   'AI','AN','IS','IT','AT','OR','AS','BY','IN','ON','TO','OF','NO','ANY','ALL',
-  'EPS','TTM','EV','LT','TA','SMA','SMASC','SMA50','SMA200','RSI','PEG','P/E','PE','PB','PS',
-  'BETA','AVG','PRICE','VOLUME','FLOAT','GAP','NEWS','BASIC','CUSTOM','FILTER','SIGNAL','TICKERS'
+  'EPS','TTM','EV','LT','TA','SMA','RSI','PEG','PE','PB','PS',
+  'BETA','AVG','PRICE','VOLUME','FLOAT','GAP','NEWS','BASIC','CUSTOM','FILTER','SIGNAL','TICKERS',
+  // Single characters — never a valid US ticker
+  'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+  // Common 2-char OCR noise from vertical ticker list misreads
+  'EL','ME','AL','LE','RE','DE','VE','TE','SE','CE','FE','HE','BE','KE','NE','PE','WE',
+  'LI','TI','VI','GI','DI','RI','FI','MI','NI','PI','SI','HI','BI','KI',
+  'LO','DO','GO','HO','KO','MO','PO','SO','TO','VO','WO','YO',
+  'IL','IM','IP','IR','IX',
+  // Other common noise tokens
+  'EW','RN','TT','LL','MM','NN','RR','SS','TH','WH','CH','SH','PH',
 ]);
 
 function normalizeTickerToken(raw: string): string | null {
   const token = raw.trim().toUpperCase().replace(/[–—]/g, '-').replace(/\.$/, '');
   if (!token) return null;
 
-  // Yahoo Finance uses hyphen for Berkshire class B. Finviz/TradingView/OCR may show BRK.B, BRK-B, or BRK B.
+  // Yahoo Finance uses hyphen for Berkshire class B.
   const normalized = token.replace('.', '-');
   if (normalized === 'BRK-B' || normalized === 'BRK/B') return 'BRK-B';
 
-  // Basic US ticker shape with optional class suffix, e.g. BRK-B, BF-B.
-  if (!/^[A-Z]{1,5}(-[A-Z])?$/.test(normalized)) return null;
+  // Basic US ticker shape: 2–5 letters, optional class suffix e.g. BRK-B, BF-B.
+  // Minimum 2 characters — single letters are never valid tickers in this context.
+  if (!/^[A-Z]{2,5}(-[A-Z])?$/.test(normalized)) return null;
   if (OCR_TICKER_BLACKLIST.has(normalized)) return null;
   return normalized;
 }
@@ -187,24 +197,62 @@ function normalizeTickerInput(input: string): string[] {
 }
 
 async function extractTickersFromImage(file: File): Promise<string[]> {
-  const Tesseract = await import('tesseract.js');
-  const { data: { text } } = await Tesseract.recognize(file, 'eng', { logger: () => {} });
+  // Convert file to base64
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.split(',')[1]); // strip the data:image/...;base64, prefix
+    };
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
+  });
 
-  const normalizedText = text
-    .toUpperCase()
-    .replace(/[–—]/g, '-')
-    .replace(/\bBRK\s*[-.]?\s*B\b/g, 'BRK-B')
-    .replace(/\bBF\s*[-.]?\s*B\b/g, 'BF-B');
+  const mediaType = (file.type || 'image/png') as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
 
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64 },
+          },
+          {
+            type: 'text',
+            text: `This is a screenshot containing US stock ticker symbols. Extract every ticker symbol you can see.
+
+Rules:
+- Return ONLY the ticker symbols, one per line, nothing else
+- Tickers are 2-5 uppercase letters (e.g. AAPL, MSFT, BRK-B)
+- Do NOT include: single letters, common words, UI labels, column headers, numbers, percentages
+- Do NOT include: ETF, BPS, BCS, IC, IVR, DTE, ROC, POP, NYSE, NASDAQ, or any other non-ticker text
+- Preserve hyphens for tickers like BRK-B
+- If you are uncertain whether something is a ticker, omit it
+- Return nothing except the ticker symbols, one per line`,
+          },
+        ],
+      }],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Claude Vision API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawText: string = data?.content?.[0]?.text ?? '';
+
+  // Parse Claude's response — one ticker per line
   const tickers: string[] = [];
-  const tickerPattern = /\b([A-Z]{1,5}(?:[-.][A-Z])?)\b/g;
-
-  for (const line of normalizedText.split('\n')) {
-    let match;
-    while ((match = tickerPattern.exec(line)) !== null) {
-      const ticker = normalizeTickerToken(match[1]);
-      if (ticker) tickers.push(ticker);
-    }
+  for (const line of rawText.split('\n')) {
+    const ticker = normalizeTickerToken(line.trim());
+    if (ticker) tickers.push(ticker);
   }
 
   return Array.from(new Set(tickers));
@@ -1699,39 +1747,57 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     downsideExhausted,
   };
 
+
+
   const absScore = Math.abs(directionalScore);
   const conflictPenalty = Math.abs(momentumScore) > 12 && Math.abs(maAlignmentScore) > 12 && Math.sign(momentumScore) !== Math.sign(maAlignmentScore) ? 12 : 0;
   const confidence = Math.round(clamp(absScore - conflictPenalty - penalty * 0.35, 0, 100));
 
-  const isChaotic = range60 > maxChaoticRange60 || (chopRatio > 6.0 && absScore < 50);
+  // ── CDW fix: catastrophic recent drop = event-driven, not a tradeable setup ──
+  // If price crashed >25% in the last 10 bars, the chart is broken regardless of direction.
+  const recentCatastrophicDrop = pct(currentPrice, max(closes.slice(-11, -1))) < -0.25;
+  if (recentCatastrophicDrop) {
+    return {
+      trend: 'unknown',
+      strategy: 'NO_TRADE',
+      subtype: 'CHOP',
+      confidence: 20,
+      ma20, ma50, ma200, scores, metrics,
+      reason: `REVIEW: catastrophic drop >25% in last 10 bars — event-driven, chart not yet tradeable. Wait for structure to form.`,
+    };
+  }
+
+  // ── GDDY fix: post-crash stabilization → IC ──────────────────────────────
+  // Wide 60-day range due to a prior crash, BUT recent 20-bar range is tight = stabilized.
+  // This is a valid IC candidate even though the 60d stats look chaotic.
+  const recentRange20Pct = high20 > 0 ? (high20 - low20) / low20 : 1;
+  const postCrashStabilized =
+    range60 > maxHealthyRange60 &&           // wide 60d range (crash visible)
+    recentRange20Pct < 0.10 &&               // but last 20 bars are tight (<10%)
+    Math.abs(momentum20) < 0.05 &&           // recent price going nowhere
+    Math.abs(momentum40) < 0.12 &&           // medium-term also contained
+    drawdownFrom60High < -0.15;              // confirms there was a real drop
+
+  const isChaotic = !postCrashStabilized && (range60 > maxChaoticRange60 || (chopRatio > 6.0 && absScore < 50));
   if (isChaotic) {
     return {
       trend: 'sideways',
       strategy: 'NO_TRADE',
       subtype: 'CHOP',
       confidence: Math.max(25, Math.min(48, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
+      ma20, ma50, ma200, scores, metrics,
       reason: `NO_TRADE CHOP: 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}.`,
     };
   }
 
   // If the move is directional but very mature/vertical, keep it out of automatic spread assignment.
-  // These names can be directionally correct but poor option-selling entries because pullback risk is high.
   if ((upsideExhausted && directionalScore > 45) || (downsideExhausted && directionalScore < -45)) {
     return {
       trend: directionalScore > 0 ? 'uptrend' : 'downtrend',
       strategy: 'NO_TRADE',
       subtype: 'UNKNOWN',
       confidence: Math.max(42, Math.min(58, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
+      ma20, ma50, ma200, scores, metrics,
       reason: `REVIEW EXTENDED: ${directionalScore > 0 ? 'bullish' : 'bearish'} direction, but move is mature/vertical. 20-day momentum ${(momentum20 * 100).toFixed(1)}%, distance from 50MA ${(distFromMa50 * 100).toFixed(1)}%, 60-day range ${(range60 * 100).toFixed(1)}%.`,
     };
   }
@@ -1829,26 +1895,63 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   }
 
   // ── Trend Memory Arbitration ──────────────────────────────────────────────
-  // Before falling into IC, check whether directional persistence is strong enough
-  // to override apparent consolidation. This prevents rangy-looking snapshots of
-  // trend continuations from being mis-classified as IC.
 
-  // Bearish persistence signals: failed rally + lower-high structure + below MAs
+  // ── GDDY: post-crash stabilized → IC (route before directional gates) ────
+  if (postCrashStabilized) {
+    return {
+      trend: 'sideways',
+      strategy: 'IC',
+      subtype: 'RANGE',
+      confidence: Math.max(52, Math.min(72, confidence)),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `IC RANGE (post-crash stabilization): 60-day range elevated from prior crash, but last 20 bars tight at ${(recentRange20Pct * 100).toFixed(1)}%, recent momentum flat. Range-bound structure supports IC.`,
+    };
+  }
+
+  // ── ERX fix: high-vol name with strong recent recovery — weight 20d more ──
+  // For leveraged ETFs and high-volatility names, a sharp intermediate crash
+  // can make momentum60 negative even when the stock is in a clear uptrend.
+  // If the recent 20-day move is decisively bullish and structure supports it,
+  // trust the recent signal over the 60d distortion.
+  const recentBullishRecovery =
+    highVolName &&
+    momentum20 > 0.08 &&
+    momentum10 > 0.03 &&
+    currentPrice > ma20 &&
+    currentPrice > ma50 &&
+    (higherLows || regimeHigherLows) &&
+    reboundFrom60Low > 0.30 &&
+    !upsideExhausted;
+
+  if (recentBullishRecovery) {
+    return {
+      trend: 'uptrend',
+      strategy: 'BPS',
+      subtype: 'REVERSAL',
+      confidence: Math.max(52, Math.min(70, confidence)),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BPS (volatile recovery): high-vol name with strong recent bounce (+${(momentum20 * 100).toFixed(1)}% 20d), price above both MAs, higher-low structure. 60d momentum distorted by prior crash — recent signal trusted.`,
+    };
+  }
+
+  // Bearish persistence: lowered threshold from -22 to -15 to catch ADSK/SPGI/VMC.
+  // Also relaxed MA50 requirement — post-bounce names can be above MA50 briefly
+  // while still in a bearish structure (lower highs confirm the direction).
   const bearishMemoryStrong =
-    directionalScore <= -22 &&
+    directionalScore <= -15 &&
     (lowerHighs || regimeLowerHighs) &&
     (lowerLows || regimeLowerLows || brokePriorSupport) &&
-    currentPrice < ma50 &&
-    (ma20Slope < -0.008 || momentum40 < -0.05) &&
-    !(momentum20 > 0.06 && currentPrice > ma20); // not in a convincing bounce
+    (currentPrice < ma50 || (lowerHighs && regimeLowerHighs && ma20Slope < -0.005)) &&
+    (ma20Slope < -0.005 || momentum40 < -0.03 || momentum60 < -0.05) &&
+    !(momentum20 > 0.08 && currentPrice > ma20 && reboundFrom60Low > 0.20); // not in a convincing bounce
 
-  // Bullish persistence signals: higher-low structure + above MAs + positive slope
+  // Bullish persistence signals
   const bullishMemoryStrong =
     directionalScore >= 22 &&
     (higherLows || regimeHigherLows) &&
     currentPrice > ma50 &&
     (ma20Slope > 0.008 || momentum40 > 0.05) &&
-    !(momentum20 < -0.06 && currentPrice < ma20); // not in a convincing breakdown
+    !(momentum20 < -0.06 && currentPrice < ma20);
 
   // True IC range: overlapping movement or poor directional persistence.
   // Only classify IC if neither directional memory gate fires.
