@@ -840,19 +840,28 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
 }
 
 // ── DTE Alert Banner ───────────────────────────────────────────────────────
-function DTEAlertBanner({ results }: { results: ScreenResult[] }) {
-  const approaching = results.filter(r => r.qualified && r.bestCandidate && r.bestCandidate.dte <= DTE_ALERT_THRESHOLD);
+function DTEAlertBanner({ results, rules }: { results: ScreenResult[], rules: RulesType }) {
+  const isShortTerm = rules.DTE_MAX <= 28;
+  const alertThreshold = isShortTerm ? rules.DTE_MIN - 1 : 25;
+  const closeTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
+  const approaching = results.filter(r => r.qualified && r.bestCandidate && r.bestCandidate.dte <= alertThreshold);
   if (approaching.length === 0) return null;
   return (
     <div className="border border-yellow-500/50 bg-yellow-500/10 rounded-lg px-4 py-3 flex items-start gap-3">
       <span className="text-yellow-400 text-base mt-0.5">⚠</span>
       <div className="flex-1">
-        <p className="text-xs text-yellow-400 font-bold tracking-wider mb-1">APPROACHING 21 DTE — ACTION REQUIRED</p>
-        <p className="text-[10px] text-yellow-300 mb-2">Close these positions regardless of profit/loss when they hit 21 DTE.</p>
+        <p className="text-xs text-yellow-400 font-bold tracking-wider mb-1">
+          {isShortTerm ? `APPROACHING ${rules.DTE_MIN} DTE — ACTIVE MANAGEMENT REQUIRED` : 'APPROACHING 21 DTE — ACTION REQUIRED'}
+        </p>
+        <p className="text-[10px] text-yellow-300 mb-2">
+          {isShortTerm
+            ? `Short term rules active (${rules.DTE_MIN}–${rules.DTE_MAX} DTE). Monitor closely — consider closing at 50% profit or ${closeTarget} DTE.`
+            : 'Close these positions regardless of profit/loss when they hit 21 DTE.'}
+        </p>
         <div className="flex flex-wrap gap-2">
           {approaching.map(r => (
             <span key={r.symbol} className="text-[10px] bg-yellow-500/10 border border-yellow-600 rounded px-2 py-0.5 text-yellow-300 font-medium">
-              {r.symbol} {r.bestCandidate?.expiration} — <span className={r.bestCandidate!.dte <= 21 ? 'text-red-400 font-bold' : 'text-yellow-400'}>{r.bestCandidate?.dte}d</span>
+              {r.symbol} {r.bestCandidate?.expiration} — <span className={r.bestCandidate!.dte <= closeTarget ? 'text-red-400 font-bold' : 'text-yellow-400'}>{r.bestCandidate?.dte}d</span>
             </span>
           ))}
         </div>
@@ -1159,7 +1168,10 @@ function ResultCard({ result, th, rules }: {
     ? 'bg-red-500/15 border-red-500 text-red-500'
     : 'bg-blue-500/15 border-blue-500 text-blue-500';
 
-  const isApproaching = c && c.dte <= DTE_ALERT_THRESHOLD;
+  const isShortTerm = rules.DTE_MAX <= 28;
+  const dteAlertThreshold = isShortTerm ? rules.DTE_MIN - 1 : DTE_ALERT_THRESHOLD;
+  const dteCloseTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
+  const isApproaching = c && c.dte <= dteAlertThreshold;
   const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings'))
     && result.earningsDate
     && daysUntil(result.earningsDate) >= 0;
@@ -1183,7 +1195,7 @@ function ResultCard({ result, th, rules }: {
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
 
         {c && <>
-          <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= 21 ? 'text-red-500' : c.dte <= DTE_ALERT_THRESHOLD ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
+          <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= dteCloseTarget ? 'text-red-500' : c.dte <= dteAlertThreshold ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
           <StrikesDisplay c={c} th={th} />
           <div className="text-xs shrink-0"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
           <div className="text-xs shrink-0"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
@@ -2803,7 +2815,6 @@ export default function Home() {
                   <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
                 </div>
               </div>
-              <DTEAlertBanner results={results} />
               <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={runScreen} />
               {qualified.length > 0 && (
                 <div>
