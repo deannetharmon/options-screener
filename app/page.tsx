@@ -751,9 +751,13 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
                 type="date"
                 min={new Date().toISOString().split('T')[0]}
                 onChange={e => handleDatePick(e.target.value)}
-                onClick={e => e.stopPropagation()}
                 className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} focus:outline-none focus:border-emerald-500 cursor-pointer`}
               />
+              <button
+                onClick={e => { e.stopPropagation(); dateInputRef.current?.showPicker(); }}
+                className={`px-1.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint} hover:text-emerald-400 hover:border-emerald-600 transition-colors text-xs`}
+                title="Open calendar"
+              >📅</button>
             </div>
           </div>
         </div>
