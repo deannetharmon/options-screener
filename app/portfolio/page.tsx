@@ -27,21 +27,6 @@ function getSavedTheme(): Theme {
   try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
 }
 
-// ── TastyTrade auth (mirrors screener pattern) ─────────────────────────────
-const BASE = 'https://api.tastytrade.com';
-async function getAccessToken(): Promise<string> {
-  const r = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
-  const s = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
-  const c = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
-  if (!r || !s || !c) throw new Error('TastyTrade credentials not configured');
-  const res = await fetch(`${BASE}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: r.trim(), client_id: c.trim(), client_secret: s.trim() }),
-  });
-  if (!res.ok) { const text = await res.text(); throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 200)}`); }
-  return (await res.json()).access_token;
-}
 interface PositionLeg {
   symbol: string;
   optionType: 'P' | 'C';
@@ -288,13 +273,7 @@ export default function PortfolioPage() {
   const fetchPositions = async () => {
     setLoading(true); setError('');
     try {
-      const accessToken = await getAccessToken();
-      const res = await fetch('/api/positions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessToken }),
-        cache: 'no-store',
-      });
+      const res = await fetch('/api/positions', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to fetch positions');
       setPositions(data.positions ?? []);
