@@ -1,5 +1,6 @@
 'use client';
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
@@ -406,34 +407,10 @@ const DEFAULT_RULES = {
 type RulesType = typeof DEFAULT_RULES;
 
 const RULE_PRESETS = [
-  {
-    key: 'course',
-    label: 'Course',
-    desc: 'Exact course rules',
-    color: 'border-blue-600 text-blue-400 bg-blue-600/10',
-    rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 },
-  },
-  {
-    key: 'relaxed',
-    label: 'Relaxed',
-    desc: 'Wider net, still disciplined',
-    color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10',
-    rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 },
-  },
-  {
-    key: 'lowvol',
-    label: 'Low Vol',
-    desc: 'Crushed IV environments',
-    color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10',
-    rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 },
-  },
-  {
-    key: 'strict',
-    label: 'Strict',
-    desc: 'A+ setups only',
-    color: 'border-red-600 text-red-400 bg-red-600/10',
-    rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 },
-  },
+  { key: 'course',  label: 'Course',  desc: 'Exact course rules',         color: 'border-blue-600 text-blue-400 bg-blue-600/10',    rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 } },
+  { key: 'relaxed', label: 'Relaxed', desc: 'Wider net, still disciplined',color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
+  { key: 'lowvol',  label: 'Low Vol', desc: 'Crushed IV environments',     color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10', rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
+  { key: 'strict',  label: 'Strict',  desc: 'A+ setups only',              color: 'border-red-600 text-red-400 bg-red-600/10',        rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
 ] as const;
 
 const RULE_LABELS: Record<string, string> = {
@@ -719,8 +696,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
 
   const handleSchedule = (days: number, label: string) => {
     const url = buildEntryCalUrl(result, days);
-    const a = document.createElement('a');
-    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = label; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
     setScheduled(label);
@@ -732,8 +708,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
     setSelectedDate(dateStr);
     const d = new Date(dateStr + 'T12:00:00');
     const url = buildEntryCalUrl(result, 0, d);
-    const a = document.createElement('a');
-    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = dateStr; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
     setScheduled(dateStr);
@@ -1221,15 +1196,16 @@ function ResultCard({ result, th, rules }: {
         </div>
       )}
 
-      {/* Best Opportunity Modal */}
-      {showBestFinder && (
+      {/* Best Opportunity Modal — rendered via portal to escape card click handler */}
+      {showBestFinder && typeof document !== 'undefined' && createPortal(
         <BestOpportunityFinder
           symbol={result.symbol}
           onClose={() => setShowBestFinder(false)}
           th={th}
           rules={rules}
           preferredStrategy={result.strategy as 'BPS' | 'BCS' | 'IC'}
-        />
+        />,
+        document.body
       )}
     </div>
   );
@@ -2238,12 +2214,11 @@ interface LevelResult {
   presetLabel: string;
   presetColor: string;
   rulesUsed: RulesType;
-  ruleDiffs: string[];  // what changed vs current rules
+  ruleDiffs: string[];
   best: BestSetup | null;
   failures: { strategy: string; reasons: string[] }[];
 }
 
-// Which rules differ between two rule sets — human readable
 function getRuleDiffs(base: RulesType, relaxed: Partial<RulesType>): string[] {
   const labels: Record<string, string> = {
     IVR_MIN: 'IVR floor', OI_MIN: 'Min OI', BID_ASK_MAX: 'Max bid-ask',
@@ -2259,31 +2234,21 @@ function getRuleDiffs(base: RulesType, relaxed: Partial<RulesType>): string[] {
 }
 
 function BestOpportunityFinder({
-  symbol,
-  onClose,
-  th,
-  rules,
-  preferredStrategy,
+  symbol, onClose, th, rules, preferredStrategy,
 }: {
-  symbol: string;
-  onClose: () => void;
-  th: typeof THEMES[Theme];
-  rules: RulesType;
-  preferredStrategy?: 'BPS' | 'BCS' | 'IC';
+  symbol: string; onClose: () => void; th: typeof THEMES[Theme];
+  rules: RulesType; preferredStrategy?: 'BPS' | 'BCS' | 'IC';
 }) {
   const [loading, setLoading] = useState(false);
   const [levelResults, setLevelResults] = useState<LevelResult[]>([]);
   const [error, setError] = useState('');
 
-  // Build the 3 levels: Course, Relaxed, Low Vol
-  // (Strict is more restrictive than Course so skip it here)
-  // All 4 levels — always diff vs DEFAULT_RULES (course baseline) not vs current rules
   const COURSE_RULES = { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 };
   const levels = [
-    { presetKey: 'strict',  presetLabel: 'Strict',  presetColor: 'border-red-500 text-red-400',       rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
-    { presetKey: 'course',  presetLabel: 'Course',  presetColor: 'border-blue-500 text-blue-400',     rules: COURSE_RULES },
+    { presetKey: 'strict',  presetLabel: 'Strict',  presetColor: 'border-red-500 text-red-400',         rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
+    { presetKey: 'course',  presetLabel: 'Course',  presetColor: 'border-blue-500 text-blue-400',       rules: COURSE_RULES },
     { presetKey: 'relaxed', presetLabel: 'Relaxed', presetColor: 'border-emerald-500 text-emerald-400', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
-    { presetKey: 'lowvol',  presetLabel: 'Low Vol', presetColor: 'border-yellow-500 text-yellow-400', rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
+    { presetKey: 'lowvol',  presetLabel: 'Low Vol', presetColor: 'border-yellow-500 text-yellow-400',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
   ];
 
   const scoreCandidate = (result: ScreenResult, strat: string): BestSetup | null => {
@@ -2293,12 +2258,10 @@ function BestOpportunityFinder({
     if (strat === 'IC') score += 12;
     if (strat === preferredStrategy) score += 20;
     let grade: BestSetup['grade'] = 'C';
-    if (score > 88) grade = 'A+';
-    else if (score > 75) grade = 'A';
-    else if (score > 60) grade = 'B';
+    if (score > 88) grade = 'A+'; else if (score > 75) grade = 'A'; else if (score > 60) grade = 'B';
     const notes: string[] = [];
     if (c.dte < 35) notes.push(`DTE is ${c.dte} — shorter side, watch 21 DTE closely`);
-    if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% is elevated — verify no binary event`);
+    if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% elevated — verify no binary event`);
     if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
     if (notes.length === 0) notes.push('Clean setup — all rules pass');
     return { strategy: strat, grade, setup: c, score, notes, result };
@@ -2308,47 +2271,26 @@ function BestOpportunityFinder({
     setLoading(true); setError(''); setLevelResults([]);
     try {
       const token = await getAccessToken();
-      const [metricsArray, price] = await Promise.all([
-        getMarketMetrics([symbol], token),
-        getQuote(symbol, token)
-      ]);
+      const [metricsArray, price] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
       const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
-
       const strategies: ('BPS' | 'BCS' | 'IC')[] = preferredStrategy
         ? [preferredStrategy, ...(['BPS', 'BCS', 'IC'] as const).filter(s => s !== preferredStrategy)]
         : ['BPS', 'BCS', 'IC'];
-
       const results: LevelResult[] = [];
-
       for (const level of levels) {
         const mergedRules = { ...rules, ...level.rules };
         const chainData = await getChain(symbol, token, mergedRules);
         const ruleDiffs = getRuleDiffs({ ...DEFAULT_RULES, ...COURSE_RULES }, level.rules);
-
         const candidates: BestSetup[] = [];
         const failures: { strategy: string; reasons: string[] }[] = [];
-
         for (const strat of strategies) {
           const result = runChecklist(symbol, strat, metrics, chainData, price, mergedRules);
           const setup = scoreCandidate(result, strat);
-          if (setup) {
-            candidates.push(setup);
-          } else {
-            failures.push({ strategy: strat, reasons: result.failReasons.length > 0 ? result.failReasons : ['No qualifying strikes found'] });
-          }
+          if (setup) candidates.push(setup);
+          else failures.push({ strategy: strat, reasons: result.failReasons.length > 0 ? result.failReasons : ['No qualifying strikes found'] });
         }
-
-        results.push({
-          presetKey: level.presetKey,
-          presetLabel: level.presetLabel,
-          presetColor: level.presetColor,
-          rulesUsed: mergedRules,
-          ruleDiffs,
-          best: candidates.length > 0 ? candidates.sort((a, b) => b.score - a.score)[0] : null,
-          failures,
-        });
+        results.push({ presetKey: level.presetKey, presetLabel: level.presetLabel, presetColor: level.presetColor, rulesUsed: mergedRules, ruleDiffs, best: candidates.length > 0 ? candidates.sort((a, b) => b.score - a.score)[0] : null, failures });
       }
-
       setLevelResults(results);
     } catch (e: any) {
       setError(e.message || 'Failed to analyze chain');
@@ -2362,40 +2304,30 @@ function BestOpportunityFinder({
   return (
     <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
       <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
-
-        {/* Header */}
         <div className="flex justify-between items-start mb-4">
           <div>
             <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity — {symbol}</h2>
             <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
-              Scans all 3 rule levels. Each level shows the best setup found and what rules were relaxed.
+              Scans all 4 rule levels. Each level shows the best setup found and what changed vs Course.
               {preferredStrategy && <span> Preferred: <span className="text-blue-400 font-bold">{preferredStrategy}</span></span>}
             </p>
           </div>
           <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white">✕</button>
         </div>
 
-        <button
-          onClick={findBest}
-          disabled={loading}
-          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors mb-4"
-        >
+        <button onClick={findBest} disabled={loading}
+          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors mb-4">
           {loading ? 'SCANNING ALL RULE LEVELS...' : 'SCAN ALL RULE LEVELS'}
         </button>
 
         {error && <div className="p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm mb-4">{error}</div>}
 
-        {/* Level results */}
         <div className="space-y-4">
           {levelResults.map(level => (
             <div key={level.presetKey} className={`border ${th.border} rounded-xl overflow-hidden`}>
-
-              {/* Level header */}
               <div className={`flex items-center justify-between px-4 py-2.5 border-b ${th.border} ${th.card}`}>
                 <div className="flex items-center gap-2">
-                  <span className={`text-[10px] font-bold tracking-widest px-2 py-0.5 border rounded ${level.presetColor}`}>
-                    {level.presetLabel.toUpperCase()}
-                  </span>
+                  <span className={`text-[10px] font-bold tracking-widest px-2 py-0.5 border rounded ${level.presetColor}`}>{level.presetLabel.toUpperCase()}</span>
                   {level.ruleDiffs.length === 0 ? (
                     <span className={`text-[9px] ${th.textFaint}`}>Course baseline — no changes</span>
                   ) : level.presetKey === 'strict' ? (
@@ -2404,65 +2336,33 @@ function BestOpportunityFinder({
                     <span className="text-[9px] text-yellow-400">Relaxed vs Course: {level.ruleDiffs.join(' · ')}</span>
                   )}
                 </div>
-                {level.best ? (
-                  <span className={`text-xs font-bold ${gradeColor(level.best.grade)}`}>
-                    Grade {level.best.grade} · {level.best.strategy}
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-slate-500">No setup found</span>
-                )}
+                {level.best
+                  ? <span className={`text-xs font-bold ${gradeColor(level.best.grade)}`}>Grade {level.best.grade} · {level.best.strategy}</span>
+                  : <span className="text-[10px] text-slate-500">No setup found</span>}
               </div>
 
-              {/* Best setup at this level */}
               {level.best ? (
                 <div className="p-4">
                   <div className="grid grid-cols-4 gap-3 mb-3">
-                    <div>
-                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p>
-                      <p className={`text-xs font-bold ${th.text}`}>{level.best.setup.expiration} <span className="text-slate-500">({level.best.setup.dte}d)</span></p>
-                    </div>
-                    <div>
-                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p>
-                      <p className={`text-xs font-bold ${th.text}`}>{level.best.setup.shortStrike}/{level.best.setup.longStrike}</p>
-                    </div>
-                    <div>
-                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit</p>
-                      <p className="text-xs font-bold text-emerald-400">${(level.best.setup.totalCredit ?? level.best.setup.credit).toFixed(2)}</p>
-                    </div>
-                    <div>
-                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>ROC / POP</p>
-                      <p className={`text-xs font-bold ${th.text}`}>{level.best.setup.roc.toFixed(0)}% / {level.best.setup.pop?.toFixed(0) ?? '—'}%</p>
-                    </div>
+                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p><p className={`text-xs font-bold ${th.text}`}>{level.best.setup.expiration} <span className="text-slate-500">({level.best.setup.dte}d)</span></p></div>
+                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p><p className={`text-xs font-bold ${th.text}`}>{level.best.setup.shortStrike}/{level.best.setup.longStrike}</p></div>
+                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit</p><p className="text-xs font-bold text-emerald-400">${(level.best.setup.totalCredit ?? level.best.setup.credit).toFixed(2)}</p></div>
+                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>ROC / POP</p><p className={`text-xs font-bold ${th.text}`}>{level.best.setup.roc.toFixed(0)}% / {level.best.setup.pop?.toFixed(0) ?? '—'}%</p></div>
                   </div>
                   <div className="grid grid-cols-3 gap-3 mb-3">
-                    <div>
-                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>50% Target</p>
-                      <p className="text-xs font-bold text-emerald-400">${((level.best.setup.totalCredit ?? level.best.setup.credit) * 0.5).toFixed(2)}</p>
-                    </div>
-                    <div>
-                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit Ratio</p>
-                      <p className={`text-xs font-bold ${th.text}`}>{(level.best.setup.creditRatio * 100).toFixed(0)}% of width</p>
-                    </div>
-                    <div>
-                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI Short/Long</p>
-                      <p className={`text-xs font-bold ${th.text}`}>{level.best.setup.shortOI} / {level.best.setup.longOI}</p>
-                    </div>
+                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>50% Target</p><p className="text-xs font-bold text-emerald-400">${((level.best.setup.totalCredit ?? level.best.setup.credit) * 0.5).toFixed(2)}</p></div>
+                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit Ratio</p><p className={`text-xs font-bold ${th.text}`}>{(level.best.setup.creditRatio * 100).toFixed(0)}% of width</p></div>
+                    <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI Short/Long</p><p className={`text-xs font-bold ${th.text}`}>{level.best.setup.shortOI} / {level.best.setup.longOI}</p></div>
                   </div>
                   <div className={`pt-2 border-t ${th.border} flex items-center justify-between`}>
                     <p className={`text-[9px] ${th.textFaint}`}>{level.best.notes[0]}</p>
                     <button
-                      onClick={() => {
-                        const s = level.best!;
-                        alert(`${s.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${s.setup.expiration} (${s.setup.dte}d)\nStrikes: ${s.setup.shortStrike}/${s.setup.longStrike}\nCredit: $${(s.setup.totalCredit ?? s.setup.credit).toFixed(2)}\n50% target: $${((s.setup.totalCredit ?? s.setup.credit) * 0.5).toFixed(2)}`);
-                      }}
+                      onClick={() => { const s = level.best!; alert(`${s.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${s.setup.expiration} (${s.setup.dte}d)\nStrikes: ${s.setup.shortStrike}/${s.setup.longStrike}\nCredit: $${(s.setup.totalCredit ?? s.setup.credit).toFixed(2)}\n50% target: $${((s.setup.totalCredit ?? s.setup.credit) * 0.5).toFixed(2)}`); }}
                       className="text-[9px] px-2 py-1 border border-emerald-600 text-emerald-400 rounded hover:bg-emerald-600/10 transition-colors font-medium tracking-wider"
-                    >
-                      TRADE IN TASTYTRADE →
-                    </button>
+                    >TRADE IN TASTYTRADE →</button>
                   </div>
                 </div>
               ) : (
-                /* No setup — show why each strategy failed */
                 <div className="px-4 py-3 space-y-1.5">
                   {level.failures.map(f => (
                     <div key={f.strategy} className="flex items-start gap-2">
@@ -2475,7 +2375,6 @@ function BestOpportunityFinder({
             </div>
           ))}
         </div>
-
       </div>
     </div>
   );
@@ -2517,7 +2416,7 @@ export default function Home() {
   const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
-  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); };
+  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); if (!newBps && !newBcs && !newIc && !newBroken) { setResults([]); setAutoTrendEntries([]); } };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
   const parseTickers = normalizeTickerInput;
