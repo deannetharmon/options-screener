@@ -1244,7 +1244,7 @@ function ResultCard({ result, th, rules }: {
             onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
             className="w-full py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-sm font-medium tracking-wider transition-colors mt-2"
           >
-            🔍 FIND BEST OPPORTUNITY FOR {result.symbol}
+            🔍 FULL OPPORTUNITIES ANALYSIS {result.symbol}
           </button>
         </div>
       )}
