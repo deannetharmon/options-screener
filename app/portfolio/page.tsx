@@ -399,14 +399,14 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
             <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
           </div>
           <div>
-            <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
-            <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
-          </div>
-          <div>
             <p className={`text-[9px] ${th.textFaint}`}>Current</p>
             <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
               {pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}
             </p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
+            <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
           </div>
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>P&L</p>
