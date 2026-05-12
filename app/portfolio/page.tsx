@@ -154,7 +154,121 @@ const THEMES = {
   light:  { bg: 'bg-[#f5f5f5]', sidebar: 'bg-white', card: 'bg-white', cardQualified: 'bg-white', border: 'border-[#e0e0e0]', borderLight: 'border-[#ebebeb]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#1a1a1a]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#cccccc]', tag: 'bg-[#f0f0f0]', label: 'text-[#444444]' },
 };
 
-function getSavedTheme(): Theme {
+interface TrendResult {
+  trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
+  strategy: 'BPS' | 'BCS' | 'IC' | 'NO_TRADE';
+  confidence: number;
+  reason: string;
+}
+
+interface Recommendation {
+  action: 'HOLD' | 'WATCH' | 'CLOSE_PROFIT' | 'MANAGE' | 'CLOSE_NOW' | 'ROLL';
+  label: string;
+  detail: string;
+  color: string;
+}
+
+async function getTrend(symbol: string): Promise<TrendResult> {
+  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+  if (!res.ok) return { trend: 'unknown', strategy: 'NO_TRADE', confidence: 0, reason: 'Chart data unavailable' };
+  const data = await res.json();
+  const bars: { c: number }[] = data?.bars ?? [];
+  const closes = bars.map((b: any) => b.c).filter((c: any): c is number => Number.isFinite(c));
+  if (closes.length < 50) return { trend: 'unknown', strategy: 'NO_TRADE', confidence: 0, reason: 'Not enough data' };
+
+  const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const price = closes[closes.length - 1];
+  const ma20 = avg(closes.slice(-20));
+  const ma50 = avg(closes.slice(-50));
+  const mom20 = (price - closes[closes.length - 21]) / closes[closes.length - 21];
+  const low20 = Math.min(...closes.slice(-20));
+  const high20 = Math.max(...closes.slice(-20));
+  const low40 = Math.min(...closes.slice(-40));
+  const high40 = Math.max(...closes.slice(-40));
+  const higherLows = low20 > Math.min(...closes.slice(-40, -20)) * 0.985;
+  const lowerHighs = high20 < Math.max(...closes.slice(-40, -20)) * 1.015;
+
+  let score = 0;
+  if (price > ma20) score += 2; else score -= 2;
+  if (price > ma50) score += 2; else score -= 2;
+  if (ma20 > ma50) score += 2; else score -= 2;
+  if (mom20 > 0.03) score += 2; else if (mom20 < -0.03) score -= 2;
+  if (higherLows) score += 2; else if (lowerHighs) score -= 2;
+
+  const confidence = Math.min(100, Math.abs(score) * 10);
+  if (score >= 4) return { trend: 'uptrend', strategy: 'BPS', confidence, reason: `Price above MA20/MA50, positive momentum` };
+  if (score <= -4) return { trend: 'downtrend', strategy: 'BCS', confidence, reason: `Price below MA20/MA50, negative momentum` };
+  return { trend: 'sideways', strategy: 'IC', confidence, reason: `Mixed signals, range-bound` };
+}
+
+function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
+  // Close now — DTE urgency
+  if (pos.needsClose) return {
+    action: 'CLOSE_NOW', label: 'CLOSE NOW', color: 'text-red-400 border-red-600',
+    detail: `${pos.dte} DTE — mandatory close regardless of P&L`,
+  };
+
+  // Profit target hit
+  if (pos.hitTarget) return {
+    action: 'CLOSE_PROFIT', label: 'TAKE PROFIT', color: 'text-emerald-400 border-emerald-600',
+    detail: '50% profit target reached — lock in gains',
+  };
+
+  const pnlPct = pos.pnlPct ?? 0;
+
+  // Position moving against us
+  if (pnlPct < -30) {
+    // Check if trend confirms the bad direction
+    const trendAgainst = trend && (
+      (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
+      (pos.strategy === 'BCS' && trend.trend === 'uptrend')
+    );
+    return {
+      action: trendAgainst ? 'CLOSE_NOW' : 'MANAGE',
+      label: trendAgainst ? 'CLOSE / ROLL' : 'MANAGE',
+      color: 'text-orange-400 border-orange-600',
+      detail: trendAgainst
+        ? `Down ${Math.abs(pnlPct).toFixed(0)}% and trend confirms — consider closing or rolling`
+        : `Down ${Math.abs(pnlPct).toFixed(0)}% but trend not confirmed — watch closely`,
+    };
+  }
+
+  // Approaching target
+  if (pnlPct >= 35) return {
+    action: 'WATCH', label: 'NEAR TARGET', color: 'text-yellow-400 border-yellow-600',
+    detail: `${pnlPct.toFixed(0)}% profit — approaching 50% target, watch for close`,
+  };
+
+  // Trend aligns with strategy — healthy
+  const trendAligns = trend && (
+    (pos.strategy === 'BPS' && trend.trend === 'uptrend') ||
+    (pos.strategy === 'BCS' && trend.trend === 'downtrend') ||
+    (pos.strategy === 'IC' && trend.trend === 'sideways')
+  );
+
+  if (trendAligns) return {
+    action: 'HOLD', label: 'HOLD', color: 'text-emerald-400 border-emerald-700',
+    detail: `Trend confirms ${pos.strategy} — ${trend!.trend}, ${pnlPct.toFixed(0)}% profit so far`,
+  };
+
+  // Trend working against but not yet a loss
+  const trendAgainst = trend && (
+    (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
+    (pos.strategy === 'BCS' && trend.trend === 'uptrend')
+  );
+
+  if (trendAgainst) return {
+    action: 'WATCH', label: 'WATCH', color: 'text-yellow-400 border-yellow-600',
+    detail: `Trend shifted to ${trend!.trend} — monitor ${pos.symbol} closely`,
+  };
+
+  return {
+    action: 'HOLD', label: 'HOLD', color: 'text-slate-400 border-slate-600',
+    detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining, on track`,
+  };
+}
+
+
   try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
 }
 
@@ -226,6 +340,15 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 // ── Position Card ──────────────────────────────────────────────────────────
 function PositionCard({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   const [expanded, setExpanded] = useState(false);
+  const [trend, setTrend] = useState<TrendResult | null>(null);
+  const [trendLoading, setTrendLoading] = useState(false);
+
+  useEffect(() => {
+    setTrendLoading(true);
+    getTrend(pos.symbol).then(t => { setTrend(t); setTrendLoading(false); }).catch(() => setTrendLoading(false));
+  }, [pos.symbol]);
+
+  const rec = getRecommendation(pos, trend);
 
   const ttLink = `https://trade.tastytrade.com/trade?symbol=${pos.symbol}`;
 
@@ -319,6 +442,19 @@ function PositionCard({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) 
             ${pos.targetPrice.toFixed(2)}
             {pos.hitTarget && <span className="ml-1 text-emerald-400">✓</span>}
           </p>
+        </div>
+
+        {/* Recommendation */}
+        <div className="shrink-0">
+          <p className={`text-[10px] ${th.textFaint}`}>Recommendation</p>
+          {trendLoading ? (
+            <p className={`text-[10px] ${th.textFaint}`}>analyzing...</p>
+          ) : (
+            <div>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 border rounded ${rec.color}`}>{rec.label}</span>
+              <p className={`text-[9px] ${th.textFaint} mt-0.5 max-w-[180px]`}>{rec.detail}</p>
+            </div>
+          )}
         </div>
 
         {/* Spacer + expand + TT link */}
