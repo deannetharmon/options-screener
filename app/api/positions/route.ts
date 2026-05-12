@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import { getValidAccessToken } from '@/lib/tokenStore';
 
-const BASE = 'https://api.tastytrade.com';
+const BASE_URL = 'https://api.tastytrade.com';
 
 async function ttFetch(path: string, token: string) {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE_URL}${path}`, {
     headers: { Authorization: token },
     cache: 'no-store',
   });
@@ -14,19 +15,18 @@ async function ttFetch(path: string, token: string) {
   return res.json();
 }
 
-export async function POST(req: NextRequest) {
+export async function GET() {
   try {
-    const { accessToken } = await req.json();
-    if (!accessToken) return NextResponse.json({ error: 'No access token provided' }, { status: 401 });
+    const token = await getValidAccessToken();
 
-    const accountsData = await ttFetch('/customers/me/accounts', accessToken);
+    const accountsData = await ttFetch('/customers/me/accounts', token);
     const accounts = accountsData?.data?.items ?? [];
     if (accounts.length === 0) return NextResponse.json({ error: 'No accounts found' }, { status: 404 });
 
     const accountNumber = accounts[0]?.account?.['account-number'];
     if (!accountNumber) return NextResponse.json({ error: 'Could not read account number' }, { status: 500 });
 
-    const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, accessToken);
+    const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
     const rawPositions = positionsData?.data?.items ?? [];
 
     const optionPositions = rawPositions.filter((p: any) =>
@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
         for (let i = 0; i < allOptionSymbols.length; i += 50) {
           const chunk = allOptionSymbols.slice(i, i + 50);
           const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
-          const priceData = await ttFetch(`/market-data/by-type?${qs}`, accessToken);
+          const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
           for (const item of priceData?.data?.items ?? []) {
             const bid = parseFloat(item.bid ?? '0');
             const ask = parseFloat(item.ask ?? '0');
