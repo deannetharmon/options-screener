@@ -313,6 +313,24 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
 
   const ttLink = `https://trade.tastytrade.com/trade?symbol=${pos.symbol}`;
 
+  // Build a TastyTrade deep-link appropriate to the action
+  const ttActionUrl = (action: ActionType): string => {
+    const base = `https://trade.tastytrade.com`;
+    const sym = pos.symbol;
+    switch (action) {
+      case 'TAKE_PROFIT':
+      case 'CUT_LOSSES':
+      case 'CLOSE_ROLL':
+      case 'MANAGE':
+        return `${base}/positions?symbol=${sym}`;
+      case 'WATCH':
+        return `${base}/quote?symbol=${sym}`;
+      case 'HOLD':
+      default:
+        return `${base}/trade?symbol=${sym}`;
+    }
+  };
+
   const shortPuts  = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Short');
   const longPuts   = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Long');
   const shortCalls = pos.legs.filter(l => l.optionType === 'C' && l.direction === 'Short');
@@ -451,7 +469,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
               })}
 
               {/* Action button */}
-              <div className="flex items-center px-3 min-w-[110px]">
+              <div className="flex flex-col items-center justify-center gap-1 px-3 min-w-[110px]">
                 {actionDef.show ? (
                   <button
                     onClick={() => onToggleSelect(pos.key, effectiveAction)}
@@ -463,6 +481,14 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
                     {actionDef.label}
                   </span>
                 )}
+                <a
+                  href={ttActionUrl(effectiveAction)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[8px] text-white/30 hover:text-white/70 tracking-wider transition-colors whitespace-nowrap"
+                  title={`Open ${pos.symbol} in TastyTrade`}>
+                  → TastyTrade ↗
+                </a>
               </div>
             </>
           )}
