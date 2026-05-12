@@ -1760,7 +1760,30 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     Math.abs(momentum40) < 0.12 &&           // medium-term also contained
     drawdownFrom60High < -0.15;              // confirms there was a real drop
 
-  const isChaotic = !postCrashStabilized && (range60 > maxChaoticRange60 || (chopRatio > 6.0 && absScore < 50));
+  // ── ADP/GDDY fix: chop ratio explodes to 99 when net60 ≈ 0 ──────────────
+  // A stock can have a very high chop ratio AND clear directional structure
+  // (ADP: staircase down but net displacement ≈ 0 over 60d due to bounces).
+  // Don't let infinite chop override a clear bearish/bullish score.
+  // Also: GDDY-type post-crash flat ranges have high chop ratio but are valid IC.
+  // Pre-compute bearish/bullish structure here so isChaotic can respect it.
+  const clearBearishStructure =
+    (lowerHighs || regimeLowerHighs) &&
+    (lowerLows || regimeLowerLows || brokePriorSupport) &&
+    (ma20Slope < -0.005 || momentum40 < -0.03) &&
+    directionalScore <= -8;
+
+  const clearBullishStructure =
+    (higherLows || regimeHigherLows) &&
+    currentPrice > ma50 &&
+    (ma20Slope > 0.005 || momentum40 > 0.03) &&
+    directionalScore >= 8;
+
+  // isChaotic: only fires when there's no clear directional structure
+  const isChaotic = !postCrashStabilized &&
+    !clearBearishStructure &&
+    !clearBullishStructure &&
+    (range60 > maxChaoticRange60 || (chopRatio > 6.0 && absScore < 50));
+
   if (isChaotic) {
     return {
       trend: 'sideways',
@@ -1878,7 +1901,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
   // ── Trend Memory Arbitration ──────────────────────────────────────────────
 
-  // ── GDDY: post-crash stabilized → IC (route before directional gates) ────
+  // ── GDDY: post-crash stabilized → IC ─────────────────────────────────────
   if (postCrashStabilized) {
     return {
       trend: 'sideways',
@@ -1890,11 +1913,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  // ── ERX fix: high-vol name with strong recent recovery — weight 20d more ──
-  // For leveraged ETFs and high-volatility names, a sharp intermediate crash
-  // can make momentum60 negative even when the stock is in a clear uptrend.
-  // If the recent 20-day move is decisively bullish and structure supports it,
-  // trust the recent signal over the 60d distortion.
+  // ── ERX fix: high-vol name with strong recent recovery ───────────────────
   const recentBullishRecovery =
     highVolName &&
     momentum20 > 0.08 &&
@@ -1916,18 +1935,27 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  // Bearish persistence: lowered threshold from -22 to -15 to catch ADSK/SPGI/VMC.
-  // Also relaxed MA50 requirement — post-bounce names can be above MA50 briefly
-  // while still in a bearish structure (lower highs confirm the direction).
+  // ── Bearish memory: catches ADSK (-22), and now also SPGI/VMC via clearBearishStructure ──
+  // Two tiers:
+  // Strong (-15 and below): full gate including MA50 check
+  // Weak (clearBearishStructure, any score): lower highs + slope confirmed = BCS override
   const bearishMemoryStrong =
     directionalScore <= -15 &&
     (lowerHighs || regimeLowerHighs) &&
     (lowerLows || regimeLowerLows || brokePriorSupport) &&
     (currentPrice < ma50 || (lowerHighs && regimeLowerHighs && ma20Slope < -0.005)) &&
     (ma20Slope < -0.005 || momentum40 < -0.03 || momentum60 < -0.05) &&
-    !(momentum20 > 0.08 && currentPrice > ma20 && reboundFrom60Low > 0.20); // not in a convincing bounce
+    !(momentum20 > 0.08 && currentPrice > ma20 && reboundFrom60Low > 0.20);
 
-  // Bullish persistence signals
+  // Weak bearish: covers SPGI (+3) and VMC (-7) — low score but clear lower-high structure
+  // with price rolling over and negative slope. Use clearBearishStructure computed above.
+  const bearishMemoryWeak =
+    !bearishMemoryStrong &&
+    clearBearishStructure &&
+    (lowerHighs || regimeLowerHighs) &&
+    drawdownFrom60High < -0.10 &&
+    !(momentum20 > 0.06 && currentPrice > ma20);
+
   const bullishMemoryStrong =
     directionalScore >= 22 &&
     (higherLows || regimeHigherLows) &&
@@ -1935,8 +1963,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     (ma20Slope > 0.008 || momentum40 > 0.05) &&
     !(momentum20 < -0.06 && currentPrice < ma20);
 
-  // True IC range: overlapping movement or poor directional persistence.
-  // Only classify IC if neither directional memory gate fires.
+  // True IC range: only if no directional memory gate fires.
   const rangeLike = absScore <= 28 || chopRatio > 3.0 || (range60 > 0.22 && Math.abs(momentum60) < 0.06);
 
   if (rangeLike && bearishMemoryStrong) {
@@ -1966,6 +1993,18 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       scores,
       metrics,
       reason: `BPS (trend memory override): score ${scores.total} — bullish structure persists despite consolidation. Higher lows, price above MA50, slope/momentum confirm direction. Range ${(range60 * 100).toFixed(1)}%, chop ${chopRatio.toFixed(1)}.`,
+    };
+  }
+
+  // ── SPGI/VMC: weak score but confirmed bearish structure ─────────────────
+  if (bearishMemoryWeak) {
+    return {
+      trend: 'downtrend',
+      strategy: 'BCS',
+      subtype: 'REVERSAL',
+      confidence: Math.max(45, Math.min(62, confidence)),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BCS (weak bearish memory): score ${scores.total} — lower highs confirmed, price rolling over, negative slope. Structure supports BCS despite low directional score. Range ${(range60 * 100).toFixed(1)}%.`,
     };
   }
 
