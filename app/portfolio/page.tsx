@@ -111,7 +111,7 @@ async function loadPositions(): Promise<Position[]> {
     }
     currentValue = currentValue * 100;
 
-    const pnl = hasCurrentPrices ? creditReceived + currentValue : null;
+    const pnl = hasCurrentPrices ? Math.abs(creditReceived) - Math.abs(currentValue) : null;
     const pnlPct = creditReceived !== 0 && pnl != null ? (pnl / Math.abs(creditReceived)) * 100 : null;
     const targetPrice = Math.abs(creditReceived) * 0.5;
     const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * 0.5;
