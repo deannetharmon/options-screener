@@ -1,9 +1,23 @@
 import { NextResponse } from 'next/server';
 
-const BASE_URL = 'https://api.tastytrade.com';
+const BASE = 'https://api.tastytrade.com';
+
+async function getAccessToken(): Promise<string> {
+  const r = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
+  const s = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
+  const c = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
+  if (!r || !s || !c) throw new Error('TastyTrade credentials not configured');
+  const res = await fetch(`${BASE}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: r.trim(), client_id: c.trim(), client_secret: s.trim() }),
+  });
+  if (!res.ok) { const text = await res.text(); throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 200)}`); }
+  return (await res.json()).access_token;
+}
 
 async function ttFetch(path: string, token: string) {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetch(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });
@@ -14,21 +28,9 @@ async function ttFetch(path: string, token: string) {
   return res.json();
 }
 
-async function getToken(): Promise<string> {
-  // Try NEXT_PUBLIC first (this is what the screener uses successfully)
-  const pubToken = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
-  if (pubToken) return pubToken;
-
-  // Fall back to non-public
-  const token = process.env.TASTYTRADE_REFRESH_TOKEN;
-  if (token) return token;
-
-  throw new Error('No TastyTrade token configured');
-}
-
 export async function GET() {
   try {
-    const token = await getToken();
+    const token = await getAccessToken();
 
     const accountsData = await ttFetch('/customers/me/accounts', token);
     const accounts = accountsData?.data?.items ?? [];
