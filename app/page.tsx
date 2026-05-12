@@ -2,6 +2,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 
+// Inject DM Sans font
+if (typeof document !== 'undefined') {
+  if (!document.getElementById('prosper-font')) {
+    const link = document.createElement('link');
+    link.id = 'prosper-font';
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=DM+Mono:wght@400;500&display=swap';
+    document.head.appendChild(link);
+  }
+}
+
 // ── Theme ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
 const LS_THEME = 'prosper-theme';
@@ -13,9 +24,9 @@ const THEMES: Record<Theme, {
   input: string; inputBorder: string; tag: string;
   label: string;
 }> = {
-  dark: { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#111111]', card: 'bg-[#1a1a1a]', cardQualified: 'bg-[#1f1f1f]', border: 'border-[#2a2a2a]', borderLight: 'border-[#222222]', header: 'bg-[#111111]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#888888]', input: 'bg-[#1a1a1a]', inputBorder: 'border-[#333333]', tag: 'bg-[#252525]', label: 'text-[#cccccc]' },
-  medium: { bg: 'bg-[#161616]', sidebar: 'bg-[#1c1c1c]', card: 'bg-[#222222]', cardQualified: 'bg-[#272727]', border: 'border-[#333333]', borderLight: 'border-[#2a2a2a]', header: 'bg-[#1c1c1c]', text: 'text-white', textMuted: 'text-[#d8d8d8]', textFaint: 'text-[#777777]', input: 'bg-[#222222]', inputBorder: 'border-[#3a3a3a]', tag: 'bg-[#2e2e2e]', label: 'text-[#bbbbbb]' },
-  light: { bg: 'bg-white', sidebar: 'bg-white', card: 'bg-white', cardQualified: 'bg-[#fafafa]', border: 'border-[#e5e5e5]', borderLight: 'border-[#efefef]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#222222]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#d0d0d0]', tag: 'bg-[#f2f2f2]', label: 'text-[#333333]' },
+  dark: { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#0f0f0f]', card: 'bg-[#171717]', cardQualified: 'bg-[#1c1c1c]', border: 'border-[#2c2c2c]', borderLight: 'border-[#202020]', header: 'bg-[#0f0f0f]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#808080]', input: 'bg-[#141414]', inputBorder: 'border-[#353535]', tag: 'bg-[#222222]', label: 'text-[#aaaaaa]' },
+  medium: { bg: 'bg-[#141414]', sidebar: 'bg-[#1a1a1a]', card: 'bg-[#202020]', cardQualified: 'bg-[#252525]', border: 'border-[#333333]', borderLight: 'border-[#282828]', header: 'bg-[#1a1a1a]', text: 'text-white', textMuted: 'text-[#d8d8d8]', textFaint: 'text-[#777777]', input: 'bg-[#1e1e1e]', inputBorder: 'border-[#3a3a3a]', tag: 'bg-[#2a2a2a]', label: 'text-[#999999]' },
+  light: { bg: 'bg-[#f5f5f5]', sidebar: 'bg-white', card: 'bg-white', cardQualified: 'bg-white', border: 'border-[#e0e0e0]', borderLight: 'border-[#ebebeb]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#1a1a1a]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#cccccc]', tag: 'bg-[#f0f0f0]', label: 'text-[#444444]' },
 };
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -2596,12 +2607,12 @@ export default function Home() {
   const disqualified = results.filter(r => !r.qualified);
 
   return (
-    <div className={`min-h-screen ${th.bg} text-slate-100 font-mono transition-colors duration-200`}>
+    <div className={`min-h-screen ${th.bg} text-slate-100 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       {/* Header */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
         <div>
-          <h1 className="text-base font-bold tracking-widest text-white">OPTIONS HUNTER</h1>
-          <p className="text-[10px] text-white/50 mt-0.5 tracking-wider">BPS · BCS · IRON CONDOR</p>
+          <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
+          <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
         </div>
         <img src="/header-bg.png" alt="" className="flex-1 mx-6 hidden sm:block" style={{height: '57px', marginTop: '-1rem', marginBottom: '-1rem', objectFit: 'cover'}} />
         <div className="flex items-center gap-3">
