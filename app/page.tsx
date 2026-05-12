@@ -2347,7 +2347,7 @@ function BestOpportunityFinder({
   const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
 
   return (
-    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] p-4">
+    <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
       <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
 
         {/* Header */}
