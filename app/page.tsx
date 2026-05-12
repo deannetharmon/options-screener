@@ -1389,7 +1389,10 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     setRawValues(Object.fromEntries(Object.entries(base).map(([k, v]) => [k, String(v)])));
   };
   const handleRulePreset = (p: typeof RULE_PRESETS[number]) => {
-    const merged = { ...editedRules, ...p.rules };
+    // Start from DEFAULT_RULES + quick preset, then re-apply ETF overrides on top if in ETF mode.
+    // This prevents ETF delta/OI/bid-ask from being lost when switching quick presets.
+    const base = preset === 'etf' ? { ...DEFAULT_RULES, ...ETF_RULES } : { ...DEFAULT_RULES };
+    const merged = { ...base, ...p.rules, ...(preset === 'etf' ? ETF_RULES : {}) };
     setEditedRules(merged);
     setRawValues(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
     setActiveRulePreset(p.key);
