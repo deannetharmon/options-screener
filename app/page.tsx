@@ -1770,13 +1770,14 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     (lowerHighs || regimeLowerHighs) &&
     (lowerLows || regimeLowerLows || brokePriorSupport) &&
     (ma20Slope < -0.005 || momentum40 < -0.03) &&
-    directionalScore <= -8;
+    drawdownFrom60High < -0.10;  // score gate removed — rangy bearish names can have near-zero directional score
 
   const clearBullishStructure =
     (higherLows || regimeHigherLows) &&
     currentPrice > ma50 &&
     (ma20Slope > 0.005 || momentum40 > 0.03) &&
-    directionalScore >= 8;
+    directionalScore >= 8 &&
+    drawdownFrom60High > -0.25;  // exclude post-crash bounces — if dropped >25% from 60d high, not a clean uptrend
 
   // isChaotic: only fires when there's no clear directional structure
   const isChaotic = !postCrashStabilized &&
@@ -1996,7 +1997,8 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  // ── SPGI/VMC: weak score but confirmed bearish structure ─────────────────
+  // ── SPGI/VMC/ADP: weak score but confirmed bearish structure ─────────────
+  // Must fire before rangeLike IC check, otherwise these fall through to IC.
   if (bearishMemoryWeak) {
     return {
       trend: 'downtrend',
