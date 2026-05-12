@@ -2668,17 +2668,10 @@ export default function Home() {
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
-          <div className="flex gap-2">
-            <button onClick={() => runScreen(runtimeRules)} disabled={loading}
-              className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
-              {loading ? 'SCANNING...' : 'RUN HUNTER'}
-            </button>
-            <button onClick={() => setShowRulesModal(true)} disabled={loading}
-              title="Edit screening rules"
-              className={`px-3 py-2.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40 text-sm`}>
-              ⚙
-            </button>
-          </div>
+          <button onClick={() => setShowRulesModal(true)} disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
+            {loading ? 'SCANNING...' : 'RUN HUNTER'}
+          </button>
 
           {/* Last Rules Used */}
           <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
