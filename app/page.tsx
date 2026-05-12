@@ -1808,7 +1808,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       subtype: 'CHOP',
       confidence: Math.max(25, Math.min(48, confidence)),
       ma20, ma50, ma200, scores, metrics,
-      reason: `NO_TRADE CHOP: 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}. | ${diagCBS} | ${diagBMS} | ${diagBMW}`,
+      reason: `NO_TRADE CHOP: 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}.`,
     };
   }
 
@@ -1973,28 +1973,26 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     drawdownFrom60High < -0.10 &&
     !(momentum20 > 0.06 && currentPrice > ma20);
 
-  const bullishMemoryStrong =
-    directionalScore >= 22 &&
-    (higherLows || regimeHigherLows) &&
-    currentPrice > ma50 &&
-    (ma20Slope > 0.008 || momentum40 > 0.05) &&
-    !(momentum20 < -0.06 && currentPrice < ma20);
-
-  // ── Diagnostic strings — embedded into reason for IC/Review paths ─────────
+  // ── Diagnostic strings — for IC/Review reason strings ────────────────────
   const diagLowerHighs = lowerHighs || regimeLowerHighs;
   const diagLowerLows = lowerLows || regimeLowerLows || brokePriorSupport || (ma20Slope < -0.008 && drawdownFrom60High < -0.15);
   const diagSlope = ma20Slope < -0.005 || momentum40 < -0.03;
   const diagDD = drawdownFrom60High < -0.10;
   const diagNoBounceBear = !(momentum20 > 0.06 && currentPrice > ma20);
   const diagCBS = `clearBearish[↓Hi=${diagLowerHighs ? '✓' : '✗'} ↓Lo=${diagLowerLows ? '✓' : '✗'} slope=${diagSlope ? '✓' : '✗'} dd=${diagDD ? '✓' : '✗'}]=${clearBearishStructure ? '✓' : '✗'}`;
-
-  const diagBMSLowHighs = lowerHighs || regimeLowerHighs;
   const diagBMSLowLows = lowerLows || regimeLowerLows || brokePriorSupport;
   const diagBMSMA50 = currentPrice < ma50 || (lowerHighs && regimeLowerHighs && ma20Slope < -0.005);
   const diagBMSSlope = ma20Slope < -0.005 || momentum40 < -0.03 || momentum60 < -0.05;
   const diagBMSNoBounce = !(momentum20 > 0.08 && currentPrice > ma20 && reboundFrom60Low > 0.20);
-  const diagBMS = `bearishStrong[score≤-15=${directionalScore <= -15 ? '✓' : '✗'} ↓Hi=${diagBMSLowHighs ? '✓' : '✗'} ↓Lo=${diagBMSLowLows ? '✓' : '✗'} MA50=${diagBMSMA50 ? '✓' : '✗'} slope=${diagBMSSlope ? '✓' : '✗'} noBounce=${diagBMSNoBounce ? '✓' : '✗'}]=${bearishMemoryStrong ? '✓' : '✗'}`;
-  const diagBMW = `bearishWeak[CBS=${clearBearishStructure ? '✓' : '✗'} dd=${diagDD ? '✓' : '✗'} noBounce=${diagNoBounceBear ? '✓' : '✗'}]=${bearishMemoryWeak ? '✓' : '✗'}`;
+  const diagBMS = `bearishStrong[s≤-15=${directionalScore <= -15 ? '✓' : '✗'} ↓Hi=${diagLowerHighs ? '✓' : '✗'} ↓Lo=${diagBMSLowLows ? '✓' : '✗'} MA50=${diagBMSMA50 ? '✓' : '✗'} slope=${diagBMSSlope ? '✓' : '✗'} noBnc=${diagBMSNoBounce ? '✓' : '✗'}]=${bearishMemoryStrong ? '✓' : '✗'}`;
+  const diagBMW = `bearishWeak[CBS=${clearBearishStructure ? '✓' : '✗'} dd=${diagDD ? '✓' : '✗'} noBnc=${diagNoBounceBear ? '✓' : '✗'}]=${bearishMemoryWeak ? '✓' : '✗'}`;
+
+  const bullishMemoryStrong =
+    directionalScore >= 22 &&
+    (higherLows || regimeHigherLows) &&
+    currentPrice > ma50 &&
+    (ma20Slope > 0.008 || momentum40 > 0.05) &&
+    !(momentum20 < -0.06 && currentPrice < ma20);
 
   // True IC range: only if no directional memory gate fires.
   const rangeLike = absScore <= 28 || chopRatio > 3.0 || (range60 > 0.22 && Math.abs(momentum60) < 0.06);
