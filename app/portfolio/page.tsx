@@ -70,8 +70,22 @@ async function loadPositions(): Promise<Position[]> {
     } catch { /* prices optional */ }
   }
 
-  // IVR is read from the positions+marks call below — populated into ivrMap after that fetch
+  // ── Fetch IVR from /market-metrics ──────────────────────────────────────
+  // Field: implied-volatility-index-rank (TastyTrade API docs confirmed)
   const ivrMap: Record<string, number | null> = {};
+  try {
+    const underlyingSymbols = Array.from(new Set(optionPositions.map((p: any) => p['underlying-symbol'] as string)));
+    const qs = underlyingSymbols.map((s: string) => `symbols[]=${encodeURIComponent(s)}`).join('&');
+    const metricsData = await ttFetch(`/market-metrics?${qs}`, token);
+    for (const item of metricsData?.data?.items ?? []) {
+      const raw = item['implied-volatility-index-rank'] ?? item['tw-implied-volatility-index-rank'] ?? null;
+      const parsed = raw != null ? parseFloat(String(raw)) : NaN;
+      if (!isNaN(parsed)) {
+        // TastyTrade returns IVR as a decimal (0.422) or percentage (42.2) — normalise to 0–100
+        ivrMap[item['symbol']] = parsed <= 1 ? Math.round(parsed * 100) : Math.round(parsed);
+      }
+    }
+  } catch { /* IVR optional */ }
 
   // ── Fetch working (GTC) orders ────────────────────────────────────────
   const gtcSymbols = new Set<string>();
@@ -158,24 +172,14 @@ async function loadPositions(): Promise<Position[]> {
     };
   });
 
-  // ── Fetch real P/L Open + IVR from TastyTrade positions+marks ───────────
+  // ── Fetch real P/L Open from TastyTrade positions+marks ─────────────────
   try {
     const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
     const plItems: any[] = plData?.data?.items ?? [];
-
-    // Debug: log first item keys once to help identify field names
-    if (plItems.length > 0) {
-      console.log('[TT positions+marks] sample keys:', Object.keys(plItems[0]));
-      console.log('[TT positions+marks] sample item:', JSON.stringify(plItems[0]));
-    }
-
-    // Group P/L and IVR by underlying symbol
     const plBySymbol: Record<string, number> = {};
     for (const item of plItems) {
       const sym = item['underlying-symbol'];
       if (!sym) continue;
-
-      // P/L Open
       const qty = parseFloat(item['quantity'] ?? '1');
       const multiplier = parseFloat(item['multiplier'] ?? '100');
       const avgOpen = parseFloat(item['average-open-price'] ?? '0');
@@ -183,20 +187,7 @@ async function loadPositions(): Promise<Position[]> {
       const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
       const pl = dir * (mark - avgOpen) * qty * multiplier;
       plBySymbol[sym] = (plBySymbol[sym] ?? 0) + pl;
-
-      // IVR — try every known field name; also check nested 'equity-option' object
-      if (ivrMap[sym] == null) {
-        const raw = item['implied-volatility-index-rank']
-          ?? item['iv-rank'] ?? item['ivr'] ?? item['iv_rank']
-          ?? item['ivRank'] ?? item['implied-volatility-rank']
-          ?? item['underlying-iv-rank'] ?? item['underlying-ivr']
-          ?? item['equity']?.['implied-volatility-index-rank']
-          ?? null;
-        const parsed = raw != null ? parseFloat(String(raw)) : NaN;
-        if (!isNaN(parsed)) ivrMap[sym] = Math.round(parsed * (parsed <= 1 ? 100 : 1));
-      }
     }
-
     for (const pos of positions) {
       if (plBySymbol[pos.symbol] != null) {
         pos.plOpen = Math.round(plBySymbol[pos.symbol] * 100) / 100;
