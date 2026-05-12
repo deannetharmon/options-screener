@@ -40,6 +40,7 @@ async function loadPositions(): Promise<Position[]> {
 
   const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
   const rawPositions = positionsData?.data?.items ?? [];
+  console.log('SYMBOLS:', rawPositions.slice(0,3).map((p: any) => p.symbol));
   const optionPositions = rawPositions.filter((p: any) =>
     p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
   );
