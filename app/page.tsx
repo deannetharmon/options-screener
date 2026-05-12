@@ -63,6 +63,11 @@ interface TrendResult {
     lowerLows: boolean;
   };
 }
+interface AutoTrendEntry {
+  symbol: string;
+  result: TrendResult;
+}
+
 interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
   qualified: boolean; bestCandidate: SpreadCandidate | null;
@@ -1151,6 +1156,114 @@ function ResultCard({ result, th, rules }: {
   );
 }
 
+// ── Auto Trend Debug Panel ─────────────────────────────────────────────────
+function AutoTrendDebugPanel({ entries, th }: { entries: AutoTrendEntry[]; th: typeof THEMES[Theme] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  if (entries.length === 0) return null;
+
+  const stratColor = (s: string) =>
+    s === 'BPS' ? 'text-emerald-400 border-emerald-600 bg-emerald-500/10'
+    : s === 'BCS' ? 'text-red-400 border-red-600 bg-red-500/10'
+    : s === 'IC' ? 'text-blue-400 border-blue-600 bg-blue-500/10'
+    : 'text-amber-400 border-amber-600 bg-amber-500/10';
+
+  const barColor = (val: number) =>
+    val > 0 ? 'bg-emerald-500' : val < 0 ? 'bg-red-500' : 'bg-slate-600';
+
+  const ScoreBar = ({ label, value, max = 50 }: { label: string; value: number; max?: number }) => {
+    const pct = Math.min(100, (Math.abs(value) / max) * 50); // 50% = center
+    const isPos = value >= 0;
+    return (
+      <div className="flex items-center gap-2">
+        <span className={`text-[9px] w-16 shrink-0 ${th.textFaint}`}>{label}</span>
+        <div className="flex-1 h-1.5 bg-slate-700 rounded-full relative overflow-hidden">
+          <div
+            className={`absolute h-full rounded-full ${barColor(value)}`}
+            style={{ width: `${pct}%`, left: isPos ? '50%' : `${50 - pct}%` }}
+          />
+          <div className="absolute left-1/2 top-0 w-px h-full bg-slate-500 opacity-50" />
+        </div>
+        <span className={`text-[9px] w-8 text-right font-mono shrink-0 ${value > 0 ? 'text-emerald-400' : value < 0 ? 'text-red-400' : th.textFaint}`}>
+          {value > 0 ? '+' : ''}{value}
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <div className={`border ${th.border} rounded-xl overflow-hidden`}>
+      <div className={`px-4 py-2.5 border-b ${th.border} flex items-center justify-between`}>
+        <p className={`text-[10px] font-bold tracking-widest ${th.textMuted}`}>TREND DETECT RESULTS</p>
+        <span className={`text-[9px] ${th.textFaint}`}>{entries.length} tickers</span>
+      </div>
+      <div className="divide-y divide-slate-800">
+        {entries.map(({ symbol, result }) => {
+          const s = result.scores;
+          const isOpen = expanded === symbol;
+          const label = result.strategy === 'NO_TRADE' ? 'REVIEW' : result.strategy;
+          return (
+            <div key={symbol}>
+              <button
+                className={`w-full px-4 py-2.5 flex items-center gap-3 hover:bg-slate-800/40 transition-colors text-left`}
+                onClick={() => setExpanded(isOpen ? null : symbol)}
+              >
+                <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${stratColor(label)}`}>{label}</span>
+                <span className={`text-xs font-bold ${th.text} w-16 shrink-0`}>{symbol}</span>
+                <span className={`text-[9px] ${th.textFaint} flex-1 truncate`}>{result.reason}</span>
+                {s && (
+                  <span className={`text-[9px] font-mono shrink-0 ${s.total > 0 ? 'text-emerald-400' : s.total < 0 ? 'text-red-400' : th.textFaint}`}>
+                    {s.total > 0 ? '+' : ''}{s.total}
+                  </span>
+                )}
+                <span className={`text-[9px] ${th.textFaint} shrink-0`}>{isOpen ? '▲' : '▼'}</span>
+              </button>
+
+              {isOpen && s && (
+                <div className={`px-4 pb-3 pt-1 ${th.card} space-y-2`}>
+                  <p className={`text-[9px] ${th.textFaint} font-mono leading-relaxed mb-2`}>{result.reason}</p>
+                  <div className="space-y-1.5">
+                    <ScoreBar label="Momentum" value={s.momentum} max={50} />
+                    <ScoreBar label="MA Align" value={s.maAlignment} max={40} />
+                    <ScoreBar label="Slope" value={s.slope} max={25} />
+                    <ScoreBar label="Structure" value={s.structure} max={60} />
+                    <ScoreBar label="Chop ✗" value={-s.chop} max={25} />
+                    <ScoreBar label="Vol/Mat ✗" value={-s.volatility} max={40} />
+                  </div>
+                  <div className={`flex items-center justify-between pt-1.5 border-t ${th.border} mt-1`}>
+                    <span className={`text-[9px] font-bold ${th.textMuted}`}>TOTAL</span>
+                    <span className={`text-[10px] font-black font-mono ${s.total > 0 ? 'text-emerald-400' : s.total < 0 ? 'text-red-400' : th.textFaint}`}>
+                      {s.total > 0 ? '+' : ''}{s.total}
+                    </span>
+                  </div>
+                  {result.metrics && (
+                    <div className={`grid grid-cols-2 gap-x-4 gap-y-0.5 pt-1.5 border-t ${th.border}`}>
+                      {[
+                        ['Mom 20d', `${(result.metrics.momentum20 * 100).toFixed(1)}%`],
+                        ['Mom 60d', `${(result.metrics.momentum60 * 100).toFixed(1)}%`],
+                        ['Mom 90d', `${(result.metrics.momentum90 * 100).toFixed(1)}%`],
+                        ['Range 60d', `${(result.metrics.range60 * 100).toFixed(1)}%`],
+                        ['Chop ratio', result.metrics.chopRatio.toFixed(1)],
+                        ['Dist MA50', `${(result.metrics.distFromMa50 * 100).toFixed(1)}%`],
+                        ['↑Hi/↑Lo', `${result.metrics.higherHighs ? '✓' : '✗'}/${result.metrics.higherLows ? '✓' : '✗'}`],
+                        ['↓Hi/↓Lo', `${result.metrics.lowerHighs ? '✓' : '✗'}/${result.metrics.lowerLows ? '✓' : '✗'}`],
+                      ].map(([k, v]) => (
+                        <div key={k} className="flex justify-between">
+                          <span className={`text-[9px] ${th.textFaint}`}>{k}</span>
+                          <span className={`text-[9px] font-mono ${th.textMuted}`}>{v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Rules Modal Subcomponents ──────────────────────────────────────────────
 function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, label, hint }: {
   ruleKey: keyof RulesType;
@@ -1313,7 +1426,8 @@ async function runTrendDetection(
   setError: (e: string) => void,
   setStatus: (s: string) => void,
   setLoading: (l: boolean) => void,
-  parseTickers: (s: string) => string[]
+  parseTickers: (s: string) => string[],
+  setAutoTrendEntries: (entries: AutoTrendEntry[]) => void
 ) {
   const autoList = Array.from(new Set(parseTickers(autoTickers)));
   if (autoList.length === 0) {
@@ -1323,15 +1437,18 @@ async function runTrendDetection(
 
   setError('');
   setLoading(true);
+  setAutoTrendEntries([]);
 
   try {
     setStatus(`Analyzing ${autoList.length} ticker${autoList.length === 1 ? '' : 's'} with Yahoo Finance...`);
     const distributions: { bps: string[]; bcs: string[]; ic: string[]; broken: string[] } = { bps: [], bcs: [], ic: [], broken: [] };
+    const entries: AutoTrendEntry[] = [];
     let completed = 0;
 
     const analyzeSymbol = async (symbol: string) => {
       try {
         const trendResult = await getTrend(symbol);
+        entries.push({ symbol, result: trendResult });
         if (trendResult.strategy === 'BPS') {
           distributions.bps.push(symbol);
         } else if (trendResult.strategy === 'BCS') {
@@ -1354,6 +1471,11 @@ async function runTrendDetection(
       const chunk = autoList.slice(i, i + TREND_DETECTION_CONCURRENCY);
       await Promise.all(chunk.map(analyzeSymbol));
     }
+
+    // Sort entries to match strategy grouping order: BPS, BCS, IC, Review
+    const order = ['BPS', 'BCS', 'IC', 'NO_TRADE'];
+    entries.sort((a, b) => order.indexOf(a.result.strategy) - order.indexOf(b.result.strategy));
+    setAutoTrendEntries(entries);
 
     if (distributions.bps.length > 0) handleBpsChange(mergeTickers(bpsTickers, distributions.bps));
     if (distributions.bcs.length > 0) handleBcsChange(mergeTickers(bcsTickers, distributions.bcs));
@@ -1705,8 +1827,62 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  // True IC range: not just weak signal, but overlapping movement or poor directional persistence.
+  // ── Trend Memory Arbitration ──────────────────────────────────────────────
+  // Before falling into IC, check whether directional persistence is strong enough
+  // to override apparent consolidation. This prevents rangy-looking snapshots of
+  // trend continuations from being mis-classified as IC.
+
+  // Bearish persistence signals: failed rally + lower-high structure + below MAs
+  const bearishMemoryStrong =
+    directionalScore <= -22 &&
+    (lowerHighs || regimeLowerHighs) &&
+    (lowerLows || regimeLowerLows || brokePriorSupport) &&
+    currentPrice < ma50 &&
+    (ma20Slope < -0.008 || momentum40 < -0.05) &&
+    !(momentum20 > 0.06 && currentPrice > ma20); // not in a convincing bounce
+
+  // Bullish persistence signals: higher-low structure + above MAs + positive slope
+  const bullishMemoryStrong =
+    directionalScore >= 22 &&
+    (higherLows || regimeHigherLows) &&
+    currentPrice > ma50 &&
+    (ma20Slope > 0.008 || momentum40 > 0.05) &&
+    !(momentum20 < -0.06 && currentPrice < ma20); // not in a convincing breakdown
+
+  // True IC range: overlapping movement or poor directional persistence.
+  // Only classify IC if neither directional memory gate fires.
   const rangeLike = absScore <= 28 || chopRatio > 3.0 || (range60 > 0.22 && Math.abs(momentum60) < 0.06);
+
+  if (rangeLike && bearishMemoryStrong) {
+    return {
+      trend: 'downtrend',
+      strategy: 'BCS',
+      subtype: 'CONTINUATION',
+      confidence: Math.max(52, Math.min(70, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BCS (trend memory override): score ${scores.total} — bearish structure persists despite consolidation. Lower highs/lows, price below MA50, slope/momentum confirm direction. Range ${(range60 * 100).toFixed(1)}%, chop ${chopRatio.toFixed(1)}.`,
+    };
+  }
+
+  if (rangeLike && bullishMemoryStrong) {
+    return {
+      trend: 'uptrend',
+      strategy: 'BPS',
+      subtype: 'CONTINUATION',
+      confidence: Math.max(52, Math.min(70, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BPS (trend memory override): score ${scores.total} — bullish structure persists despite consolidation. Higher lows, price above MA50, slope/momentum confirm direction. Range ${(range60 * 100).toFixed(1)}%, chop ${chopRatio.toFixed(1)}.`,
+    };
+  }
+
   if (rangeLike) {
     return {
       trend: 'sideways',
@@ -1722,6 +1898,39 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
+  // ── Final fallback: only truly ambiguous signals reach here ──────────────
+  // If we have a weak directional lean but no clean pattern, try one more time
+  // to assign BCS/BPS before sending to Review.
+  if (directionalScore <= -18 && currentPrice < ma50 && (lowerHighs || brokePriorSupport)) {
+    return {
+      trend: 'downtrend',
+      strategy: 'BCS',
+      subtype: 'REVERSAL',
+      confidence: Math.max(40, Math.min(55, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BCS (weak lean): score ${scores.total} — below MA50 with lower-high or support break structure, but signal is not clean. Monitor carefully.`,
+    };
+  }
+
+  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows)) {
+    return {
+      trend: 'uptrend',
+      strategy: 'BPS',
+      subtype: 'REVERSAL',
+      confidence: Math.max(40, Math.min(55, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BPS (weak lean): score ${scores.total} — above MA50 with higher-low structure, but signal is not clean. Monitor carefully.`,
+    };
+  }
+
   return {
     trend: 'unknown',
     strategy: 'NO_TRADE',
@@ -1732,7 +1941,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     ma200,
     scores,
     metrics,
-    reason: `REVIEW: mixed or immature signal; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.`,
+    reason: `REVIEW: genuinely conflicting signals; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}. No clear directional or range pattern.`,
   };
 }
 
@@ -1961,6 +2170,7 @@ export default function Home() {
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeRules, setRuntimeRules] = useState<RulesType>(getSavedRules);
   const [lastRunRules, setLastRunRules] = useState<RulesType | null>(null);
+  const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
 
   useEffect(() => {
     try {
@@ -1992,13 +2202,15 @@ export default function Home() {
     runTrendDetection(
       autoTickers, bpsTickers, bcsTickers, icTickers, brokenTickers,
       handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
-      setAutoTickers, setError, setStatus, setLoading, parseTickers
+      setAutoTickers, setError, setStatus, setLoading, parseTickers,
+      setAutoTrendEntries
     );
   };
 
   const runScreen = async (rules: RulesType) => {
     setError('');
     setResults([]);
+    setAutoTrendEntries([]);
 
     const autoList = parseTickers(autoTickers);
     const bps = parseTickers(bpsTickers);
@@ -2226,7 +2438,7 @@ export default function Home() {
 
         {/* Main content */}
         <div className="flex-1 overflow-auto p-5">
-          {results.length === 0 && !loading && (
+          {results.length === 0 && !loading && autoTrendEntries.length === 0 && (
             <div className={`h-full flex flex-col items-center justify-center ${th.textFaint}`}>
               <div className="text-4xl mb-3 opacity-20">◈</div>
               <p className={`text-[10px] tracking-widest ${th.textMuted}`}>ADD TICKERS AND RUN HUNTER</p>
@@ -2234,6 +2446,13 @@ export default function Home() {
             </div>
           )}
           {loading && <div className="h-full flex flex-col items-center justify-center gap-2"><div className={`text-[10px] tracking-widest ${th.textMuted} animate-pulse font-medium`}>{status || 'SCANNING...'}</div></div>}
+
+          {/* Trend detect debug panel — shown after ANALYZE TRENDS, cleared when RUN HUNTER fires */}
+          {!loading && autoTrendEntries.length > 0 && results.length === 0 && (
+            <div className="space-y-4">
+              <AutoTrendDebugPanel entries={autoTrendEntries} th={th} />
+            </div>
+          )}
           {results.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
