@@ -1,4 +1,6 @@
+// lib/tastytrade.ts
 const BASE_URL = 'https://api.tastytrade.com';
+const SANDBOX_URL = 'https://api.cert.tastyworks.com';
 
 export interface OptionChainItem {
   symbol: string;
@@ -27,10 +29,20 @@ export interface Quote {
   ask: number | null;
 }
 
+// This tells the code whether we are using real money or fake money (sandbox)
+export interface TastytradeConfig {
+  isSandbox: boolean;
+}
+
+function getBaseUrl(isSandbox: boolean): string {
+  return isSandbox ? SANDBOX_URL : BASE_URL;
+}
+
 function authHeader(token: string) {
   return { Authorization: token };
 }
 
+// ====================== EXISTING FUNCTIONS (unchanged) ======================
 export async function getMarketMetrics(symbols: string[], token: string): Promise<MarketMetrics[]> {
   const symbolList = symbols.join(',');
   const res = await fetch(`${BASE_URL}/market-metrics?symbols=${encodeURIComponent(symbolList)}`, {
@@ -148,4 +160,50 @@ export async function refreshAccessToken(refreshToken: string): Promise<string> 
 
   const data = await res.json();
   return data.access_token;
+}
+
+// ====================== NEW TRADING FUNCTIONS (this is what we added) ======================
+
+/** Get your account number(s) */
+export async function getCustomerAccounts(token: string, isSandbox = false) {
+  const base = getBaseUrl(isSandbox);
+  const res = await fetch(`${base}/customers/me/accounts`, {
+    headers: authHeader(token),
+  });
+
+  if (!res.ok) throw new Error(`Failed to get accounts: ${res.status}`);
+  const data = await res.json();
+  return data.data?.items || [];
+}
+
+/** Place an order (or dry-run to test safely) */
+export async function placeOrder(
+  accountNumber: string,
+  orderPayload: any,
+  token: string,
+  isSandbox = false,
+  dryRun = true
+) {
+  const base = getBaseUrl(isSandbox);
+  let url = `${base}/accounts/${accountNumber}/orders`;
+
+  if (dryRun) {
+    url += '/dry-run';   // This is safe — it only checks, doesn't trade
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      ...authHeader(token),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(orderPayload),
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Order failed (${res.status}): ${errorText}`);
+  }
+
+  return await res.json();
 }
