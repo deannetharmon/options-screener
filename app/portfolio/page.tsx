@@ -79,7 +79,15 @@ async function loadPositions(): Promise<Position[]> {
       const qs = chunk.map((s: string) => `equity=${encodeURIComponent(s)}`).join('&');
       const mData = await ttFetch(`/market-data/by-type?${qs}`, token);
       for (const item of mData?.data?.items ?? []) {
-        const ivr = parseFloat(item['iv-rank'] ?? item['ivr'] ?? 'NaN');
+        // Log all keys on first item so we can identify the correct IVR field name
+        if (Object.keys(ivrMap).length === 0) {
+          console.log('[TT IVR debug] sample item keys:', Object.keys(item));
+          console.log('[TT IVR debug] sample item:', JSON.stringify(item));
+        }
+        // Try every known field name TastyTrade has used
+        const raw = item['iv-rank'] ?? item['ivr'] ?? item['implied-volatility-index-rank']
+          ?? item['iv_rank'] ?? item['ivRank'] ?? item['implied-volatility-rank'] ?? null;
+        const ivr = raw != null ? parseFloat(raw) : NaN;
         ivrMap[item.symbol] = isNaN(ivr) ? null : Math.round(ivr * 100);
       }
     }
