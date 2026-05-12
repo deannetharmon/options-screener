@@ -71,7 +71,7 @@ async function loadPositions(): Promise<Position[]> {
   }
 
   // ── Fetch live IVR for each underlying ──────────────────────────────────
-  const underlyingSymbols = [...new Set(optionPositions.map((p: any) => p['underlying-symbol']))];
+  const underlyingSymbols = Array.from(new Set(optionPositions.map((p: any) => p['underlying-symbol'] as string)));
   const ivrMap: Record<string, number | null> = {};
   try {
     for (let i = 0; i < underlyingSymbols.length; i += 20) {
