@@ -382,16 +382,16 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
         </button>
 
         {/* Data columns — fixed grid for vertical alignment */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 110px 110px 80px 80px 90px 80px', gap: '0 12px', alignItems: 'center' }}>
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 110px 80px 80px 90px 80px', gap: '0 12px', alignItems: 'center' }}>
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
             <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
           </div>
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>Expiry / DTE</p>
-            <p className="text-xs" style={{ fontFamily: "'DM Mono', monospace" }}>
-              <span className={th.text}>{pos.expDate}</span>
-              <span className={`ml-1 ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
+            <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
+              <span className={`block ${th.text}`}>{pos.expDate}</span>
+              <span className={`block ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
             </p>
           </div>
           <div>
@@ -518,13 +518,13 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
 
   return (
     <div className={`grid grid-cols-4 border-b ${th.border}`}>
-      <div className={`p-5 border-r ${th.border}`}>
+      <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Open Positions</p>
         <p className={`text-3xl font-bold ${th.text}`}>{positions.length}</p>
         <p className={`text-[10px] ${th.textFaint} mt-1`}>{positions.length === 1 ? '1 active spread' : `${positions.length} active spreads`}</p>
       </div>
 
-      <div className={`p-5 border-r ${th.border}`}>
+      <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Captured</p>
         <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
           {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(0)}
@@ -535,7 +535,7 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
         </p>
       </div>
 
-      <div className={`p-5 border-r ${th.border}`}>
+      <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>At Risk</p>
         <p className={`text-3xl font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>
           ${totalAtRisk.toFixed(0)}
@@ -543,7 +543,7 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
         <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all expire worthless</p>
       </div>
 
-      <div className="p-5">
+      <div className="p-5 flex flex-col items-center text-center">
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Est. Theta / Day</p>
         <p className="text-3xl font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
           +${totalTheta.toFixed(2)}
