@@ -217,7 +217,7 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   const pnlPct = pos.pnlPct ?? 0;
 
   // Position moving against us
-  if (pnlPct < -30) {
+  if (pnlPct < -15) {
     // Check if trend confirms the bad direction
     const trendAgainst = trend && (
       (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
@@ -247,8 +247,12 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   );
 
   if (trendAligns) return {
-    action: 'HOLD', label: 'HOLD', color: 'text-emerald-400 border-emerald-700',
-    detail: `Trend confirms ${pos.strategy} — ${trend!.trend}, ${pnlPct.toFixed(0)}% profit so far`,
+    action: pnlPct < 0 ? 'WATCH' : 'HOLD',
+    label: pnlPct < 0 ? 'WATCH' : 'HOLD',
+    color: pnlPct < 0 ? 'text-yellow-400 border-yellow-600' : 'text-emerald-400 border-emerald-700',
+    detail: pnlPct < 0
+      ? `Trend still confirms ${pos.strategy} but position is down ${Math.abs(pnlPct).toFixed(0)}% — monitor`
+      : `Trend confirms ${pos.strategy} — ${trend!.trend}, ${pnlPct.toFixed(0)}% profit so far`,
   };
 
   // Trend working against but not yet a loss
