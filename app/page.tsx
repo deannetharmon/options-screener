@@ -422,10 +422,11 @@ const DEFAULT_RULES = {
 type RulesType = typeof DEFAULT_RULES;
 
 const RULE_PRESETS = [
-  { key: 'course',  label: 'Course',  desc: 'Exact course rules',         color: 'border-blue-600 text-blue-400 bg-blue-600/10',    rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 } },
-  { key: 'relaxed', label: 'Relaxed', desc: 'Wider net, still disciplined',color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
-  { key: 'lowvol',  label: 'Low Vol', desc: 'Crushed IV environments',     color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10', rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
-  { key: 'strict',  label: 'Strict',  desc: 'A+ setups only',              color: 'border-red-600 text-red-400 bg-red-600/10',        rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
+  { key: 'course',    label: 'Course',     desc: 'Exact course rules',             color: 'border-blue-600 text-blue-400 bg-blue-600/10',        rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 } },
+  { key: 'relaxed',   label: 'Relaxed',    desc: 'Wider net, still disciplined',   color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
+  { key: 'lowvol',    label: 'Low Vol',    desc: 'Crushed IV environments',        color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
+  { key: 'strict',    label: 'Strict',     desc: 'A+ setups only',                 color: 'border-red-600 text-red-400 bg-red-600/10',            rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
+  { key: 'shortterm', label: 'Short Term', desc: '14-28 DTE · active management', color: 'border-orange-500 text-orange-400 bg-orange-500/10',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 14, DTE_MAX: 28 } },
 ] as const;
 
 const RULE_LABELS: Record<string, string> = {
@@ -1244,7 +1245,7 @@ function ResultCard({ result, th, rules }: {
             onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
             className="w-full py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-sm font-medium tracking-wider transition-colors mt-2"
           >
-            🔍 FULL OPPORTUNITIES ANALYSIS {result.symbol}
+            🔍 FIND BEST OPPORTUNITY FOR {result.symbol}
           </button>
         </div>
       )}
@@ -2317,10 +2318,11 @@ function BestOpportunityFinder({
 
   const COURSE_RULES = { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 };
   const levels = [
-    { presetKey: 'strict',  presetLabel: 'Strict',  presetColor: 'border-red-500 text-red-400',         rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
-    { presetKey: 'course',  presetLabel: 'Course',  presetColor: 'border-blue-500 text-blue-400',       rules: COURSE_RULES },
-    { presetKey: 'relaxed', presetLabel: 'Relaxed', presetColor: 'border-emerald-500 text-emerald-400', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
-    { presetKey: 'lowvol',  presetLabel: 'Low Vol', presetColor: 'border-yellow-500 text-yellow-400',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
+    { presetKey: 'strict',    presetLabel: 'Strict',     presetColor: 'border-red-500 text-red-400',         rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
+    { presetKey: 'course',    presetLabel: 'Course',     presetColor: 'border-blue-500 text-blue-400',       rules: COURSE_RULES },
+    { presetKey: 'relaxed',   presetLabel: 'Relaxed',    presetColor: 'border-emerald-500 text-emerald-400', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
+    { presetKey: 'lowvol',    presetLabel: 'Low Vol',    presetColor: 'border-yellow-500 text-yellow-400',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
+    { presetKey: 'shortterm', presetLabel: 'Short Term', presetColor: 'border-orange-500 text-orange-400',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 14, DTE_MAX: 28 } },
   ];
 
   const scoreCandidate = (result: ScreenResult, strat: string): BestSetup | null => {
@@ -2331,6 +2333,7 @@ function BestOpportunityFinder({
     if (score > 88) grade = 'A+'; else if (score > 75) grade = 'A'; else if (score > 60) grade = 'B';
     const notes: string[] = [];
     if (c.dte < 35) notes.push(`DTE is ${c.dte} — shorter side, watch 21 DTE closely`);
+    if (c.dte < 29) notes.push(`⚠ Short term setup — active daily management required, gamma risk elevated`);
     if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% elevated — verify no binary event`);
     if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
     if (notes.length === 0) notes.push('Clean setup — all rules pass');
@@ -2402,6 +2405,8 @@ function BestOpportunityFinder({
                     <span className={`text-[9px] ${th.textFaint}`}>Course baseline — no changes</span>
                   ) : level.presetKey === 'strict' ? (
                     <span className="text-[9px] text-red-400">Tighter: {level.ruleDiffs.join(' · ')}</span>
+                  ) : level.presetKey === 'shortterm' ? (
+                    <span className="text-[9px] text-orange-400">14–28 DTE · requires active daily management</span>
                   ) : (
                     <span className="text-[9px] text-yellow-400">Relaxed vs Course: {level.ruleDiffs.join(' · ')}</span>
                   )}
