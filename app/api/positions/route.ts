@@ -4,7 +4,7 @@ const BASE = 'https://api.tastytrade.com';
 
 async function ttFetch(path: string, token: string) {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: token },
     cache: 'no-store',
   });
   if (!res.ok) {
