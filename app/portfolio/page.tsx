@@ -161,11 +161,11 @@ interface TrendResult {
   reason: string;
 }
 
+type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL';
+
 interface Recommendation {
-  action: 'HOLD' | 'WATCH' | 'CLOSE_PROFIT' | 'MANAGE' | 'CLOSE_NOW' | 'ROLL';
-  label: string;
+  action: ActionType;
   detail: string;
-  color: string;
 }
 
 async function getTrend(symbol: string): Promise<TrendResult> {
@@ -202,72 +202,26 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 }
 
 function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
-  // Close now — DTE urgency
-  if (pos.needsClose) return {
-    action: 'CLOSE_NOW', label: '✕ CLOSE NOW', color: 'text-red-400 border-red-600 bg-red-500/10',
-    detail: `${pos.dte} DTE — mandatory close regardless of P&L`,
-  };
-
-  if (pos.hitTarget) return {
-    action: 'CLOSE_PROFIT', label: '✓ TAKE PROFIT', color: 'text-emerald-400 border-emerald-600 bg-emerald-500/10',
-    detail: '50% profit target reached — lock in gains',
-  };
-
   const pnlPct = pos.pnl != null && pos.creditReceived !== 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
-
-  if (pnlPct < -15) {
-    const trendAgainst = trend && (
-      (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
-      (pos.strategy === 'BCS' && trend.trend === 'uptrend')
-    );
-    return {
-      action: trendAgainst ? 'CLOSE_NOW' : 'MANAGE',
-      label: trendAgainst ? '✕ CLOSE / ROLL' : '⚡ MANAGE',
-      color: trendAgainst ? 'text-red-400 border-red-600 bg-red-500/10' : 'text-orange-400 border-orange-600 bg-orange-500/10',
-      detail: trendAgainst
-        ? `Down ${Math.abs(pnlPct).toFixed(0)}% and trend confirms — consider closing or rolling`
-        : `Down ${Math.abs(pnlPct).toFixed(0)}% but trend not confirmed — watch closely`,
-    };
-  }
-
-  if (pnlPct >= 35) return {
-    action: 'WATCH', label: '◎ NEAR TARGET', color: 'text-yellow-400 border-yellow-600 bg-yellow-500/10',
-    detail: `${pnlPct.toFixed(0)}% profit — approaching 50% target, watch for close`,
-  };
-
+  const trendAgainst = trend && (
+    (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
+    (pos.strategy === 'BCS' && trend.trend === 'uptrend')
+  );
   const trendAligns = trend && (
     (pos.strategy === 'BPS' && trend.trend === 'uptrend') ||
     (pos.strategy === 'BCS' && trend.trend === 'downtrend') ||
     (pos.strategy === 'IC' && trend.trend === 'sideways')
   );
-
-  if (trendAligns) return {
-    action: pnlPct < 0 ? 'WATCH' : 'HOLD',
-    label: pnlPct < 0 ? '⚠ WATCH' : '● HOLD',
-    color: pnlPct < 0 ? 'text-yellow-400 border-yellow-600 bg-yellow-500/10' : 'text-blue-400 border-blue-600 bg-blue-500/10',
-    detail: pnlPct < 0
-      ? `Trend still confirms ${pos.strategy} but position is down ${Math.abs(pnlPct).toFixed(0)}% — monitor`
-      : `Trend confirms ${pos.strategy} — ${trend!.trend}, ${pnlPct.toFixed(0)}% profit so far`,
-  };
-
-  const trendAgainst = trend && (
-    (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
-    (pos.strategy === 'BCS' && trend.trend === 'uptrend')
-  );
-
-  if (trendAgainst) return {
-    action: 'WATCH', label: '⚠ WATCH', color: 'text-yellow-400 border-yellow-600 bg-yellow-500/10',
-    detail: `Trend shifted to ${trend!.trend} — monitor ${pos.symbol} closely`,
-  };
-
-  return {
-    action: pnlPct < 0 ? 'WATCH' : 'HOLD',
-    label: pnlPct < 0 ? '⚠ WATCH' : '● HOLD',
-    color: pnlPct < 0 ? 'text-yellow-400 border-yellow-600 bg-yellow-500/10' : 'text-blue-400 border-blue-600 bg-blue-500/10',
-    detail: pnlPct < 0
-      ? `Down ${Math.abs(pnlPct).toFixed(0)}% — monitor, ${pos.dte} DTE remaining`
-      : `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining, on track`,
-  };
+  if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
+  if (pos.needsClose && pnlPct < 0)  return { action: 'CUT_LOSSES', detail: `${pos.dte} DTE — close to prevent further loss` };
+  if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `50% target reached — lock in $${pos.pnl?.toFixed(2)} profit` };
+  if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% and trend confirms — exit` };
+  if (pnlPct < -15)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — trend not confirmed, manage actively` };
+  if (pnlPct >= 35)                  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — approaching target` };
+  if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — watch closely` };
+  if (pnlPct < 0)                    return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — trend still ok, monitor` };
+  if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
+  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
 }
 
 function getSavedTheme(): Theme {
@@ -340,11 +294,11 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 }
 
 // ── Position Card ──────────────────────────────────────────────────────────
-function PositionCard({ pos, th, selected, onToggleSelect }: {
+function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
   pos: Position;
   th: typeof THEMES[Theme];
-  selected: boolean;
-  onToggleSelect: (key: string) => void;
+  selectedAction: ActionType | null;
+  onToggleSelect: (key: string, action: ActionType) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
@@ -374,7 +328,7 @@ function PositionCard({ pos, th, selected, onToggleSelect }: {
     return pos.legs.map(l => `${l.strikePrice}${l.optionType}`).join(' / ');
   };
 
-  const borderClass = selected
+  const borderClass = selectedAction
     ? 'border-blue-500/60'
     : pos.needsClose
     ? 'border-red-500/60'
@@ -453,34 +407,50 @@ function PositionCard({ pos, th, selected, onToggleSelect }: {
           </p>
         </div>
 
-        {/* Recommendation + checkbox */}
-        <div className="shrink-0 flex items-center gap-2">
-          <div>
-            <p className={`text-[10px] ${th.textFaint}`}>Recommendation</p>
-            {trendLoading ? (
-              <p className={`text-[10px] ${th.textFaint}`}>analyzing...</p>
-            ) : (
-              <div>
-                <span className={`text-[10px] font-bold px-1.5 py-0.5 border rounded ${rec.color}`}>{rec.label}</span>
-                <p className={`text-[9px] ${th.textFaint} mt-0.5 max-w-[180px]`}>{rec.detail}</p>
-              </div>
-            )}
-          </div>
-          <div onClick={e => { e.stopPropagation(); onToggleSelect(pos.key); }} className="shrink-0 ml-1 mt-3">
-            <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors cursor-pointer ${selected ? 'bg-blue-500 border-blue-500' : 'border-slate-500 hover:border-blue-400'}`}>
-              {selected && <span className="text-white text-[10px] font-bold">✓</span>}
+        {/* Action columns */}
+        {(() => {
+          const actions: { key: ActionType; label: string; color: string }[] = [
+            { key: 'HOLD',        label: 'Hold',        color: 'bg-blue-500 border-blue-500' },
+            { key: 'WATCH',       label: 'Watch',       color: 'bg-yellow-500 border-yellow-500' },
+            { key: 'MANAGE',      label: 'Manage',      color: 'bg-orange-500 border-orange-500' },
+            { key: 'TAKE_PROFIT', label: 'Take profit', color: 'bg-emerald-500 border-emerald-500' },
+            { key: 'CUT_LOSSES',  label: 'Cut losses',  color: 'bg-red-500 border-red-500' },
+            { key: 'CLOSE_ROLL',  label: 'Close / roll', color: 'bg-purple-500 border-purple-500' },
+          ];
+          return (
+            <div className={`ml-auto flex items-stretch border-l ${th.border} shrink-0`} onClick={e => e.stopPropagation()}>
+              {trendLoading ? (
+                <div className="flex items-center px-4">
+                  <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
+                </div>
+              ) : (
+                actions.map(a => (
+                  <div key={a.key} className={`flex flex-col items-center justify-center px-3 py-2 gap-1.5 border-r last:border-r-0 ${th.borderLight} min-w-[52px]`}>
+                    <span className={`text-[9px] text-center leading-tight ${rec.action === a.key ? th.textMuted : th.textFaint}`}>{a.label}</span>
+                    <div
+                      onClick={() => onToggleSelect(pos.key, a.key)}
+                      className={`w-4 h-4 rounded border-2 flex items-center justify-center cursor-pointer transition-all
+                        ${selectedAction === a.key ? a.color + ' text-white' : 'border-slate-600 hover:border-slate-400'}
+                        ${rec.action === a.key && selectedAction === null ? 'ring-1 ring-offset-1 ring-offset-transparent ' + a.color.split(' ')[0].replace('bg-', 'ring-') : ''}`}
+                    >
+                      {(selectedAction === a.key || (rec.action === a.key && selectedAction === null)) && (
+                        <span className={`text-[9px] font-bold ${selectedAction === a.key ? 'text-white' : a.color.replace('bg-', 'text-').split(' ')[0]}`}>✓</span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
-          </div>
-        </div>
+          );
+        })()}
 
-        {/* Spacer + expand + TT link */}
-        <div className="ml-auto flex items-center gap-2">
+        {/* Expand + TT link */}
+        <div className="flex flex-col items-center gap-2 px-3 shrink-0" onClick={e => e.stopPropagation()}>
           <a href={ttLink} target="_blank" rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()}
-            className="text-[9px] px-2 py-1 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/10 transition-colors font-medium tracking-wider">
+            className="text-[9px] px-2 py-1 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/10 transition-colors font-medium tracking-wider whitespace-nowrap">
             TRADE →
           </a>
-          <span className={`text-xs ${th.textFaint}`}>{expanded ? '▲' : '▼'}</span>
+          <span className={`text-xs ${th.textFaint} cursor-pointer`} onClick={() => setExpanded(!expanded)}>{expanded ? '▲' : '▼'}</span>
         </div>
       </div>
 
@@ -546,13 +516,29 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
 // ── Close Summary Modal ───────────────────────────────────────────────────
 function CloseModal({ positions, selected, onClose, th }: {
   positions: Position[];
-  selected: Set<string>;
+  selected: Map<string, ActionType>;
   onClose: () => void;
   th: typeof THEMES[Theme];
 }) {
   const selectedPositions = positions.filter(p => selected.has(p.key));
   const totalCredit = selectedPositions.reduce((sum, p) => sum + p.creditReceived, 0);
   const totalPnl = selectedPositions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+
+  const actionLabels: Record<ActionType, { label: string; color: string }> = {
+    HOLD:        { label: 'Hold',         color: 'text-blue-400 border-blue-600' },
+    WATCH:       { label: '⚠ Watch',      color: 'text-yellow-400 border-yellow-600' },
+    MANAGE:      { label: '⚡ Manage',     color: 'text-orange-400 border-orange-600' },
+    TAKE_PROFIT: { label: '✓ Take profit', color: 'text-emerald-400 border-emerald-600' },
+    CUT_LOSSES:  { label: '✕ Cut losses',  color: 'text-red-400 border-red-600' },
+    CLOSE_ROLL:  { label: '↻ Close / roll', color: 'text-purple-400 border-purple-600' },
+  };
+
+  const grouped = new Map<ActionType, Position[]>();
+  for (const pos of selectedPositions) {
+    const action = selected.get(pos.key)!;
+    if (!grouped.has(action)) grouped.set(action, []);
+    grouped.get(action)!.push(pos);
+  }
 
   const openAll = () => {
     selectedPositions.forEach(p => {
@@ -571,24 +557,34 @@ function CloseModal({ positions, selected, onClose, th }: {
           <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
         </div>
 
-        <div className="px-5 py-3 space-y-2 max-h-80 overflow-auto">
-          {selectedPositions.map(p => {
-            const closeTarget = (p.currentValue ?? p.creditReceived * 0.5).toFixed(2);
-            const pnl = p.pnl;
-            return (
-              <div key={p.key} className={`flex items-center justify-between py-2 border-b ${th.borderLight}`}>
-                <div className="flex items-center gap-3">
-                  <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{p.symbol}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(p.strategy)}`}>{p.strategy}</span>
-                  <span className={`text-[10px] ${th.textFaint}`}>{p.expDate} · {p.dte}d</span>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>BTC @ ${closeTarget}</p>
-                  {pnl != null && <p className={`text-[10px] ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</p>}
-                </div>
+        <div className="px-5 py-3 space-y-4 max-h-80 overflow-auto">
+          {Array.from(grouped.entries()).map(([action, poses]) => (
+            <div key={action}>
+              <p className={`text-[9px] font-bold tracking-widest mb-2 uppercase ${actionLabels[action].color.split(' ')[0]}`}>
+                {actionLabels[action].label}
+              </p>
+              <div className="space-y-2">
+                {poses.map(p => {
+                  const closeTarget = (p.currentValue ?? p.creditReceived * 0.5).toFixed(2);
+                  return (
+                    <div key={p.key} className={`flex items-center justify-between py-2 border-b ${th.borderLight}`}>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{p.symbol}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(p.strategy)}`}>{p.strategy}</span>
+                        <span className={`text-[10px] ${th.textFaint}`}>{p.expDate} · {p.dte}d</span>
+                      </div>
+                      <div className="text-right">
+                        {(action === 'TAKE_PROFIT' || action === 'CUT_LOSSES' || action === 'CLOSE_ROLL') && (
+                          <p className="text-xs font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>BTC @ ${closeTarget}</p>
+                        )}
+                        {p.pnl != null && <p className={`text-[10px] ${p.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(2)}</p>}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
 
         <div className={`px-5 py-3 border-t ${th.border} flex items-center justify-between`}>
@@ -628,19 +624,20 @@ export default function PortfolioPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Map<string, ActionType>>(new Map());
   const [showCloseModal, setShowCloseModal] = useState(false);
 
-  const toggleSelected = (key: string) => {
+  const toggleSelected = (key: string, action: ActionType) => {
     setSelected(prev => {
-      const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
+      const next = new Map(prev);
+      if (next.get(key) === action) next.delete(key);
+      else next.set(key, action);
       return next;
     });
   };
 
   const fetchPositions = async () => {
-    setLoading(true); setError(''); setSelected(new Set());
+    setLoading(true); setError(''); setSelected(new Map());
     try {
       const data = await loadPositions();
       setPositions(data);
@@ -714,7 +711,7 @@ export default function PortfolioPage() {
             {needsClose.length > 0 && (
               <div>
                 <p className="text-[9px] text-red-400 tracking-widest mb-2 font-medium uppercase">⚠ Close Now — 21 DTE or Less</p>
-                <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selected={selected.has(p.key)} onToggleSelect={toggleSelected} />)}</div>
+                <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
 
@@ -722,7 +719,7 @@ export default function PortfolioPage() {
             {hitTarget.length > 0 && (
               <div>
                 <p className="text-[9px] text-emerald-400 tracking-widest mb-2 font-medium uppercase">✓ 50% Profit Target Hit</p>
-                <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selected={selected.has(p.key)} onToggleSelect={toggleSelected} />)}</div>
+                <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
 
@@ -730,7 +727,7 @@ export default function PortfolioPage() {
             {normal.length > 0 && (
               <div>
                 <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium uppercase`}>Active Positions</p>
-                <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selected={selected.has(p.key)} onToggleSelect={toggleSelected} />)}</div>
+                <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
 
@@ -747,7 +744,7 @@ export default function PortfolioPage() {
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-wider transition-colors">
               REVIEW SELECTED →
             </button>
-            <button onClick={() => setSelected(new Set())}
+            <button onClick={() => setSelected(new Map())}
               className="text-xs text-slate-400 hover:text-white transition-colors">
               Clear
             </button>
@@ -755,7 +752,6 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      {/* Close modal */}
       {showCloseModal && (
         <CloseModal
           positions={positions}
@@ -767,4 +763,3 @@ export default function PortfolioPage() {
     </div>
   );
 }
-
