@@ -103,9 +103,13 @@ function getSavedTheme(): Theme {
 }
 
 function getWidthSteps(maxWidth: number, price: number | null): number[] {
-  const minWidth = price == null ? 5 : price >= 500 ? 25 : price >= 200 ? 20 : price >= 100 ? 10 : 5;
+  // Always start at $5 so high-priced ETFs/indexes can find narrow spreads with viable credit ratios.
+  // Step size scales with price to keep iteration count reasonable.
+  // e.g. SPY $739: steps $5, $10, $15... up to maxWidth
+  //      SPX $7412: steps $25, $50... up to maxWidth (price>=2000 uses $25 steps)
+  const stepSize = price == null ? 5 : price >= 2000 ? 25 : price >= 500 ? 5 : price >= 200 ? 5 : 5;
   const steps: number[] = [];
-  for (let w = minWidth; w <= maxWidth; w += minWidth) steps.push(w);
+  for (let w = stepSize; w <= maxWidth; w += stepSize) steps.push(w);
   return steps;
 }
 
