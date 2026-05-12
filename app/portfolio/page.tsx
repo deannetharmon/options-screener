@@ -482,31 +482,55 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
 function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
   const totalCredit = positions.reduce((sum, p) => sum + p.creditReceived, 0);
   const totalPnl = positions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+  const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
   const needsClose = positions.filter(p => p.needsClose).length;
   const hitTarget = positions.filter(p => p.hitTarget && !p.needsClose).length;
 
+  // Max loss = spread width × 100 × qty - credit received, per position
+  const totalAtRisk = positions.reduce((sum, p) => {
+    const shorts = p.legs.filter(l => l.direction === 'Short');
+    const longs  = p.legs.filter(l => l.direction === 'Long' && l.optionType === shorts[0]?.optionType);
+    if (shorts[0] && longs[0]) {
+      const width = Math.abs(shorts[0].strikePrice - longs[0].strikePrice);
+      const qty = shorts[0].quantity;
+      const maxLoss = (width * 100 * qty) - p.creditReceived;
+      return sum + Math.max(0, maxLoss);
+    }
+    return sum;
+  }, 0);
+
   return (
-    <div className={`grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 border-b ${th.border}`}>
-      <div>
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-1`}>Open Positions</p>
-        <p className={`text-2xl font-bold ${th.text}`}>{positions.length}</p>
+    <div className={`grid grid-cols-2 sm:grid-cols-4 border-b ${th.border}`}>
+      <div className={`p-5 border-r ${th.border}`}>
+        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Open Positions</p>
+        <p className={`text-3xl font-bold ${th.text}`}>{positions.length}</p>
+        <p className={`text-[10px] ${th.textFaint} mt-1`}>{positions.length === 1 ? '1 active spread' : `${positions.length} active spreads`}</p>
       </div>
-      <div>
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-1`}>Total Credit</p>
-        <p className="text-2xl font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${totalCredit.toFixed(2)}</p>
-      </div>
-      <div>
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-1`}>Unrealized P&L</p>
-        <p className={`text-2xl font-bold ${pnlColor(totalPnl)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+
+      <div className={`p-5 border-r ${th.border}`}>
+        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Captured</p>
+        <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+          {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(0)}
+        </p>
+        <p className={`text-[10px] ${th.textFaint} mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
+          of ${totalCredit.toFixed(0)} collected · <span className={totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{capturedPct.toFixed(0)}%</span>
         </p>
       </div>
-      <div>
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-1`}>Action Needed</p>
-        <div className="flex items-center gap-3">
-          {needsClose > 0 && <span className="text-lg font-bold text-red-400">⚠ {needsClose} close</span>}
-          {hitTarget > 0 && <span className="text-lg font-bold text-emerald-400">✓ {hitTarget} target</span>}
-          {needsClose === 0 && hitTarget === 0 && <span className={`text-lg font-bold ${th.textFaint}`}>—</span>}
+
+      <div className={`p-5 border-r ${th.border}`}>
+        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>At Risk</p>
+        <p className="text-3xl font-bold text-slate-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+          ${totalAtRisk.toFixed(0)}
+        </p>
+        <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all spreads expire worthless</p>
+      </div>
+
+      <div className="p-5">
+        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Action Needed</p>
+        <div className="flex flex-col gap-1">
+          {needsClose > 0 && <span className="text-sm font-bold text-red-400">⚠ {needsClose} must close</span>}
+          {hitTarget > 0 && <span className="text-sm font-bold text-emerald-400">✓ {hitTarget} at target</span>}
+          {needsClose === 0 && hitTarget === 0 && <span className={`text-3xl font-bold ${th.textFaint}`}>—</span>}
         </div>
       </div>
     </div>
