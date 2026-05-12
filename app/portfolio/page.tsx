@@ -70,7 +70,36 @@ async function loadPositions(): Promise<Position[]> {
     } catch { /* prices optional */ }
   }
 
-  // Parse OCC option symbol: e.g. APP260618P410 → type=P, strike=410
+  // ── Fetch live IVR for each underlying ──────────────────────────────────
+  const underlyingSymbols = [...new Set(optionPositions.map((p: any) => p['underlying-symbol']))];
+  const ivrMap: Record<string, number | null> = {};
+  try {
+    for (let i = 0; i < underlyingSymbols.length; i += 20) {
+      const chunk = underlyingSymbols.slice(i, i + 20) as string[];
+      const qs = chunk.map((s: string) => `equity=${encodeURIComponent(s)}`).join('&');
+      const mData = await ttFetch(`/market-data/by-type?${qs}`, token);
+      for (const item of mData?.data?.items ?? []) {
+        const ivr = parseFloat(item['iv-rank'] ?? item['ivr'] ?? 'NaN');
+        ivrMap[item.symbol] = isNaN(ivr) ? null : Math.round(ivr * 100);
+      }
+    }
+  } catch { /* IVR optional */ }
+
+  // ── Fetch working (GTC) orders ────────────────────────────────────────
+  const gtcSymbols = new Set<string>();
+  try {
+    const ordersData = await ttFetch(`/accounts/${accountNumber}/orders/live`, token);
+    for (const order of ordersData?.data?.items ?? []) {
+      if (order.status === 'Live' || order.status === 'Working') {
+        for (const leg of order.legs ?? []) {
+          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+        }
+      }
+    }
+  } catch { /* GTC check optional */ }
+
+  // ── Parse OCC option symbol: e.g. APP260618P410 → type=P, strike=410 ──
   function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
     // TastyTrade format: "APP  260618P00410000" — ticker + spaces + YYMMDD + C/P + 8-digit strike
     const match = sym.trim().replace(/\s+/g, '').match(/^([A-Z/]+)(\d{6})([CP])(\d{8})$/);
@@ -133,10 +162,36 @@ async function loadPositions(): Promise<Position[]> {
       creditReceived: Math.abs(creditReceived),
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, hitTarget,
+      plOpen: null, // populated below from TastyTrade P/L endpoint
       needsClose: dte <= 21,
       accountNumber,
+      ivr: ivrMap[symbol] ?? null,
+      hasGtc: gtcSymbols.has(symbol),
     };
   });
+
+  // ── Fetch real P/L Open from TastyTrade ──────────────────────────────
+  try {
+    const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
+    const plItems: any[] = plData?.data?.items ?? [];
+    // Group P/L by underlying symbol
+    const plBySymbol: Record<string, number> = {};
+    for (const item of plItems) {
+      const sym = item['underlying-symbol'];
+      const qty = parseFloat(item['quantity'] ?? '1');
+      const multiplier = parseFloat(item['multiplier'] ?? '100');
+      const avgOpen = parseFloat(item['average-open-price'] ?? '0');
+      const mark = parseFloat(item['mark-price'] ?? '0');
+      const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
+      const pl = dir * (mark - avgOpen) * qty * multiplier;
+      plBySymbol[sym] = (plBySymbol[sym] ?? 0) + pl;
+    }
+    for (const pos of positions) {
+      if (plBySymbol[pos.symbol] != null) {
+        pos.plOpen = Math.round(plBySymbol[pos.symbol] * 100) / 100;
+      }
+    }
+  } catch { /* plOpen stays null */ }
 
   positions.sort((a, b) => {
     if (a.needsClose && !b.needsClose) return -1;
@@ -249,10 +304,13 @@ interface Position {
   currentValue: number | null;
   pnl: number | null;
   pnlPct: number | null;
+  plOpen: number | null;      // TastyTrade real P/L Open
   targetPrice: number;
   hitTarget: boolean;
   needsClose: boolean;
   accountNumber: string;
+  ivr: number | null;         // Live IV Rank from TastyTrade
+  hasGtc: boolean;            // Whether a GTC working order exists
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -396,7 +454,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
         </button>
 
         {/* Data columns — fixed grid for vertical alignment */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 110px 80px 80px 90px 80px', gap: '0 12px', alignItems: 'center' }}>
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 110px 80px 80px 90px 80px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
             <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
@@ -433,6 +491,24 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
             <p className={`text-[9px] ${th.textFaint}`}>50% Target</p>
             <p className={`text-xs ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
               ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
+            </p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
+            <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
+            </p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
+            <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.ivr != null ? `${pos.ivr}` : '—'}
+            </p>
+          </div>
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
+            <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>
+              {pos.hasGtc ? '✓ Live' : '✕ None'}
             </p>
           </div>
         </div>
