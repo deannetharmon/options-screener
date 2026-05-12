@@ -2064,7 +2064,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows) && momentum60 > 0.07) {
+  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows) && momentum60 > 0.05 && !rangeLike) {
     return {
       trend: 'uptrend',
       strategy: 'BPS',
@@ -2076,6 +2076,23 @@ async function getTrend(symbol: string): Promise<TrendResult> {
       scores,
       metrics,
       reason: `BPS (weak lean): score ${scores.total} — above MA50 with higher-low structure, but signal is not clean. Monitor carefully.`,
+    };
+  }
+
+  // Second pass: strong score above MA50 even without confirmed higher lows — catches RY-type
+  // stocks with strong directional scores that just pulled back far enough to disrupt the lows structure
+  if (directionalScore >= 45 && currentPrice > ma50 && momentum60 > 0.04 && ma20Slope > 0 && !rangeLike) {
+    return {
+      trend: 'uptrend',
+      strategy: 'BPS',
+      subtype: 'REVERSAL',
+      confidence: Math.max(42, Math.min(58, confidence)),
+      ma20,
+      ma50,
+      ma200,
+      scores,
+      metrics,
+      reason: `BPS (strong score, recovering): score ${scores.total} — above MA50 with positive slope and momentum. Higher-low structure not yet confirmed but directional lean is clear.`,
     };
   }
 
