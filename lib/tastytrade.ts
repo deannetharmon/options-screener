@@ -207,3 +207,34 @@ export async function placeOrder(
 
   return await res.json();
 }
+
+// ====================== ORDER BUILDER HELPERS ======================
+
+/** Creates a Bull Put Spread order (Credit Spread) */
+export function buildBullPutSpread(
+  shortPutSymbol: string,   // e.g. "SPY  250516P00560000"
+  longPutSymbol: string,    // e.g. "SPY  250516P00550000"
+  quantity: number,
+  netCredit: number,        // e.g. 1.25
+  timeInForce: 'Day' | 'GTC' = 'Day'
+) {
+  return {
+    "time-in-force": timeInForce,
+    "order-type": "Limit",
+    "price": netCredit.toFixed(2),
+    "legs": [
+      {
+        "symbol": shortPutSymbol,
+        "quantity": quantity,
+        "action": "Sell to Open",
+        "order-leg-type": "Equity Option"
+      },
+      {
+        "symbol": longPutSymbol,
+        "quantity": quantity,
+        "action": "Buy to Open",
+        "order-leg-type": "Equity Option"
+      }
+    ]
+  };
+}
