@@ -2636,14 +2636,16 @@ export default function Home() {
     <div className={`min-h-screen ${th.bg} text-slate-100 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       {/* Header */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
-        <div>
-          <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
-          <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
+            <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
+          </div>
+          <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
+            <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
+            <Link href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
+          </nav>
         </div>
-        <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-          <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
-          <Link href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
-        </nav>
         <img src="/header-bg.png" alt="" className="flex-1 mx-6 hidden sm:block" style={{height: '57px', marginTop: '-1rem', marginBottom: '-1rem', objectFit: 'cover'}} />
         <div className="flex items-center gap-3">
           <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
