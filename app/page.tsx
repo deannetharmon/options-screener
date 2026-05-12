@@ -1773,7 +1773,8 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     // Use ma50Slope as fallback — catches ADP-type bounces where ma20 is temporarily positive
     // but the slower MA50 still points down, confirming the broader downtrend
     (ma20Slope < -0.005 || momentum40 < -0.03 || ma50Slope < -0.008) &&
-    drawdownFrom60High < -0.06;
+    drawdownFrom60High < -0.06 &&
+    !(momentum90 > 0.25 && drawdownFrom60High < -0.20 && range60 > 0.35); // ANET-type: strongly bullish then event crash — not a clean downtrend
 
   const clearBullishStructure =
     (higherLows || regimeHigherLows) &&
@@ -2063,7 +2064,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     };
   }
 
-  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows)) {
+  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows) && momentum60 > 0.07) {
     return {
       trend: 'uptrend',
       strategy: 'BPS',
