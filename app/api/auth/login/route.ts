@@ -1,16 +1,43 @@
-import { NextResponse } from 'next/server';
+// app/api/auth/login/route.ts
+import { NextRequest, NextResponse } from 'next/server';
 
-export async function GET() {
-  const clientId = process.env.TASTYTRADE_CLIENT_ID!;
-  const redirectUri = process.env.TASTYTRADE_REDIRECT_URI || 'https://options-screener-dun.vercel.app/api/callback';
+export async function POST(request: NextRequest) {
+  try {
+    const { username, password } = await request.json();
 
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: 'code',
-    scope: 'read trade openid',
-  });
+    if (!username || !password) {
+      return NextResponse.json({ error: "Username and password required" }, { status: 400 });
+    }
 
-  const authUrl = `https://api.tastytrade.com/oauth/authorize?${params.toString()}`;
-  return NextResponse.redirect(authUrl);
+    const formData = new URLSearchParams({
+      grant_type: 'password',
+      username: username,
+      password: password,
+      client_id: process.env.TASTYTRADE_CLIENT_ID || '',
+      client_secret: process.env.TASTYTRADE_CLIENT_SECRET || '',
+    });
+
+    const res = await fetch('https://api.tastytrade.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData.toString(),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      return NextResponse.json({ 
+        error: data.error_description || data.error || "Login failed" 
+      }, { status: res.status });
+    }
+
+    return NextResponse.json({
+      access_token: data.access_token,
+      expires_in: data.expires_in,
+    });
+
+  } catch (error) {
+    console.error("Login error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
 }
