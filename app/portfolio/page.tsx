@@ -74,8 +74,8 @@ async function loadPositions(): Promise<Position[]> {
   // Field: implied-volatility-index-rank (TastyTrade API docs confirmed)
   const ivrMap: Record<string, number | null> = {};
   try {
-    const underlyingSymbols: string[] = Array.from(new Set(optionPositions.map((p: any) => p['underlying-symbol'] as string)));
-    const qs = underlyingSymbols.map((s: string) => `symbols[]=${encodeURIComponent(s)}`).join('&');
+    const underlyingSymbols: string[] = (optionPositions as any[]).map((p: any) => String(p['underlying-symbol'])).filter((v, i, a) => a.indexOf(v) === i);
+    const qs = underlyingSymbols.map((s) => `symbols[]=${encodeURIComponent(s)}`).join('&');
     const metricsData = await ttFetch(`/market-metrics?${qs}`, token);
     for (const item of metricsData?.data?.items ?? []) {
       const raw = item['implied-volatility-index-rank'] ?? item['tw-implied-volatility-index-rank'] ?? null;
