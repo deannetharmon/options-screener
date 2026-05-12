@@ -72,12 +72,14 @@ async function loadPositions(): Promise<Position[]> {
 
   // Parse OCC option symbol: e.g. APP260618P410 → type=P, strike=410
   function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
-    const match = sym.match(/([A-Z]+)(\d{6})([CP])(\d+)$/);
+    const match = sym.match(/^([A-Z/]+)(\d{6})([CP])(\d+)$/);
     if (!match) return { optionType: 'C', strikePrice: 0 };
-    return {
-      optionType: match[3] as 'P' | 'C',
-      strikePrice: parseInt(match[4], 10) / 1000,
-    };
+    // Full OCC: 8-digit strike in 1/1000 dollars (e.g. 00585000 = $585.00)
+    // Short TastyTrade symbols omit leading zeros: 585000 = $585.00, 5500000 = $5500.00
+    const raw = parseInt(match[4], 10);
+    // If 6+ digits, divide by 1000; if fewer, it's already the dollar value
+    const strikePrice = match[4].length >= 6 ? raw / 1000 : raw;
+    return { optionType: match[3] as 'P' | 'C', strikePrice };
   }
 
   const today = new Date();
