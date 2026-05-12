@@ -400,13 +400,6 @@ function PositionCard({ pos, th, selected, onToggleSelect }: {
 
       {/* Main row */}
       <div className="px-4 py-3 flex items-center gap-4 flex-wrap cursor-pointer" onClick={() => setExpanded(!expanded)}>
-        {/* Checkbox */}
-        <div onClick={e => { e.stopPropagation(); onToggleSelect(pos.key); }} className="shrink-0">
-          <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${selected ? 'bg-blue-500 border-blue-500' : 'border-slate-500 hover:border-blue-400'}`}>
-            {selected && <span className="text-white text-[10px] font-bold">✓</span>}
-          </div>
-        </div>
-
         {/* Symbol + strategy */}
         <div className="w-20 shrink-0">
           <p className={`font-bold ${th.text} text-sm`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -460,17 +453,24 @@ function PositionCard({ pos, th, selected, onToggleSelect }: {
           </p>
         </div>
 
-        {/* Recommendation */}
-        <div className="shrink-0">
-          <p className={`text-[10px] ${th.textFaint}`}>Recommendation</p>
-          {trendLoading ? (
-            <p className={`text-[10px] ${th.textFaint}`}>analyzing...</p>
-          ) : (
-            <div>
-              <span className={`text-[10px] font-bold px-1.5 py-0.5 border rounded ${rec.color}`}>{rec.label}</span>
-              <p className={`text-[9px] ${th.textFaint} mt-0.5 max-w-[180px]`}>{rec.detail}</p>
+        {/* Recommendation + checkbox */}
+        <div className="shrink-0 flex items-center gap-2">
+          <div>
+            <p className={`text-[10px] ${th.textFaint}`}>Recommendation</p>
+            {trendLoading ? (
+              <p className={`text-[10px] ${th.textFaint}`}>analyzing...</p>
+            ) : (
+              <div>
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 border rounded ${rec.color}`}>{rec.label}</span>
+                <p className={`text-[9px] ${th.textFaint} mt-0.5 max-w-[180px]`}>{rec.detail}</p>
+              </div>
+            )}
+          </div>
+          <div onClick={e => { e.stopPropagation(); onToggleSelect(pos.key); }} className="shrink-0 ml-1 mt-3">
+            <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors cursor-pointer ${selected ? 'bg-blue-500 border-blue-500' : 'border-slate-500 hover:border-blue-400'}`}>
+              {selected && <span className="text-white text-[10px] font-bold">✓</span>}
             </div>
-          )}
+          </div>
         </div>
 
         {/* Spacer + expand + TT link */}
@@ -745,7 +745,7 @@ export default function PortfolioPage() {
             <span className="text-xs text-white font-medium">{selected.size} position{selected.size !== 1 ? 's' : ''} selected</span>
             <button onClick={() => setShowCloseModal(true)}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-wider transition-colors">
-              REVIEW CLOSE →
+              REVIEW SELECTED →
             </button>
             <button onClick={() => setSelected(new Set())}
               className="text-xs text-slate-400 hover:text-white transition-colors">
@@ -767,3 +767,4 @@ export default function PortfolioPage() {
     </div>
   );
 }
+
