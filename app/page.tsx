@@ -1769,9 +1769,11 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const clearBearishStructure =
     (lowerHighs || regimeLowerHighs) &&
     (lowerLows || regimeLowerLows || brokePriorSupport ||
-      (ma20Slope < -0.008 && drawdownFrom60High < -0.12)) && // slope+drawdown substitutes for lowerLows
-    (ma20Slope < -0.005 || momentum40 < -0.03) &&
-    drawdownFrom60High < -0.06;  // lowered from -10% to -6% — catches ADP-type bounces within downtrend
+      (ma20Slope < -0.008 && drawdownFrom60High < -0.12)) &&
+    // Use ma50Slope as fallback — catches ADP-type bounces where ma20 is temporarily positive
+    // but the slower MA50 still points down, confirming the broader downtrend
+    (ma20Slope < -0.005 || momentum40 < -0.03 || ma50Slope < -0.008) &&
+    drawdownFrom60High < -0.06;
 
   const clearBullishStructure =
     (higherLows || regimeHigherLows) &&
@@ -1968,7 +1970,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   // ── Diagnostic strings for IC/Review reason text ──────────────────────────
   const _diagLH = lowerHighs || regimeLowerHighs;
   const _diagLL = lowerLows || regimeLowerLows || brokePriorSupport || (ma20Slope < -0.008 && drawdownFrom60High < -0.12);
-  const _diagSlope = ma20Slope < -0.005 || momentum40 < -0.03;
+  const _diagSlope = ma20Slope < -0.005 || momentum40 < -0.03 || ma50Slope < -0.008;
   const _diagDD = drawdownFrom60High < -0.06;
   const _diagNoBnc = !(momentum20 > 0.06 && currentPrice > ma20);
   const _diagCBS = `CBS[↓Hi=${_diagLH?'✓':'✗'} ↓Lo=${_diagLL?'✓':'✗'} slope=${_diagSlope?'✓':'✗'} dd=${_diagDD?'✓':'✗'}]=${clearBearishStructure?'✓':'✗'}`;
