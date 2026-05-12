@@ -340,7 +340,12 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 }
 
 // ── Position Card ──────────────────────────────────────────────────────────
-function PositionCard({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
+function PositionCard({ pos, th, selected, onToggleSelect }: {
+  pos: Position;
+  th: typeof THEMES[Theme];
+  selected: boolean;
+  onToggleSelect: (key: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
   const [trendLoading, setTrendLoading] = useState(false);
@@ -369,7 +374,9 @@ function PositionCard({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) 
     return pos.legs.map(l => `${l.strikePrice}${l.optionType}`).join(' / ');
   };
 
-  const borderClass = pos.needsClose
+  const borderClass = selected
+    ? 'border-blue-500/60'
+    : pos.needsClose
     ? 'border-red-500/60'
     : pos.hitTarget
     ? 'border-emerald-500/60'
@@ -393,6 +400,13 @@ function PositionCard({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) 
 
       {/* Main row */}
       <div className="px-4 py-3 flex items-center gap-4 flex-wrap cursor-pointer" onClick={() => setExpanded(!expanded)}>
+        {/* Checkbox */}
+        <div onClick={e => { e.stopPropagation(); onToggleSelect(pos.key); }} className="shrink-0">
+          <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${selected ? 'bg-blue-500 border-blue-500' : 'border-slate-500 hover:border-blue-400'}`}>
+            {selected && <span className="text-white text-[10px] font-bold">✓</span>}
+          </div>
+        </div>
+
         {/* Symbol + strategy */}
         <div className="w-20 shrink-0">
           <p className={`font-bold ${th.text} text-sm`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -529,6 +543,82 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
   );
 }
 
+// ── Close Summary Modal ───────────────────────────────────────────────────
+function CloseModal({ positions, selected, onClose, th }: {
+  positions: Position[];
+  selected: Set<string>;
+  onClose: () => void;
+  th: typeof THEMES[Theme];
+}) {
+  const selectedPositions = positions.filter(p => selected.has(p.key));
+  const totalCredit = selectedPositions.reduce((sum, p) => sum + p.creditReceived, 0);
+  const totalPnl = selectedPositions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+
+  const openAll = () => {
+    selectedPositions.forEach(p => {
+      window.open(`https://my.tastytrade.com/trade?symbol=${p.symbol}`, '_blank');
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-lg`}>
+        <div className={`flex items-center justify-between px-5 py-4 border-b ${th.border}`}>
+          <div>
+            <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>CLOSE {selectedPositions.length} POSITION{selectedPositions.length !== 1 ? 'S' : ''}</h2>
+            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>Buy to close — set limit at mid price in TastyTrade</p>
+          </div>
+          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
+        </div>
+
+        <div className="px-5 py-3 space-y-2 max-h-80 overflow-auto">
+          {selectedPositions.map(p => {
+            const closeTarget = (p.currentValue ?? p.creditReceived * 0.5).toFixed(2);
+            const pnl = p.pnl;
+            return (
+              <div key={p.key} className={`flex items-center justify-between py-2 border-b ${th.borderLight}`}>
+                <div className="flex items-center gap-3">
+                  <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{p.symbol}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(p.strategy)}`}>{p.strategy}</span>
+                  <span className={`text-[10px] ${th.textFaint}`}>{p.expDate} · {p.dte}d</span>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>BTC @ ${closeTarget}</p>
+                  {pnl != null && <p className={`text-[10px] ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</p>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className={`px-5 py-3 border-t ${th.border} flex items-center justify-between`}>
+          <div>
+            <p className={`text-[10px] ${th.textFaint}`}>Total credit collected</p>
+            <p className="text-sm font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${totalCredit.toFixed(2)}</p>
+          </div>
+          <div className="text-right">
+            <p className={`text-[10px] ${th.textFaint}`}>Estimated P&L</p>
+            <p className={`text-sm font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+            </p>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 flex gap-3">
+          <button onClick={openAll}
+            className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
+            OPEN ALL IN TASTYTRADE →
+          </button>
+          <button onClick={onClose}
+            className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:${th.text} transition-colors`}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────
 export default function PortfolioPage() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
@@ -538,9 +628,19 @@ export default function PortfolioPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showCloseModal, setShowCloseModal] = useState(false);
+
+  const toggleSelected = (key: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
 
   const fetchPositions = async () => {
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setSelected(new Set());
     try {
       const data = await loadPositions();
       setPositions(data);
@@ -614,7 +714,7 @@ export default function PortfolioPage() {
             {needsClose.length > 0 && (
               <div>
                 <p className="text-[9px] text-red-400 tracking-widest mb-2 font-medium uppercase">⚠ Close Now — 21 DTE or Less</p>
-                <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} />)}</div>
+                <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selected={selected.has(p.key)} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
 
@@ -622,7 +722,7 @@ export default function PortfolioPage() {
             {hitTarget.length > 0 && (
               <div>
                 <p className="text-[9px] text-emerald-400 tracking-widest mb-2 font-medium uppercase">✓ 50% Profit Target Hit</p>
-                <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} />)}</div>
+                <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selected={selected.has(p.key)} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
 
@@ -630,12 +730,39 @@ export default function PortfolioPage() {
             {normal.length > 0 && (
               <div>
                 <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium uppercase`}>Active Positions</p>
-                <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} />)}</div>
+                <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selected={selected.has(p.key)} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
 
           </div>
         </>
+      )}
+
+      {/* Floating action bar */}
+      {selected.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
+          <div className="flex items-center gap-3 bg-[#111] border border-[#333] rounded-2xl px-5 py-3 shadow-2xl">
+            <span className="text-xs text-white font-medium">{selected.size} position{selected.size !== 1 ? 's' : ''} selected</span>
+            <button onClick={() => setShowCloseModal(true)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-wider transition-colors">
+              REVIEW CLOSE →
+            </button>
+            <button onClick={() => setSelected(new Set())}
+              className="text-xs text-slate-400 hover:text-white transition-colors">
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Close modal */}
+      {showCloseModal && (
+        <CloseModal
+          positions={positions}
+          selected={selected}
+          onClose={() => setShowCloseModal(false)}
+          th={th}
+        />
       )}
     </div>
   );
