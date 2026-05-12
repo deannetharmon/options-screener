@@ -2277,8 +2277,11 @@ function BestOpportunityFinder({
 
   // Build the 3 levels: Course, Relaxed, Low Vol
   // (Strict is more restrictive than Course so skip it here)
+  // All 4 levels — always diff vs DEFAULT_RULES (course baseline) not vs current rules
+  const COURSE_RULES = { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 };
   const levels = [
-    { presetKey: 'course',  presetLabel: 'Course',  presetColor: 'border-blue-500 text-blue-400',    rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 } },
+    { presetKey: 'strict',  presetLabel: 'Strict',  presetColor: 'border-red-500 text-red-400',       rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
+    { presetKey: 'course',  presetLabel: 'Course',  presetColor: 'border-blue-500 text-blue-400',     rules: COURSE_RULES },
     { presetKey: 'relaxed', presetLabel: 'Relaxed', presetColor: 'border-emerald-500 text-emerald-400', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
     { presetKey: 'lowvol',  presetLabel: 'Low Vol', presetColor: 'border-yellow-500 text-yellow-400', rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
   ];
@@ -2320,7 +2323,7 @@ function BestOpportunityFinder({
       for (const level of levels) {
         const mergedRules = { ...rules, ...level.rules };
         const chainData = await getChain(symbol, token, mergedRules);
-        const ruleDiffs = getRuleDiffs(rules, level.rules);
+        const ruleDiffs = getRuleDiffs({ ...DEFAULT_RULES, ...COURSE_RULES }, level.rules);
 
         const candidates: BestSetup[] = [];
         const failures: { strategy: string; reasons: string[] }[] = [];
@@ -2357,7 +2360,7 @@ function BestOpportunityFinder({
   const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
 
   return (
-    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-[60] p-4">
+    <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
       <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
 
         {/* Header */}
@@ -2394,11 +2397,11 @@ function BestOpportunityFinder({
                     {level.presetLabel.toUpperCase()}
                   </span>
                   {level.ruleDiffs.length === 0 ? (
-                    <span className={`text-[9px] ${th.textFaint}`}>Your current rules</span>
+                    <span className={`text-[9px] ${th.textFaint}`}>Course baseline — no changes</span>
+                  ) : level.presetKey === 'strict' ? (
+                    <span className="text-[9px] text-red-400">Tighter: {level.ruleDiffs.join(' · ')}</span>
                   ) : (
-                    <span className="text-[9px] text-yellow-500">
-                      Relaxed: {level.ruleDiffs.join(' · ')}
-                    </span>
+                    <span className="text-[9px] text-yellow-400">Relaxed vs Course: {level.ruleDiffs.join(' · ')}</span>
                   )}
                 </div>
                 {level.best ? (
