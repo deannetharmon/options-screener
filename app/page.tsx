@@ -405,37 +405,6 @@ const DEFAULT_RULES = {
 };
 type RulesType = typeof DEFAULT_RULES;
 
-const RULE_PRESETS = [
-  {
-    key: 'course',
-    label: 'Course',
-    desc: 'Exact course rules',
-    color: 'border-blue-600 text-blue-400 bg-blue-600/10',
-    rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 },
-  },
-  {
-    key: 'relaxed',
-    label: 'Relaxed',
-    desc: 'Wider net, still disciplined',
-    color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10',
-    rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 },
-  },
-  {
-    key: 'lowvol',
-    label: 'Low Vol',
-    desc: 'Crushed IV environments',
-    color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10',
-    rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 },
-  },
-  {
-    key: 'strict',
-    label: 'Strict',
-    desc: 'A+ setups only',
-    color: 'border-red-600 text-red-400 bg-red-600/10',
-    rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 },
-  },
-] as const;
-
 const RULE_LABELS: Record<string, string> = {
   IVR_MIN: 'IVR Min % (floor)',
   IVR_IC_MAX: 'IVR Max % (IC only)',
@@ -713,7 +682,10 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
   };
 
   const handleSchedule = (days: number, label: string) => {
-    window.open(buildEntryCalUrl(result, days), '_blank');
+    const url = buildEntryCalUrl(result, days);
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = label; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
     setScheduled(label);
     setOpen(false);
@@ -722,7 +694,10 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
   const handleDatePick = (dateStr: string) => {
     if (!dateStr) return;
     const d = new Date(dateStr + 'T12:00:00');
-    window.open(buildEntryCalUrl(result, 0, d), '_blank');
+    const url = buildEntryCalUrl(result, 0, d);
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = dateStr; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
     setScheduled(dateStr);
     setOpen(false);
@@ -782,9 +757,13 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
                 type="date"
                 min={new Date().toISOString().split('T')[0]}
                 onChange={e => handleDatePick(e.target.value)}
-                onClick={e => e.stopPropagation()}
                 className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} focus:outline-none focus:border-emerald-500 cursor-pointer`}
               />
+              <button
+                onClick={e => { e.stopPropagation(); try { dateInputRef.current?.showPicker(); } catch { dateInputRef.current?.focus(); } }}
+                className={`px-1.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint} hover:text-emerald-400 hover:border-emerald-600 transition-colors text-xs`}
+                title="Open calendar"
+              >📅</button>
             </div>
           </div>
         </div>
@@ -1377,7 +1356,6 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
   const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
   const [preset, setPreset] = useState<'stock' | 'etf'>('stock');
-  const [activeRulePreset, setActiveRulePreset] = useState<string | null>(null);
 
   const handleChange = (key: string, raw: string) => setRawValues(prev => ({ ...prev, [key]: raw }));
   const handleBlur = (key: keyof RulesType, raw: string) => {
@@ -1391,12 +1369,6 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     const base = p === 'etf' ? { ...DEFAULT_RULES, ...ETF_RULES } : { ...DEFAULT_RULES };
     setEditedRules(base);
     setRawValues(Object.fromEntries(Object.entries(base).map(([k, v]) => [k, String(v)])));
-  };
-  const handleRulePreset = (p: typeof RULE_PRESETS[number]) => {
-    const merged = { ...editedRules, ...p.rules };
-    setEditedRules(merged);
-    setRawValues(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
-    setActiveRulePreset(p.key);
   };
   const handleRun = () => { saveRulesToStorage(editedRules); onRun(editedRules); };
 
@@ -1425,24 +1397,6 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
               {p === 'stock' ? '📈 STOCK' : '🏦 ETF / INDEX'}
             </button>
           ))}
-        </div>
-
-        {/* Rule Presets */}
-        <div className="px-6 pb-3 pt-1">
-          <p className="text-[8px] tracking-widest uppercase mb-2 opacity-50">Quick presets — sets IVR, OI, credit & ROC:</p>
-          <div className="flex gap-2 flex-wrap">
-            {RULE_PRESETS.map(p => (
-              <button
-                key={p.key}
-                onClick={() => handleRulePreset(p)}
-                title={p.desc}
-                className={'px-3 py-1.5 rounded-lg text-[10px] font-bold tracking-widest border transition-colors ' + (activeRulePreset === p.key ? p.color : 'border-slate-700 text-slate-400 hover:border-slate-500')}
-              >
-                {p.label}
-                <span className="ml-1.5 font-normal text-[9px] opacity-60">{p.desc}</span>
-              </button>
-            ))}
-          </div>
         </div>
 
         <div className="px-6 pb-4 space-y-4">
