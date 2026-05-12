@@ -202,29 +202,30 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
     const reader = new FileReader();
     reader.onload = () => {
       const result = reader.result as string;
-      resolve(result.split(',')[1]); // strip the data:image/...;base64, prefix
+      resolve(result.split(',')[1]);
     };
     reader.onerror = () => reject(new Error('Failed to read image file'));
     reader.readAsDataURL(file);
   });
 
-  const mediaType = (file.type || 'image/png') as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+  const mediaType = file.type || 'image/png';
+  const dataUrl = `data:${mediaType};base64,${base64}`;
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'anthropic-dangerous-direct-browser-access': 'true',
+      'Authorization': `Bearer ${process.env.NEXT_PUBLIC_OPENAI_API_KEY ?? ''}`,
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1000,
+      model: 'gpt-4o',
+      max_tokens: 500,
       messages: [{
         role: 'user',
         content: [
           {
-            type: 'image',
-            source: { type: 'base64', media_type: mediaType, data: base64 },
+            type: 'image_url',
+            image_url: { url: dataUrl, detail: 'low' },
           },
           {
             type: 'text',
@@ -245,13 +246,13 @@ Rules:
   });
 
   if (!response.ok) {
-    throw new Error(`Claude Vision API error: ${response.status}`);
+    const err = await response.json().catch(() => ({}));
+    throw new Error(`OpenAI Vision API error: ${response.status} — ${err?.error?.message ?? 'unknown'}`);
   }
 
   const data = await response.json();
-  const rawText: string = data?.content?.[0]?.text ?? '';
+  const rawText: string = data?.choices?.[0]?.message?.content ?? '';
 
-  // Parse Claude's response — one ticker per line
   const tickers: string[] = [];
   for (const line of rawText.split('\n')) {
     const ticker = normalizeTickerToken(line.trim());
