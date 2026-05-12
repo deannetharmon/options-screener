@@ -695,7 +695,7 @@ export default function PortfolioPage() {
   const normal     = positions.filter(p => !p.needsClose && !p.hitTarget);
 
   return (
-    <div className={`min-h-screen ${th.bg} transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minWidth: '1200px' }}>
+    <div className={`min-h-screen ${th.bg} transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
 
       {/* Header */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
@@ -744,7 +744,8 @@ export default function PortfolioPage() {
         <>
           <SummaryBar positions={positions} th={th} />
 
-          <div className="p-6 space-y-6">
+          <div className="overflow-x-auto">
+          <div className="p-6 space-y-6" style={{ minWidth: '1180px' }}>
 
             {/* Needs close */}
             {needsClose.length > 0 && (
@@ -770,6 +771,7 @@ export default function PortfolioPage() {
               </div>
             )}
 
+          </div>
           </div>
         </>
       )}
