@@ -13,18 +13,173 @@ if (typeof document !== 'undefined') {
   }
 }
 
+const BASE = 'https://api.tastytrade.com';
+
+function getStoredToken(): string {
+  const token = sessionStorage.getItem('tt_access_token');
+  if (!token) { window.location.href = '/login'; throw new Error('Not authenticated'); }
+  return token;
+}
+
+async function ttFetch(path: string, token: string) {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (res.status === 401) { window.location.href = '/login'; throw new Error('Session expired'); }
+  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 100)}`); }
+  return res.json();
+}
+
 async function loadPositions(): Promise<Position[]> {
-  const res = await fetch('/api/positions', { cache: 'no-store' });
-  if (res.status === 401) {
-    // Redirect to login
-    window.location.href = '/login';
-    throw new Error('Not authenticated');
+  const token = getStoredToken();
+
+  const accountsData = await ttFetch('/customers/me/accounts', token);
+  const accounts = accountsData?.data?.items ?? [];
+  if (accounts.length === 0) throw new Error('No accounts found');
+  const accountNumber = accounts[0]?.account?.['account-number'];
+  if (!accountNumber) throw new Error('Could not read account number');
+
+  const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
+  const rawPositions = positionsData?.data?.items ?? [];
+  const optionPositions = rawPositions.filter((p: any) =>
+    p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
+  );
+
+  const groups: Record<string, any[]> = {};
+  for (const pos of optionPositions) {
+    const symbol = pos['underlying-symbol'];
+    const expDate = pos['expires-at']?.slice(0, 10) ?? 'unknown';
+    const key = `${symbol}::${expDate}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(pos);
   }
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error ?? `Failed to load positions (${res.status})`);
+
+  const allOptionSymbols = optionPositions.map((p: any) => p.symbol).filter(Boolean);
+  const currentPrices: Record<string, number> = {};
+  if (allOptionSymbols.length > 0) {
+    try {
+      for (let i = 0; i < allOptionSymbols.length; i += 50) {
+        const chunk = allOptionSymbols.slice(i, i + 50);
+        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
+        const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
+        for (const item of priceData?.data?.items ?? []) {
+          const bid = parseFloat(item.bid ?? '0');
+          const ask = parseFloat(item.ask ?? '0');
+          currentPrices[item.symbol] = (bid + ask) / 2;
+        }
+      }
+    } catch { /* prices optional */ }
   }
-  const { positions } = await res.json();
+
+  const ivrMap: Record<string, number | null> = {};
+  try {
+    const underlyingSymbols: string[] = (optionPositions as any[])
+      .map((p: any) => String(p['underlying-symbol']))
+      .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
+    const qs = underlyingSymbols.map((s) => `symbols[]=${encodeURIComponent(s)}`).join('&');
+    const metricsData = await ttFetch(`/market-metrics?${qs}`, token);
+    for (const item of metricsData?.data?.items ?? []) {
+      const raw = item['implied-volatility-index-rank'] ?? item['iv-rank'] ?? null;
+      const parsed = raw != null ? parseFloat(String(raw)) : NaN;
+      if (!isNaN(parsed)) ivrMap[item['symbol']] = parsed <= 1 ? Math.round(parsed * 100) : Math.round(parsed);
+    }
+  } catch { /* IVR optional */ }
+
+  const gtcSymbols = new Set<string>();
+  try {
+    const ordersData = await ttFetch(`/accounts/${accountNumber}/orders/live`, token);
+    for (const order of ordersData?.data?.items ?? []) {
+      if (order.status === 'Live' || order.status === 'Working') {
+        for (const leg of order.legs ?? []) {
+          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+        }
+      }
+    }
+  } catch { /* GTC optional */ }
+
+  const plBySymbol: Record<string, number> = {};
+  try {
+    const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
+    for (const item of plData?.data?.items ?? []) {
+      const sym = item['underlying-symbol'];
+      if (!sym) continue;
+      const qty = parseFloat(item['quantity'] ?? '1');
+      const multiplier = parseFloat(item['multiplier'] ?? '100');
+      const avgOpen = parseFloat(item['average-open-price'] ?? '0');
+      const mark = parseFloat(item['mark-price'] ?? '0');
+      const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
+      plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
+    }
+  } catch { /* plOpen optional */ }
+
+  const today = new Date();
+  const positions: Position[] = Object.entries(groups).map(([key, legs]) => {
+    const [symbol, expDate] = key.split('::');
+    const dte = Math.round((new Date(expDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const putLegs  = legs.filter((l: any) => parseOptionSymbol(l.symbol).optionType === 'P');
+    const callLegs = legs.filter((l: any) => parseOptionSymbol(l.symbol).optionType === 'C');
+    let strategy = 'UNKNOWN';
+    if      (putLegs.length >= 2 && callLegs.length === 0) strategy = 'BPS';
+    else if (callLegs.length >= 2 && putLegs.length === 0) strategy = 'BCS';
+    else if (putLegs.length >= 2 && callLegs.length >= 2)  strategy = 'IC';
+    else if (putLegs.length === 1 && callLegs.length === 0) strategy = 'PUT';
+    else if (callLegs.length === 1 && putLegs.length === 0) strategy = 'CALL';
+
+    let creditReceived = 0;
+    for (const leg of legs) {
+      const qty = parseInt(leg['quantity'] ?? '1', 10);
+      const avgPrice = parseFloat(leg['average-open-price'] ?? '0');
+      creditReceived += leg['quantity-direction'] === 'Short' ? avgPrice * qty : -(avgPrice * qty);
+    }
+    creditReceived = creditReceived * 100;
+
+    let currentValue = 0;
+    let hasCurrentPrices = true;
+    for (const leg of legs) {
+      const qty = parseInt(leg['quantity'] ?? '1', 10);
+      const price = currentPrices[leg.symbol];
+      if (price == null) { hasCurrentPrices = false; break; }
+      currentValue += leg['quantity-direction'] === 'Short' ? price * qty : -(price * qty);
+    }
+    currentValue = currentValue * 100;
+
+    const pnl = hasCurrentPrices ? Math.abs(creditReceived) - Math.abs(currentValue) : null;
+    const pnlPct = creditReceived !== 0 && pnl != null ? (pnl / Math.abs(creditReceived)) * 100 : null;
+    const targetPrice = Math.abs(creditReceived) * 0.5;
+    const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * 0.5;
+
+    return {
+      key, symbol, expDate, dte, strategy,
+      legs: legs.map((l: any) => {
+        const parsed = parseOptionSymbol(l.symbol);
+        return {
+          symbol: l.symbol,
+          optionType: parsed.optionType,
+          strikePrice: parsed.strikePrice,
+          direction: l['quantity-direction'] as 'Short' | 'Long',
+          quantity: parseInt(l['quantity'] ?? '1', 10),
+          avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
+          currentPrice: currentPrices[l.symbol] ?? null,
+        };
+      }),
+      creditReceived: Math.abs(creditReceived),
+      currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
+      pnl, pnlPct, targetPrice, hitTarget,
+      plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
+      needsClose: dte <= 21,
+      accountNumber,
+      ivr: ivrMap[symbol] ?? null,
+      hasGtc: gtcSymbols.has(symbol),
+    };
+  });
+
+  positions.sort((a, b) => {
+    if (a.needsClose && !b.needsClose) return -1;
+    if (!a.needsClose && b.needsClose) return 1;
+    return a.dte - b.dte;
+  });
   return positions;
 }
 type Theme = 'dark' | 'medium' | 'light';
@@ -643,7 +798,7 @@ export default function PortfolioPage() {
             {loading ? 'LOADING...' : '↻ REFRESH'}
           </button>
           <button
-            onClick={async () => { await fetch('/api/auth/login', { method: 'DELETE' }); window.location.href = '/login'; }}
+            onClick={() => { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; }}
             className="text-[10px] px-3 py-1.5 border border-white/10 text-white/30 rounded hover:border-white/30 hover:text-white/60 transition-colors tracking-wider">
             SIGN OUT
           </button>

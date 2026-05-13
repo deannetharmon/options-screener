@@ -7,7 +7,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 
-// Browser makes the OAuth call directly to TastyTrade (same as screener)
 async function getAccessTokenFromRefresh(refreshToken: string, clientSecret: string): Promise<string> {
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
@@ -33,10 +32,9 @@ function LoginContent() {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    fetch('/api/auth/status')
-      .then(r => r.json())
-      .then(d => { if (d.authenticated) router.replace('/portfolio'); })
-      .catch(() => {});
+    // Already have a token in sessionStorage? Go straight to portfolio
+    const token = sessionStorage.getItem('tt_access_token');
+    if (token) router.replace('/portfolio');
   }, [router]);
 
   const handleConnect = async () => {
@@ -44,23 +42,16 @@ function LoginContent() {
     setIsLoading(true);
     setError('');
     try {
-      // Step 1: Browser calls TastyTrade directly to get access token
       const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
-      if (!clientSecret) throw new Error('App configuration error');
+      if (!clientSecret) throw new Error('App configuration error — missing client secret');
+
+      // Browser calls TastyTrade directly (server IPs are blocked by TastyTrade)
       const accessToken = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret);
 
-      // Step 2: Send access token to our server to store in httpOnly cookie
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessToken }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        router.push('/portfolio');
-      } else {
-        setError(data.error || 'Login failed');
-      }
+      // Store in sessionStorage so portfolio page can use it
+      sessionStorage.setItem('tt_access_token', accessToken);
+
+      router.push('/portfolio');
     } catch (e: any) {
       setError(e.message || 'Could not connect');
     }
@@ -118,8 +109,7 @@ function LoginContent() {
         </button>
 
         <p className="text-[10px] text-white/20 text-center mt-6 leading-relaxed">
-          Your token is stored securely and never shared.<br />
-          Refresh tokens never expire.
+          Your token is stored securely in your browser session.
         </p>
       </div>
     </div>
