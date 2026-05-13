@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
   try {
     const { username, password } = await request.json();
 
-    if (!username || !password) {
+    if (!username || !pa/Users/dh735964/Downloads/login-page.tsxssword) {
       return NextResponse.json({ error: 'Username and password are required' }, { status: 400 });
     }
 
