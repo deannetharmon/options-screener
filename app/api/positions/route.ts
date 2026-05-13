@@ -1,36 +1,10 @@
+// app/api/positions/route.ts
 import { NextResponse } from 'next/server';
-
-const BASE = 'https://api.tastytrade.com';
-
-async function getAccessToken(): Promise<string> {
-  const r = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN;
-  const s = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
-  const c = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
-  if (!r || !s || !c) throw new Error('TastyTrade credentials not configured');
-  const res = await fetch(`${BASE}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: r.trim(), client_id: c.trim(), client_secret: s.trim() }),
-  });
-  if (!res.ok) { const text = await res.text(); throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 200)}`); }
-  return (await res.json()).access_token;
-}
-
-async function ttFetch(path: string, token: string) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: 'no-store',
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`);
-  }
-  return res.json();
-}
+import { getSessionToken, ttFetch } from '@/lib/tokenStore';
 
 export async function GET() {
   try {
-    const token = await getAccessToken();
+    const token = await getSessionToken();
 
     const accountsData = await ttFetch('/customers/me/accounts', token);
     const accounts = accountsData?.data?.items ?? [];
@@ -55,6 +29,7 @@ export async function GET() {
       groups[key].push(pos);
     }
 
+    // ── Fetch current option prices ───────────────────────────────────────
     const allOptionSymbols = optionPositions.map((p: any) => p.symbol).filter(Boolean);
     const currentPrices: Record<string, number> = {};
     if (allOptionSymbols.length > 0) {
@@ -72,6 +47,54 @@ export async function GET() {
       } catch { /* prices optional */ }
     }
 
+    // ── Fetch IVR from /market-metrics ────────────────────────────────────
+    const ivrMap: Record<string, number | null> = {};
+    try {
+      const underlyingSymbols: string[] = (optionPositions as any[])
+        .map((p: any) => String(p['underlying-symbol']))
+        .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
+      const qs = underlyingSymbols.map((s) => `symbols[]=${encodeURIComponent(s)}`).join('&');
+      const metricsData = await ttFetch(`/market-metrics?${qs}`, token);
+      for (const item of metricsData?.data?.items ?? []) {
+        const raw = item['implied-volatility-index-rank'] ?? item['iv-rank'] ?? null;
+        const parsed = raw != null ? parseFloat(String(raw)) : NaN;
+        if (!isNaN(parsed)) {
+          ivrMap[item['symbol']] = parsed <= 1 ? Math.round(parsed * 100) : Math.round(parsed);
+        }
+      }
+    } catch { /* IVR optional */ }
+
+    // ── Fetch working (GTC) orders ────────────────────────────────────────
+    const gtcSymbols = new Set<string>();
+    try {
+      const ordersData = await ttFetch(`/accounts/${accountNumber}/orders/live`, token);
+      for (const order of ordersData?.data?.items ?? []) {
+        if (order.status === 'Live' || order.status === 'Working') {
+          for (const leg of order.legs ?? []) {
+            const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+            if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+          }
+        }
+      }
+    } catch { /* GTC check optional */ }
+
+    // ── Fetch P/L Open from positions+marks ──────────────────────────────
+    const plBySymbol: Record<string, number> = {};
+    try {
+      const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
+      for (const item of plData?.data?.items ?? []) {
+        const sym = item['underlying-symbol'];
+        if (!sym) continue;
+        const qty = parseFloat(item['quantity'] ?? '1');
+        const multiplier = parseFloat(item['multiplier'] ?? '100');
+        const avgOpen = parseFloat(item['average-open-price'] ?? '0');
+        const mark = parseFloat(item['mark-price'] ?? '0');
+        const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
+        plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
+      }
+    } catch { /* plOpen optional */ }
+
+    // ── Build position objects ────────────────────────────────────────────
     const today = new Date();
     const positions = Object.entries(groups).map(([key, legs]) => {
       const [symbol, expDate] = key.split('::');
@@ -104,7 +127,7 @@ export async function GET() {
       }
       currentValue = currentValue * 100;
 
-      const pnl = hasCurrentPrices ? creditReceived + currentValue : null;
+      const pnl = hasCurrentPrices ? Math.abs(creditReceived) - Math.abs(currentValue) : null;
       const pnlPct = creditReceived !== 0 && pnl != null ? (pnl / Math.abs(creditReceived)) * 100 : null;
       const targetPrice = Math.abs(creditReceived) * 0.5;
       const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * 0.5;
@@ -125,6 +148,9 @@ export async function GET() {
         pnl, pnlPct, targetPrice, hitTarget,
         needsClose: dte <= 21,
         accountNumber,
+        ivr: ivrMap[symbol] ?? null,
+        hasGtc: gtcSymbols.has(symbol),
+        plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
       };
     });
 
@@ -136,6 +162,7 @@ export async function GET() {
 
     return NextResponse.json({ positions, accountNumber });
   } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+    const status = e.message.includes('Not authenticated') ? 401 : 500;
+    return NextResponse.json({ error: e.message }, { status });
   }
 }
