@@ -2,16 +2,46 @@
 import { cookies } from 'next/headers';
 
 const BASE = 'https://api.tastytrade.com';
+const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 
 /**
- * Get the TastyTrade session token from the httpOnly cookie.
- * Throws if not logged in.
+ * Get a valid access token — refreshes automatically if expired.
  */
 export async function getSessionToken(): Promise<string> {
   const cookieStore = cookies();
-  const token = cookieStore.get('tt_session')?.value;
-  if (!token) throw new Error('Not authenticated — please log in');
-  return token;
+
+  // Try existing access token first
+  const accessToken = cookieStore.get('tt_access_token')?.value;
+  if (accessToken) return accessToken;
+
+  // Try refreshing with refresh token
+  const refreshToken = cookieStore.get('tt_refresh_token')?.value;
+  if (!refreshToken) throw new Error('Not authenticated — please log in');
+
+  const clientSecret = process.env.TASTYTRADE_CLIENT_SECRET;
+  if (!clientSecret) throw new Error('Server configuration error');
+
+  const res = await fetch(`${BASE}/oauth/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: CLIENT_ID,
+      client_secret: clientSecret,
+    }),
+  });
+
+  if (!res.ok) throw new Error('Session expired — please log in again');
+
+  const data = await res.json();
+  const newToken = data.access_token;
+  if (!newToken) throw new Error('Could not refresh session');
+
+  return newToken;
 }
 
 /**
@@ -19,7 +49,10 @@ export async function getSessionToken(): Promise<string> {
  */
 export async function ttFetch(path: string, token: string) {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { Authorization: token },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Accept': 'application/json',
+    },
     cache: 'no-store',
   });
   if (!res.ok) {
@@ -30,12 +63,15 @@ export async function ttFetch(path: string, token: string) {
 }
 
 /**
- * Check if the user has a session cookie set.
+ * Check if user has a valid session.
  */
 export async function isAuthenticated(): Promise<boolean> {
   try {
     const cookieStore = cookies();
-    return !!cookieStore.get('tt_session')?.value;
+    return !!(
+      cookieStore.get('tt_access_token')?.value ||
+      cookieStore.get('tt_refresh_token')?.value
+    );
   } catch {
     return false;
   }
