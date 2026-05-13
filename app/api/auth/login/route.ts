@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 60 * 60 * 24, // 24 hours
+      maxAge: 60 * 60 * 24,
       path: '/',
     });
 
@@ -49,7 +49,6 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE() {
-  // Logout — clear the cookie
   const response = NextResponse.json({ ok: true });
   response.cookies.delete('tt_session');
   return response;
