@@ -31,6 +31,13 @@ async function ttFetch(path: string, token: string) {
   return res.json();
 }
 
+function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
+  const match = sym.trim().replace(/\s+/g, '').match(/^([A-Z/]+)(\d{6})([CP])(\d{8})$/);
+  if (!match) return { optionType: 'C', strikePrice: 0 };
+  const strikePrice = parseInt(match[4], 10) / 1000;
+  return { optionType: match[3] as 'P' | 'C', strikePrice };
+}
+
 async function loadPositions(): Promise<Position[]> {
   const token = getStoredToken();
 
