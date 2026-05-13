@@ -1,5 +1,20 @@
 {
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/ai/route": "app/api/ai/route.js",
+  "/api/auth/login/route": "app/api/auth/login/route.js",
+  "/api/auth/status/route": "app/api/auth/status/route.js",
+  "/api/callback/route": "app/api/callback/route.js",
+  "/api/chart/route": "app/api/chart/route.js",
+  "/api/csv/route": "app/api/csv/route.js",
+  "/api/debug-auth/route": "app/api/debug-auth/route.js",
+  "/api/filters/route": "app/api/filters/route.js",
+  "/api/ocr/route": "app/api/ocr/route.js",
+  "/api/positions/route": "app/api/positions/route.js",
+  "/api/screen/route": "app/api/screen/route.js",
+  "/help/page": "app/help/page.js",
   "/login/page": "app/login/page.js",
-  "/page": "app/page.js",
-  "/portfolio/page": "app/portfolio/page.js"
+  "/portfolio/page": "app/portfolio/page.js",
+  "/test-trade/page": "app/test-trade/page.js",
+  "/api/auth/login/page": "app/api/auth/login/page.js",
+  "/page": "app/page.js"
 }
