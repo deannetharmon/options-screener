@@ -16,14 +16,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
     }
 
-    // Exchange refresh token for access token
+    // Try JSON body instead of form-encoded
     const res = await fetch(`${BASE}/oauth/token`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
-      body: new URLSearchParams({
+      body: JSON.stringify({
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
         client_id: CLIENT_ID,
@@ -32,37 +32,45 @@ export async function POST(request: NextRequest) {
     });
 
     const text = await res.text();
+
+    // Log full response for debugging
+    console.log('[TT token] status:', res.status);
+    console.log('[TT token] response:', text.slice(0, 500));
+
     let data: any;
     try { data = JSON.parse(text); } catch {
-      return NextResponse.json({ error: `Unexpected response: ${text.slice(0, 100)}` }, { status: 502 });
+      return NextResponse.json({ 
+        error: `TastyTrade error (${res.status}): ${text.slice(0, 200)}` 
+      }, { status: 502 });
     }
 
     if (!res.ok) {
       return NextResponse.json(
-        { error: data?.error_description ?? data?.error ?? 'Invalid refresh token' },
+        { error: data?.error_description ?? data?.error ?? `Auth failed (${res.status})` },
         { status: 401 }
       );
     }
 
     const accessToken = data.access_token;
     if (!accessToken) {
-      return NextResponse.json({ error: 'No access token returned' }, { status: 500 });
+      return NextResponse.json({ 
+        error: `No access token. Response: ${JSON.stringify(data).slice(0, 200)}` 
+      }, { status: 500 });
     }
 
-    // Store both tokens in httpOnly cookies
     const response = NextResponse.json({ ok: true });
     response.cookies.set('tt_access_token', accessToken, {
       httpOnly: true,
       secure: true,
       sameSite: 'lax',
-      maxAge: 60 * 60, // 1 hour
+      maxAge: 60 * 60,
       path: '/',
     });
     response.cookies.set('tt_refresh_token', refreshToken, {
       httpOnly: true,
       secure: true,
       sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 365, // 1 year
+      maxAge: 60 * 60 * 24 * 365,
       path: '/',
     });
 
