@@ -483,11 +483,10 @@ async function ttFetch(path: string, token: string) {
   return res.json();
 }
 async function getAccessToken(): Promise<string> {
-  const r = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN, s = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET, c = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
-  if (!r || !s || !c) throw new Error('TastyTrade credentials not configured');
-  const res = await fetch(`${BASE}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: r.trim(), client_id: c.trim(), client_secret: s.trim() }) });
-  if (!res.ok) { const text = await res.text(); throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 200)}`); }
-  return (await res.json()).access_token;
+  // Use token from sessionStorage (set by login page)
+  const token = sessionStorage.getItem('tt_access_token');
+  if (!token) { window.location.href = '/login'; throw new Error('Not authenticated'); }
+  return token;
 }
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
