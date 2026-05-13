@@ -4,12 +4,32 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+const BASE = 'https://api.tastytrade.com';
+const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
+
+// Browser makes the OAuth call directly to TastyTrade (same as screener)
+async function getAccessTokenFromRefresh(refreshToken: string, clientSecret: string): Promise<string> {
+  const res = await fetch(`${BASE}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: CLIENT_ID,
+      client_secret: clientSecret,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error_description ?? data?.error ?? 'Token exchange failed');
+  if (!data.access_token) throw new Error('No access token returned');
+  return data.access_token;
+}
+
 function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const errorParam = searchParams.get('error');
   const [refreshToken, setRefreshToken] = useState('');
-  const [error, setError] = useState(errorParam ?? '');
+  const [error, setError] = useState(searchParams.get('error') ?? '');
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
@@ -24,10 +44,16 @@ function LoginContent() {
     setIsLoading(true);
     setError('');
     try {
+      // Step 1: Browser calls TastyTrade directly to get access token
+      const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
+      if (!clientSecret) throw new Error('App configuration error');
+      const accessToken = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret);
+
+      // Step 2: Send access token to our server to store in httpOnly cookie
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: refreshToken.trim() }),
+        body: JSON.stringify({ accessToken }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -35,8 +61,8 @@ function LoginContent() {
       } else {
         setError(data.error || 'Login failed');
       }
-    } catch {
-      setError('Could not connect to server');
+    } catch (e: any) {
+      setError(e.message || 'Could not connect');
     }
     setIsLoading(false);
   };
