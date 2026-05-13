@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
     // Validate the token by calling a lightweight endpoint
     const res = await fetch(`${BASE}/customers/me`, {
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: accessToken,
         Accept: 'application/json',
       },
     });
