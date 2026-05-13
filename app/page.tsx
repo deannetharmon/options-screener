@@ -482,30 +482,53 @@ async function ttFetch(path: string, token: string) {
   if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`); }
   return res.json();
 }
-const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-
 async function getAccessToken(): Promise<string> {
-  // Try cached access token first (valid for 24h)
-  const cached = sessionStorage.getItem('tt_access_token');
-  if (cached) return cached;
-
-  // Fall back to refresh token stored in localStorage (never expires)
-  const refreshToken = localStorage.getItem('tt_refresh_token');
-  const clientSecret = localStorage.getItem('tt_client_secret');
-  if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
-
-  const res = await fetch(`${BASE}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: CLIENT_ID, client_secret: clientSecret }),
-  });
-  if (!res.ok) { localStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
-  const data = await res.json();
-  const token = data.access_token;
-  if (!token) { window.location.href = '/login'; throw new Error('No token'); }
-  sessionStorage.setItem('tt_access_token', token);
-  return token;
+  const r = process.env.NEXT_PUBLIC_TASTYTRADE_REFRESH_TOKEN, s = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET, c = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_ID;
+  if (!r || !s || !c) throw new Error('TastyTrade credentials not configured');
+  const res = await fetch(`${BASE}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: r.trim(), client_id: c.trim(), client_secret: s.trim() }) });
+  if (!res.ok) { const text = await res.text(); throw new Error(`Token refresh failed (${res.status}): ${text.slice(0, 200)}`); }
+  return (await res.json()).access_token;
 }
+async function loadPortfolioTickers(): Promise<{ current: string[]; historical: string[] }> {
+  const token = await getAccessToken();
+
+  // ── Current positions ─────────────────────────────────────────────────
+  const current: string[] = [];
+  try {
+    const accountsData = await ttFetch('/customers/me/accounts', token);
+    const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+    if (accountNumber) {
+      const posData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
+      for (const p of posData?.data?.items ?? []) {
+        const sym = p['underlying-symbol'];
+        if (sym && !current.includes(sym)) current.push(sym);
+      }
+    }
+  } catch { /* current positions optional */ }
+
+  // ── Historical positions (transactions) ───────────────────────────────
+  const historical: string[] = [];
+  try {
+    const accountsData = await ttFetch('/customers/me/accounts', token);
+    const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+    if (accountNumber) {
+      // Fetch last 2 years of transactions
+      const startDate = new Date();
+      startDate.setFullYear(startDate.getFullYear() - 2);
+      const startStr = startDate.toISOString().split('T')[0];
+      const txData = await ttFetch(`/accounts/${accountNumber}/transactions?start-date=${startStr}&per-page=500`, token);
+      for (const tx of txData?.data?.items ?? []) {
+        const sym = tx['underlying-symbol'] ?? tx['symbol'];
+        if (sym && !historical.includes(sym) && !current.includes(sym)) {
+          historical.push(sym);
+        }
+      }
+    }
+  } catch { /* historical optional */ }
+
+  return { current, historical };
+}
+
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
   return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
@@ -977,6 +1000,43 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { 
   const [showLoad, setShowLoad] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveError, setSaveError] = useState('');
+  const [loadingPortfolio, setLoadingPortfolio] = useState(false);
+  const [portfolioStatus, setPortfolioStatus] = useState('');
+
+  const handleLoadFromPortfolio = async () => {
+    setLoadingPortfolio(true);
+    setPortfolioStatus('Fetching positions...');
+    try {
+      const { current, historical } = await loadPortfolioTickers();
+      const all = [...current, ...historical];
+      if (all.length === 0) { setPortfolioStatus('No positions found'); setTimeout(() => setPortfolioStatus(''), 3000); return; }
+      const allStr = all.join(', ');
+      setPortfolioStatus(`Found ${current.length} current · ${historical.length} historical`);
+      setTimeout(() => setPortfolioStatus(''), 4000);
+      // Check if boxes already have tickers
+      const hasExisting = [bps, bcs, ic].some(v => normalizeTickerInput(v).length > 0);
+      if (hasExisting) {
+        onLoadPrompt({
+          name: `${all.length} tickers from portfolio`,
+          type: 'strategy',
+          onLoad: (doMerge: boolean) => {
+            if (doMerge) {
+              // Merge all into BPS box (user can redistribute)
+              onLoadAll(mergeTickers(bps, all), bcs, ic, broken);
+            } else {
+              onLoadAll(allStr, '', '', '');
+            }
+          },
+        });
+      } else {
+        onLoadAll(allStr, '', '', '');
+      }
+    } catch (e: any) {
+      setPortfolioStatus(`Error: ${e.message}`);
+      setTimeout(() => setPortfolioStatus(''), 4000);
+    }
+    setLoadingPortfolio(false);
+  };
   const parseTickers = normalizeTickerInput;
   const refreshFilters = useCallback(async () => { const f = await loadFilters('global') as GlobalFilters; setGlobalFilters(f); }, []);
   useEffect(() => { refreshFilters(); }, [refreshFilters]);
@@ -997,6 +1057,15 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { 
   return (
     <div className={`border-t ${th.border} pt-3`}>
       <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
+      <div className="flex gap-2 mb-2">
+        <button
+          onClick={handleLoadFromPortfolio}
+          disabled={loadingPortfolio}
+          className={`w-full text-[9px] px-2 py-1.5 border border-purple-700 rounded-lg text-purple-400 hover:border-purple-500 hover:text-purple-300 transition-colors font-medium flex items-center justify-center gap-1 disabled:opacity-40`}>
+          {loadingPortfolio ? '⟳ Loading...' : '📊 Load from Portfolio'}
+        </button>
+      </div>
+      {portfolioStatus && <p className={`text-[9px] ${portfolioStatus.startsWith('Error') ? 'text-red-400' : 'text-emerald-400'} mb-2`}>{portfolioStatus}</p>}
       <div className="flex gap-2">
         <button onClick={() => onLoadAll('', '', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
         <div className="relative flex-1">
