@@ -791,6 +791,10 @@ export default function PortfolioPage() {
       setPositions(data);
       setLastRefresh(new Date());
     } catch (e: any) {
+      if (e.message === 'Not authenticated' || e.message === 'Session expired') {
+        window.location.href = '/login';
+        return;
+      }
       setError(e.message);
     } finally {
       setLoading(false);
