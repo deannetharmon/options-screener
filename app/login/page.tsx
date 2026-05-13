@@ -1,114 +1,42 @@
-// app/login/page.tsx
-'use client';
+// lib/tokenStore.ts
+import { cookies } from 'next/headers';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+const BASE = 'https://api.tastytrade.com';
 
-export default function LoginPage() {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
+/**
+ * Get the TastyTrade session token from the httpOnly cookie.
+ * Throws if not logged in.
+ */
+export async function getSessionToken(): Promise<string> {
+  const cookieStore = cookies();
+  const token = cookieStore.get('tt_session')?.value;
+  if (!token) throw new Error('Not authenticated — please log in');
+  return token;
+}
 
-  // If already logged in, skip to portfolio
-  useEffect(() => {
-    fetch('/api/auth/status')
-      .then(r => r.json())
-      .then(d => { if (d.authenticated) router.replace('/portfolio'); })
-      .catch(() => {});
-  }, [router]);
+/**
+ * Make an authenticated request to TastyTrade API.
+ */
+export async function ttFetch(path: string, token: string) {
+  const res = await fetch(`${BASE}/Users/dh735964/Downloads/login-page (1).tsx${path}`, {
+    headers: { Authorization: token },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  return res.json();
+}
 
-  const handleLogin = async () => {
-    if (!username || !password) { setError('Please enter username and password'); return; }
-    setIsLoading(true);
-    setError('');
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        router.push('/portfolio');
-      } else {
-        setError(data.error || 'Login failed');
-      }
-    } catch {
-      setError('Could not connect to server');
-    }
-    setIsLoading(false);
-  };
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] p-4"
-      style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-
-      {/* Inject DM Sans font */}
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');`}</style>
-
-      <div className="w-full max-w-sm">
-        {/* Logo */}
-        <div className="text-center mb-10">
-          <h1 className="text-xl font-bold tracking-widest text-white"
-            style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
-          <p className="text-[10px] text-white/40 mt-1 tracking-wider"
-            style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
-        </div>
-
-        {/* Card */}
-        <div className="bg-[#111] border border-[#222] rounded-2xl p-8">
-          <h2 className="text-sm font-bold text-white tracking-wider mb-6">
-            SIGN IN WITH TASTYTRADE
-          </h2>
-
-          <div className="space-y-3">
-            <div>
-              <label className="text-[10px] text-white/40 tracking-wider uppercase">Username / Email</label>
-              <input
-                type="text"
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleLogin()}
-                autoComplete="username"
-                className="mt-1 w-full px-4 py-3 bg-[#0a0a0a] border border-[#2c2c2c] rounded-lg text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors"
-                placeholder="your@email.com"
-              />
-            </div>
-
-            <div>
-              <label className="text-[10px] text-white/40 tracking-wider uppercase">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleLogin()}
-                autoComplete="current-password"
-                className="mt-1 w-full px-4 py-3 bg-[#0a0a0a] border border-[#2c2c2c] rounded-lg text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors"
-                placeholder="••••••••"
-              />
-            </div>
-
-            {error && (
-              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
-                {error}
-              </p>
-            )}
-
-            <button
-              onClick={handleLogin}
-              disabled={isLoading}
-              className="w-full py-3 mt-2 bg-white text-black rounded-lg text-xs font-bold tracking-widest hover:bg-white/90 transition-colors disabled:opacity-40">
-              {isLoading ? 'SIGNING IN...' : 'SIGN IN →'}
-            </button>
-          </div>
-
-          <p className="text-[10px] text-white/20 text-center mt-6 leading-relaxed">
-            Your credentials are sent directly to TastyTrade<br />and never stored on our servers.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+/**
+ * Check if the user has a session cookie set.
+ */
+export async function isAuthenticated(): Promise<boolean> {
+  try {
+    const cookieStore = cookies();
+    return !!cookieStore.get('tt_session')?.value;
+  } catch {
+    return false;
+  }
 }
