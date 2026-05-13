@@ -11,14 +11,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Username and password are required' }, { status: 400 });
     }
 
-    // TastyTrade personal accounts use /sessions — NOT OAuth client credentials
     const res = await fetch(`${BASE}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ login: username, password, 'remember-me': true }),
     });
 
-    const data = await res.json();
+    // Read as text first — TastyTrade sometimes returns HTML on errors
+    const text = await res.text();
+    let data: any;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return NextResponse.json(
+        { error: `TastyTrade returned unexpected response (${res.status}): ${text.slice(0, 100)}` },
+        { status: 502 }
+      );
+    }
 
     if (!res.ok) {
       return NextResponse.json(
@@ -29,10 +38,9 @@ export async function POST(request: NextRequest) {
 
     const token = data?.data?.['session-token'];
     if (!token) {
-      return NextResponse.json({ error: 'No session token returned' }, { status: 500 });
+      return NextResponse.json({ error: `No session token in response: ${JSON.stringify(data).slice(0, 100)}` }, { status: 500 });
     }
 
-    // Store token in httpOnly cookie — never exposed to browser JS
     const response = NextResponse.json({ ok: true });
     response.cookies.set('tt_session', token, {
       httpOnly: true,
