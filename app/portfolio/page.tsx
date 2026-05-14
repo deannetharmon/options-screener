@@ -199,6 +199,18 @@ async function loadPositions(): Promise<Position[]> {
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, hitTarget,
       plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
+      maxRisk: (() => {
+        const shorts = legs.filter((l: any) => l['quantity-direction'] === 'Short');
+        const longs  = legs.filter((l: any) => l['quantity-direction'] === 'Long');
+        if (shorts[0] && longs[0]) {
+          const shortStrike = parseOptionSymbol(shorts[0].symbol).strikePrice;
+          const longStrike  = parseOptionSymbol(longs[0].symbol).strikePrice;
+          const width = Math.abs(shortStrike - longStrike);
+          const qty = parseInt(shorts[0]['quantity'] ?? '1', 10);
+          return Math.max(0, (width * 100 * qty) - Math.abs(creditReceived));
+        }
+        return 0;
+      })(),
       entryDte,
       needsClose: entryDte > 21 && dte <= 21,
       accountNumber,
