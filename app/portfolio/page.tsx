@@ -145,6 +145,10 @@ async function loadPositions(): Promise<Position[]> {
   const positions: Position[] = Object.entries(groups).map(([key, legs]) => {
     const [symbol, expDate] = key.split('::');
     const dte = Math.round((new Date(expDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    const openedAt = legs[0]?.['created-at']?.slice(0, 10) ?? null;
+    const entryDte = openedAt
+      ? Math.round((new Date(expDate).getTime() - new Date(openedAt).getTime()) / (1000 * 60 * 60 * 24))
+      : dte;
     const putLegs  = legs.filter((l: any) => parseOptionSymbol(l.symbol).optionType === 'P');
     const callLegs = legs.filter((l: any) => parseOptionSymbol(l.symbol).optionType === 'C');
     let strategy = 'UNKNOWN';
@@ -195,7 +199,8 @@ async function loadPositions(): Promise<Position[]> {
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, hitTarget,
       plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
-      needsClose: dte <= 21,
+      entryDte,
+      needsClose: entryDte > 21 && dte <= 21,
       accountNumber,
       ivr: ivrMap[symbol] ?? null,
       hasGtc: gtcSymbols.has(symbol),
@@ -317,6 +322,7 @@ interface Position {
   targetPrice: number;
   hitTarget: boolean;
   needsClose: boolean;
+  entryDte: number;
   accountNumber: string;
   ivr: number | null;         // Live IV Rank from TastyTrade
   hasGtc: boolean;            // Whether a GTC working order exists
@@ -444,7 +450,10 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
       {pos.needsClose && (
         <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
           <span className="text-red-400 text-xs">⚠</span>
-          <span className="text-xs text-red-400 font-bold tracking-wider">CLOSE NOW — {pos.dte} DTE REMAINING</span>
+          <span className="text-xs text-red-400 font-bold tracking-wider">
+          CLOSE NOW — {pos.dte} DTE REMAINING
+            <span className="ml-2 font-normal opacity-60">(entered at {pos.entryDte} DTE)</span>
+          </span>
         </div>
       )}
       {pos.hitTarget && !pos.needsClose && (
@@ -868,7 +877,7 @@ export default function PortfolioPage() {
             {/* Needs close */}
             {needsClose.length > 0 && (
               <div>
-                <p className="text-[10px] text-red-400 tracking-widest mb-3 font-bold uppercase">⚠ Close Now — 21 DTE or Less</p>
+                <p className="text-[10px] text-red-400 tracking-widest mb-3 font-bold uppercase">⚠ Close Now — Decayed to 21 DTE or Less</p>
                 <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
               </div>
             )}
