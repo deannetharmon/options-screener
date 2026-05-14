@@ -24,15 +24,29 @@ async function getAccessTokenFromRefresh(refreshToken: string, clientSecret: str
   return data.access_token;
 }
 
+function EyeIcon({ open }: { open: boolean }) {
+  return open ? (
+    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12C3.75 7.5 7.5 4.5 12 4.5s8.25 3 9.75 7.5c-1.5 4.5-5.25 7.5-9.75 7.5S3.75 16.5 2.25 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  ) : (
+    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 002.25 12c1.5 4.5 5.25 7.5 9.75 7.5 1.76 0 3.42-.44 4.865-1.22M6.53 6.53A9.77 9.77 0 0112 4.5c4.5 0 8.25 3 9.75 7.5a10.49 10.49 0 01-2.34 3.71M6.53 6.53L3 3m3.53 3.53l10.94 10.94M16.47 16.47L21 21" />
+    </svg>
+  );
+}
+
 function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [refreshToken, setRefreshToken] = useState('');
+  const [showToken, setShowToken] = useState(false);
   const [error, setError] = useState(searchParams.get('error') ?? '');
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    // Already have a token in sessionStorage? Go straight to portfolio
+    // Already have a valid token? Go straight to portfolio
     const token = sessionStorage.getItem('tt_access_token');
     if (token) router.replace('/portfolio');
   }, [router]);
@@ -42,15 +56,12 @@ function LoginContent() {
     setIsLoading(true);
     setError('');
     try {
+      // NEXT_PUBLIC_ prefix required for browser-accessible env vars
       const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
-      if (!clientSecret) throw new Error('App configuration error — missing client secret');
+      if (!clientSecret) throw new Error('App configuration error — missing client secret. Contact the app owner.');
 
-      // Browser calls TastyTrade directly (server IPs are blocked by TastyTrade)
       const accessToken = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret);
-
-      // Store in sessionStorage so portfolio page can use it
       sessionStorage.setItem('tt_access_token', accessToken);
-
       router.push('/portfolio');
     } catch (e: any) {
       setError(e.message || 'Could not connect');
@@ -85,14 +96,24 @@ function LoginContent() {
 
         <div className="mb-4">
           <label className="text-[10px] text-white/40 tracking-wider uppercase">Refresh Token</label>
-          <input
-            type="password"
-            value={refreshToken}
-            onChange={e => setRefreshToken(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleConnect()}
-            className="mt-1 w-full px-4 py-3 bg-[#0a0a0a] border border-[#2c2c2c] rounded-lg text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono"
-            placeholder="paste your refresh token here"
-          />
+          <div className="relative mt-1">
+            <input
+              type={showToken ? 'text' : 'password'}
+              value={refreshToken}
+              onChange={e => setRefreshToken(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleConnect()}
+              className="w-full px-4 py-3 pr-11 bg-[#0a0a0a] border border-[#2c2c2c] rounded-lg text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono"
+              placeholder="paste your refresh token here"
+            />
+            <button
+              type="button"
+              onClick={() => setShowToken(v => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/70 transition-colors"
+              tabIndex={-1}
+            >
+              <EyeIcon open={showToken} />
+            </button>
+          </div>
         </div>
 
         {error && (
