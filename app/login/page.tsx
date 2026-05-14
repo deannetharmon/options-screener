@@ -46,18 +46,34 @@ function LoginContent() {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-  const token = sessionStorage.getItem('tt_access_token');
-  if (token) { router.replace('/portfolio'); return; }
-  const saved = localStorage.getItem('tt_refresh_token');
-  if (saved) setRefreshToken(saved);
-}, [router]);
+    const token = sessionStorage.getItem('tt_access_token');
+    if (token) { router.replace('/portfolio'); return; }
+
+    const saved = localStorage.getItem('tt_refresh_token');
+    const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
+
+    if (saved && clientSecret) {
+      setIsLoading(true);
+      getAccessTokenFromRefresh(saved, clientSecret)
+        .then(accessToken => {
+          sessionStorage.setItem('tt_access_token', accessToken);
+          router.replace('/portfolio');
+        })
+        .catch(() => {
+          localStorage.removeItem('tt_refresh_token');
+          localStorage.removeItem('tt_client_secret');
+          setIsLoading(false);
+        });
+    } else if (saved) {
+      setRefreshToken(saved);
+    }
+  }, [router]);
 
   const handleConnect = async () => {
     if (!refreshToken.trim()) { setError('Please enter your refresh token'); return; }
     setIsLoading(true);
     setError('');
     try {
-      // NEXT_PUBLIC_ prefix required for browser-accessible env vars
       const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
       if (!clientSecret) throw new Error('App configuration error — missing client secret. Contact the app owner.');
 
@@ -133,7 +149,7 @@ function LoginContent() {
         </button>
 
         <p className="text-[10px] text-white/20 text-center mt-6 leading-relaxed">
-          Your token is stored securely in your browser session.
+          Your token is stored in your browser's local storage.
         </p>
       </div>
     </div>
