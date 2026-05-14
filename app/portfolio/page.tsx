@@ -109,7 +109,7 @@ async function loadPositions(): Promise<Position[]> {
     for (const item of metricsData?.data?.items ?? []) {
       const raw = item['implied-volatility-index-rank'] ?? item['iv-rank'] ?? null;
       const parsed = raw != null ? parseFloat(String(raw)) : NaN;
-      if (!isNaN(parsed)) ivrMap[item['symbol']] = parsed <= 1 ? Math.round(parsed * 100) : Math.round(parsed);
+      if (!isNaN(parsed)) ivrMap[item['symbol']] = parsed < 1 ? Math.round(parsed * 100) : Math.round(parsed);
     }
   } catch { /* IVR optional */ }
 
