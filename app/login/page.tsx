@@ -31,26 +31,33 @@ function LoginContent() {
   const [clientSecret, setClientSecret] = useState('');
   const [error, setError] = useState(searchParams.get('error') ?? '');
   const [isLoading, setIsLoading] = useState(false);
-  const [isFirstTime, setIsFirstTime] = useState(true);
+  // false = checking stored creds (show spinner); true = show form
+  const [showForm, setShowForm] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem('tt_refresh_token');
     const storedSecret = localStorage.getItem('tt_client_secret');
     if (stored && storedSecret) {
-      // Auto-login with stored credentials
       getAccessTokenFromRefresh(stored, storedSecret)
         .then(token => {
           sessionStorage.setItem('tt_access_token', token);
-          // Small delay to ensure sessionStorage is set before redirect
-          setTimeout(() => router.replace('/portfolio'), 100);
+          router.replace('/portfolio');
         })
-        .catch(() => {
-          localStorage.removeItem('tt_refresh_token');
-          localStorage.removeItem('tt_client_secret');
-          setIsFirstTime(true);
+        .catch((e: any) => {
+          // DO NOT clear credentials — pre-fill them so user can just hit Connect
+          // (or paste a new token if theirs expired). Clearing forces full re-entry.
+          setRefreshToken(stored);
+          setClientSecret(storedSecret);
+          const msg = e.message ?? '';
+          setError(
+            msg.toLowerCase().includes('invalid') || msg.toLowerCase().includes('expired')
+              ? 'Session expired — your refresh token may have expired. Generate a new one in TastyTrade → Settings → API → Manage → Create Grant.'
+              : `Auto-login failed: ${msg || 'unknown error'}. Update your credentials below and reconnect.`
+          );
+          setShowForm(true);
         });
     } else {
-      setIsFirstTime(true);
+      setShowForm(true);
     }
   }, [router]);
 
@@ -61,12 +68,9 @@ function LoginContent() {
     setError('');
     try {
       const accessToken = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret.trim());
-
-      // Store permanently in localStorage — never need to enter again
       localStorage.setItem('tt_refresh_token', refreshToken.trim());
       localStorage.setItem('tt_client_secret', clientSecret.trim());
       sessionStorage.setItem('tt_access_token', accessToken);
-
       router.push('/portfolio');
     } catch (e: any) {
       setError(e.message || 'Could not connect');
@@ -74,9 +78,11 @@ function LoginContent() {
     setIsLoading(false);
   };
 
-  if (!isFirstTime) {
+  if (!showForm) {
     return (
-      <div className="text-white/40 text-xs tracking-widest">CONNECTING...</div>
+      <div className="text-white/40 text-xs tracking-widest" style={{ fontFamily: "'DM Mono', monospace" }}>
+        CONNECTING...
+      </div>
     );
   }
 
@@ -92,7 +98,7 @@ function LoginContent() {
       <div className="bg-[#111] border border-[#222] rounded-2xl p-8">
         <h2 className="text-sm font-bold text-white tracking-wider mb-2">CONNECT YOUR ACCOUNT</h2>
         <p className="text-xs text-white/40 mb-6 leading-relaxed">
-          Enter your TastyTrade credentials once — you'll never need to do this again.
+          Enter your TastyTrade credentials once — stored locally, never re-asked unless your refresh token expires.
         </p>
 
         <div className="mb-4 bg-white/5 border border-white/10 rounded-lg p-3">
