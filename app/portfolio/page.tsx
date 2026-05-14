@@ -117,7 +117,7 @@ async function loadPositions(): Promise<Position[]> {
   try {
     const ordersData = await ttFetch(`/accounts/${accountNumber}/orders/live`, token);
     for (const order of ordersData?.data?.items ?? []) {
-      if (order.status === 'Live' || order.status === 'Working') {
+      if (['Live', 'Working', 'Contingent', 'Pending'].includes(order.status ?? '')) {
         for (const leg of order.legs ?? []) {
           const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
           if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
