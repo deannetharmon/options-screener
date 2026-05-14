@@ -318,8 +318,9 @@ interface Position {
   currentValue: number | null;
   pnl: number | null;
   pnlPct: number | null;
-  plOpen: number | null;      // TastyTrade real P/L Open
+  plOpen: number | null;
   targetPrice: number;
+  maxRisk: number;
   hitTarget: boolean;
   needsClose: boolean;
   entryDte: number;
