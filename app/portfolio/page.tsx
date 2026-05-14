@@ -104,7 +104,7 @@ async function loadPositions(): Promise<Position[]> {
     const underlyingSymbols: string[] = (optionPositions as any[])
       .map((p: any) => String(p['underlying-symbol']))
       .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
-    const qs = underlyingSymbols.map((s) => `symbols[]=${encodeURIComponent(s)}`).join('&');
+    const qs = underlyingSymbols.map((s) => `symbols=${encodeURIComponent(s)}`).join('&');
     const metricsData = await ttFetch(`/market-metrics?${qs}`, token);
     for (const item of metricsData?.data?.items ?? []) {
       const raw = item['implied-volatility-index-rank'] ?? item['iv-rank'] ?? null;
