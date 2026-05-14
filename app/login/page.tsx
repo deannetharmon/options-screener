@@ -46,10 +46,11 @@ function LoginContent() {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    // Already have a valid token? Go straight to portfolio
-    const token = sessionStorage.getItem('tt_access_token');
-    if (token) router.replace('/portfolio');
-  }, [router]);
+  const token = sessionStorage.getItem('tt_access_token');
+  if (token) { router.replace('/portfolio'); return; }
+  const saved = localStorage.getItem('tt_refresh_token');
+  if (saved) setRefreshToken(saved);
+}, [router]);
 
   const handleConnect = async () => {
     if (!refreshToken.trim()) { setError('Please enter your refresh token'); return; }
@@ -62,6 +63,8 @@ function LoginContent() {
 
       const accessToken = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret);
       sessionStorage.setItem('tt_access_token', accessToken);
+      localStorage.setItem('tt_refresh_token', refreshToken.trim());
+      localStorage.setItem('tt_client_secret', clientSecret);
       router.push('/portfolio');
     } catch (e: any) {
       setError(e.message || 'Could not connect');
