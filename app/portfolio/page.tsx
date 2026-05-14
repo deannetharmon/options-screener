@@ -115,13 +115,11 @@ async function loadPositions(): Promise<Position[]> {
 
   const gtcSymbols = new Set<string>();
   try {
-    const ordersData = await ttFetch(`/accounts/${accountNumber}/orders?status=Live&status=Working&status=Contingent&status=Pending&per-page=100`, token);
+    const ordersData = await ttFetch(`/accounts/${accountNumber}/orders/live`, token);
     for (const order of ordersData?.data?.items ?? []) {
-      if (['Live', 'Working', 'Contingent', 'Pending'].includes(order.status ?? '')) {
-        for (const leg of order.legs ?? []) {
-          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
-          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
-        }
+      for (const leg of order.legs ?? []) {
+        const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+        if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
       }
     }
   } catch { /* GTC optional */ }
