@@ -286,7 +286,8 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `50% target reached — lock in $${pos.pnl?.toFixed(2)} profit` };
   if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% and trend confirms — exit` };
   if (pnlPct < -15)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — trend not confirmed, manage actively` };
-  if (pnlPct >= 35)                  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — approaching target` };
+  if (pnlPct >= 50)                  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — target reached` };
+  if (pnlPct >= 35)                  return { action: 'WATCH', detail: `${pnlPct.toFixed(0)}% profit — approaching 50% target` };
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — watch closely` };
   if (pnlPct < 0)                    return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — trend still ok, monitor` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
