@@ -15,6 +15,7 @@ if (typeof document !== 'undefined') {
 
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
+const LS_PROFIT_TARGETS = 'prosper-profit-targets';
 
 async function getAccessToken(): Promise<string> {
   const cached = sessionStorage.getItem('tt_access_token');
@@ -42,10 +43,10 @@ async function ttFetch(path: string, token: string) {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     cache: 'no-store',
   });
-  if (res.status === 401) { 
+  if (res.status === 401) {
     sessionStorage.removeItem('tt_access_token');
-    window.location.href = '/login'; 
-    throw new Error('Session expired'); 
+    window.location.href = '/login';
+    throw new Error('Session expired');
   }
   if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 100)}`); }
   return res.json();
@@ -139,6 +140,9 @@ async function loadPositions(): Promise<Position[]> {
     }
   } catch { /* plOpen optional */ }
 
+  let profitTargets: Record<string, number> = {};
+  try { profitTargets = JSON.parse(localStorage.getItem(LS_PROFIT_TARGETS) ?? '{}'); } catch {}
+
   const today = new Date();
   const positions: Position[] = Object.entries(groups).map(([key, legs]) => {
     const [symbol, expDate] = key.split('::');
@@ -176,8 +180,9 @@ async function loadPositions(): Promise<Position[]> {
 
     const pnl = hasCurrentPrices ? Math.abs(creditReceived) - Math.abs(currentValue) : null;
     const pnlPct = creditReceived !== 0 && pnl != null ? (pnl / Math.abs(creditReceived)) * 100 : null;
-    const targetPrice = Math.abs(creditReceived) * 0.5;
-    const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * 0.5;
+    const profitTarget = profitTargets[key] ?? 0.5;
+    const targetPrice = Math.abs(creditReceived) * profitTarget;
+    const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * profitTarget;
 
     return {
       key, symbol, expDate, dte, strategy,
@@ -195,7 +200,7 @@ async function loadPositions(): Promise<Position[]> {
       }),
       creditReceived: Math.abs(creditReceived),
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
-      pnl, pnlPct, targetPrice, hitTarget,
+      pnl, pnlPct, targetPrice, profitTarget, hitTarget,
       plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
       maxRisk: (() => {
         const shorts = legs.filter((l: any) => l['quantity-direction'] === 'Short');
@@ -224,6 +229,7 @@ async function loadPositions(): Promise<Position[]> {
   });
   return positions;
 }
+
 type Theme = 'dark' | 'medium' | 'light';
 const LS_THEME = 'prosper-theme';
 
@@ -262,8 +268,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const mom20 = (price - closes[closes.length - 21]) / closes[closes.length - 21];
   const low20 = Math.min(...closes.slice(-20));
   const high20 = Math.max(...closes.slice(-20));
-  const low40 = Math.min(...closes.slice(-40));
-  const high40 = Math.max(...closes.slice(-40));
   const higherLows = low20 > Math.min(...closes.slice(-40, -20)) * 0.985;
   const lowerHighs = high20 < Math.max(...closes.slice(-40, -20)) * 1.015;
 
@@ -282,6 +286,8 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
 function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
   const pnlPct = pos.pnl != null && pos.creditReceived !== 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
+  const targetPct = pos.profitTarget * 100;
+  const approachingPct = targetPct - 15;
   const trendAgainst = trend && (
     (pos.strategy === 'BPS' && trend.trend === 'downtrend') ||
     (pos.strategy === 'BCS' && trend.trend === 'uptrend')
@@ -293,11 +299,11 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   );
   if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
   if (pos.needsClose && pnlPct < 0)  return { action: 'CUT_LOSSES', detail: `${pos.dte} DTE — close to prevent further loss` };
-  if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `50% target reached — lock in $${pos.pnl?.toFixed(2)} profit` };
+  if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target reached — lock in $${pos.pnl?.toFixed(2)} profit` };
   if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% and trend confirms — exit` };
   if (pnlPct < -15)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — trend not confirmed, manage actively` };
-  if (pnlPct >= 50)                  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — target reached` };
-  if (pnlPct >= 35)                  return { action: 'WATCH', detail: `${pnlPct.toFixed(0)}% profit — approaching 50% target` };
+  if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — target reached` };
+  if (pnlPct >= approachingPct)      return { action: 'WATCH', detail: `${pnlPct.toFixed(0)}% profit — approaching ${Math.round(targetPct)}% target` };
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — watch closely` };
   if (pnlPct < 0)                    return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — trend still ok, monitor` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
@@ -331,13 +337,14 @@ interface Position {
   pnlPct: number | null;
   plOpen: number | null;
   targetPrice: number;
+  profitTarget: number;
   maxRisk: number;
   hitTarget: boolean;
   needsClose: boolean;
   entryDte: number;
   accountNumber: string;
-  ivr: number | null;         // Live IV Rank from TastyTrade
-  hasGtc: boolean;            // Whether a GTC working order exists
+  ivr: number | null;
+  hasGtc: boolean;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -379,15 +386,18 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 }
 
 // ── Position Card ──────────────────────────────────────────────────────────
-function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
+function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetChange }: {
   pos: Position;
   th: typeof THEMES[Theme];
   selectedAction: ActionType | null;
   onToggleSelect: (key: string, action: ActionType) => void;
+  onProfitTargetChange: (key: string, value: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
   const [trendLoading, setTrendLoading] = useState(false);
+  const [editingTarget, setEditingTarget] = useState(false);
+  const [targetInput, setTargetInput] = useState(String(Math.round(pos.profitTarget * 100)));
 
   useEffect(() => {
     setTrendLoading(true);
@@ -396,14 +406,12 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
 
   const rec = getRecommendation(pos, trend);
 
-  const ttLink = `https://trade.tastytrade.com/trade?symbol=${pos.symbol}`;
-
   const ttActionUrl = (_action: ActionType): string =>
     `https://my.tastytrade.com/app.html#/trading/positions`;
 
   const ttActionTooltip = (action: ActionType): string => {
     switch (action) {
-      case 'TAKE_PROFIT':  return `Open TastyTrade Positions → close ${pos.symbol} at 50% profit`;
+      case 'TAKE_PROFIT':  return `Open TastyTrade Positions → close ${pos.symbol} at ${Math.round(pos.profitTarget * 100)}% profit`;
       case 'CUT_LOSSES':   return `Open TastyTrade Positions → close ${pos.symbol} to cut losses`;
       case 'CLOSE_ROLL':   return `Open TastyTrade Positions → close or roll ${pos.symbol}`;
       case 'MANAGE':       return `Open TastyTrade Positions → manage ${pos.symbol}`;
@@ -425,6 +433,12 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
     if (pos.strategy === 'IC' && shortPuts[0] && longPuts[0] && shortCalls[0] && longCalls[0])
       return `${shortPuts[0].strikePrice}P/${longPuts[0].strikePrice}P · ${shortCalls[0].strikePrice}C/${longCalls[0].strikePrice}C`;
     return pos.legs.map(l => `${l.strikePrice}${l.optionType}`).join(' / ');
+  };
+
+  const handleTargetSave = () => {
+    const val = Math.min(100, Math.max(10, parseInt(targetInput) || 50)) / 100;
+    setEditingTarget(false);
+    onProfitTargetChange(pos.key, val);
   };
 
   const borderClass = selectedAction
@@ -463,7 +477,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
         <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
           <span className="text-red-400 text-xs">⚠</span>
           <span className="text-xs text-red-400 font-bold tracking-wider">
-          CLOSE NOW — {pos.dte} DTE REMAINING
+            CLOSE NOW — {pos.dte} DTE REMAINING
             <span className="ml-2 font-normal opacity-60">(entered at {pos.entryDte} DTE)</span>
           </span>
         </div>
@@ -471,20 +485,20 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
       {pos.hitTarget && !pos.needsClose && (
         <div className="bg-emerald-500/10 border-b border-emerald-500/40 px-4 py-1.5 flex items-center gap-2">
           <span className="text-emerald-400 text-xs">✓</span>
-          <span className="text-xs text-emerald-400 font-bold tracking-wider">50% PROFIT TARGET HIT — CLOSE FOR PROFIT</span>
+          <span className="text-xs text-emerald-400 font-bold tracking-wider">{Math.round(pos.profitTarget * 100)}% PROFIT TARGET HIT — CLOSE FOR PROFIT</span>
         </div>
       )}
 
       <div className="flex items-stretch">
-        {/* Expand toggle — left edge */}
+        {/* Expand toggle */}
         <button
           onClick={() => setExpanded(!expanded)}
           className={`px-3 flex items-center border-r ${th.borderLight} ${th.textFaint} hover:${th.textMuted} transition-colors shrink-0`}>
           <span className="text-[10px]">{expanded ? '▲' : '▼'}</span>
         </button>
 
-        {/* Data columns — fixed grid for vertical alignment */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 110px 80px 80px 90px 80px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+        {/* Data columns */}
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
             <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
@@ -517,12 +531,38 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect }: {
               {pos.pnlPct != null && <span className="ml-1 text-[10px] font-normal">({pos.pnlPct.toFixed(0)}%)</span>}
             </p>
           </div>
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>50% Target</p>
-            <p className={`text-xs ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
-            </p>
+
+          {/* Profit Target — click to edit */}
+          <div onClick={e => e.stopPropagation()}>
+            <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
+            {editingTarget ? (
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min="10"
+                  max="100"
+                  value={targetInput}
+                  onChange={e => setTargetInput(e.target.value)}
+                  onBlur={handleTargetSave}
+                  onKeyDown={e => { if (e.key === 'Enter') handleTargetSave(); if (e.key === 'Escape') setEditingTarget(false); }}
+                  autoFocus
+                  className="text-xs w-12 bg-transparent border-b border-blue-500 outline-none text-blue-400"
+                  style={{ fontFamily: "'DM Mono', monospace" }}
+                />
+                <span className="text-[9px] text-blue-400">%</span>
+              </div>
+            ) : (
+              <p
+                className={`text-xs cursor-pointer hover:text-blue-400 transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
+                style={{ fontFamily: "'DM Mono', monospace" }}
+                onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}
+                title="Click to edit profit target %"
+              >
+                ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
+              </p>
+            )}
           </div>
+
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
             <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
@@ -638,7 +678,6 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
     return sum;
   }, 0);
 
-  // Est. theta/day = sum of (current_value / DTE) per position — daily decay working in our favor
   const totalTheta = positions.reduce((sum, p) => {
     if (p.currentValue != null && p.dte > 0) return sum + (p.currentValue / p.dte);
     return sum;
@@ -651,7 +690,6 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
         <p className={`text-3xl font-bold ${th.text}`}>{positions.length}</p>
         <p className={`text-[10px] ${th.textFaint} mt-1`}>{positions.length === 1 ? '1 active spread' : `${positions.length} active spreads`}</p>
       </div>
-
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Captured</p>
         <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
@@ -662,7 +700,6 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
           <span className={`ml-1 ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>· {capturedPct.toFixed(0)}%</span>
         </p>
       </div>
-
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>At Risk</p>
         <p className={`text-3xl font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>
@@ -670,7 +707,6 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
         </p>
         <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all expire worthless</p>
       </div>
-
       <div className="p-5 flex flex-col items-center text-center">
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Est. Theta / Day</p>
         <p className="text-3xl font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
@@ -694,11 +730,11 @@ function CloseModal({ positions, selected, onClose, th }: {
   const totalPnl = selectedPositions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
 
   const actionLabels: Record<ActionType, { label: string; color: string }> = {
-    HOLD:        { label: 'Hold',         color: 'text-blue-400 border-blue-600' },
-    WATCH:       { label: '⚠ Watch',      color: 'text-yellow-400 border-yellow-600' },
-    MANAGE:      { label: '⚡ Manage',     color: 'text-orange-400 border-orange-600' },
-    TAKE_PROFIT: { label: '✓ Take profit', color: 'text-emerald-400 border-emerald-600' },
-    CUT_LOSSES:  { label: '✕ Cut losses',  color: 'text-red-400 border-red-600' },
+    HOLD:        { label: 'Hold',           color: 'text-blue-400 border-blue-600' },
+    WATCH:       { label: '⚠ Watch',        color: 'text-yellow-400 border-yellow-600' },
+    MANAGE:      { label: '⚡ Manage',       color: 'text-orange-400 border-orange-600' },
+    TAKE_PROFIT: { label: '✓ Take profit',  color: 'text-emerald-400 border-emerald-600' },
+    CUT_LOSSES:  { label: '✕ Cut losses',   color: 'text-red-400 border-red-600' },
     CLOSE_ROLL:  { label: '↻ Close / roll', color: 'text-purple-400 border-purple-600' },
   };
 
@@ -734,7 +770,7 @@ function CloseModal({ positions, selected, onClose, th }: {
               </p>
               <div className="space-y-2">
                 {poses.map(p => {
-                  const closeTarget = (p.currentValue ?? p.creditReceived * 0.5).toFixed(2);
+                  const closeTarget = (p.currentValue ?? p.creditReceived * p.profitTarget).toFixed(2);
                   return (
                     <div key={p.key} className={`flex items-center justify-between py-2 border-b ${th.borderLight}`}>
                       <div className="flex items-center gap-3">
@@ -803,6 +839,21 @@ export default function PortfolioPage() {
       else next.set(key, action);
       return next;
     });
+  };
+
+  const handleProfitTargetChange = (key: string, value: number) => {
+    try {
+      const targets = JSON.parse(localStorage.getItem(LS_PROFIT_TARGETS) ?? '{}');
+      targets[key] = value;
+      localStorage.setItem(LS_PROFIT_TARGETS, JSON.stringify(targets));
+    } catch {}
+    // Update position in state without full refetch
+    setPositions(prev => prev.map(p => {
+      if (p.key !== key) return p;
+      const targetPrice = p.creditReceived * value;
+      const hitTarget = p.pnl != null && p.pnl >= p.creditReceived * value;
+      return { ...p, profitTarget: value, targetPrice, hitTarget };
+    }));
   };
 
   const fetchPositions = async () => {
@@ -884,33 +935,30 @@ export default function PortfolioPage() {
           <SummaryBar positions={positions} th={th} />
 
           <div className="overflow-x-auto">
-          <div className="p-6 space-y-6" style={{ minWidth: '1180px' }}>
+            <div className="p-6 space-y-6" style={{ minWidth: '1200px' }}>
 
-            {/* Needs close */}
-            {needsClose.length > 0 && (
-              <div>
-                <p className="text-[10px] text-red-400 tracking-widest mb-3 font-bold uppercase">⚠ Close Now — Decayed to 21 DTE or Less</p>
-                <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
-              </div>
-            )}
+              {needsClose.length > 0 && (
+                <div>
+                  <p className="text-[10px] text-red-400 tracking-widest mb-3 font-bold uppercase">⚠ Close Now — Decayed to 21 DTE or Less</p>
+                  <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                </div>
+              )}
 
-            {/* Hit target */}
-            {hitTarget.length > 0 && (
-              <div>
-                <p className="text-[10px] text-emerald-400 tracking-widest mb-3 font-bold uppercase">✓ 50% Profit Target Hit</p>
-                <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
-              </div>
-            )}
+              {hitTarget.length > 0 && (
+                <div>
+                  <p className="text-[10px] text-emerald-400 tracking-widest mb-3 font-bold uppercase">✓ Profit Target Hit</p>
+                  <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                </div>
+              )}
 
-            {/* Active positions */}
-            {normal.length > 0 && (
-              <div>
-                <p className={`text-[10px] ${th.textFaint} tracking-widest mb-3 font-bold uppercase`}>Active Positions</p>
-                <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} />)}</div>
-              </div>
-            )}
+              {normal.length > 0 && (
+                <div>
+                  <p className={`text-[10px] ${th.textFaint} tracking-widest mb-3 font-bold uppercase`}>Active Positions</p>
+                  <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                </div>
+              )}
 
-          </div>
+            </div>
           </div>
         </>
       )}
