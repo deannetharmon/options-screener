@@ -20,11 +20,9 @@ const LS_PROFIT_TARGETS = 'prosper-profit-targets';
 async function getAccessToken(): Promise<string> {
   const cached = sessionStorage.getItem('tt_access_token');
   if (cached) return cached;
-
   const refreshToken = localStorage.getItem('tt_refresh_token');
   const clientSecret = localStorage.getItem('tt_client_secret');
   if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
-
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -43,13 +41,30 @@ async function ttFetch(path: string, token: string) {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     cache: 'no-store',
   });
-  if (res.status === 401) {
-    sessionStorage.removeItem('tt_access_token');
-    window.location.href = '/login';
-    throw new Error('Session expired');
-  }
-  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 100)}`); }
+  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
+  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`); }
   return res.json();
+}
+
+async function ttPost(path: string, token: string, body: any) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `POST ${path} failed (${res.status})`);
+  return data;
+}
+
+async function ttDelete(path: string, token: string) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  if (!res.ok) { const text = await res.text(); throw new Error(`DELETE ${path} failed (${res.status}): ${text.slice(0, 100)}`); }
+  return res.json().catch(() => ({}));
 }
 
 function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
@@ -115,12 +130,19 @@ async function loadPositions(): Promise<Position[]> {
   } catch { /* IVR optional */ }
 
   const gtcSymbols = new Set<string>();
+  const liveOrdersBySymbol: Record<string, any[]> = {};
   try {
     const ordersData = await ttFetch(`/accounts/${accountNumber}/orders/live`, token);
     for (const order of ordersData?.data?.items ?? []) {
       for (const leg of order.legs ?? []) {
-        const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
-        if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+        const sym = (leg['underlying-symbol'] ?? leg.symbol ?? '').split(' ')[0].trim();
+        if (sym) {
+          gtcSymbols.add(sym);
+          if (!liveOrdersBySymbol[sym]) liveOrdersBySymbol[sym] = [];
+          if (!liveOrdersBySymbol[sym].find((o: any) => o.id === order.id)) {
+            liveOrdersBySymbol[sym].push(order);
+          }
+        }
       }
     }
   } catch { /* GTC optional */ }
@@ -219,6 +241,7 @@ async function loadPositions(): Promise<Position[]> {
       accountNumber,
       ivr: ivrMap[symbol] ?? null,
       hasGtc: gtcSymbols.has(symbol),
+      liveOrders: liveOrdersBySymbol[symbol] ?? [],
     };
   });
 
@@ -260,7 +283,6 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const bars: { c: number }[] = data?.bars ?? [];
   const closes = bars.map((b: any) => b.c).filter((c: any): c is number => Number.isFinite(c));
   if (closes.length < 50) return { trend: 'unknown', strategy: 'NO_TRADE', confidence: 0, reason: 'Not enough data' };
-
   const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
   const price = closes[closes.length - 1];
   const ma20 = avg(closes.slice(-20));
@@ -270,14 +292,12 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   const high20 = Math.max(...closes.slice(-20));
   const higherLows = low20 > Math.min(...closes.slice(-40, -20)) * 0.985;
   const lowerHighs = high20 < Math.max(...closes.slice(-40, -20)) * 1.015;
-
   let score = 0;
   if (price > ma20) score += 2; else score -= 2;
   if (price > ma50) score += 2; else score -= 2;
   if (ma20 > ma50) score += 2; else score -= 2;
   if (mom20 > 0.03) score += 2; else if (mom20 < -0.03) score -= 2;
   if (higherLows) score += 2; else if (lowerHighs) score -= 2;
-
   const confidence = Math.min(100, Math.abs(score) * 10);
   if (score >= 4) return { trend: 'uptrend', strategy: 'BPS', confidence, reason: `Price above MA20/MA50, positive momentum` };
   if (score <= -4) return { trend: 'downtrend', strategy: 'BCS', confidence, reason: `Price below MA20/MA50, negative momentum` };
@@ -345,6 +365,7 @@ interface Position {
   accountNumber: string;
   ivr: number | null;
   hasGtc: boolean;
+  liveOrders: any[];
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -385,19 +406,267 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
   );
 }
 
+// ── OCO Exit Order Modal ───────────────────────────────────────────────────
+function ExitOrderModal({ pos, th, onClose, onSuccess }: {
+  pos: Position;
+  th: typeof THEMES[Theme];
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const creditPerContract = pos.creditReceived / 100;
+  const defaultProfitPrice = parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
+  const defaultStopPrice   = parseFloat((creditPerContract * 2).toFixed(2));
+
+  const [profitPct, setProfitPct]     = useState(Math.round(pos.profitTarget * 100));
+  const [profitPrice, setProfitPrice] = useState(defaultProfitPrice);
+  const [stopPct, setStopPct]         = useState(200);
+  const [stopPrice, setStopPrice]     = useState(defaultStopPrice);
+
+  const [step, setStep] = useState<'edit' | 'dryrun' | 'confirm' | 'submitting' | 'success' | 'error'>('edit');
+  const [dryRunResult, setDryRunResult] = useState<any>(null);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const hasExistingOrders = pos.liveOrders.length > 0;
+
+  const updateFromProfitPct = (pct: number) => {
+    setProfitPct(pct);
+    setProfitPrice(parseFloat((creditPerContract * (1 - pct / 100)).toFixed(2)));
+  };
+  const updateFromStopPct = (pct: number) => {
+    setStopPct(pct);
+    setStopPrice(parseFloat((creditPerContract * (pct / 100)).toFixed(2)));
+  };
+
+  const buildLegs = () => pos.legs.map(leg => ({
+    'instrument-type': 'Equity Option',
+    'symbol': leg.symbol,
+    'quantity': leg.quantity,
+    'action': leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close',
+  }));
+
+  const buildOCOPayload = () => ({
+    'type': 'OCO',
+    'orders': [
+      {
+        'order-type': 'Limit',
+        'price': profitPrice.toFixed(2),
+        'price-effect': 'Debit',
+        'time-in-force': 'GTC',
+        'legs': buildLegs(),
+      },
+      {
+        'order-type': 'Stop Limit',
+        'stop-trigger': stopPrice.toFixed(2),
+        'price': parseFloat((stopPrice * 1.05).toFixed(2)),
+        'price-effect': 'Debit',
+        'time-in-force': 'GTC',
+        'legs': buildLegs(),
+      },
+    ],
+  });
+
+  const runDryRun = async () => {
+    setStep('dryrun');
+    setErrorMsg('');
+    try {
+      const token = await getAccessToken();
+      const result = await ttPost(`/accounts/${pos.accountNumber}/complex-orders/dry-run`, token, buildOCOPayload());
+      setDryRunResult(result);
+      setStep('confirm');
+    } catch (e: any) {
+      setErrorMsg(e.message);
+      setStep('error');
+    }
+  };
+
+  const submitOrder = async () => {
+    setStep('submitting');
+    setErrorMsg('');
+    try {
+      const token = await getAccessToken();
+      if (hasExistingOrders) {
+        for (const order of pos.liveOrders) {
+          try { await ttDelete(`/accounts/${pos.accountNumber}/orders/${order.id}`, token); } catch { /* best effort */ }
+        }
+      }
+      await ttPost(`/accounts/${pos.accountNumber}/complex-orders`, token, buildOCOPayload());
+      setStep('success');
+      setTimeout(() => { onSuccess(); onClose(); }, 1500);
+    } catch (e: any) {
+      setErrorMsg(e.message);
+      setStep('error');
+    }
+  };
+
+  const bpEffect = dryRunResult?.data?.['buying-power-effect']?.['change-in-buying-power'];
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-md shadow-2xl`}>
+
+        {/* Header */}
+        <div className={`flex items-center justify-between px-5 py-4 border-b ${th.border}`}>
+          <div>
+            <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>SET EXIT ORDERS — {pos.symbol}</h2>
+            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>{pos.strategy} · {pos.expDate} · {pos.dte}d · Credit ${pos.creditReceived.toFixed(2)}</p>
+          </div>
+          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {hasExistingOrders && (
+            <div className="bg-yellow-500/10 border border-yellow-600/50 rounded-lg px-3 py-2">
+              <p className="text-[10px] text-yellow-400 font-medium">⚠ {pos.liveOrders.length} existing GTC order{pos.liveOrders.length !== 1 ? 's' : ''} will be cancelled and replaced.</p>
+            </div>
+          )}
+
+          {/* Profit target */}
+          <div className={`border ${th.border} rounded-lg p-3`}>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-bold text-emerald-400">✓ Take Profit (Limit GTC)</p>
+              <p className={`text-[10px] ${th.textFaint}`}>closes when spread decays to this value</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1 flex-1">
+                <input type="number" min="10" max="95" value={profitPct}
+                  onChange={e => updateFromProfitPct(parseInt(e.target.value) || 50)}
+                  className={`w-14 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} text-center focus:outline-none focus:border-emerald-500`} />
+                <span className={`text-xs ${th.textFaint}`}>% profit →</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className={`text-[10px] ${th.textFaint}`}>BTC @</span>
+                <input type="number" min="0.01" step="0.01" value={profitPrice}
+                  onChange={e => setProfitPrice(parseFloat(e.target.value) || 0)}
+                  className={`w-16 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs text-emerald-400 text-center focus:outline-none focus:border-emerald-500`} />
+                <span className={`text-[10px] ${th.textFaint}`}>db</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Stop loss */}
+          <div className={`border ${th.border} rounded-lg p-3`}>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-bold text-red-400">✕ Stop Loss (Stop Limit GTC)</p>
+              <p className={`text-[10px] ${th.textFaint}`}>exits if spread reaches this cost</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1 flex-1">
+                <input type="number" min="110" max="400" value={stopPct}
+                  onChange={e => updateFromStopPct(parseInt(e.target.value) || 200)}
+                  className={`w-14 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} text-center focus:outline-none focus:border-red-500`} />
+                <span className={`text-xs ${th.textFaint}`}>% of credit →</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className={`text-[10px] ${th.textFaint}`}>Stop @</span>
+                <input type="number" min="0.01" step="0.01" value={stopPrice}
+                  onChange={e => setStopPrice(parseFloat(e.target.value) || 0)}
+                  className={`w-16 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs text-red-400 text-center focus:outline-none focus:border-red-500`} />
+                <span className={`text-[10px] ${th.textFaint}`}>db</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Summary */}
+          <div className={`${th.tag} rounded-lg px-3 py-2 space-y-1`}>
+            <p className={`text-[10px] ${th.textFaint} font-medium uppercase tracking-wider mb-1`}>OCO Summary</p>
+            <div className="flex justify-between">
+              <span className={`text-[10px] ${th.textFaint}`}>Take profit when</span>
+              <span className="text-[10px] text-emerald-400 font-medium">spread costs ${profitPrice.toFixed(2)} to close ({profitPct}% profit)</span>
+            </div>
+            <div className="flex justify-between">
+              <span className={`text-[10px] ${th.textFaint}`}>Stop loss when</span>
+              <span className="text-[10px] text-red-400 font-medium">spread costs ${stopPrice.toFixed(2)} to close ({stopPct}% of credit)</span>
+            </div>
+            <div className={`border-t ${th.border} mt-1 pt-1 flex justify-between`}>
+              <span className={`text-[10px] ${th.textFaint}`}>Max profit if target hits</span>
+              <span className="text-[10px] text-emerald-400 font-medium">+${(pos.creditReceived - profitPrice * 100).toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className={`text-[10px] ${th.textFaint}`}>Max loss if stop hits</span>
+              <span className="text-[10px] text-red-400 font-medium">-${Math.max(0, stopPrice * 100 - pos.creditReceived).toFixed(2)}</span>
+            </div>
+          </div>
+
+          {/* Dry run result */}
+          {step === 'confirm' && dryRunResult && (
+            <div className="border border-emerald-600/50 bg-emerald-500/5 rounded-lg px-3 py-2">
+              <p className="text-[10px] font-bold text-emerald-400 mb-1">✓ Dry Run Passed — Order is valid</p>
+              {bpEffect && <p className={`text-[10px] ${th.textFaint}`}>BP Effect: <span className={th.text}>${parseFloat(bpEffect).toFixed(2)}</span></p>}
+            </div>
+          )}
+
+          {step === 'error' && (
+            <div className="bg-red-500/10 border border-red-500/50 rounded-lg px-3 py-2">
+              <p className="text-[10px] text-red-400 font-medium">Error: {errorMsg}</p>
+            </div>
+          )}
+
+          {step === 'success' && (
+            <div className="bg-emerald-500/10 border border-emerald-500/50 rounded-lg px-3 py-2">
+              <p className="text-[10px] text-emerald-400 font-medium">✓ OCO orders submitted successfully</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className={`px-5 py-4 border-t ${th.border} flex gap-3`}>
+          {step === 'edit' && (
+            <>
+              <button onClick={runDryRun} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
+                DRY RUN →
+              </button>
+              <button onClick={onClose} className={`px-4 py-2.5 border ${th.border} ${th.textFaint} rounded-xl text-xs transition-colors`}>
+                Cancel
+              </button>
+            </>
+          )}
+          {step === 'dryrun' && (
+            <div className={`flex-1 text-center text-xs ${th.textFaint} tracking-widest animate-pulse py-2.5`}>VALIDATING ORDER...</div>
+          )}
+          {step === 'confirm' && (
+            <>
+              <button onClick={submitOrder} className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
+                {hasExistingOrders ? 'CANCEL & REPLACE →' : 'SUBMIT OCO →'}
+              </button>
+              <button onClick={() => setStep('edit')} className={`px-4 py-2.5 border ${th.border} ${th.textFaint} rounded-xl text-xs transition-colors`}>
+                Edit
+              </button>
+            </>
+          )}
+          {step === 'submitting' && (
+            <div className={`flex-1 text-center text-xs ${th.textFaint} tracking-widest animate-pulse py-2.5`}>SUBMITTING...</div>
+          )}
+          {step === 'error' && (
+            <>
+              <button onClick={() => setStep('edit')} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
+                TRY AGAIN
+              </button>
+              <button onClick={onClose} className={`px-4 py-2.5 border ${th.border} ${th.textFaint} rounded-xl text-xs transition-colors`}>
+                Close
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Position Card ──────────────────────────────────────────────────────────
-function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetChange }: {
+function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetChange, onRefresh }: {
   pos: Position;
   th: typeof THEMES[Theme];
   selectedAction: ActionType | null;
   onToggleSelect: (key: string, action: ActionType) => void;
   onProfitTargetChange: (key: string, value: number) => void;
+  onRefresh: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
   const [trendLoading, setTrendLoading] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetInput, setTargetInput] = useState(String(Math.round(pos.profitTarget * 100)));
+  const [showExitModal, setShowExitModal] = useState(false);
 
   useEffect(() => {
     setTrendLoading(true);
@@ -406,16 +675,14 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
 
   const rec = getRecommendation(pos, trend);
 
-  const ttActionUrl = (_action: ActionType): string =>
-    `https://my.tastytrade.com/app.html#/trading/positions`;
+  const ttActionUrl = (_action: ActionType): string => `https://my.tastytrade.com/app.html#/trading/positions`;
 
   const ttActionTooltip = (action: ActionType): string => {
     switch (action) {
-      case 'TAKE_PROFIT':  return `Open TastyTrade Positions → close ${pos.symbol} at ${Math.round(pos.profitTarget * 100)}% profit`;
-      case 'CUT_LOSSES':   return `Open TastyTrade Positions → close ${pos.symbol} to cut losses`;
-      case 'CLOSE_ROLL':   return `Open TastyTrade Positions → close or roll ${pos.symbol}`;
-      case 'MANAGE':       return `Open TastyTrade Positions → manage ${pos.symbol}`;
-      case 'WATCH':        return `Open TastyTrade Positions → monitor ${pos.symbol}`;
+      case 'TAKE_PROFIT':  return `Open TastyTrade → close ${pos.symbol} at ${Math.round(pos.profitTarget * 100)}% profit`;
+      case 'CUT_LOSSES':   return `Open TastyTrade → close ${pos.symbol} to cut losses`;
+      case 'CLOSE_ROLL':   return `Open TastyTrade → close or roll ${pos.symbol}`;
+      case 'MANAGE':       return `Open TastyTrade → manage ${pos.symbol}`;
       default:             return `Open TastyTrade Positions`;
     }
   };
@@ -441,243 +708,236 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
     onProfitTargetChange(pos.key, val);
   };
 
-  const borderClass = selectedAction
-    ? 'border-blue-500/60'
-    : pos.needsClose
-    ? 'border-red-500/60'
-    : pos.hitTarget
-    ? 'border-emerald-500/60'
+  const borderClass = selectedAction ? 'border-blue-500/60'
+    : pos.needsClose ? 'border-red-500/60'
+    : pos.hitTarget  ? 'border-emerald-500/60'
     : th.border;
 
   const effectiveAction = selectedAction ?? rec.action;
 
   const actionConfig: Record<ActionType, { label: string; btnClass: string; pillClass: string; show: boolean }> = {
-    HOLD:        { label: '● Hold',         btnClass: '', pillClass: 'border-blue-700 text-blue-400 bg-blue-500/10',      show: false },
+    HOLD:        { label: '● Hold',         btnClass: '', pillClass: 'border-blue-700 text-blue-400 bg-blue-500/10',       show: false },
     WATCH:       { label: '⚠ Watch',        btnClass: '', pillClass: 'border-yellow-700 text-yellow-400 bg-yellow-500/10', show: false },
     MANAGE:      { label: '⚡ Manage',       btnClass: 'border-orange-600 text-orange-400 hover:bg-orange-600/10',  pillClass: '', show: true },
     TAKE_PROFIT: { label: '✓ Take Profit',  btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/10', pillClass: '', show: true },
-    CUT_LOSSES:  { label: '✕ Cut Losses',   btnClass: 'border-red-600 text-red-400 hover:bg-red-600/10',           pillClass: '', show: true },
-    CLOSE_ROLL:  { label: '↻ Close / Roll', btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/10',  pillClass: '', show: true },
+    CUT_LOSSES:  { label: '✕ Cut Losses',   btnClass: 'border-red-600 text-red-400 hover:bg-red-600/10',            pillClass: '', show: true },
+    CLOSE_ROLL:  { label: '↻ Close / Roll', btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/10',   pillClass: '', show: true },
   };
 
   const actionDef = actionConfig[effectiveAction];
 
   const actions: { key: ActionType; label: string; activeColor: string; ringColor: string; labelColor: string }[] = [
-    { key: 'HOLD',        label: 'Hold',         activeColor: 'bg-blue-500 border-blue-500',      ringColor: 'ring-blue-500',    labelColor: 'text-blue-400' },
-    { key: 'WATCH',       label: 'Watch',        activeColor: 'bg-yellow-500 border-yellow-500',  ringColor: 'ring-yellow-500',  labelColor: 'text-yellow-400' },
-    { key: 'MANAGE',      label: 'Manage',       activeColor: 'bg-orange-500 border-orange-500',  ringColor: 'ring-orange-500',  labelColor: 'text-orange-400' },
+    { key: 'HOLD',        label: 'Hold',         activeColor: 'bg-blue-500 border-blue-500',       ringColor: 'ring-blue-500',    labelColor: 'text-blue-400' },
+    { key: 'WATCH',       label: 'Watch',        activeColor: 'bg-yellow-500 border-yellow-500',   ringColor: 'ring-yellow-500',  labelColor: 'text-yellow-400' },
+    { key: 'MANAGE',      label: 'Manage',       activeColor: 'bg-orange-500 border-orange-500',   ringColor: 'ring-orange-500',  labelColor: 'text-orange-400' },
     { key: 'TAKE_PROFIT', label: 'Take profit',  activeColor: 'bg-emerald-500 border-emerald-500', ringColor: 'ring-emerald-500', labelColor: 'text-emerald-400' },
-    { key: 'CUT_LOSSES',  label: 'Cut losses',   activeColor: 'bg-red-500 border-red-500',        ringColor: 'ring-red-500',     labelColor: 'text-red-400' },
-    { key: 'CLOSE_ROLL',  label: 'Close / roll', activeColor: 'bg-purple-500 border-purple-500',  ringColor: 'ring-purple-500',  labelColor: 'text-purple-400' },
+    { key: 'CUT_LOSSES',  label: 'Cut losses',   activeColor: 'bg-red-500 border-red-500',         ringColor: 'ring-red-500',     labelColor: 'text-red-400' },
+    { key: 'CLOSE_ROLL',  label: 'Close / roll', activeColor: 'bg-purple-500 border-purple-500',   ringColor: 'ring-purple-500',  labelColor: 'text-purple-400' },
   ];
 
   return (
-    <div className={`border ${borderClass} ${th.card} rounded-lg overflow-hidden transition-all`}>
-      {pos.needsClose && (
-        <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
-          <span className="text-red-400 text-xs">⚠</span>
-          <span className="text-xs text-red-400 font-bold tracking-wider">
-            CLOSE NOW — {pos.dte} DTE REMAINING
-            <span className="ml-2 font-normal opacity-60">(entered at {pos.entryDte} DTE)</span>
-          </span>
-        </div>
-      )}
-      {pos.hitTarget && !pos.needsClose && (
-        <div className="bg-emerald-500/10 border-b border-emerald-500/40 px-4 py-1.5 flex items-center gap-2">
-          <span className="text-emerald-400 text-xs">✓</span>
-          <span className="text-xs text-emerald-400 font-bold tracking-wider">{Math.round(pos.profitTarget * 100)}% PROFIT TARGET HIT — CLOSE FOR PROFIT</span>
-        </div>
-      )}
+    <>
+      <div className={`border ${borderClass} ${th.card} rounded-lg overflow-hidden transition-all`}>
+        {pos.needsClose && (
+          <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
+            <span className="text-red-400 text-xs">⚠</span>
+            <span className="text-xs text-red-400 font-bold tracking-wider">
+              CLOSE NOW — {pos.dte} DTE REMAINING
+              <span className="ml-2 font-normal opacity-60">(entered at {pos.entryDte} DTE)</span>
+            </span>
+          </div>
+        )}
+        {pos.hitTarget && !pos.needsClose && (
+          <div className="bg-emerald-500/10 border-b border-emerald-500/40 px-4 py-1.5 flex items-center gap-2">
+            <span className="text-emerald-400 text-xs">✓</span>
+            <span className="text-xs text-emerald-400 font-bold tracking-wider">{Math.round(pos.profitTarget * 100)}% PROFIT TARGET HIT — CLOSE FOR PROFIT</span>
+          </div>
+        )}
 
-      <div className="flex items-stretch">
-        {/* Expand toggle */}
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className={`px-3 flex items-center border-r ${th.borderLight} ${th.textFaint} hover:${th.textMuted} transition-colors shrink-0`}>
-          <span className="text-[10px]">{expanded ? '▲' : '▼'}</span>
-        </button>
+        <div className="flex items-stretch">
+          <button onClick={() => setExpanded(!expanded)}
+            className={`px-3 flex items-center border-r ${th.borderLight} ${th.textFaint} hover:${th.textMuted} transition-colors shrink-0`}>
+            <span className="text-[10px]">{expanded ? '▲' : '▼'}</span>
+          </button>
 
-        {/* Data columns */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
-          <div>
-            <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
-            <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
-          </div>
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>Expiry / DTE</p>
-            <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
-              <span className={`block ${th.text}`}>{pos.expDate}</span>
-              <span className={`block ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
-            </p>
-          </div>
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
-            <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
-          </div>
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>Current</p>
-            <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              {pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}
-            </p>
-          </div>
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
-            <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
-          </div>
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>P&L</p>
-            <p className={`text-xs font-bold ${pnlColor(pos.pnl)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              {pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)}` : '—'}
-              {pos.pnlPct != null && <span className="ml-1 text-[10px] font-normal">({pos.pnlPct.toFixed(0)}%)</span>}
-            </p>
-          </div>
+          <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+            <div>
+              <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
+              <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
+            </div>
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>Expiry / DTE</p>
+              <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
+                <span className={`block ${th.text}`}>{pos.expDate}</span>
+                <span className={`block ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
+              </p>
+            </div>
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
+              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
+            </div>
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>Current</p>
+              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}
+              </p>
+            </div>
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
+              <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
+            </div>
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>P&L</p>
+              <p className={`text-xs font-bold ${pnlColor(pos.pnl)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)}` : '—'}
+                {pos.pnlPct != null && <span className="ml-1 text-[10px] font-normal">({pos.pnlPct.toFixed(0)}%)</span>}
+              </p>
+            </div>
 
-          {/* Profit Target — click to edit */}
-          <div onClick={e => e.stopPropagation()}>
-            <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
-            {editingTarget ? (
-              <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  min="10"
-                  max="100"
-                  value={targetInput}
-                  onChange={e => setTargetInput(e.target.value)}
-                  onBlur={handleTargetSave}
-                  onKeyDown={e => { if (e.key === 'Enter') handleTargetSave(); if (e.key === 'Escape') setEditingTarget(false); }}
-                  autoFocus
-                  className="text-xs w-12 bg-transparent border-b border-blue-500 outline-none text-blue-400"
+            {/* Profit Target — click to edit */}
+            <div onClick={e => e.stopPropagation()}>
+              <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
+              {editingTarget ? (
+                <div className="flex items-center gap-1">
+                  <input type="number" min="10" max="100" value={targetInput}
+                    onChange={e => setTargetInput(e.target.value)}
+                    onBlur={handleTargetSave}
+                    onKeyDown={e => { if (e.key === 'Enter') handleTargetSave(); if (e.key === 'Escape') setEditingTarget(false); }}
+                    autoFocus
+                    className="text-xs w-12 bg-transparent border-b border-blue-500 outline-none text-blue-400"
+                    style={{ fontFamily: "'DM Mono', monospace" }} />
+                  <span className="text-[9px] text-blue-400">%</span>
+                </div>
+              ) : (
+                <p
+                  className={`text-xs cursor-pointer hover:text-blue-400 transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
                   style={{ fontFamily: "'DM Mono', monospace" }}
-                />
-                <span className="text-[9px] text-blue-400">%</span>
+                  onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}
+                  title="Click to edit profit target %"
+                >
+                  ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
+              <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
+              </p>
+            </div>
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
+              <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {pos.ivr != null ? `${pos.ivr}` : '—'}
+              </p>
+            </div>
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
+              <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>
+                {pos.hasGtc ? '✓ Live' : '✕ None'}
+              </p>
+            </div>
+          </div>
+
+          {/* Action columns + button */}
+          <div className={`flex items-stretch border-l ${th.border} shrink-0`} onClick={e => e.stopPropagation()}>
+            {trendLoading ? (
+              <div className="flex items-center px-4">
+                <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
               </div>
             ) : (
-              <p
-                className={`text-xs cursor-pointer hover:text-blue-400 transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
-                style={{ fontFamily: "'DM Mono', monospace" }}
-                onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}
-                title="Click to edit profit target %"
-              >
-                ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
-              </p>
+              <>
+                {actions.map(a => {
+                  const isSelected = selectedAction === a.key;
+                  const isRec = rec.action === a.key && selectedAction === null;
+                  const labelColor = isSelected || isRec ? a.labelColor : th.textFaint;
+                  return (
+                    <div key={a.key} onClick={() => onToggleSelect(pos.key, a.key)}
+                      className={`flex flex-col items-center justify-center px-3 py-2 gap-1.5 border-r ${th.borderLight} w-[70px] cursor-pointer hover:bg-white/5 transition-colors`}>
+                      <span className={`text-[9px] text-center leading-tight whitespace-nowrap font-medium ${labelColor}`}>{a.label}</span>
+                      <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center transition-all
+                        ${isSelected ? a.activeColor : isRec ? 'border-slate-500 ring-1 ' + a.ringColor : 'border-slate-700'}`}>
+                        {(isSelected || isRec) && <span className="text-[8px] font-bold text-white">✓</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="flex flex-col items-center justify-center gap-1 px-3 min-w-[110px]">
+                  {actionDef.show ? (
+                    <button onClick={() => onToggleSelect(pos.key, effectiveAction)}
+                      className={`text-[9px] px-3 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors w-full text-center ${actionDef.btnClass}`}>
+                      {actionDef.label}
+                    </button>
+                  ) : (
+                    <span className={`text-[9px] px-3 py-1.5 border rounded whitespace-nowrap w-full text-center font-medium ${actionDef.pillClass}`}>
+                      {actionDef.label}
+                    </span>
+                  )}
+                  <a href={ttActionUrl(effectiveAction)} target="_blank" rel="noopener noreferrer"
+                    className="text-[8px] text-white/30 hover:text-white/70 tracking-wider transition-colors whitespace-nowrap"
+                    title={ttActionTooltip(effectiveAction)}>
+                    → TastyTrade ↗
+                  </a>
+                </div>
+              </>
             )}
           </div>
-
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
-            <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
-            </p>
-          </div>
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
-            <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              {pos.ivr != null ? `${pos.ivr}` : '—'}
-            </p>
-          </div>
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
-            <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>
-              {pos.hasGtc ? '✓ Live' : '✕ None'}
-            </p>
-          </div>
         </div>
 
-        {/* Action columns + button */}
-        <div className={`flex items-stretch border-l ${th.border} shrink-0`} onClick={e => e.stopPropagation()}>
-          {trendLoading ? (
-            <div className="flex items-center px-4">
-              <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
+        {/* Expanded legs + OCO button */}
+        {expanded && (
+          <div className={`border-t ${th.border} px-4 py-3`}>
+            <div className="flex items-center justify-between mb-2">
+              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Legs</p>
+              <button
+                onClick={e => { e.stopPropagation(); setShowExitModal(true); }}
+                className={`text-[9px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors ${pos.hasGtc
+                  ? 'border-yellow-600 text-yellow-400 hover:bg-yellow-600/10'
+                  : 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/10'}`}>
+                {pos.hasGtc ? '↻ Replace Exit Orders' : '+ Set Exit Orders (OCO)'}
+              </button>
             </div>
-          ) : (
-            <>
-              {actions.map(a => {
-                const isSelected = selectedAction === a.key;
-                const isRec = rec.action === a.key && selectedAction === null;
-                const labelColor = isSelected || isRec ? a.labelColor : th.textFaint;
-                return (
-                  <div
-                    key={a.key}
-                    onClick={() => onToggleSelect(pos.key, a.key)}
-                    className={`flex flex-col items-center justify-center px-3 py-2 gap-1.5 border-r ${th.borderLight} w-[70px] cursor-pointer hover:bg-white/5 transition-colors`}
-                  >
-                    <span className={`text-[9px] text-center leading-tight whitespace-nowrap font-medium ${labelColor}`}>{a.label}</span>
-                    <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center transition-all
-                      ${isSelected ? a.activeColor : isRec ? 'border-slate-500 ring-1 ' + a.ringColor : 'border-slate-700'}`}>
-                      {(isSelected || isRec) && <span className="text-[8px] font-bold text-white">✓</span>}
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* Action button */}
-              <div className="flex flex-col items-center justify-center gap-1 px-3 min-w-[110px]">
-                {actionDef.show ? (
-                  <button
-                    onClick={() => onToggleSelect(pos.key, effectiveAction)}
-                    className={`text-[9px] px-3 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors w-full text-center ${actionDef.btnClass}`}>
-                    {actionDef.label}
-                  </button>
-                ) : (
-                  <span className={`text-[9px] px-3 py-1.5 border rounded whitespace-nowrap w-full text-center font-medium ${actionDef.pillClass}`}>
-                    {actionDef.label}
+            <div className="space-y-1.5">
+              {pos.legs.map((leg, i) => (
+                <div key={i} className="flex items-center gap-4 flex-wrap">
+                  <span className={`text-[10px] w-10 font-bold ${leg.direction === 'Short' ? 'text-red-400' : 'text-emerald-400'}`}>{leg.direction}</span>
+                  <span className={`text-[10px] ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                    {leg.quantity}x {leg.strikePrice} {leg.optionType === 'P' ? 'Put' : 'Call'}
                   </span>
-                )}
-                <a
-                  href={ttActionUrl(effectiveAction)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[8px] text-white/30 hover:text-white/70 tracking-wider transition-colors whitespace-nowrap"
-                  title={ttActionTooltip(effectiveAction)}>
-                  → TastyTrade ↗
-                </a>
-              </div>
-            </>
-          )}
-        </div>
+                  <span className={`text-[10px] ${th.textFaint}`}>Avg open: <span className={th.text}>${leg.avgOpenPrice.toFixed(2)}</span></span>
+                  {leg.currentPrice != null && (
+                    <span className={`text-[10px] ${th.textFaint}`}>Current: <span className={th.text}>${leg.currentPrice.toFixed(2)}</span></span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Expanded legs */}
-      {expanded && (
-        <div className={`border-t ${th.border} px-4 py-3`}>
-          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Legs</p>
-          <div className="space-y-1.5">
-            {pos.legs.map((leg, i) => (
-              <div key={i} className="flex items-center gap-4 flex-wrap">
-                <span className={`text-[10px] w-10 font-bold ${leg.direction === 'Short' ? 'text-red-400' : 'text-emerald-400'}`}>{leg.direction}</span>
-                <span className={`text-[10px] ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                  {leg.quantity}x {leg.strikePrice} {leg.optionType === 'P' ? 'Put' : 'Call'}
-                </span>
-                <span className={`text-[10px] ${th.textFaint}`}>Avg open: <span className={th.text}>${leg.avgOpenPrice.toFixed(2)}</span></span>
-                {leg.currentPrice != null && (
-                  <span className={`text-[10px] ${th.textFaint}`}>Current: <span className={th.text}>${leg.currentPrice.toFixed(2)}</span></span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+      {showExitModal && (
+        <ExitOrderModal pos={pos} th={th} onClose={() => setShowExitModal(false)} onSuccess={onRefresh} />
       )}
-    </div>
+    </>
   );
 }
 
 // ── Summary Bar ────────────────────────────────────────────────────────────
 function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
   const totalCredit = positions.reduce((sum, p) => sum + p.creditReceived, 0);
-  const totalPnl = positions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+  const totalPnl    = positions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
   const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
-
   const totalAtRisk = positions.reduce((sum, p) => {
     const shorts = p.legs.filter(l => l.direction === 'Short');
     const longs  = p.legs.filter(l => l.direction === 'Long' && l.optionType === shorts[0]?.optionType);
     if (shorts[0] && longs[0]) {
       const width = Math.abs(shorts[0].strikePrice - longs[0].strikePrice);
-      const qty = shorts[0].quantity;
+      const qty   = shorts[0].quantity;
       return sum + Math.max(0, (width * 100 * qty) - p.creditReceived);
     }
     return sum;
   }, 0);
-
   const totalTheta = positions.reduce((sum, p) => {
     if (p.currentValue != null && p.dte > 0) return sum + (p.currentValue / p.dte);
     return sum;
@@ -702,16 +962,12 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
       </div>
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>At Risk</p>
-        <p className={`text-3xl font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          ${totalAtRisk.toFixed(0)}
-        </p>
+        <p className={`text-3xl font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>${totalAtRisk.toFixed(0)}</p>
         <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all expire worthless</p>
       </div>
       <div className="p-5 flex flex-col items-center text-center">
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Est. Theta / Day</p>
-        <p className="text-3xl font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-          +${totalTheta.toFixed(2)}
-        </p>
+        <p className="text-3xl font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>+${totalTheta.toFixed(2)}</p>
         <p className={`text-[10px] ${th.textFaint} mt-1`}>est. daily decay across all positions</p>
       </div>
     </div>
@@ -727,7 +983,7 @@ function CloseModal({ positions, selected, onClose, th }: {
 }) {
   const selectedPositions = positions.filter(p => selected.has(p.key));
   const totalCredit = selectedPositions.reduce((sum, p) => sum + p.creditReceived, 0);
-  const totalPnl = selectedPositions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+  const totalPnl    = selectedPositions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
 
   const actionLabels: Record<ActionType, { label: string; color: string }> = {
     HOLD:        { label: 'Hold',           color: 'text-blue-400 border-blue-600' },
@@ -745,12 +1001,6 @@ function CloseModal({ positions, selected, onClose, th }: {
     grouped.get(action)!.push(pos);
   }
 
-  const openAll = () => {
-    selectedPositions.forEach(p => {
-      window.open(`https://my.tastytrade.com/trade?symbol=${p.symbol}`, '_blank');
-    });
-  };
-
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
       <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-lg`}>
@@ -761,7 +1011,6 @@ function CloseModal({ positions, selected, onClose, th }: {
           </div>
           <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
         </div>
-
         <div className="px-5 py-3 space-y-4 max-h-80 overflow-auto">
           {Array.from(grouped.entries()).map(([action, poses]) => (
             <div key={action}>
@@ -791,7 +1040,6 @@ function CloseModal({ positions, selected, onClose, th }: {
             </div>
           ))}
         </div>
-
         <div className={`px-5 py-3 border-t ${th.border} flex items-center justify-between`}>
           <div>
             <p className={`text-[10px] ${th.textFaint}`}>Total credit collected</p>
@@ -804,14 +1052,13 @@ function CloseModal({ positions, selected, onClose, th }: {
             </p>
           </div>
         </div>
-
         <div className="px-5 py-4 flex gap-3">
-          <button onClick={openAll}
+          <button onClick={() => selectedPositions.forEach(p => window.open(`https://my.tastytrade.com/trade?symbol=${p.symbol}`, '_blank'))}
             className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
             OPEN ALL IN TASTYTRADE →
           </button>
           <button onClick={onClose}
-            className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:${th.text} transition-colors`}>
+            className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium transition-colors`}>
             Cancel
           </button>
         </div>
@@ -826,10 +1073,10 @@ export default function PortfolioPage() {
   const th = THEMES[theme];
 
   const [positions, setPositions] = useState<Position[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [selected, setSelected] = useState<Map<string, ActionType>>(new Map());
+  const [selected, setSelected]   = useState<Map<string, ActionType>>(new Map());
   const [showCloseModal, setShowCloseModal] = useState(false);
 
   const toggleSelected = (key: string, action: ActionType) => {
@@ -847,11 +1094,10 @@ export default function PortfolioPage() {
       targets[key] = value;
       localStorage.setItem(LS_PROFIT_TARGETS, JSON.stringify(targets));
     } catch {}
-    // Update position in state without full refetch
     setPositions(prev => prev.map(p => {
       if (p.key !== key) return p;
       const targetPrice = p.creditReceived * value;
-      const hitTarget = p.pnl != null && p.pnl >= p.creditReceived * value;
+      const hitTarget   = p.pnl != null && p.pnl >= p.creditReceived * value;
       return { ...p, profitTarget: value, targetPrice, hitTarget };
     }));
   };
@@ -863,10 +1109,7 @@ export default function PortfolioPage() {
       setPositions(data);
       setLastRefresh(new Date());
     } catch (e: any) {
-      if (e.message === 'Not authenticated' || e.message === 'Session expired') {
-        window.location.href = '/login';
-        return;
-      }
+      if (e.message === 'Not authenticated' || e.message === 'Session expired') { window.location.href = '/login'; return; }
       setError(e.message);
     } finally {
       setLoading(false);
@@ -881,7 +1124,6 @@ export default function PortfolioPage() {
 
   return (
     <div className={`min-h-screen ${th.bg} transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-
       {/* Header */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
         <div className="flex items-center gap-6">
@@ -900,8 +1142,7 @@ export default function PortfolioPage() {
             className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider disabled:opacity-40">
             {loading ? 'LOADING...' : '↻ REFRESH'}
           </button>
-          <button
-            onClick={() => { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; }}
+          <button onClick={() => { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; }}
             className="text-[10px] px-3 py-1.5 border border-white/10 text-white/30 rounded hover:border-white/30 hover:text-white/60 transition-colors tracking-wider">
             SIGN OUT
           </button>
@@ -909,19 +1150,14 @@ export default function PortfolioPage() {
         </div>
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="mx-6 mt-4 p-4 bg-red-500/10 border border-red-500 rounded-lg text-red-400 text-sm">{error}</div>
-      )}
+      {error && <div className="mx-6 mt-4 p-4 bg-red-500/10 border border-red-500 rounded-lg text-red-400 text-sm">{error}</div>}
 
-      {/* Loading state */}
       {loading && positions.length === 0 && (
         <div className="flex items-center justify-center h-64">
           <div className={`text-sm ${th.textFaint} tracking-widest`}>FETCHING POSITIONS...</div>
         </div>
       )}
 
-      {/* No positions */}
       {!loading && !error && positions.length === 0 && (
         <div className="flex flex-col items-center justify-center h-64 gap-2">
           <p className={`text-sm ${th.textFaint} tracking-widest`}>NO OPEN POSITIONS FOUND</p>
@@ -929,41 +1165,34 @@ export default function PortfolioPage() {
         </div>
       )}
 
-      {/* Content */}
       {positions.length > 0 && (
         <>
           <SummaryBar positions={positions} th={th} />
-
           <div className="overflow-x-auto">
             <div className="p-6 space-y-6" style={{ minWidth: '1200px' }}>
-
               {needsClose.length > 0 && (
                 <div>
                   <p className="text-[10px] text-red-400 tracking-widest mb-3 font-bold uppercase">⚠ Close Now — Decayed to 21 DTE or Less</p>
-                  <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                  <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} onRefresh={fetchPositions} />)}</div>
                 </div>
               )}
-
               {hitTarget.length > 0 && (
                 <div>
                   <p className="text-[10px] text-emerald-400 tracking-widest mb-3 font-bold uppercase">✓ Profit Target Hit</p>
-                  <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                  <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} onRefresh={fetchPositions} />)}</div>
                 </div>
               )}
-
               {normal.length > 0 && (
                 <div>
                   <p className={`text-[10px] ${th.textFaint} tracking-widest mb-3 font-bold uppercase`}>Active Positions</p>
-                  <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                  <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} onRefresh={fetchPositions} />)}</div>
                 </div>
               )}
-
             </div>
           </div>
         </>
       )}
 
-      {/* Floating action bar */}
       {selected.size > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
           <div className="flex items-center gap-3 bg-[#111] border border-[#333] rounded-2xl px-5 py-3 shadow-2xl">
@@ -972,22 +1201,12 @@ export default function PortfolioPage() {
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-wider transition-colors">
               REVIEW SELECTED →
             </button>
-            <button onClick={() => setSelected(new Map())}
-              className="text-xs text-slate-400 hover:text-white transition-colors">
-              Clear
-            </button>
+            <button onClick={() => setSelected(new Map())} className="text-xs text-slate-400 hover:text-white transition-colors">Clear</button>
           </div>
         </div>
       )}
 
-      {showCloseModal && (
-        <CloseModal
-          positions={positions}
-          selected={selected}
-          onClose={() => setShowCloseModal(false)}
-          th={th}
-        />
-      )}
+      {showCloseModal && <CloseModal positions={positions} selected={selected} onClose={() => setShowCloseModal(false)} th={th} />}
     </div>
   );
 }
