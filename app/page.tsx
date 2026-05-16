@@ -477,30 +477,47 @@ const LS_GLOBAL_SESSIONS = 'prosper-global-sessions';
 
 // ── TastyTrade API ─────────────────────────────────────────────────────────
 const BASE = 'https://api.tastytrade.com';
-async function ttFetch(path: string, token: string) {
-  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`); }
-  return res.json();
-}
-
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
+
 async function getAccessToken(): Promise<string> {
   const cached = sessionStorage.getItem('tt_access_token');
   if (cached) return cached;
   const refreshToken = localStorage.getItem('tt_refresh_token');
-  const clientSecret = localStorage.getItem('tt_client_secret');
+  const clientSecret =
+    process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ||
+    localStorage.getItem('tt_client_secret') ||
+    '';
   if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: CLIENT_ID, client_secret: clientSecret }),
   });
-  if (!res.ok) { localStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
+  if (!res.ok) {
+    sessionStorage.removeItem('tt_access_token');
+    localStorage.removeItem('tt_refresh_token');
+    window.location.href = '/login';
+    throw new Error('Session expired');
+  }
   const data = await res.json();
   const token = data.access_token;
   if (!token) { window.location.href = '/login'; throw new Error('No token'); }
   sessionStorage.setItem('tt_access_token', token);
   return token;
+}
+
+async function ttFetch(path: string, token: string): Promise<any> {
+  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 401) {
+    // Token expired mid-session — clear it, get a fresh one, retry once
+    sessionStorage.removeItem('tt_access_token');
+    const freshToken = await getAccessToken();
+    const retry = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${freshToken}` } });
+    if (!retry.ok) { const text = await retry.text(); throw new Error(`${path} failed (${retry.status}): ${text.slice(0, 200)}`); }
+    return retry.json();
+  }
+  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`); }
+  return res.json();
 }
 async function loadPortfolioTickers(): Promise<{ current: string[]; historical: string[] }> {
   const token = await getAccessToken();
