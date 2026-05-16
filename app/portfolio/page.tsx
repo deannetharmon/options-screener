@@ -235,6 +235,17 @@ async function loadPositions(): Promise<Position[]> {
       ivr: ivrMap[symbol] ?? null,
       hasGtc: gtcSymbols.has(symbol),
       stockPrice: stockPrices[symbol] ?? null,
+      buffer: (() => {
+        const stock = stockPrices[symbol];
+        if (stock == null) return null;
+        const shorts = legs.filter((l: any) => l['quantity-direction'] === 'Short');
+        if (shorts.length === 0) return null;
+        const shortStrike = parseOptionSymbol(shorts[0].symbol).strikePrice;
+        const optType = parseOptionSymbol(shorts[0].symbol).optionType;
+        if (optType === 'P') return ((stock - shortStrike) / stock) * 100;
+        if (optType === 'C') return ((shortStrike - stock) / stock) * 100;
+        return null;
+      })(),
     };
   });
 
@@ -362,6 +373,7 @@ interface Position {
   ivr: number | null;
   hasGtc: boolean;
   stockPrice: number | null;
+  buffer: number | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -515,7 +527,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         </button>
 
         {/* Data columns */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -536,6 +548,19 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
             <p className={`text-[9px] ${th.textFaint}`}>Stock</p>
             <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
               {pos.stockPrice != null ? `$${pos.stockPrice.toFixed(2)}` : '—'}
+            </p>
+          </div>
+
+          {/* % Buffer */}
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>% Buffer</p>
+            <p className={`text-xs font-bold ${
+              pos.buffer == null ? th.textFaint :
+              pos.buffer < 3 ? 'text-red-400' :
+              pos.buffer < 7 ? 'text-yellow-400' :
+              'text-emerald-400'
+            }`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.buffer != null ? `${pos.buffer.toFixed(1)}%` : '—'}
             </p>
           </div>
 
@@ -975,7 +1000,7 @@ export default function PortfolioPage() {
           <SummaryBar positions={positions} th={th} />
 
           <div className="overflow-x-auto">
-            <div className="p-6 space-y-6" style={{ minWidth: '1300px' }}>
+            <div className="p-6 space-y-6" style={{ minWidth: '1400px' }}>
 
               {needsClose.length > 0 && (
                 <div>
