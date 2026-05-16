@@ -43,29 +43,35 @@ function LoginContent() {
   const [refreshToken, setRefreshToken] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [error, setError] = useState(searchParams.get('error') ?? '');
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true); // start true — always attempt auto-login first
 
   useEffect(() => {
-    const token = sessionStorage.getItem('tt_access_token');
-    if (token) { router.replace('/portfolio'); return; }
+    // 1. Already have a valid access token this session → go straight to portfolio
+    const existingAccess = sessionStorage.getItem('tt_access_token');
+    if (existingAccess) { router.replace('/portfolio'); return; }
 
-    const saved = localStorage.getItem('tt_refresh_token');
-    const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
+    // 2. Have a stored refresh token → try to silently get a new access token
+    const storedRefresh = localStorage.getItem('tt_refresh_token');
+    // Client secret: prefer env var, fall back to localStorage (set on first manual login)
+    const clientSecret =
+      process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ||
+      localStorage.getItem('tt_client_secret') ||
+      '';
 
-    if (saved && clientSecret) {
-      setIsLoading(true);
-      getAccessTokenFromRefresh(saved, clientSecret)
+    if (storedRefresh && clientSecret) {
+      getAccessTokenFromRefresh(storedRefresh, clientSecret)
         .then(accessToken => {
           sessionStorage.setItem('tt_access_token', accessToken);
           router.replace('/portfolio');
         })
         .catch(() => {
+          // Refresh token expired or revoked — clear it and show the form
           localStorage.removeItem('tt_refresh_token');
-          localStorage.removeItem('tt_client_secret');
           setIsLoading(false);
         });
-    } else if (saved) {
-      setRefreshToken(saved);
+    } else {
+      // Nothing stored — show the form immediately
+      setIsLoading(false);
     }
   }, [router]);
 
@@ -74,19 +80,32 @@ function LoginContent() {
     setIsLoading(true);
     setError('');
     try {
-      const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET;
-      if (!clientSecret) throw new Error('App configuration error — missing client secret. Contact the app owner.');
+      const clientSecret =
+        process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ||
+        localStorage.getItem('tt_client_secret') ||
+        '';
+      if (!clientSecret) throw new Error('App configuration error — client secret missing. Contact the app owner.');
 
       const accessToken = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret);
       sessionStorage.setItem('tt_access_token', accessToken);
       localStorage.setItem('tt_refresh_token', refreshToken.trim());
-      localStorage.setItem('tt_client_secret', clientSecret);
+      // Persist the secret so future silent refreshes work even without the env var
+      if (clientSecret) localStorage.setItem('tt_client_secret', clientSecret);
       router.push('/portfolio');
     } catch (e: any) {
       setError(e.message || 'Could not connect');
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
+
+  // While attempting silent auto-login show a minimal loading screen
+  if (isLoading) {
+    return (
+      <div className="text-white/40 text-xs tracking-widest" style={{ fontFamily: "'DM Mono', monospace" }}>
+        CONNECTING...
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-sm">
@@ -100,7 +119,7 @@ function LoginContent() {
       <div className="bg-[#111] border border-[#222] rounded-2xl p-8">
         <h2 className="text-sm font-bold text-white tracking-wider mb-2">CONNECT YOUR ACCOUNT</h2>
         <p className="text-xs text-white/40 mb-6 leading-relaxed">
-          Enter your TastyTrade refresh token to connect your account.
+          Enter your TastyTrade refresh token once — you won't be asked again unless your token expires.
         </p>
 
         <div className="mb-4 bg-white/5 border border-white/10 rounded-lg p-3">
@@ -149,7 +168,7 @@ function LoginContent() {
         </button>
 
         <p className="text-[10px] text-white/20 text-center mt-6 leading-relaxed">
-          Your token is stored in your browser's local storage.
+          Your token is stored in your browser only. Never sent to our servers.
         </p>
       </div>
     </div>
