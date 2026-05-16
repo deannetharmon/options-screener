@@ -114,6 +114,21 @@ async function loadPositions(): Promise<Position[]> {
     }
   } catch { /* IVR optional */ }
 
+  // Fetch current stock prices for underlying symbols
+  const stockPrices: Record<string, number | null> = {};
+  try {
+    const underlyingSymbols: string[] = (optionPositions as any[])
+      .map((p: any) => String(p['underlying-symbol']))
+      .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
+    const qs = underlyingSymbols.map(s => `equity=${encodeURIComponent(s)}`).join('&');
+    const stockData = await ttFetch(`/market-data/by-type?${qs}`, token);
+    for (const item of stockData?.data?.items ?? []) {
+      const bid = parseFloat(item.bid ?? '0');
+      const ask = parseFloat(item.ask ?? '0');
+      stockPrices[item.symbol] = (bid + ask) / 2;
+    }
+  } catch { /* stock prices optional */ }
+
   const gtcSymbols = new Set<string>();
   try {
     const ordersData = await ttFetch(`/accounts/${accountNumber}/orders/live`, token);
@@ -219,6 +234,7 @@ async function loadPositions(): Promise<Position[]> {
       accountNumber,
       ivr: ivrMap[symbol] ?? null,
       hasGtc: gtcSymbols.has(symbol),
+      stockPrice: stockPrices[symbol] ?? null,
     };
   });
 
@@ -345,6 +361,7 @@ interface Position {
   accountNumber: string;
   ivr: number | null;
   hasGtc: boolean;
+  stockPrice: number | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -498,11 +515,14 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         </button>
 
         {/* Data columns */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+          {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
             <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
           </div>
+
+          {/* Expiry / DTE */}
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>Expiry / DTE</p>
             <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
@@ -510,20 +530,36 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
               <span className={`block ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
             </p>
           </div>
+
+          {/* Stock price */}
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Stock</p>
+            <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.stockPrice != null ? `$${pos.stockPrice.toFixed(2)}` : '—'}
+            </p>
+          </div>
+
+          {/* Strikes */}
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
             <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
           </div>
+
+          {/* Buyback (was Current) */}
           <div>
-            <p className={`text-[9px] ${th.textFaint}`}>Current</p>
+            <p className={`text-[9px] ${th.textFaint}`}>Buyback</p>
             <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
               {pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}
             </p>
           </div>
+
+          {/* Credit */}
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
             <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
           </div>
+
+          {/* P&L */}
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>P&L</p>
             <p className={`text-xs font-bold ${pnlColor(pos.pnl)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
@@ -563,18 +599,23 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
             )}
           </div>
 
+          {/* P/L Open */}
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
             <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
               {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
             </p>
           </div>
+
+          {/* IVR */}
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
             <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
               {pos.ivr != null ? `${pos.ivr}` : '—'}
             </p>
           </div>
+
+          {/* GTC */}
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
             <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -847,7 +888,6 @@ export default function PortfolioPage() {
       targets[key] = value;
       localStorage.setItem(LS_PROFIT_TARGETS, JSON.stringify(targets));
     } catch {}
-    // Update position in state without full refetch
     setPositions(prev => prev.map(p => {
       if (p.key !== key) return p;
       const targetPrice = p.creditReceived * value;
@@ -935,7 +975,7 @@ export default function PortfolioPage() {
           <SummaryBar positions={positions} th={th} />
 
           <div className="overflow-x-auto">
-            <div className="p-6 space-y-6" style={{ minWidth: '1200px' }}>
+            <div className="p-6 space-y-6" style={{ minWidth: '1300px' }}>
 
               {needsClose.length > 0 && (
                 <div>
