@@ -498,6 +498,86 @@ const DTE_ALERT_THRESHOLD = 25;
 const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
 const LS_SAVED_FILTERS = 'prosper-saved-filters';
 const LS_GLOBAL_SESSIONS = 'prosper-global-sessions';
+const LS_SCREEN_MODE = 'prosper-screen-mode';
+const LS_RANK_CONFIG = 'prosper-rank-config';
+
+// ── Ranking / Scoring ──────────────────────────────────────────────────────
+interface RankConfig {
+  weightIvr: number;       // 0–40
+  weightCredit: number;    // 0–40
+  weightRoc: number;       // 0–30
+  weightPop: number;       // 0–20
+  weightDte: number;       // 0–20
+  dteSweetSpot: number;    // DTE center (default 38)
+  dteRange: number;        // ± around sweet spot for full score (default 7)
+  thresholdGreen: number;  // default 75
+  thresholdYellow: number; // default 55
+  thresholdOrange: number; // default 35
+}
+
+const DEFAULT_RANK_CONFIG: RankConfig = {
+  weightIvr: 25, weightCredit: 25, weightRoc: 20, weightPop: 15, weightDte: 15,
+  dteSweetSpot: 38, dteRange: 7,
+  thresholdGreen: 75, thresholdYellow: 55, thresholdOrange: 35,
+};
+
+function getSavedRankConfig(): RankConfig {
+  try { const s = localStorage.getItem(LS_RANK_CONFIG); return s ? { ...DEFAULT_RANK_CONFIG, ...JSON.parse(s) } : { ...DEFAULT_RANK_CONFIG }; }
+  catch { return { ...DEFAULT_RANK_CONFIG }; }
+}
+
+interface DimensionScore {
+  ivr: number; credit: number; roc: number; pop: number; dte: number; total: number;
+}
+
+function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
+  const c = result.bestCandidate;
+  if (!c) return null;
+  const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+
+  // IVR — curves up, peaks ~65, slightly penalizes >80 (earnings risk territory)
+  const ivr = result.ivr ?? 0;
+  const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
+  const ivrScore = clamp(ivrRaw) * cfg.weightIvr;
+
+  // Credit ratio — linear from 0.20 (min) to 0.50 (max)
+  const creditRaw = (c.creditRatio - 0.20) / 0.30;
+  const creditScore = clamp(creditRaw) * cfg.weightCredit;
+
+  // ROC — logarithmic, diminishing returns above 50%
+  const rocRaw = Math.log(1 + c.roc / 50) / Math.log(2);
+  const rocScore = clamp(rocRaw) * cfg.weightRoc;
+
+  // POP — bell curve, peaks at 72%, drops above 85% (strike too tight)
+  const pop = c.pop ?? 70;
+  const popRaw = pop <= 72 ? (pop - 55) / 17 : 1 - (pop - 72) / 30;
+  const popScore = clamp(popRaw) * cfg.weightPop;
+
+  // DTE — bell curve centered on sweet spot
+  const dteDiff = Math.abs(c.dte - cfg.dteSweetSpot);
+  const dteRaw = dteDiff <= cfg.dteRange ? 1 : 1 - (dteDiff - cfg.dteRange) / 15;
+  const dteScore = clamp(dteRaw) * cfg.weightDte;
+
+  const total = Math.round(ivrScore + creditScore + rocScore + popScore + dteScore);
+  return {
+    score: total,
+    dims: {
+      ivr: Math.round(ivrScore),
+      credit: Math.round(creditScore),
+      roc: Math.round(rocScore),
+      pop: Math.round(popScore),
+      dte: Math.round(dteScore),
+      total,
+    },
+  };
+}
+
+function trafficLight(score: number, cfg: RankConfig): { emoji: string; label: string; color: string; border: string; bg: string } {
+  if (score >= cfg.thresholdGreen)  return { emoji: '🟢', label: 'Strong',     color: 'text-emerald-400', border: 'border-emerald-600', bg: 'bg-emerald-500/10' };
+  if (score >= cfg.thresholdYellow) return { emoji: '🟡', label: 'Acceptable', color: 'text-yellow-400',  border: 'border-yellow-600',  bg: 'bg-yellow-500/10'  };
+  if (score >= cfg.thresholdOrange) return { emoji: '🟠', label: 'Marginal',   color: 'text-orange-400',  border: 'border-orange-600',  bg: 'bg-orange-500/10'  };
+  return                                    { emoji: '🔴', label: 'Avoid',      color: 'text-red-400',     border: 'border-red-700',     bg: 'bg-red-500/5'      };
+}
 
 // ── TastyTrade API ─────────────────────────────────────────────────────────
 const BASE = 'https://api.tastytrade.com';
@@ -1297,16 +1377,23 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
-function ResultCard({ result, th, rules }: {
+function ResultCard({ result, th, rules, screenMode, rankConfig }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
+  screenMode?: 'filter' | 'rank';
+  rankConfig?: RankConfig;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
 
   const c = result.bestCandidate;
   const t = result.trendResult;
+
+  // Ranking
+  const scored = rankConfig && c ? scoreCandidate(result, rankConfig) : null;
+  const light = scored ? trafficLight(scored.score, rankConfig!) : null;
+  const isRankMode = screenMode === 'rank';
   const stratBadge = result.strategy === 'BPS'
     ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500'
     : result.strategy === 'BCS'
@@ -1360,6 +1447,12 @@ function ResultCard({ result, th, rules }: {
             {result.ruleSetApplied}
           </span>
         )}
+        {/* Rank score badge */}
+        {isRankMode && scored && light && (
+          <span className={`text-[9px] px-2 py-0.5 border rounded shrink-0 font-bold ${light.color} ${light.border} ${light.bg}`}>
+            {light.emoji} {scored.score} — {light.label}
+          </span>
+        )}
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
         {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
@@ -1389,6 +1482,33 @@ function ResultCard({ result, th, rules }: {
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
           {t && <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border}`}><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
+
+          {/* Score breakdown in rank mode */}
+          {isRankMode && scored && light && (
+            <div className={`border ${light.border} ${light.bg} rounded-lg p-3`}>
+              <div className="flex items-center justify-between mb-2">
+                <p className={`text-[10px] font-bold ${light.color}`}>{light.emoji} Score {scored.score}/100 — {light.label}</p>
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                {[
+                  { label: 'IVR', val: scored.dims.ivr, max: rankConfig!.weightIvr },
+                  { label: 'Credit', val: scored.dims.credit, max: rankConfig!.weightCredit },
+                  { label: 'ROC', val: scored.dims.roc, max: rankConfig!.weightRoc },
+                  { label: 'POP', val: scored.dims.pop, max: rankConfig!.weightPop },
+                  { label: 'DTE', val: scored.dims.dte, max: rankConfig!.weightDte },
+                ].map(d => (
+                  <div key={d.label} className="text-center">
+                    <p className={`text-[8px] ${th.textFaint} mb-1`}>{d.label}</p>
+                    <div className={`h-1 rounded-full bg-slate-700 mb-1`}>
+                      <div className={`h-full rounded-full ${light!.color.replace('text-', 'bg-')}`}
+                        style={{ width: `${d.max > 0 ? (d.val / d.max) * 100 : 0}%` }} />
+                    </div>
+                    <p className={`text-[9px] font-bold ${th.text}`}>{d.val}<span className={`${th.textFaint} font-normal`}>/{d.max}</span></p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {Object.entries(result.checks).map(([key, check]) => (
@@ -1555,8 +1675,64 @@ function AutoTrendDebugPanel({ entries, th }: { entries: AutoTrendEntry[]; th: t
   );
 }
 
-// ── Rules Modal Subcomponents ──────────────────────────────────────────────
-function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, label, hint }: {
+// ── Range Indicator ────────────────────────────────────────────────────────
+function RangeIndicator({ value, strict, course, relaxed, lowvol, fmt }: {
+  value: number; strict?: number; course?: number; relaxed?: number; lowvol?: number;
+  fmt?: (v: number) => string;
+}) {
+  const f = fmt ?? ((v: number) => String(v));
+  const points = [
+    strict  != null ? { v: strict,  label: 'Strict',  color: 'bg-red-500' }    : null,
+    course  != null ? { v: course,  label: 'Course',  color: 'bg-blue-500' }   : null,
+    relaxed != null ? { v: relaxed, label: 'Relaxed', color: 'bg-emerald-500' }: null,
+    lowvol  != null ? { v: lowvol,  label: 'Low Vol', color: 'bg-yellow-500' } : null,
+  ].filter(Boolean) as { v: number; label: string; color: string }[];
+  if (!points.length) return null;
+  const allVals = points.map(p => p.v);
+  const min = Math.min(...allVals, value) * 0.9;
+  const max = Math.max(...allVals, value) * 1.1;
+  const pct = (v: number) => Math.round(((v - min) / (max - min)) * 100);
+  return (
+    <div className="mt-1 relative h-3">
+      <div className="absolute inset-x-0 top-1.5 h-px bg-slate-700 rounded" />
+      {points.map(p => (
+        <div key={p.label} className={`absolute w-1.5 h-1.5 rounded-full ${p.color} top-1 -translate-x-1/2`}
+          style={{ left: `${pct(p.v)}%` }} title={`${p.label}: ${f(p.v)}`} />
+      ))}
+      <div className="absolute w-2 h-2 rounded-full bg-white border-2 border-slate-900 top-0.5 -translate-x-1/2 z-10"
+        style={{ left: `${pct(value)}%` }} title={`Current: ${f(value)}`} />
+    </div>
+  );
+}
+
+// ── Slider ─────────────────────────────────────────────────────────────────
+function Slider({ label, hint, value, min, max, step = 1, fmt, onChange, th }: {
+  label: string; hint?: string; value: number; min: number; max: number; step?: number;
+  fmt?: (v: number) => string; onChange: (v: number) => void; th: typeof THEMES[Theme];
+}) {
+  const f = fmt ?? ((v: number) => String(v));
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <p className={`text-[9px] ${th.textFaint} tracking-wider uppercase font-medium leading-tight`}>{label}</p>
+        <span className={`text-[10px] font-bold ${th.text}`}>{f(value)}</span>
+      </div>
+      {hint && <p className={`text-[8px] ${th.textFaint} opacity-60`}>{hint}</p>}
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={e => onChange(parseFloat(e.target.value))}
+        className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-blue-500"
+        style={{ background: `linear-gradient(to right, #3b82f6 ${((value - min) / (max - min)) * 100}%, #374151 0%)` }}
+      />
+      <div className="flex justify-between">
+        <span className={`text-[8px] ${th.textFaint}`}>{f(min)}</span>
+        <span className={`text-[8px] ${th.textFaint}`}>{f(max)}</span>
+      </div>
+    </div>
+  );
+}
+
+
   ruleKey: keyof RulesType;
   rawValues: Record<string, string>;
   editedRules: RulesType;
@@ -1596,13 +1772,218 @@ function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] 
 }
 
 // ── Rules Modal ────────────────────────────────────────────────────────────
-function RulesModal({ stockRules, etfRules, onClose, onRun, th }: {
+function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
   stockRules: RulesType;
   etfRules: RulesType;
+  rankConfig: RankConfig;
   onClose: () => void;
-  onRun: (stockRules: RulesType, etfRules: RulesType, stockLabel: string, etfLabel: string) => void;
+  onRun: (stockRules: RulesType, etfRules: RulesType, stockLabel: string, etfLabel: string, rankConfig: RankConfig) => void;
   th: typeof THEMES[Theme];
 }) {
+  const [stockEdited, setStockEdited] = useState<RulesType>({ ...stockRules });
+  const [stockRaw, setStockRaw] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(stockRules).map(([k, v]) => [k, String(v)])));
+  const [stockPreset, setStockPreset] = useState<string | null>(() => { try { return localStorage.getItem(LS_ACTIVE_PRESET); } catch { return null; } });
+  const [etfEdited, setEtfEdited] = useState<RulesType>({ ...etfRules });
+  const [etfRaw, setEtfRaw] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(etfRules).map(([k, v]) => [k, String(v)])));
+  const [etfPreset, setEtfPreset] = useState<string | null>(() => { try { return localStorage.getItem(LS_ACTIVE_PRESET_ETF); } catch { return null; } });
+  const [rankEdited, setRankEdited] = useState<RankConfig>({ ...rankConfig });
+
+  const makeHandlers = (
+    edited: RulesType,
+    setEdited: React.Dispatch<React.SetStateAction<RulesType>>,
+    setRaw: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  ) => ({
+    onChange: (key: string, raw: string) => setRaw(prev => ({ ...prev, [key]: raw })),
+    onBlur: (key: keyof RulesType, raw: string) => {
+      const val = parseFloat(raw);
+      if (!isNaN(val)) { setEdited(prev => ({ ...prev, [key]: val })); setRaw(prev => ({ ...prev, [key]: String(val) })); }
+      else setRaw(prev => ({ ...prev, [key]: String(edited[key]) }));
+    },
+  });
+
+  const stockHandlers = makeHandlers(stockEdited, setStockEdited, setStockRaw);
+  const etfHandlers = makeHandlers(etfEdited, setEtfEdited, setEtfRaw);
+
+  const applyPresetToStock = (p: typeof RULE_PRESETS[number]) => {
+    const merged = { ...DEFAULT_RULES, ...p.rules };
+    setStockEdited(merged); setStockRaw(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
+    setStockPreset(p.key); try { localStorage.setItem(LS_ACTIVE_PRESET, p.key); } catch {}
+  };
+  const applyPresetToEtf = (p: typeof RULE_PRESETS[number]) => {
+    const merged = { ...DEFAULT_ETF_RULES, ...p.rules };
+    setEtfEdited(merged); setEtfRaw(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
+    setEtfPreset(p.key); try { localStorage.setItem(LS_ACTIVE_PRESET_ETF, p.key); } catch {}
+  };
+  const handleResetStock = () => {
+    setStockEdited({ ...DEFAULT_RULES }); setStockRaw(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)])));
+    setStockPreset(null); try { localStorage.removeItem(LS_RULES); localStorage.removeItem(LS_ACTIVE_PRESET); } catch {}
+  };
+  const handleResetEtf = () => {
+    setEtfEdited({ ...DEFAULT_ETF_RULES }); setEtfRaw(Object.fromEntries(Object.entries(DEFAULT_ETF_RULES).map(([k, v]) => [k, String(v)])));
+    setEtfPreset(null); try { localStorage.removeItem(LS_RULES_ETF); localStorage.removeItem(LS_ACTIVE_PRESET_ETF); } catch {}
+  };
+  const handleResetRank = () => setRankEdited({ ...DEFAULT_RANK_CONFIG });
+
+  const handleRun = () => {
+    saveRulesToStorage(stockEdited); saveEtfRulesToStorage(etfEdited);
+    try { localStorage.setItem(LS_RANK_CONFIG, JSON.stringify(rankEdited)); } catch {}
+    const sLabel = stockPreset ? (RULE_PRESETS.find(p => p.key === stockPreset)?.label ?? 'Custom') : 'Custom';
+    const eLabel = etfPreset ? (RULE_PRESETS.find(p => p.key === etfPreset)?.label ?? 'ETF Custom') : 'ETF Custom';
+    onRun(stockEdited, etfEdited, sLabel, eLabel, rankEdited);
+  };
+
+  const RuleCol = ({ edited, raw, handlers, presetKey, onApplyPreset, onReset, isEtf }: {
+    edited: RulesType; raw: Record<string, string>;
+    handlers: { onChange: (k: string, v: string) => void; onBlur: (k: keyof RulesType, v: string) => void };
+    presetKey: string | null; onApplyPreset: (p: typeof RULE_PRESETS[number]) => void; onReset: () => void; isEtf: boolean;
+  }) => {
+    const ri = (key: keyof RulesType, lbl?: string, hint?: string) => (
+      <div>
+        <RuleInput ruleKey={key} rawValues={raw} editedRules={edited} onRawChange={handlers.onChange} onBlur={handlers.onBlur} th={th} label={lbl} hint={hint} />
+        <RangeIndicator
+          value={edited[key] as number}
+          strict={(RULE_PRESETS.find(p => p.key === 'strict')?.rules as any)?.[key]}
+          course={(RULE_PRESETS.find(p => p.key === 'course')?.rules as any)?.[key]}
+          relaxed={(RULE_PRESETS.find(p => p.key === 'relaxed')?.rules as any)?.[key]}
+          lowvol={(RULE_PRESETS.find(p => p.key === 'lowvol')?.rules as any)?.[key]}
+          fmt={(v) => String(v)}
+        />
+      </div>
+    );
+    return (
+      <div className="flex-1 min-w-0">
+        <div className={`px-4 py-2.5 border-b ${th.border} flex items-center justify-between ${isEtf ? 'bg-blue-500/5' : ''}`}>
+          <div>
+            <p className={`text-[10px] font-bold tracking-widest ${isEtf ? 'text-blue-400' : th.text}`}>{isEtf ? '🏦 ETF / INDEX' : '📈 STOCK'}</p>
+            <p className={`text-[8px] ${th.textFaint} mt-0.5`}>{isEtf ? 'Auto-applied to ETFs & Indexes' : 'Auto-applied to individual stocks'}</p>
+          </div>
+          <button onClick={onReset} className="text-[8px] border border-yellow-700 text-yellow-600 px-2 py-0.5 rounded hover:bg-yellow-500/10 transition-colors">RESET</button>
+        </div>
+        <div className="px-4 py-2 border-b border-dashed border-slate-800">
+          <p className="text-[8px] tracking-widest uppercase mb-1.5 opacity-40">Quick presets:</p>
+          <div className="flex gap-1 flex-wrap">
+            {RULE_PRESETS.map(p => (
+              <button key={p.key} onClick={() => onApplyPreset(p)} title={p.desc}
+                className={'px-2 py-1 rounded text-[8px] font-bold border transition-colors ' + (presetKey === p.key ? p.color : 'border-slate-700 text-slate-500 hover:border-slate-500')}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="px-4 py-3 space-y-3">
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>① Volatility & Timing</p>
+            <div className="grid grid-cols-2 gap-3">
+              {ri('IVR_MIN','IVR Min %','Floor')}
+              {ri('IVR_IC_MAX','IVR Max % (IC)','IC only')}
+              {ri('DTE_MIN','DTE Min')}
+              {ri('DTE_MAX','DTE Max')}
+            </div>
+          </div>
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>② Delta</p>
+            <div className="grid grid-cols-2 gap-3">
+              {ri('SPREAD_DELTA_MIN','Spread δ Min')}
+              {ri('SPREAD_DELTA_MAX','Spread δ Max')}
+              {ri('IC_DELTA_MIN','IC δ Min')}
+              {ri('IC_DELTA_MAX','IC δ Max')}
+            </div>
+          </div>
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>③ Liquidity · Credit · Return</p>
+            <div className="grid grid-cols-2 gap-3">
+              {ri('OI_MIN','Min OI','Per leg')}
+              {ri('BID_ASK_MAX','Max Bid-Ask','Per leg')}
+              {ri('MAX_SPREAD_WIDTH','Max Width $','Optimizer cap')}
+              {ri('CREDIT_RATIO_MIN','Min Credit Ratio','0.33=course')}
+              {ri('ROC_MIN_SPREAD','Min ROC Spread')}
+              {ri('ROC_MIN_IC','Min ROC IC')}
+              {ri('POP_MIN','Min POP %')}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const sl = (key: keyof RankConfig, label: string, hint: string, min: number, max: number, step = 1, fmt?: (v: number) => string) => (
+    <Slider label={label} hint={hint} value={rankEdited[key] as number} min={min} max={max} step={step}
+      fmt={fmt} onChange={v => setRankEdited(prev => ({ ...prev, [key]: v }))} th={th} />
+  );
+
+  const totalWeight = rankEdited.weightIvr + rankEdited.weightCredit + rankEdited.weightRoc + rankEdited.weightPop + rankEdited.weightDte;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-full max-w-6xl max-h-[92vh] overflow-auto`}>
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border}`}>
+          <div>
+            <h2 className="text-sm font-bold tracking-widest text-red-500">SCREENING RULES</h2>
+            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Stock and ETF/Index rules apply automatically per ticker. Ranking config drives the score in Rank mode. Dots on inputs show preset positions.</p>
+          </div>
+          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg`}>✕</button>
+        </div>
+        <div className="flex divide-x divide-slate-800">
+          <RuleCol edited={stockEdited} raw={stockRaw} handlers={stockHandlers} presetKey={stockPreset} onApplyPreset={applyPresetToStock} onReset={handleResetStock} isEtf={false} />
+          <RuleCol edited={etfEdited} raw={etfRaw} handlers={etfHandlers} presetKey={etfPreset} onApplyPreset={applyPresetToEtf} onReset={handleResetEtf} isEtf={true} />
+
+          {/* Ranking config column */}
+          <div className="w-72 shrink-0">
+            <div className={`px-4 py-2.5 border-b ${th.border} flex items-center justify-between bg-purple-500/5`}>
+              <div>
+                <p className="text-[10px] font-bold tracking-widest text-purple-400">⬡ RANKING</p>
+                <p className={`text-[8px] ${th.textFaint} mt-0.5`}>Scoring weights and thresholds</p>
+              </div>
+              <button onClick={handleResetRank} className="text-[8px] border border-yellow-700 text-yellow-600 px-2 py-0.5 rounded hover:bg-yellow-500/10 transition-colors">RESET</button>
+            </div>
+            <div className="px-4 py-3 space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold`}>Scoring Weights</p>
+                  <span className={`text-[8px] font-bold ${totalWeight === 100 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+                    {totalWeight}/100 pts
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {sl('weightIvr',    'IVR Quality',    'Peaks ~65, slight penalty >80', 0, 40)}
+                  {sl('weightCredit', 'Credit Ratio',   'Linear 0.20→0.50',             0, 40)}
+                  {sl('weightRoc',    'ROC',            'Log scale, dims >50%',          0, 30)}
+                  {sl('weightPop',    'POP',            'Bell curve, peaks at 72%',      0, 20)}
+                  {sl('weightDte',    'DTE Quality',    'Bell curve around sweet spot',  0, 20)}
+                </div>
+              </div>
+              <div>
+                <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-3`}>DTE Sweet Spot</p>
+                <div className="space-y-3">
+                  {sl('dteSweetSpot', 'Center DTE',  'Full score at this DTE', 14, 45)}
+                  {sl('dteRange',     '± Range',     'Days either side for full score', 1, 14)}
+                </div>
+              </div>
+              <div>
+                <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-3`}>Traffic Light Thresholds</p>
+                <div className="space-y-3">
+                  {sl('thresholdGreen',  '🟢 Green floor',  'Strong — take the trade',    40, 100)}
+                  {sl('thresholdYellow', '🟡 Yellow floor', 'Acceptable — proceed with care', 20, 80)}
+                  {sl('thresholdOrange', '🟠 Orange floor', 'Marginal — paper trade only', 10, 60)}
+                </div>
+                <p className={`text-[8px] ${th.textFaint} mt-2 leading-relaxed`}>
+                  🔴 Red = below orange floor. Earnings always blocks regardless of score.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className={`flex gap-3 px-6 py-4 border-t ${th.border}`}>
+          <p className={`text-[9px] ${th.textFaint} flex-1 self-center`}>
+            Stocks and ETFs/Indexes auto-apply their own rules. Ranking scores apply in Rank mode only. Dots on inputs show where each preset sits.
+          </p>
+          <button onClick={onClose} className={`border ${th.border} ${th.textMuted} py-2 px-4 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
+          <button onClick={handleRun} className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-6 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
+        </div>
+      </div>
+    </div>
+  );
+}
   const [stockEdited, setStockEdited] = useState<RulesType>({ ...stockRules });
   const [stockRaw, setStockRaw] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(stockRules).map(([k, v]) => [k, String(v)])));
   const [stockPreset, setStockPreset] = useState<string | null>(() => { try { return localStorage.getItem(LS_ACTIVE_PRESET); } catch { return null; } });
@@ -2658,6 +3039,10 @@ export default function Home() {
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
   const [runtimeEtfRules, setRuntimeEtfRules] = useState<RulesType>(getSavedEtfRules);
+  const [rankConfig, setRankConfig] = useState<RankConfig>(getSavedRankConfig);
+  const [screenMode, setScreenMode] = useState<'filter' | 'rank'>(() => {
+    try { return (localStorage.getItem(LS_SCREEN_MODE) as 'filter' | 'rank') ?? 'filter'; } catch { return 'filter'; }
+  });
   const [stockPresetLabel, setStockPresetLabel] = useState<string>(() => {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'Custom'; } catch { return 'Custom'; }
   });
@@ -2784,11 +3169,20 @@ export default function Home() {
         index === self.findIndex(t => t.symbol === r.symbol && t.strategy === r.strategy)
       );
 
-      uniqueResults.sort((a, b) => {
-        if (a.qualified && !b.qualified) return -1;
-        if (!a.qualified && b.qualified) return 1;
-        return (b.ivr ?? 0) - (a.ivr ?? 0);
-      });
+      if (screenMode === 'rank') {
+        // Sort by score descending; no-candidate results go to the bottom
+        uniqueResults.sort((a, b) => {
+          const sA = a.bestCandidate ? (scoreCandidate(a, rankConfig)?.score ?? 0) : -1;
+          const sB = b.bestCandidate ? (scoreCandidate(b, rankConfig)?.score ?? 0) : -1;
+          return sB - sA;
+        });
+      } else {
+        uniqueResults.sort((a, b) => {
+          if (a.qualified && !b.qualified) return -1;
+          if (!a.qualified && b.qualified) return 1;
+          return (b.ivr ?? 0) - (a.ivr ?? 0);
+        });
+      }
 
       setResults(uniqueResults);
     } catch (e: any) {
@@ -2917,6 +3311,16 @@ export default function Home() {
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
+          {/* Mode toggle */}
+          <div className={`flex rounded-lg border ${th.border} overflow-hidden`}>
+            {(['filter', 'rank'] as const).map(mode => (
+              <button key={mode} onClick={() => { setScreenMode(mode); try { localStorage.setItem(LS_SCREEN_MODE, mode); } catch {} }}
+                className={`flex-1 py-2 text-[9px] font-bold tracking-widest transition-colors ${screenMode === mode ? 'bg-blue-600 text-white' : `${th.textFaint} hover:${th.textMuted}`}`}>
+                {mode === 'filter' ? '⊘ FILTER' : '⬡ RANK'}
+              </button>
+            ))}
+          </div>
+
           <button onClick={() => setShowRulesModal(true)} disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
@@ -2974,8 +3378,19 @@ export default function Home() {
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex gap-4 text-[10px] tracking-wider font-medium">
-                  <span className="text-emerald-500">{qualified.length} QUALIFIED</span>
-                  <span className={th.textFaint}>{disqualified.length} DISQUALIFIED</span>
+                  {screenMode === 'filter' ? (
+                    <>
+                      <span className="text-emerald-500">{qualified.length} QUALIFIED</span>
+                      <span className={th.textFaint}>{disqualified.length} DISQUALIFIED</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-emerald-400">{results.filter(r => { const s = r.bestCandidate ? scoreCandidate(r, rankConfig)?.score ?? 0 : 0; return s >= rankConfig.thresholdGreen; }).length} 🟢</span>
+                      <span className="text-yellow-400">{results.filter(r => { const s = r.bestCandidate ? scoreCandidate(r, rankConfig)?.score ?? 0 : 0; return s >= rankConfig.thresholdYellow && s < rankConfig.thresholdGreen; }).length} 🟡</span>
+                      <span className="text-orange-400">{results.filter(r => { const s = r.bestCandidate ? scoreCandidate(r, rankConfig)?.score ?? 0 : 0; return s >= rankConfig.thresholdOrange && s < rankConfig.thresholdYellow; }).length} 🟠</span>
+                      <span className="text-red-400">{results.filter(r => { const s = r.bestCandidate ? scoreCandidate(r, rankConfig)?.score ?? 0 : 0; return s < rankConfig.thresholdOrange; }).length} 🔴</span>
+                    </>
+                  )}
                   <span className={th.textFaint}>{results.length} SCANNED</span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -2999,17 +3414,35 @@ export default function Home() {
                   <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
                 </div>
               </div>
-              <SmartSuggestionsPanel results={results} rules={runtimeStockRules} th={th} onApplyAndRerun={(r) => runScreen(r, runtimeEtfRules, stockPresetLabel, etfPresetLabel)} />
-              {qualified.length > 0 && (
-                <div>
-                  <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                  <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} />)}</div>
-                </div>
+
+              {screenMode === 'filter' && (
+                <SmartSuggestionsPanel results={results} rules={runtimeStockRules} th={th} onApplyAndRerun={(r) => runScreen(r, runtimeEtfRules, stockPresetLabel, etfPresetLabel)} />
               )}
-              {disqualified.length > 0 && (
+
+              {screenMode === 'filter' ? (
+                <>
+                  {qualified.length > 0 && (
+                    <div>
+                      <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} />)}</div>
+                    </div>
+                  )}
+                  {disqualified.length > 0 && (
+                    <div>
+                      <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} />)}</div>
+                    </div>
+                  )}
+                </>
+              ) : (
                 <div>
-                  <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                  <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} />)}</div>
+                  <p className="text-[9px] text-purple-400 tracking-widest mb-2 font-medium">⬡ RANKED — ALL OPPORTUNITIES</p>
+                  <div className="space-y-2">{results.map((r, i) => (
+                    <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
+                      <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} /></div>
+                    </div>
+                  ))}</div>
                 </div>
               )}
             </div>
@@ -3018,7 +3451,7 @@ export default function Home() {
       </div>
 
       <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} th={th} />
-      {showRulesModal && <RulesModal stockRules={runtimeStockRules} etfRules={runtimeEtfRules} onClose={() => setShowRulesModal(false)} onRun={(sRules, eRules, sLabel, eLabel) => { setShowRulesModal(false); setRuntimeStockRules(sRules); setRuntimeEtfRules(eRules); setStockPresetLabel(sLabel); setEtfPresetLabel(eLabel); runScreen(sRules, eRules, sLabel, eLabel); }} th={th} />}
+      {showRulesModal && <RulesModal stockRules={runtimeStockRules} etfRules={runtimeEtfRules} rankConfig={rankConfig} onClose={() => setShowRulesModal(false)} onRun={(sRules, eRules, sLabel, eLabel, rCfg) => { setShowRulesModal(false); setRuntimeStockRules(sRules); setRuntimeEtfRules(eRules); setStockPresetLabel(sLabel); setEtfPresetLabel(eLabel); setRankConfig(rCfg); runScreen(sRules, eRules, sLabel, eLabel); }} th={th} />}
     </div>
   );
 }
