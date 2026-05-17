@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 
-async function getAccessTokenFromRefresh(refreshToken: string, clientSecret: string): Promise<string> {
+async function getAccessTokenFromRefresh(refreshToken: string, clientSecret: string): Promise<{ accessToken: string; newRefreshToken?: string }> {
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -21,7 +21,10 @@ async function getAccessTokenFromRefresh(refreshToken: string, clientSecret: str
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error_description ?? data?.error ?? 'Token exchange failed');
   if (!data.access_token) throw new Error('No access token returned');
-  return data.access_token;
+  return {
+    accessToken: data.access_token,
+    newRefreshToken: data.refresh_token !== refreshToken ? data.refresh_token : undefined,
+  };
 }
 
 function EyeIcon({ open }: { open: boolean }) {
@@ -43,34 +46,32 @@ function LoginContent() {
   const [refreshToken, setRefreshToken] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [error, setError] = useState(searchParams.get('error') ?? '');
-  const [isLoading, setIsLoading] = useState(true); // start true — always attempt auto-login first
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // 1. Already have a valid access token this session → go straight to portfolio
     const existingAccess = sessionStorage.getItem('tt_access_token');
     if (existingAccess) { router.replace('/portfolio'); return; }
 
-    // 2. Have a stored refresh token → try to silently get a new access token
     const storedRefresh = localStorage.getItem('tt_refresh_token');
-    // Client secret: prefer env var, fall back to localStorage (set on first manual login)
     const clientSecret =
       process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ||
       localStorage.getItem('tt_client_secret') ||
       '';
 
+    // If we have a stored token, the user can escape back — they likely got here by accident
+
     if (storedRefresh && clientSecret) {
       getAccessTokenFromRefresh(storedRefresh, clientSecret)
-        .then(accessToken => {
+        .then(({ accessToken, newRefreshToken }) => {
           sessionStorage.setItem('tt_access_token', accessToken);
+          if (newRefreshToken) localStorage.setItem('tt_refresh_token', newRefreshToken);
           router.replace('/portfolio');
         })
         .catch(() => {
-          // Refresh token expired or revoked — clear it and show the form
           localStorage.removeItem('tt_refresh_token');
           setIsLoading(false);
         });
     } else {
-      // Nothing stored — show the form immediately
       setIsLoading(false);
     }
   }, [router]);
@@ -86,10 +87,9 @@ function LoginContent() {
         '';
       if (!clientSecret) throw new Error('App configuration error — client secret missing. Contact the app owner.');
 
-      const accessToken = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret);
+      const { accessToken, newRefreshToken } = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret);
       sessionStorage.setItem('tt_access_token', accessToken);
-      localStorage.setItem('tt_refresh_token', refreshToken.trim());
-      // Persist the secret so future silent refreshes work even without the env var
+      localStorage.setItem('tt_refresh_token', newRefreshToken ?? refreshToken.trim());
       if (clientSecret) localStorage.setItem('tt_client_secret', clientSecret);
       router.push('/portfolio');
     } catch (e: any) {
@@ -98,11 +98,17 @@ function LoginContent() {
     }
   };
 
-  // While attempting silent auto-login show a minimal loading screen
   if (isLoading) {
     return (
-      <div className="text-white/40 text-xs tracking-widest" style={{ fontFamily: "'DM Mono', monospace" }}>
-        CONNECTING...
+      <div className="flex flex-col items-center gap-4">
+        <div className="text-white/40 text-xs tracking-widest" style={{ fontFamily: "'DM Mono', monospace" }}>
+          CONNECTING...
+        </div>
+        <div className="flex gap-3">
+          <a href="/portfolio" className="text-white/20 text-xs tracking-widest hover:text-white/40 transition-colors">← portfolio</a>
+          <span className="text-white/10">·</span>
+          <a href="/" className="text-white/20 text-xs tracking-widest hover:text-white/40 transition-colors">hunter</a>
+        </div>
       </div>
     );
   }
@@ -166,6 +172,16 @@ function LoginContent() {
           className="w-full py-3 bg-white text-black rounded-lg text-xs font-bold tracking-widest hover:bg-white/90 transition-colors disabled:opacity-40">
           {isLoading ? 'CONNECTING...' : 'CONNECT →'}
         </button>
+
+        {/* Always show navigation links so user is never trapped */}
+        <div className="flex gap-3 mt-3">
+          <a href="/portfolio" className="flex-1 py-2.5 border border-white/10 text-white/30 rounded-lg text-xs tracking-widest hover:border-white/20 hover:text-white/50 transition-colors text-center">
+            ← Portfolio
+          </a>
+          <a href="/" className="flex-1 py-2.5 border border-white/10 text-white/30 rounded-lg text-xs tracking-widest hover:border-white/20 hover:text-white/50 transition-colors text-center">
+            Hunter
+          </a>
+        </div>
 
         <p className="text-[10px] text-white/20 text-center mt-6 leading-relaxed">
           Your token is stored in your browser only. Never sent to our servers.
