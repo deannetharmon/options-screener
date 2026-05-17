@@ -1732,7 +1732,8 @@ function Slider({ label, hint, value, min, max, step = 1, fmt, onChange, th }: {
   );
 }
 
-
+// ── Rules Modal Subcomponents ──────────────────────────────────────────────
+function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, label, hint }: {
   ruleKey: keyof RulesType;
   rawValues: Record<string, string>;
   editedRules: RulesType;
