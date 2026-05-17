@@ -1137,7 +1137,7 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, onReclas
   bps: string; bcs: string; ic: string; broken: string;
   onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void;
   onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
-  onReclassify: () => void;
+  onReclassify: (tickers: string[]) => Promise<void>;
   th: typeof THEMES[Theme];
 }) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
@@ -1152,14 +1152,29 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, onReclas
   const [reclassifyStatus, setReclassifyStatus] = useState('');
 
   const handleReclassify = async () => {
+    // Gather all tickers currently in the four boxes
+    const allTickers = [
+      ...normalizeTickerInput(bps),
+      ...normalizeTickerInput(bcs),
+      ...normalizeTickerInput(ic),
+      ...normalizeTickerInput(broken),
+    ];
+    if (allTickers.length === 0) {
+      setReclassifyStatus('⚠ No tickers in boxes');
+      setTimeout(() => setReclassifyStatus(''), 3000);
+      return;
+    }
     setReclassifying(true);
-    setReclassifyStatus('Analyzing trends...');
+    setReclassifyStatus(`Analyzing ${allTickers.length} tickers...`);
     try {
-      await onReclassify();
-    } finally {
-      setReclassifying(false);
+      await onReclassify(allTickers);
       setReclassifyStatus('✓ Done — tickers redistributed');
       setTimeout(() => { setReclassifyStatus(''); setLastLoadedName(null); }, 3000);
+    } catch {
+      setReclassifyStatus('⚠ Error during re-classify');
+      setTimeout(() => setReclassifyStatus(''), 3000);
+    } finally {
+      setReclassifying(false);
     }
   };
 
@@ -3215,7 +3230,20 @@ export default function Home() {
             </div>
           </div>
 
-          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} broken={brokenTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} onReclassify={runTrendDetectionWrapper} th={th} />
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} broken={brokenTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} onReclassify={async (tickers) => {
+            // Clear boxes, put all tickers into auto box, run trend detection
+            handleBpsChange('');
+            handleBcsChange('');
+            handleIcChange('');
+            handleBrokenChange('');
+            const tickerStr = tickers.join(', ');
+            await runTrendDetection(
+              tickerStr, '', '', '', '',
+              handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
+              () => {}, setError, setStatus, setLoading, parseTickers,
+              setAutoTrendEntries, showLoadPrompt
+            );
+          }} th={th} />
 
           <div className={`border-t ${th.border} pt-3 space-y-4`}>
             <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
@@ -3291,7 +3319,19 @@ export default function Home() {
                   </p>
                 </div>
                 <button
-                  onClick={() => { runTrendDetectionWrapper(); setSessionLoadedAt(null); try { localStorage.removeItem(LS_SESSION_LOADED_AT); } catch {} }}
+                  onClick={async () => {
+                    const tickers = [...parseTickers(bpsTickers), ...parseTickers(bcsTickers), ...parseTickers(icTickers), ...parseTickers(brokenTickers)];
+                    if (tickers.length === 0) return;
+                    handleBpsChange(''); handleBcsChange(''); handleIcChange(''); handleBrokenChange('');
+                    setSessionLoadedAt(null);
+                    try { localStorage.removeItem(LS_SESSION_LOADED_AT); } catch {}
+                    await runTrendDetection(
+                      tickers.join(', '), '', '', '', '',
+                      handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
+                      () => {}, setError, setStatus, setLoading, parseTickers,
+                      setAutoTrendEntries, showLoadPrompt
+                    );
+                  }}
                   className="text-[9px] px-3 py-1.5 border border-yellow-600 text-yellow-400 rounded hover:bg-yellow-500/10 transition-colors font-bold shrink-0 whitespace-nowrap">
                   ↻ Re-classify now
                 </button>
