@@ -107,8 +107,6 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-function saveRulesToStorage(rules: RulesType) {
-  try { localStorage.setItem(LS_RULES, JSON.stringify(rules)); } catch {}
 }
 
 function getSavedTheme(): Theme {
@@ -451,19 +449,44 @@ const RULE_LABELS: Record<string, string> = {
 };
 
 const LS_RULES = 'prosper-rules';
+const LS_RULES_ETF = 'prosper-rules-etf';
 const LS_RULES_PRESET = 'prosper-rules-preset';
 const LS_ACTIVE_PRESET = 'prosper-active-preset';
+const LS_ACTIVE_PRESET_ETF = 'prosper-active-preset-etf';
 const LS_RULES_VERSION = 'prosper-rules-v3'; // bump this when defaults change
+
+const DEFAULT_ETF_RULES: RulesType = {
+  IVR_MIN: 15, IVR_IC_MAX: 70, OI_MIN: 100, BID_ASK_MAX: 0.25,
+  CREDIT_RATIO_MIN: 0.20, SPREAD_DELTA_MIN: 0.15, SPREAD_DELTA_MAX: 0.35,
+  IC_DELTA_MIN: 0.15, IC_DELTA_MAX: 0.25, DTE_MIN: 30, DTE_MAX: 45,
+  MAX_SPREAD_WIDTH: 500, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 20, POP_MIN: 65,
+};
+
 function getSavedRules(): RulesType {
   try {
-    // If this version key doesn't exist, wipe old saved rules so new defaults take effect
     if (!localStorage.getItem(LS_RULES_VERSION)) {
       localStorage.removeItem(LS_RULES);
+      localStorage.removeItem(LS_RULES_ETF);
       localStorage.setItem(LS_RULES_VERSION, '1');
     }
     const saved = localStorage.getItem(LS_RULES);
     return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES };
   } catch { return { ...DEFAULT_RULES }; }
+}
+
+function getSavedEtfRules(): RulesType {
+  try {
+    const saved = localStorage.getItem(LS_RULES_ETF);
+    return saved ? { ...DEFAULT_ETF_RULES, ...JSON.parse(saved) } : { ...DEFAULT_ETF_RULES };
+  } catch { return { ...DEFAULT_ETF_RULES }; }
+}
+
+function saveRulesToStorage(rules: RulesType) {
+  try { localStorage.setItem(LS_RULES, JSON.stringify(rules)); } catch {}
+}
+
+function saveEtfRulesToStorage(rules: RulesType) {
+  try { localStorage.setItem(LS_RULES_ETF, JSON.stringify(rules)); } catch {}
 }
 const TREND_DETECTION_CONCURRENCY = 8;
 const LS_BPS = 'prosper-tickers-bps';
@@ -695,11 +718,15 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
   return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true };
 }
 
-function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, RULES: RulesType, trendResult?: TrendResult, ruleSetApplied?: string): ScreenResult {
+function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, STOCK_RULES: RulesType, trendResult?: TrendResult, stockPresetLabel?: string, ETF_RULES_PARAM?: RulesType, etfPresetLabel?: string): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
   const isIndex = chainData.isEtfOrIndex ?? INDEX_TICKERS.has(symbol.toUpperCase());
-  // Auto-apply ETF rules for any ticker detected as ETF/Index — overrides global rules for this ticker only
-  const effectiveRules: RulesType = isIndex ? { ...RULES, ...ETF_RULES } : RULES;
+  // Auto-select the right rule set based on ticker type
+  const RULES = isIndex ? (ETF_RULES_PARAM ?? { ...DEFAULT_ETF_RULES }) : STOCK_RULES;
+  const appliedLabel = isIndex
+    ? (etfPresetLabel ? `ETF — ${etfPresetLabel}` : 'ETF rules')
+    : (stockPresetLabel ?? 'Custom');
+  const effectiveRules: RulesType = RULES;
   const effectiveIvrMin = isIndex ? INDEX_IVR_MIN : effectiveRules.IVR_MIN;
   const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < effectiveIvrMin ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${effectiveIvrMin}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${effectiveIvrMin}% minimum${isIndex ? ' (index)' : ''}` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: isIndex ? `Above ${effectiveIvrMin}% (index floor)` : 'Above minimum' };
 
@@ -744,7 +771,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     : { status: 'pending', value: '—', reason: 'No candidate' };
   if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: isIndex ? `ETF rules${ruleSetApplied ? ` + ${ruleSetApplied}` : ''}` : (ruleSetApplied ?? 'Custom'), checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
@@ -1565,166 +1592,6 @@ function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] 
   return (
     <div className={`col-span-full pt-3 pb-1 border-b ${th.border}`}>
       <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold`}>{label}</p>
-    </div>
-  );
-}
-
-// ── Rules Modal ────────────────────────────────────────────────────────────
-const ETF_RULES: Partial<RulesType> = {
-  IVR_MIN: 15, OI_MIN: 100, BID_ASK_MAX: 0.25,
-  SPREAD_DELTA_MIN: 0.15, SPREAD_DELTA_MAX: 0.35,
-  IC_DELTA_MIN: 0.15, IC_DELTA_MAX: 0.25,
-  CREDIT_RATIO_MIN: 0.20, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 20, POP_MIN: 68,
-};
-
-function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType, presetLabel: string) => void; th: typeof THEMES[Theme] }) {
-  const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
-  const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
-  const [preset, setPreset] = useState<'stock' | 'etf'>(() => {
-    try { const p = localStorage.getItem(LS_RULES_PRESET); return p === 'etf' ? 'etf' : 'stock'; } catch { return 'stock'; }
-  });
-  const [activeRulePreset, setActiveRulePreset] = useState<string | null>(() => {
-    try {
-      // Use saved preset key if present
-      const saved = localStorage.getItem(LS_ACTIVE_PRESET);
-      if (saved) return saved;
-      // Otherwise detect which preset the loaded rules match
-      const keys: (keyof RulesType)[] = ['IVR_MIN', 'OI_MIN', 'BID_ASK_MAX', 'CREDIT_RATIO_MIN', 'ROC_MIN_SPREAD', 'ROC_MIN_IC'];
-      const match = RULE_PRESETS.find(p =>
-        keys.every(k => (p.rules as any)[k] === undefined || (p.rules as any)[k] === rules[k])
-      );
-      return match?.key ?? null;
-    } catch { return null; }
-  });
-
-  const handleChange = (key: string, raw: string) => setRawValues(prev => ({ ...prev, [key]: raw }));
-  const handleBlur = (key: keyof RulesType, raw: string) => {
-    const val = parseFloat(raw);
-    if (!isNaN(val)) { const updated = { ...editedRules, [key]: val }; setEditedRules(updated); setRawValues(prev => ({ ...prev, [key]: String(val) })); }
-    else setRawValues(prev => ({ ...prev, [key]: String(editedRules[key]) }));
-  };
-  const handleReset = () => { setEditedRules({ ...DEFAULT_RULES }); setRawValues(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)]))); setPreset('stock'); setActiveRulePreset(null); localStorage.removeItem(LS_RULES); try { localStorage.removeItem(LS_RULES_PRESET); localStorage.removeItem(LS_ACTIVE_PRESET); } catch {} };
-  const handlePreset = (p: 'stock' | 'etf') => {
-    setPreset(p);
-    setActiveRulePreset(null);
-    try { localStorage.setItem(LS_RULES_PRESET, p); localStorage.removeItem(LS_ACTIVE_PRESET); } catch {}
-    const base = p === 'etf' ? { ...DEFAULT_RULES, ...ETF_RULES } : { ...DEFAULT_RULES };
-    setEditedRules(base);
-    setRawValues(Object.fromEntries(Object.entries(base).map(([k, v]) => [k, String(v)])));
-  };
-  const handleRulePreset = (p: typeof RULE_PRESETS[number]) => {
-    // Start from DEFAULT_RULES + quick preset, then re-apply ETF overrides on top if in ETF mode.
-    // This prevents ETF delta/OI/bid-ask from being lost when switching quick presets.
-    const base = preset === 'etf' ? { ...DEFAULT_RULES, ...ETF_RULES } : { ...DEFAULT_RULES };
-    const merged = { ...base, ...p.rules, ...(preset === 'etf' ? ETF_RULES : {}) };
-    setEditedRules(merged);
-    setRawValues(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
-    setActiveRulePreset(p.key);
-    try { localStorage.setItem(LS_ACTIVE_PRESET, p.key); } catch {}
-  };
-  const handleRun = () => {
-    saveRulesToStorage(editedRules);
-    const label = activeRulePreset
-      ? RULE_PRESETS.find(p => p.key === activeRulePreset)?.label ?? 'Custom'
-      : preset === 'etf' ? 'ETF / Index' : 'Custom';
-    onRun(editedRules, label);
-  };
-
-  const ri = (key: keyof RulesType, label?: string, hint?: string) => (
-    <RuleInput ruleKey={key} rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} label={label} hint={hint} />
-  );
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-auto`}>
-
-        {/* Header */}
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border}`}>
-          <div>
-            <h2 className="text-sm font-bold tracking-widest text-red-500">SCREENING RULES</h2>
-            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Defaults = course rules. Reset restores them. Earnings buffer = DTE Max + 5d. IVR cap = IC only.</p>
-          </div>
-          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg`}>✕</button>
-        </div>
-
-        {/* Stock / ETF toggle */}
-        <div className="px-6 pt-4 pb-2 flex gap-2">
-          {(['stock', 'etf'] as const).map(p => (
-            <button key={p} onClick={() => handlePreset(p)}
-              className={`px-4 py-1.5 rounded-lg text-[10px] font-bold tracking-widest border transition-colors ${preset === p ? 'bg-blue-600 border-blue-500 text-white' : `${th.input} border ${th.inputBorder} ${th.textFaint} hover:border-blue-500`}`}>
-              {p === 'stock' ? '📈 STOCK' : '🏦 ETF / INDEX'}
-            </button>
-          ))}
-        </div>
-
-        {/* Rule Presets */}
-        <div className="px-6 pb-3 pt-1">
-          <p className="text-[8px] tracking-widest uppercase mb-2 opacity-50">Quick presets — sets IVR, OI, credit & ROC:</p>
-          <div className="flex gap-2 flex-wrap">
-            {RULE_PRESETS.map(p => (
-              <button
-                key={p.key}
-                onClick={() => handleRulePreset(p)}
-                title={p.desc}
-                className={'px-3 py-1.5 rounded-lg text-[10px] font-bold tracking-widest border transition-colors ' + (activeRulePreset === p.key ? p.color : 'border-slate-700 text-slate-400 hover:border-slate-500')}
-              >
-                {p.label}
-                <span className="ml-1.5 font-normal text-[9px] opacity-60">{p.desc}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="px-6 pb-4 space-y-4">
-
-          {/* ── Row 1: IVR + DTE ── */}
-          <div>
-            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>① Volatility & Timing</p>
-            <div className="grid grid-cols-4 gap-3">
-              {ri('IVR_MIN',    'IVR Min %',       'Floor — all strategies')}
-              {ri('IVR_IC_MAX', 'IVR Max % (IC)',  'IC only — above = skip')}
-              {ri('DTE_MIN',    'DTE Min (days)')}
-              {ri('DTE_MAX',    'DTE Max (days)')}
-            </div>
-          </div>
-
-          {/* ── Row 2: Delta ── */}
-          <div>
-            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>② Strike Selection — Delta</p>
-            <div className="grid grid-cols-4 gap-3">
-              {ri('SPREAD_DELTA_MIN', 'Spread δ Min', 'BPS / BCS short strike')}
-              {ri('SPREAD_DELTA_MAX', 'Spread δ Max', 'BPS / BCS short strike')}
-              {ri('IC_DELTA_MIN',     'IC δ Min',     'Both IC short strikes')}
-              {ri('IC_DELTA_MAX',     'IC δ Max',     'Both IC short strikes')}
-            </div>
-          </div>
-
-          {/* ── Row 3: Liquidity + Credit + ROC ── */}
-          <div>
-            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 pb-1 border-b ${th.border}`}>③ Liquidity · Credit · Return</p>
-            <div className="grid grid-cols-3 gap-3">
-              {ri('OI_MIN',           'Min Open Interest', 'Per leg')}
-              {ri('BID_ASK_MAX',      'Max Bid-Ask $',     'Per leg')}
-              {ri('MAX_SPREAD_WIDTH', 'Max Spread Width $','Optimizer cap')}
-            </div>
-            <div className="grid grid-cols-3 gap-3 mt-3">
-              {ri('CREDIT_RATIO_MIN', 'Min Credit Ratio',  '0.33 = course · 0.25 = floor · 0.20 = danger')}
-              {ri('ROC_MIN_SPREAD',   'Min ROC % — Spread','BPS and BCS')}
-              {ri('ROC_MIN_IC',       'Min ROC % — IC',    'Iron Condor')}
-              {ri('POP_MIN',          'Min POP %',         '65 = course · 68 = ETF floor')}
-            </div>
-          </div>
-
-        </div>
-
-        {/* Footer */}
-        <div className={`flex gap-3 px-6 py-4 border-t ${th.border}`}>
-          <button onClick={handleReset} className="border border-yellow-600 text-yellow-500 py-2 px-4 rounded-lg text-xs tracking-widest hover:bg-yellow-500/10 font-medium">RESET</button>
-          <div className="flex-1" />
-          <button onClick={onClose} className={`border ${th.border} ${th.textMuted} py-2 px-4 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
-          <button onClick={handleRun} className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-6 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -2646,15 +2513,13 @@ export default function Home() {
   const [status, setStatus] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
-  const [runtimeRules, setRuntimeRules] = useState<RulesType>(getSavedRules);
-  const [lastRunRules, setLastRunRules] = useState<RulesType | null>(null);
-  const [activePresetLabel, setActivePresetLabel] = useState<string>(() => {
-    try {
-      const preset = localStorage.getItem(LS_RULES_PRESET) === 'etf' ? 'ETF / Index' : '';
-      const rulePreset = localStorage.getItem(LS_ACTIVE_PRESET);
-      const match = RULE_PRESETS.find(p => p.key === rulePreset);
-      return match ? match.label : preset || 'Custom';
-    } catch { return 'Custom'; }
+  const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
+  const [runtimeEtfRules, setRuntimeEtfRules] = useState<RulesType>(getSavedEtfRules);
+  const [stockPresetLabel, setStockPresetLabel] = useState<string>(() => {
+    try { const k = localStorage.getItem(LS_ACTIVE_PRESET); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'Custom'; } catch { return 'Custom'; }
+  });
+  const [etfPresetLabel, setEtfPresetLabel] = useState<string>(() => {
+    try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
   });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
 
@@ -2693,7 +2558,7 @@ export default function Home() {
     );
   };
 
-  const runScreen = async (rules: RulesType, presetLabel?: string) => {
+  const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string) => {
     setError('');
     setResults([]);
     setAutoTrendEntries([]);
@@ -2708,8 +2573,8 @@ export default function Home() {
       return;
     }
 
-    setRuntimeRules(rules);
-    setLastRunRules(rules);
+    setRuntimeStockRules(sRules);
+    setRuntimeEtfRules(eRules);
     setLoading(true);
 
     try {
@@ -2729,6 +2594,10 @@ export default function Home() {
         checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' }, pop: { status: 'pending', value: '—', reason: '—' } }
       });
 
+      // getChain uses the appropriate rule set for DTE filtering — pass stock rules as base,
+      // runChecklist will auto-select ETF rules internally per ticker
+      const getChainRules = (isEtfTicker: boolean) => isEtfTicker ? eRules : sRules;
+
       // Scan AUTO tickers (with trend detection)
       for (let i = 0; i < autoList.length; i++) {
         const symbol = autoList[i];
@@ -2737,12 +2606,12 @@ export default function Home() {
         try { trendResult = await getTrend(symbol); } catch (e) { console.warn(e); }
         const strategy: 'BPS' | 'BCS' | 'IC' =
           trendResult?.strategy === 'BPS' || trendResult?.strategy === 'BCS' || trendResult?.strategy === 'IC'
-            ? trendResult.strategy
-            : 'IC';
+            ? trendResult.strategy : 'IC';
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
-          const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
-          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult, presetLabel));
+          const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
+          const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
         } catch (e: any) {
           screenResults.push(errResult(symbol, strategy, e.message, trendResult));
         }
@@ -2758,8 +2627,9 @@ export default function Home() {
           setStatus(`Scanning ${symbol}...`);
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
-            const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
-            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, undefined, presetLabel));
+            const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
+            const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
           } catch (e: any) {
             screenResults.push(errResult(symbol, strategy, e.message));
           }
@@ -2911,25 +2781,32 @@ export default function Home() {
 
           {/* Last Rules Used */}
           <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
-            <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>LAST RULES USED</p>
-            {lastRunRules === null
-              ? <p className={`${th.textFaint} italic`}>No screen run yet</p>
-              : [
-                  ['IVR', `≥ ${lastRunRules.IVR_MIN}%`],
-                  ['DTE', `${lastRunRules.DTE_MIN}–${lastRunRules.DTE_MAX} days`],
-                  ['Earnings buffer', `${lastRunRules.DTE_MAX + 5}d (auto)`],
-                  ['BPS/BCS delta', `${lastRunRules.SPREAD_DELTA_MIN}–${lastRunRules.SPREAD_DELTA_MAX}`],
-                  ['IC delta', `${lastRunRules.IC_DELTA_MIN}–${lastRunRules.IC_DELTA_MAX}`],
-                  ['Credit ratio', `≥ ${(lastRunRules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
-                  ['OI per leg', `≥ ${lastRunRules.OI_MIN}`],
-                  ['Bid-Ask', `≤ $${lastRunRules.BID_ASK_MAX}`],
-                  ['Max width', `$${lastRunRules.MAX_SPREAD_WIDTH} (opt)`],
-                  ['Min ROC spread', `${lastRunRules.ROC_MIN_SPREAD}%`],
-                  ['Min ROC IC', `${lastRunRules.ROC_MIN_IC}%`],
-                ].map(([k, v]) => (
-                  <div key={k} className="flex justify-between"><span className={th.textFaint}>{k}</span><span className={`${th.textMuted} font-medium`}>{v}</span></div>
-                ))
-            }
+            <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>ACTIVE RULES</p>
+            <div className="space-y-3">
+              {[
+                { label: '📈 Stock', rules: runtimeStockRules, preset: stockPresetLabel },
+                { label: '🏦 ETF/Index', rules: runtimeEtfRules, preset: etfPresetLabel },
+              ].map(({ label, rules, preset }) => (
+                <div key={label}>
+                  <p className={`${th.textFaint} font-bold mb-1`}>{label} <span className="font-normal opacity-60">({preset})</span></p>
+                  {[
+                    ['IVR', `≥ ${rules.IVR_MIN}%`],
+                    ['DTE', `${rules.DTE_MIN}–${rules.DTE_MAX}d`],
+                    ['Credit ratio', `≥ ${(rules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
+                    ['OI per leg', `≥ ${rules.OI_MIN}`],
+                    ['Bid-Ask', `≤ $${rules.BID_ASK_MAX}`],
+                    ['Max width', `$${rules.MAX_SPREAD_WIDTH}`],
+                    ['Min ROC spread', `${rules.ROC_MIN_SPREAD}%`],
+                    ['Min ROC IC', `${rules.ROC_MIN_IC}%`],
+                  ].map(([k, v]) => (
+                    <div key={k} className="flex justify-between">
+                      <span className={th.textFaint}>{k}</span>
+                      <span className={`${th.textMuted} font-medium`}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -2979,17 +2856,17 @@ export default function Home() {
                   <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
                 </div>
               </div>
-              <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={(r) => runScreen(r, activePresetLabel)} />
+              <SmartSuggestionsPanel results={results} rules={runtimeStockRules} th={th} onApplyAndRerun={(r) => runScreen(r, runtimeEtfRules, stockPresetLabel, etfPresetLabel)} />
               {qualified.length > 0 && (
                 <div>
                   <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                  <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div>
+                  <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} />)}</div>
                 </div>
               )}
               {disqualified.length > 0 && (
                 <div>
                   <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                  <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={runtimeRules} />)}</div>
+                  <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} />)}</div>
                 </div>
               )}
             </div>
@@ -2998,7 +2875,7 @@ export default function Home() {
       </div>
 
       <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} th={th} />
-      {showRulesModal && <RulesModal rules={runtimeRules} onClose={() => setShowRulesModal(false)} onRun={(rules, presetLabel) => { setShowRulesModal(false); setRuntimeRules(rules); setActivePresetLabel(presetLabel); runScreen(rules, presetLabel); }} th={th} />}
+      {showRulesModal && <RulesModal stockRules={runtimeStockRules} etfRules={runtimeEtfRules} onClose={() => setShowRulesModal(false)} onRun={(sRules, eRules, sLabel, eLabel) => { setShowRulesModal(false); setRuntimeStockRules(sRules); setRuntimeEtfRules(eRules); setStockPresetLabel(sLabel); setEtfPresetLabel(eLabel); runScreen(sRules, eRules, sLabel, eLabel); }} th={th} />}
     </div>
   );
 }
