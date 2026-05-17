@@ -87,6 +87,7 @@ interface ScreenResult {
   qualified: boolean; bestCandidate: SpreadCandidate | null;
   failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
   isEtf?: boolean;
+  ruleSetApplied?: string;
   checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; };
 }
 interface FilterSuggestion {
@@ -694,7 +695,7 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
   return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true };
 }
 
-function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, RULES: RulesType, trendResult?: TrendResult): ScreenResult {
+function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, RULES: RulesType, trendResult?: TrendResult, ruleSetApplied?: string): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
   const isIndex = chainData.isEtfOrIndex ?? INDEX_TICKERS.has(symbol.toUpperCase());
   // Auto-apply ETF rules for any ticker detected as ETF/Index — overrides global rules for this ticker only
@@ -743,7 +744,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     : { status: 'pending', value: '—', reason: 'No candidate' };
   if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: isIndex ? `ETF rules${ruleSetApplied ? ` + ${ruleSetApplied}` : ''}` : (ruleSetApplied ?? 'Custom'), checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
@@ -1313,6 +1314,26 @@ function ResultCard({ result, th, rules }: {
             </p>
           )}
         </div>
+        {/* Rule set badge */}
+        {result.ruleSetApplied && (
+          <span className={`text-[8px] px-1.5 py-0.5 border rounded shrink-0 font-medium tracking-wider
+            ${result.ruleSetApplied.includes('ETF')
+              ? 'border-blue-800 text-blue-400/80 bg-blue-500/5'
+              : result.ruleSetApplied === 'Strict'
+              ? 'border-red-900 text-red-400/70 bg-red-500/5'
+              : result.ruleSetApplied === 'Course'
+              ? 'border-slate-700 text-slate-400/70'
+              : result.ruleSetApplied === 'Relaxed'
+              ? 'border-emerald-900 text-emerald-400/70 bg-emerald-500/5'
+              : result.ruleSetApplied === 'Low Vol'
+              ? 'border-yellow-900 text-yellow-400/70 bg-yellow-500/5'
+              : result.ruleSetApplied === 'Short Term'
+              ? 'border-orange-900 text-orange-400/70 bg-orange-500/5'
+              : 'border-slate-700 text-slate-500'
+            }`}>
+            {result.ruleSetApplied}
+          </span>
+        )}
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
         {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
@@ -1556,7 +1577,7 @@ const ETF_RULES: Partial<RulesType> = {
   CREDIT_RATIO_MIN: 0.20, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 20, POP_MIN: 68,
 };
 
-function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType) => void; th: typeof THEMES[Theme] }) {
+function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: () => void; onRun: (rules: RulesType, presetLabel: string) => void; th: typeof THEMES[Theme] }) {
   const [rawValues, setRawValues] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(rules).map(([k, v]) => [k, String(v)])));
   const [editedRules, setEditedRules] = useState<RulesType>({ ...rules });
   const [preset, setPreset] = useState<'stock' | 'etf'>(() => {
@@ -1601,7 +1622,13 @@ function RulesModal({ rules, onClose, onRun, th }: { rules: RulesType; onClose: 
     setActiveRulePreset(p.key);
     try { localStorage.setItem(LS_ACTIVE_PRESET, p.key); } catch {}
   };
-  const handleRun = () => { saveRulesToStorage(editedRules); onRun(editedRules); };
+  const handleRun = () => {
+    saveRulesToStorage(editedRules);
+    const label = activeRulePreset
+      ? RULE_PRESETS.find(p => p.key === activeRulePreset)?.label ?? 'Custom'
+      : preset === 'etf' ? 'ETF / Index' : 'Custom';
+    onRun(editedRules, label);
+  };
 
   const ri = (key: keyof RulesType, label?: string, hint?: string) => (
     <RuleInput ruleKey={key} rawValues={rawValues} editedRules={editedRules} onRawChange={handleChange} onBlur={handleBlur} th={th} label={label} hint={hint} />
@@ -2621,6 +2648,14 @@ export default function Home() {
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeRules, setRuntimeRules] = useState<RulesType>(getSavedRules);
   const [lastRunRules, setLastRunRules] = useState<RulesType | null>(null);
+  const [activePresetLabel, setActivePresetLabel] = useState<string>(() => {
+    try {
+      const preset = localStorage.getItem(LS_RULES_PRESET) === 'etf' ? 'ETF / Index' : '';
+      const rulePreset = localStorage.getItem(LS_ACTIVE_PRESET);
+      const match = RULE_PRESETS.find(p => p.key === rulePreset);
+      return match ? match.label : preset || 'Custom';
+    } catch { return 'Custom'; }
+  });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
 
   useEffect(() => {
@@ -2658,7 +2693,7 @@ export default function Home() {
     );
   };
 
-  const runScreen = async (rules: RulesType) => {
+  const runScreen = async (rules: RulesType, presetLabel?: string) => {
     setError('');
     setResults([]);
     setAutoTrendEntries([]);
@@ -2707,7 +2742,7 @@ export default function Home() {
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
-          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult));
+          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, trendResult, presetLabel));
         } catch (e: any) {
           screenResults.push(errResult(symbol, strategy, e.message, trendResult));
         }
@@ -2724,7 +2759,7 @@ export default function Home() {
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const [chainData, price] = await Promise.all([getChain(symbol, token, rules), getQuote(symbol, token)]);
-            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules));
+            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, rules, undefined, presetLabel));
           } catch (e: any) {
             screenResults.push(errResult(symbol, strategy, e.message));
           }
@@ -2944,7 +2979,7 @@ export default function Home() {
                   <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
                 </div>
               </div>
-              <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={runScreen} />
+              <SmartSuggestionsPanel results={results} rules={runtimeRules} th={th} onApplyAndRerun={(r) => runScreen(r, activePresetLabel)} />
               {qualified.length > 0 && (
                 <div>
                   <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
@@ -2963,7 +2998,7 @@ export default function Home() {
       </div>
 
       <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} th={th} />
-      {showRulesModal && <RulesModal rules={runtimeRules} onClose={() => setShowRulesModal(false)} onRun={(rules) => { setShowRulesModal(false); setRuntimeRules(rules); runScreen(rules); }} th={th} />}
+      {showRulesModal && <RulesModal rules={runtimeRules} onClose={() => setShowRulesModal(false)} onRun={(rules, presetLabel) => { setShowRulesModal(false); setRuntimeRules(rules); setActivePresetLabel(presetLabel); runScreen(rules, presetLabel); }} th={th} />}
     </div>
   );
 }
