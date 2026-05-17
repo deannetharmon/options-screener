@@ -7,20 +7,10 @@ import { useRouter, useSearchParams } from 'next/navigation';
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 
-// Client secret comes ONLY from the env var — never localStorage
-// This prevents stale/mismatched secrets from breaking auth
-function getClientSecret(): string {
-  // Guard against SSR — localStorage only exists in browser
-  const stored = typeof window !== 'undefined' ? localStorage.getItem('tt_client_secret') : '';
-  return process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET || stored || '';
-}
-
 async function getAccessTokenFromRefresh(
-  refreshToken: string
+  refreshToken: string,
+  clientSecret: string
 ): Promise<{ accessToken: string; newRefreshToken?: string }> {
-  const clientSecret = getClientSecret();
-  if (!clientSecret) throw new Error('App configuration error — client secret not configured.');
-
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -32,7 +22,7 @@ async function getAccessTokenFromRefresh(
     }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.error_description ?? data?.error ?? 'Token exchange failed');
+  if (!res.ok) throw new Error(data?.error_description ?? data?.error ?? 'Connection failed');
   if (!data.access_token) throw new Error('No access token returned');
   return {
     accessToken: data.access_token,
@@ -59,51 +49,57 @@ function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [refreshToken, setRefreshToken] = useState('');
-  const [showToken, setShowToken] = useState(false);
+  const [clientSecret, setClientSecret] = useState('');
+  const [showRefresh, setShowRefresh] = useState(false);
+  const [showSecret, setShowSecret] = useState(false);
   const [error, setError] = useState(searchParams.get('error') ?? '');
   const [isLoading, setIsLoading] = useState(true);
+  const [hasStoredSecret, setHasStoredSecret] = useState(false);
 
   useEffect(() => {
     const existingAccess = sessionStorage.getItem('tt_access_token');
     if (existingAccess) { router.replace('/portfolio'); return; }
 
     const storedRefresh = localStorage.getItem('tt_refresh_token');
-    if (!storedRefresh) { setIsLoading(false); return; }
+    const storedSecret = localStorage.getItem('tt_client_secret');
 
-    const clientSecret = getClientSecret();
-    if (!clientSecret) {
-      // No env var — can't auto-login, show form
+    if (storedSecret) setHasStoredSecret(true);
+
+    if (storedRefresh && storedSecret) {
+      getAccessTokenFromRefresh(storedRefresh, storedSecret)
+        .then(({ accessToken, newRefreshToken }) => {
+          sessionStorage.setItem('tt_access_token', accessToken);
+          if (newRefreshToken) localStorage.setItem('tt_refresh_token', newRefreshToken);
+          router.replace('/portfolio');
+        })
+        .catch((e) => {
+          // Keep the client secret — it's the refresh token that expired
+          localStorage.removeItem('tt_refresh_token');
+          setError(`Session expired — paste a new refresh token. (${e.message})`);
+          setIsLoading(false);
+        });
+    } else {
       setIsLoading(false);
-      return;
     }
-
-    getAccessTokenFromRefresh(storedRefresh)
-      .then(({ accessToken, newRefreshToken }) => {
-        sessionStorage.setItem('tt_access_token', accessToken);
-        if (newRefreshToken) localStorage.setItem('tt_refresh_token', newRefreshToken);
-        router.replace('/portfolio');
-      })
-      .catch((e) => {
-        // Refresh token is genuinely expired/revoked — clear it
-        localStorage.removeItem('tt_refresh_token');
-        setError(`Session expired — please paste a new refresh token. (${e.message})`);
-        setIsLoading(false);
-      });
   }, [router]);
 
   const handleConnect = async () => {
+    const storedSecret = localStorage.getItem('tt_client_secret');
+    const secretToUse = clientSecret.trim() || storedSecret || '';
+
     if (!refreshToken.trim()) { setError('Please enter your refresh token'); return; }
+    if (!secretToUse) { setError('Please enter your client secret'); return; }
+
     setIsLoading(true);
     setError('');
     try {
-      const { accessToken, newRefreshToken } = await getAccessTokenFromRefresh(refreshToken.trim());
+      const { accessToken, newRefreshToken } = await getAccessTokenFromRefresh(
+        refreshToken.trim(),
+        secretToUse
+      );
       sessionStorage.setItem('tt_access_token', accessToken);
       localStorage.setItem('tt_refresh_token', newRefreshToken ?? refreshToken.trim());
-      // Cache secret locally only if env var isn't available (build didn't pick it up)
-      if (!process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET) {
-        const cs = getClientSecret();
-        if (cs) localStorage.setItem('tt_client_secret', cs);
-      }
+      localStorage.setItem('tt_client_secret', secretToUse);
       router.push('/portfolio');
     } catch (e: any) {
       setError(e.message || 'Could not connect');
@@ -138,46 +134,65 @@ function LoginContent() {
       <div className="bg-[#111] border border-[#222] rounded-2xl p-8">
         <h2 className="text-sm font-bold text-white tracking-wider mb-2">CONNECT YOUR ACCOUNT</h2>
         <p className="text-xs text-white/40 mb-5 leading-relaxed">
-          Paste your TastyTrade refresh token. You'll only need to do this again if the token expires.
+          {hasStoredSecret
+            ? 'Your client secret is saved. Just paste a new refresh token.'
+            : "Paste both values from your TastyTrade API grant. They'll be saved locally so you won't need to do this again."}
         </p>
 
-        {/* How to get a token */}
-        <div className="mb-4 bg-white/5 border border-white/10 rounded-lg p-3">
+        <div className="mb-5 bg-white/5 border border-white/10 rounded-lg p-3">
           <p className="text-[10px] text-white/50 leading-relaxed">
-            <span className="text-white/70 font-bold">How to get your token:</span><br />
-            1. Log in to{' '}
-            <a
-              href="https://my.tastytrade.com/settings/api"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-400 hover:text-blue-300 underline"
-            >
-              tastytrade.com → Settings → API
+            <span className="text-white/70 font-bold">From TastyTrade:</span><br />
+            1.{' '}
+            <a href="https://my.tastytrade.com/settings/api" target="_blank" rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300 underline">
+              Settings → API → your app
             </a><br />
-            2. Click your app → <span className="text-white/70">Manage → Create Grant</span><br />
-            3. Copy the <span className="text-white/70">Refresh Token</span> and paste below
+            2. Click <span className="text-white/70">Manage → Create Grant</span><br />
+            3. Copy <span className="text-white/70">Refresh Token</span>
+            {!hasStoredSecret && <> and <span className="text-white/70">Client Secret</span></>} below
           </p>
         </div>
 
+        {/* Refresh Token */}
         <div className="mb-4">
           <label className="text-[10px] text-white/40 tracking-wider uppercase">Refresh Token</label>
           <div className="relative mt-1">
             <input
-              type={showToken ? 'text' : 'password'}
+              type={showRefresh ? 'text' : 'password'}
               value={refreshToken}
               onChange={e => setRefreshToken(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleConnect()}
               autoFocus
               className="w-full px-4 py-3 pr-11 bg-[#0a0a0a] border border-[#2c2c2c] rounded-lg text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono"
-              placeholder="paste your refresh token here"
+              placeholder="paste refresh token"
             />
-            <button
-              type="button"
-              onClick={() => setShowToken(v => !v)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/70 transition-colors"
-              tabIndex={-1}
-            >
-              <EyeIcon open={showToken} />
+            <button type="button" onClick={() => setShowRefresh(v => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/70 transition-colors" tabIndex={-1}>
+              <EyeIcon open={showRefresh} />
+            </button>
+          </div>
+        </div>
+
+        {/* Client Secret */}
+        <div className="mb-5">
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-[10px] text-white/40 tracking-wider uppercase">Client Secret</label>
+            {hasStoredSecret && (
+              <span className="text-[9px] text-emerald-500">✓ saved — leave blank to keep</span>
+            )}
+          </div>
+          <div className="relative">
+            <input
+              type={showSecret ? 'text' : 'password'}
+              value={clientSecret}
+              onChange={e => setClientSecret(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleConnect()}
+              className="w-full px-4 py-3 pr-11 bg-[#0a0a0a] border border-[#2c2c2c] rounded-lg text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono"
+              placeholder={hasStoredSecret ? 'leave blank to use saved secret' : 'paste client secret'}
+            />
+            <button type="button" onClick={() => setShowSecret(v => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/70 transition-colors" tabIndex={-1}>
+              <EyeIcon open={showSecret} />
             </button>
           </div>
         </div>
@@ -188,14 +203,11 @@ function LoginContent() {
           </div>
         )}
 
-        <button
-          onClick={handleConnect}
-          disabled={isLoading}
+        <button onClick={handleConnect} disabled={isLoading}
           className="w-full py-3 bg-white text-black rounded-lg text-xs font-bold tracking-widest hover:bg-white/90 transition-colors disabled:opacity-40">
           {isLoading ? 'CONNECTING...' : 'CONNECT →'}
         </button>
 
-        {/* Always-visible nav links — user is never trapped */}
         <div className="flex gap-3 mt-3">
           <a href="/portfolio" className="flex-1 py-2.5 border border-white/10 text-white/30 rounded-lg text-xs tracking-widest hover:border-white/20 hover:text-white/50 transition-colors text-center">
             ← Portfolio
@@ -206,7 +218,7 @@ function LoginContent() {
         </div>
 
         <p className="text-[10px] text-white/20 text-center mt-5 leading-relaxed">
-          Your token is stored in your browser only. Never sent to our servers.
+          Both values are stored in your browser only. Never sent to our servers.
         </p>
       </div>
     </div>
