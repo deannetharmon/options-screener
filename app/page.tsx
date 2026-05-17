@@ -1595,6 +1595,150 @@ function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] 
   );
 }
 
+// ── Rules Modal ────────────────────────────────────────────────────────────
+function RulesModal({ stockRules, etfRules, onClose, onRun, th }: {
+  stockRules: RulesType;
+  etfRules: RulesType;
+  onClose: () => void;
+  onRun: (stockRules: RulesType, etfRules: RulesType, stockLabel: string, etfLabel: string) => void;
+  th: typeof THEMES[Theme];
+}) {
+  const [stockEdited, setStockEdited] = useState<RulesType>({ ...stockRules });
+  const [stockRaw, setStockRaw] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(stockRules).map(([k, v]) => [k, String(v)])));
+  const [stockPreset, setStockPreset] = useState<string | null>(() => { try { return localStorage.getItem(LS_ACTIVE_PRESET); } catch { return null; } });
+  const [etfEdited, setEtfEdited] = useState<RulesType>({ ...etfRules });
+  const [etfRaw, setEtfRaw] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(etfRules).map(([k, v]) => [k, String(v)])));
+  const [etfPreset, setEtfPreset] = useState<string | null>(() => { try { return localStorage.getItem(LS_ACTIVE_PRESET_ETF); } catch { return null; } });
+
+  const makeHandlers = (
+    edited: RulesType,
+    setEdited: React.Dispatch<React.SetStateAction<RulesType>>,
+    setRaw: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  ) => ({
+    onChange: (key: string, raw: string) => setRaw(prev => ({ ...prev, [key]: raw })),
+    onBlur: (key: keyof RulesType, raw: string) => {
+      const val = parseFloat(raw);
+      if (!isNaN(val)) { setEdited(prev => ({ ...prev, [key]: val })); setRaw(prev => ({ ...prev, [key]: String(val) })); }
+      else setRaw(prev => ({ ...prev, [key]: String(edited[key]) }));
+    },
+  });
+
+  const stockHandlers = makeHandlers(stockEdited, setStockEdited, setStockRaw);
+  const etfHandlers = makeHandlers(etfEdited, setEtfEdited, setEtfRaw);
+
+  const applyPresetToStock = (p: typeof RULE_PRESETS[number]) => {
+    const merged = { ...DEFAULT_RULES, ...p.rules };
+    setStockEdited(merged); setStockRaw(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
+    setStockPreset(p.key); try { localStorage.setItem(LS_ACTIVE_PRESET, p.key); } catch {}
+  };
+  const applyPresetToEtf = (p: typeof RULE_PRESETS[number]) => {
+    const merged = { ...DEFAULT_ETF_RULES, ...p.rules };
+    setEtfEdited(merged); setEtfRaw(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
+    setEtfPreset(p.key); try { localStorage.setItem(LS_ACTIVE_PRESET_ETF, p.key); } catch {}
+  };
+  const handleResetStock = () => {
+    setStockEdited({ ...DEFAULT_RULES }); setStockRaw(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)])));
+    setStockPreset(null); try { localStorage.removeItem(LS_RULES); localStorage.removeItem(LS_ACTIVE_PRESET); } catch {}
+  };
+  const handleResetEtf = () => {
+    setEtfEdited({ ...DEFAULT_ETF_RULES }); setEtfRaw(Object.fromEntries(Object.entries(DEFAULT_ETF_RULES).map(([k, v]) => [k, String(v)])));
+    setEtfPreset(null); try { localStorage.removeItem(LS_RULES_ETF); localStorage.removeItem(LS_ACTIVE_PRESET_ETF); } catch {}
+  };
+  const handleRun = () => {
+    saveRulesToStorage(stockEdited); saveEtfRulesToStorage(etfEdited);
+    const sLabel = stockPreset ? (RULE_PRESETS.find(p => p.key === stockPreset)?.label ?? 'Custom') : 'Custom';
+    const eLabel = etfPreset ? (RULE_PRESETS.find(p => p.key === etfPreset)?.label ?? 'ETF Custom') : 'ETF Custom';
+    onRun(stockEdited, etfEdited, sLabel, eLabel);
+  };
+
+  const RuleCol = ({ edited, raw, handlers, presetKey, onApplyPreset, onReset, isEtf }: {
+    edited: RulesType; raw: Record<string, string>;
+    handlers: { onChange: (k: string, v: string) => void; onBlur: (k: keyof RulesType, v: string) => void };
+    presetKey: string | null; onApplyPreset: (p: typeof RULE_PRESETS[number]) => void; onReset: () => void; isEtf: boolean;
+  }) => {
+    const ri = (key: keyof RulesType, lbl?: string, hint?: string) => (
+      <RuleInput ruleKey={key} rawValues={raw} editedRules={edited} onRawChange={handlers.onChange} onBlur={handlers.onBlur} th={th} label={lbl} hint={hint} />
+    );
+    return (
+      <div className="flex-1 min-w-0">
+        <div className={`px-4 py-2.5 border-b ${th.border} flex items-center justify-between ${isEtf ? 'bg-blue-500/5' : ''}`}>
+          <div>
+            <p className={`text-[10px] font-bold tracking-widest ${isEtf ? 'text-blue-400' : th.text}`}>{isEtf ? '🏦 ETF / INDEX' : '📈 STOCK'}</p>
+            <p className={`text-[8px] ${th.textFaint} mt-0.5`}>{isEtf ? 'Auto-applied to ETFs & Indexes' : 'Auto-applied to individual stocks'}</p>
+          </div>
+          <button onClick={onReset} className="text-[8px] border border-yellow-700 text-yellow-600 px-2 py-0.5 rounded hover:bg-yellow-500/10 transition-colors">RESET</button>
+        </div>
+        <div className="px-4 py-2 border-b border-dashed border-slate-800">
+          <p className="text-[8px] tracking-widest uppercase mb-1.5 opacity-40">Quick presets:</p>
+          <div className="flex gap-1 flex-wrap">
+            {RULE_PRESETS.map(p => (
+              <button key={p.key} onClick={() => onApplyPreset(p)} title={p.desc}
+                className={'px-2 py-1 rounded text-[8px] font-bold border transition-colors ' + (presetKey === p.key ? p.color : 'border-slate-700 text-slate-500 hover:border-slate-500')}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="px-4 py-3 space-y-3">
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>① Volatility & Timing</p>
+            <div className="grid grid-cols-2 gap-2">
+              {ri('IVR_MIN','IVR Min %','Floor')}
+              {ri('IVR_IC_MAX','IVR Max % (IC)','IC only')}
+              {ri('DTE_MIN','DTE Min')}
+              {ri('DTE_MAX','DTE Max')}
+            </div>
+          </div>
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>② Delta</p>
+            <div className="grid grid-cols-2 gap-2">
+              {ri('SPREAD_DELTA_MIN','Spread δ Min')}
+              {ri('SPREAD_DELTA_MAX','Spread δ Max')}
+              {ri('IC_DELTA_MIN','IC δ Min')}
+              {ri('IC_DELTA_MAX','IC δ Max')}
+            </div>
+          </div>
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>③ Liquidity · Credit · Return</p>
+            <div className="grid grid-cols-2 gap-2">
+              {ri('OI_MIN','Min OI','Per leg')}
+              {ri('BID_ASK_MAX','Max Bid-Ask','Per leg')}
+              {ri('MAX_SPREAD_WIDTH','Max Width $','Optimizer cap')}
+              {ri('CREDIT_RATIO_MIN','Min Credit Ratio','0.33=course')}
+              {ri('ROC_MIN_SPREAD','Min ROC Spread')}
+              {ri('ROC_MIN_IC','Min ROC IC')}
+              {ri('POP_MIN','Min POP %')}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-auto`}>
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border}`}>
+          <div>
+            <h2 className="text-sm font-bold tracking-widest text-red-500">SCREENING RULES</h2>
+            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Configure Stock and ETF/Index rules independently. The screener auto-applies the right set per ticker.</p>
+          </div>
+          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg`}>✕</button>
+        </div>
+        <div className="flex divide-x divide-slate-800">
+          <RuleCol edited={stockEdited} raw={stockRaw} handlers={stockHandlers} presetKey={stockPreset} onApplyPreset={applyPresetToStock} onReset={handleResetStock} isEtf={false} />
+          <RuleCol edited={etfEdited} raw={etfRaw} handlers={etfHandlers} presetKey={etfPreset} onApplyPreset={applyPresetToEtf} onReset={handleResetEtf} isEtf={true} />
+        </div>
+        <div className={`flex gap-3 px-6 py-4 border-t ${th.border}`}>
+          <p className={`text-[9px] ${th.textFaint} flex-1 self-center`}>Stocks and ETFs/Indexes in the same scan list will automatically use their respective rules.</p>
+          <button onClick={onClose} className={`border ${th.border} ${th.textMuted} py-2 px-4 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
+          <button onClick={handleRun} className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-6 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Trend Detection with Yahoo Finance ──────────────────────────────────────
 async function runTrendDetection(
   autoTickers: string,
