@@ -107,7 +107,6 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-}
 
 function getSavedTheme(): Theme {
   try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; }
