@@ -1148,6 +1148,20 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, onReclas
   const [loadingPortfolio, setLoadingPortfolio] = useState(false);
   const [portfolioStatus, setPortfolioStatus] = useState('');
   const [lastLoadedName, setLastLoadedName] = useState<string | null>(null);
+  const [reclassifying, setReclassifying] = useState(false);
+  const [reclassifyStatus, setReclassifyStatus] = useState('');
+
+  const handleReclassify = async () => {
+    setReclassifying(true);
+    setReclassifyStatus('Analyzing trends...');
+    try {
+      await onReclassify();
+    } finally {
+      setReclassifying(false);
+      setReclassifyStatus('✓ Done — tickers redistributed');
+      setTimeout(() => { setReclassifyStatus(''); setLastLoadedName(null); }, 3000);
+    }
+  };
 
   const markSessionLoaded = (name: string) => {
     setLastLoadedName(name);
@@ -1222,12 +1236,16 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, onReclas
         <div className={`mb-2 px-2 py-1.5 rounded border border-yellow-700/50 bg-yellow-500/5 flex items-center justify-between gap-2`}>
           <div>
             <p className="text-[8px] text-yellow-400/80 leading-tight">Loaded: <span className="font-bold text-yellow-400">{lastLoadedName}</span></p>
-            <p className="text-[8px] text-yellow-400/50 leading-tight">Trends may have shifted</p>
+            {reclassifyStatus
+              ? <p className={`text-[8px] leading-tight ${reclassifyStatus.startsWith('✓') ? 'text-emerald-400' : 'text-yellow-400/70'}`}>{reclassifyStatus}</p>
+              : <p className="text-[8px] text-yellow-400/50 leading-tight">Trends may have shifted</p>
+            }
           </div>
           <button
-            onClick={onReclassify}
-            className="text-[8px] px-2 py-1 border border-yellow-600 text-yellow-400 rounded hover:bg-yellow-500/10 transition-colors font-bold shrink-0 whitespace-nowrap">
-            ↻ Re-classify
+            onClick={handleReclassify}
+            disabled={reclassifying}
+            className="text-[8px] px-2 py-1 border border-yellow-600 text-yellow-400 rounded hover:bg-yellow-500/10 transition-colors font-bold shrink-0 whitespace-nowrap disabled:opacity-50">
+            {reclassifying ? '⟳ Analyzing...' : '↻ Re-classify'}
           </button>
         </div>
       )}
@@ -2978,7 +2996,7 @@ export default function Home() {
   };
 
   const runTrendDetectionWrapper = () => {
-    runTrendDetection(
+    return runTrendDetection(
       autoTickers, bpsTickers, bcsTickers, icTickers, brokenTickers,
       handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
       setAutoTickers, setError, setStatus, setLoading, parseTickers,
