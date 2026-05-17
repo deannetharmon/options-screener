@@ -500,6 +500,7 @@ const LS_SAVED_FILTERS = 'prosper-saved-filters';
 const LS_GLOBAL_SESSIONS = 'prosper-global-sessions';
 const LS_SCREEN_MODE = 'prosper-screen-mode';
 const LS_RANK_CONFIG = 'prosper-rank-config';
+const LS_SESSION_LOADED_AT = 'prosper-session-loaded-at';
 
 // ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
@@ -1132,7 +1133,13 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
 }
 
 // ── Sessions Panel ─────────────────────────────────────────────────────────
-function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { bps: string; bcs: string; ic: string; broken: string; onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void; onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void; th: typeof THEMES[Theme] }) {
+function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, onReclassify, th }: {
+  bps: string; bcs: string; ic: string; broken: string;
+  onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void;
+  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
+  onReclassify: () => void;
+  th: typeof THEMES[Theme];
+}) {
   const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
   const [showSave, setShowSave] = useState(false);
   const [showLoad, setShowLoad] = useState(false);
@@ -1140,6 +1147,12 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { 
   const [saveError, setSaveError] = useState('');
   const [loadingPortfolio, setLoadingPortfolio] = useState(false);
   const [portfolioStatus, setPortfolioStatus] = useState('');
+  const [lastLoadedName, setLastLoadedName] = useState<string | null>(null);
+
+  const markSessionLoaded = (name: string) => {
+    setLastLoadedName(name);
+    try { localStorage.setItem(LS_SESSION_LOADED_AT, JSON.stringify({ name, at: Date.now() })); } catch {}
+  };
 
   const handleLoadFromPortfolio = async () => {
     setLoadingPortfolio(true);
@@ -1187,14 +1200,37 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, th }: { 
   const handleLoadSelect = (name: string) => {
     const session = globalFilters[name]; if (!session) return; setShowLoad(false);
     const allEmpty = !parseTickers(bps).length && !parseTickers(bcs).length && !parseTickers(ic).length;
-    if (allEmpty) { onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), ''); return; }
-    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => { if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken); else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), ''); } });
+    if (allEmpty) {
+      onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
+      markSessionLoaded(name);
+      return;
+    }
+    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => {
+      if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken);
+      else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
+      markSessionLoaded(name);
+    }});
   };
   const handleDelete = async (name: string) => { await deleteFilter('global', name); await refreshFilters(); };
   const filterNames = Object.keys(globalFilters);
   return (
     <div className={`border-t ${th.border} pt-3`}>
       <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
+
+      {/* Loaded session indicator + re-classify */}
+      {lastLoadedName && (
+        <div className={`mb-2 px-2 py-1.5 rounded border border-yellow-700/50 bg-yellow-500/5 flex items-center justify-between gap-2`}>
+          <div>
+            <p className="text-[8px] text-yellow-400/80 leading-tight">Loaded: <span className="font-bold text-yellow-400">{lastLoadedName}</span></p>
+            <p className="text-[8px] text-yellow-400/50 leading-tight">Trends may have shifted</p>
+          </div>
+          <button
+            onClick={onReclassify}
+            className="text-[8px] px-2 py-1 border border-yellow-600 text-yellow-400 rounded hover:bg-yellow-500/10 transition-colors font-bold shrink-0 whitespace-nowrap">
+            ↻ Re-classify
+          </button>
+        </div>
+      )}
       <div className="flex gap-2 mb-2">
         <button
           onClick={handleLoadFromPortfolio}
@@ -2904,6 +2940,9 @@ export default function Home() {
   const [screenMode, setScreenMode] = useState<'filter' | 'rank'>(() => {
     try { return (localStorage.getItem(LS_SCREEN_MODE) as 'filter' | 'rank') ?? 'filter'; } catch { return 'filter'; }
   });
+  const [sessionLoadedAt, setSessionLoadedAt] = useState<{ name: string; at: number } | null>(() => {
+    try { const s = localStorage.getItem(LS_SESSION_LOADED_AT); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const [stockPresetLabel, setStockPresetLabel] = useState<string>(() => {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'Custom'; } catch { return 'Custom'; }
   });
@@ -3158,7 +3197,7 @@ export default function Home() {
             </div>
           </div>
 
-          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} broken={brokenTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} th={th} />
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} broken={brokenTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} onReclassify={runTrendDetectionWrapper} th={th} />
 
           <div className={`border-t ${th.border} pt-3 space-y-4`}>
             <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
@@ -3219,6 +3258,32 @@ export default function Home() {
 
         {/* Main content */}
         <div className="flex-1 overflow-auto p-5">
+
+          {/* Stale session warning */}
+          {sessionLoadedAt && (() => {
+            const daysSince = (Date.now() - sessionLoadedAt.at) / (1000 * 60 * 60 * 24);
+            if (daysSince < 2) return null;
+            return (
+              <div className="mb-4 px-4 py-3 border border-yellow-600/50 bg-yellow-500/8 rounded-lg flex items-start gap-3">
+                <span className="text-yellow-400 text-sm mt-0.5">⚠</span>
+                <div className="flex-1">
+                  <p className="text-xs text-yellow-400 font-bold tracking-wider">STALE SESSION — "{sessionLoadedAt.name}"</p>
+                  <p className="text-[10px] text-yellow-400/70 mt-0.5">
+                    Loaded {Math.floor(daysSince)} day{Math.floor(daysSince) !== 1 ? 's' : ''} ago. Market conditions may have shifted — tickers could belong in different boxes now.
+                  </p>
+                </div>
+                <button
+                  onClick={() => { runTrendDetectionWrapper(); setSessionLoadedAt(null); try { localStorage.removeItem(LS_SESSION_LOADED_AT); } catch {} }}
+                  className="text-[9px] px-3 py-1.5 border border-yellow-600 text-yellow-400 rounded hover:bg-yellow-500/10 transition-colors font-bold shrink-0 whitespace-nowrap">
+                  ↻ Re-classify now
+                </button>
+                <button
+                  onClick={() => { setSessionLoadedAt(null); try { localStorage.removeItem(LS_SESSION_LOADED_AT); } catch {} }}
+                  className="text-yellow-600 hover:text-yellow-400 text-sm shrink-0">✕</button>
+              </div>
+            );
+          })()}
+
           {results.length === 0 && !loading && autoTrendEntries.length === 0 && (
             <div className={`h-full flex flex-col items-center justify-center ${th.textFaint}`}>
               <div className="text-4xl mb-3 opacity-20">◈</div>
