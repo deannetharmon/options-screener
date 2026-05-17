@@ -599,8 +599,9 @@ async function getAccessToken(): Promise<string> {
     body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: CLIENT_ID, client_secret: clientSecret }),
   });
   if (!res.ok) {
+    // Don't clear the refresh token on a non-200 — the token might still be valid
+    // and we may be hitting a temporary server error. Only redirect, don't nuke.
     sessionStorage.removeItem('tt_access_token');
-    localStorage.removeItem('tt_refresh_token');
     window.location.href = '/login';
     throw new Error('Session expired');
   }
@@ -608,6 +609,10 @@ async function getAccessToken(): Promise<string> {
   const token = data.access_token;
   if (!token) { window.location.href = '/login'; throw new Error('No token'); }
   sessionStorage.setItem('tt_access_token', token);
+  // Save rotated refresh token if TastyTrade issued a new one
+  if (data.refresh_token && data.refresh_token !== refreshToken) {
+    localStorage.setItem('tt_refresh_token', data.refresh_token);
+  }
   return token;
 }
 
