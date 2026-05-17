@@ -3070,6 +3070,15 @@ export default function Home() {
             <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
             <Link href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
           </nav>
+          {/* Mode toggle in header */}
+          <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
+            {(['filter', 'rank'] as const).map(mode => (
+              <button key={mode} onClick={() => { setScreenMode(mode); try { localStorage.setItem(LS_SCREEN_MODE, mode); } catch {} }}
+                className={`text-xs px-3 py-1.5 rounded transition-colors tracking-wider font-medium ${screenMode === mode ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
+                {mode === 'filter' ? '⊘ Filter' : '⬡ Rank'}
+              </button>
+            ))}
+          </div>
         </div>
         <img src="/header-bg.png" alt="" className="flex-1 mx-6 hidden sm:block" style={{height: '57px', marginTop: '-1rem', marginBottom: '-1rem', objectFit: 'cover'}} />
         <div className="flex items-center gap-3">
@@ -3171,16 +3180,6 @@ export default function Home() {
           </div>
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
-
-          {/* Mode toggle */}
-          <div className={`flex rounded-lg border ${th.border} overflow-hidden`}>
-            {(['filter', 'rank'] as const).map(mode => (
-              <button key={mode} onClick={() => { setScreenMode(mode); try { localStorage.setItem(LS_SCREEN_MODE, mode); } catch {} }}
-                className={`flex-1 py-2 text-[9px] font-bold tracking-widest transition-colors ${screenMode === mode ? 'bg-blue-600 text-white' : `${th.textFaint} hover:${th.textMuted}`}`}>
-                {mode === 'filter' ? '⊘ FILTER' : '⬡ RANK'}
-              </button>
-            ))}
-          </div>
 
           <button onClick={() => setShowRulesModal(true)} disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
