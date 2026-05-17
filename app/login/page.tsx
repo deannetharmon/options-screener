@@ -7,7 +7,18 @@ import { useRouter, useSearchParams } from 'next/navigation';
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 
-async function getAccessTokenFromRefresh(refreshToken: string, clientSecret: string): Promise<{ accessToken: string; newRefreshToken?: string }> {
+// Client secret comes ONLY from the env var — never localStorage
+// This prevents stale/mismatched secrets from breaking auth
+function getClientSecret(): string {
+  return process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ?? '';
+}
+
+async function getAccessTokenFromRefresh(
+  refreshToken: string
+): Promise<{ accessToken: string; newRefreshToken?: string }> {
+  const clientSecret = getClientSecret();
+  if (!clientSecret) throw new Error('App configuration error — client secret not configured.');
+
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -23,7 +34,9 @@ async function getAccessTokenFromRefresh(refreshToken: string, clientSecret: str
   if (!data.access_token) throw new Error('No access token returned');
   return {
     accessToken: data.access_token,
-    newRefreshToken: data.refresh_token !== refreshToken ? data.refresh_token : undefined,
+    newRefreshToken: data.refresh_token && data.refresh_token !== refreshToken
+      ? data.refresh_token
+      : undefined,
   };
 }
 
@@ -49,31 +62,34 @@ function LoginContent() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // Clean up any stale client secret from localStorage — env var is the only source now
+    try { localStorage.removeItem('tt_client_secret'); } catch {}
+
     const existingAccess = sessionStorage.getItem('tt_access_token');
     if (existingAccess) { router.replace('/portfolio'); return; }
 
     const storedRefresh = localStorage.getItem('tt_refresh_token');
-    const clientSecret =
-      process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ||
-      localStorage.getItem('tt_client_secret') ||
-      '';
+    if (!storedRefresh) { setIsLoading(false); return; }
 
-    // If we have a stored token, the user can escape back — they likely got here by accident
-
-    if (storedRefresh && clientSecret) {
-      getAccessTokenFromRefresh(storedRefresh, clientSecret)
-        .then(({ accessToken, newRefreshToken }) => {
-          sessionStorage.setItem('tt_access_token', accessToken);
-          if (newRefreshToken) localStorage.setItem('tt_refresh_token', newRefreshToken);
-          router.replace('/portfolio');
-        })
-        .catch(() => {
-          localStorage.removeItem('tt_refresh_token');
-          setIsLoading(false);
-        });
-    } else {
+    const clientSecret = getClientSecret();
+    if (!clientSecret) {
+      // No env var — can't auto-login, show form
       setIsLoading(false);
+      return;
     }
+
+    getAccessTokenFromRefresh(storedRefresh)
+      .then(({ accessToken, newRefreshToken }) => {
+        sessionStorage.setItem('tt_access_token', accessToken);
+        if (newRefreshToken) localStorage.setItem('tt_refresh_token', newRefreshToken);
+        router.replace('/portfolio');
+      })
+      .catch((e) => {
+        // Refresh token is genuinely expired/revoked — clear it
+        localStorage.removeItem('tt_refresh_token');
+        setError(`Session expired — please paste a new refresh token. (${e.message})`);
+        setIsLoading(false);
+      });
   }, [router]);
 
   const handleConnect = async () => {
@@ -81,16 +97,9 @@ function LoginContent() {
     setIsLoading(true);
     setError('');
     try {
-      const clientSecret =
-        process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ||
-        localStorage.getItem('tt_client_secret') ||
-        '';
-      if (!clientSecret) throw new Error('App configuration error — client secret missing. Contact the app owner.');
-
-      const { accessToken, newRefreshToken } = await getAccessTokenFromRefresh(refreshToken.trim(), clientSecret);
+      const { accessToken, newRefreshToken } = await getAccessTokenFromRefresh(refreshToken.trim());
       sessionStorage.setItem('tt_access_token', accessToken);
       localStorage.setItem('tt_refresh_token', newRefreshToken ?? refreshToken.trim());
-      if (clientSecret) localStorage.setItem('tt_client_secret', clientSecret);
       router.push('/portfolio');
     } catch (e: any) {
       setError(e.message || 'Could not connect');
@@ -124,17 +133,25 @@ function LoginContent() {
 
       <div className="bg-[#111] border border-[#222] rounded-2xl p-8">
         <h2 className="text-sm font-bold text-white tracking-wider mb-2">CONNECT YOUR ACCOUNT</h2>
-        <p className="text-xs text-white/40 mb-6 leading-relaxed">
-          Enter your TastyTrade refresh token once — you won't be asked again unless your token expires.
+        <p className="text-xs text-white/40 mb-5 leading-relaxed">
+          Paste your TastyTrade refresh token. You'll only need to do this again if the token expires.
         </p>
 
+        {/* How to get a token */}
         <div className="mb-4 bg-white/5 border border-white/10 rounded-lg p-3">
           <p className="text-[10px] text-white/50 leading-relaxed">
             <span className="text-white/70 font-bold">How to get your token:</span><br />
-            1. Log in to tastytrade.com<br />
-            2. Go to Settings → API / OAuth Applications<br />
-            3. Click your app → <span className="text-white/70">Manage → Create Grant</span><br />
-            4. Copy the refresh token and paste it below
+            1. Log in to{' '}
+            <a
+              href="https://my.tastytrade.com/settings/api"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300 underline"
+            >
+              tastytrade.com → Settings → API
+            </a><br />
+            2. Click your app → <span className="text-white/70">Manage → Create Grant</span><br />
+            3. Copy the <span className="text-white/70">Refresh Token</span> and paste below
           </p>
         </div>
 
@@ -146,6 +163,7 @@ function LoginContent() {
               value={refreshToken}
               onChange={e => setRefreshToken(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleConnect()}
+              autoFocus
               className="w-full px-4 py-3 pr-11 bg-[#0a0a0a] border border-[#2c2c2c] rounded-lg text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-white/30 transition-colors font-mono"
               placeholder="paste your refresh token here"
             />
@@ -161,7 +179,7 @@ function LoginContent() {
         </div>
 
         {error && (
-          <div className="mb-4 text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+          <div className="mb-4 text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 leading-relaxed">
             {error}
           </div>
         )}
@@ -173,7 +191,7 @@ function LoginContent() {
           {isLoading ? 'CONNECTING...' : 'CONNECT →'}
         </button>
 
-        {/* Always show navigation links so user is never trapped */}
+        {/* Always-visible nav links — user is never trapped */}
         <div className="flex gap-3 mt-3">
           <a href="/portfolio" className="flex-1 py-2.5 border border-white/10 text-white/30 rounded-lg text-xs tracking-widest hover:border-white/20 hover:text-white/50 transition-colors text-center">
             ← Portfolio
@@ -183,7 +201,7 @@ function LoginContent() {
           </a>
         </div>
 
-        <p className="text-[10px] text-white/20 text-center mt-6 leading-relaxed">
+        <p className="text-[10px] text-white/20 text-center mt-5 leading-relaxed">
           Your token is stored in your browser only. Never sent to our servers.
         </p>
       </div>
