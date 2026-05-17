@@ -10,7 +10,9 @@ const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 // Client secret comes ONLY from the env var — never localStorage
 // This prevents stale/mismatched secrets from breaking auth
 function getClientSecret(): string {
-  return process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ?? '';
+  // Guard against SSR — localStorage only exists in browser
+  const stored = typeof window !== 'undefined' ? localStorage.getItem('tt_client_secret') : '';
+  return process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET || stored || '';
 }
 
 async function getAccessTokenFromRefresh(
@@ -62,9 +64,6 @@ function LoginContent() {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Clean up any stale client secret from localStorage — env var is the only source now
-    try { localStorage.removeItem('tt_client_secret'); } catch {}
-
     const existingAccess = sessionStorage.getItem('tt_access_token');
     if (existingAccess) { router.replace('/portfolio'); return; }
 
@@ -100,6 +99,11 @@ function LoginContent() {
       const { accessToken, newRefreshToken } = await getAccessTokenFromRefresh(refreshToken.trim());
       sessionStorage.setItem('tt_access_token', accessToken);
       localStorage.setItem('tt_refresh_token', newRefreshToken ?? refreshToken.trim());
+      // Cache secret locally only if env var isn't available (build didn't pick it up)
+      if (!process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET) {
+        const cs = getClientSecret();
+        if (cs) localStorage.setItem('tt_client_secret', cs);
+      }
       router.push('/portfolio');
     } catch (e: any) {
       setError(e.message || 'Could not connect');
