@@ -2740,389 +2740,254 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
 
 
+  // ── Spike-resistant range metrics ─────────────────────────────────────────
+  // Raw high60/low60 are poisoned by single outlier candles (AFL Feb spike,
+  // INTC April spike). Sort last60 closes and trim the top/bottom 3 values
+  // to get a robust range that ignores event-driven wicks.
+  const last60Sorted = [...last60].sort((a, b) => a - b);
+  const trimN = Math.min(3, Math.floor(last60.length * 0.05));
+  const trimmedLow60  = last60Sorted[trimN];
+  const trimmedHigh60 = last60Sorted[last60Sorted.length - 1 - trimN];
+  const trimmedRange60   = trimmedLow60 > 0 ? (trimmedHigh60 - trimmedLow60) / trimmedLow60 : range60;
+  const trimmedNet60     = Math.abs(momentum60);
+  const trimmedChopRatio = trimmedNet60 < 0.01 ? 99 : trimmedRange60 / trimmedNet60;
+  const trimmedDrawdownFrom60High = trimmedHigh60 > 0 ? (currentPrice - trimmedHigh60) / trimmedHigh60 : drawdownFrom60High;
+  const trimmedReboundFrom60Low  = trimmedLow60  > 0 ? (currentPrice - trimmedLow60)  / trimmedLow60  : reboundFrom60Low;
+
+  // Use trimmed metrics for classification decisions; keep raw in `metrics` for display.
+  const tRange60    = trimmedRange60;
+  const tChopRatio  = trimmedChopRatio;
+  const tDD60High   = trimmedDrawdownFrom60High;
+  const tReb60Low   = trimmedReboundFrom60Low;
+
   const absScore = Math.abs(directionalScore);
   const conflictPenalty = Math.abs(momentumScore) > 12 && Math.abs(maAlignmentScore) > 12 && Math.sign(momentumScore) !== Math.sign(maAlignmentScore) ? 12 : 0;
   const confidence = Math.round(clamp(absScore - conflictPenalty - penalty * 0.35, 0, 100));
 
-  // ── CDW fix: catastrophic recent drop = event-driven, not a tradeable setup ──
-  // If price crashed >25% in the last 10 bars, the chart is broken regardless of direction.
+  // ── STEP 1: Hard exits — broken/untradeable charts ─────────────────────────
+  // Catastrophic recent drop (>25% in last 10 bars) = event-driven, not tradeable.
+  // Exception: stock already in a confirmed sustained downtrend (the drop is just the final leg).
   const recentCatastrophicDrop = pct(currentPrice, max(closes.slice(-11, -1))) < -0.25;
-  // TMDX fix: exempt stocks already in a confirmed sustained downtrend.
-  // A stock dropping 25%+ as the final leg of a 6-month downtrend is BCS, not event-driven chaos.
   const preCatastrophicDowntrend =
     (lowerHighs || regimeLowerHighs) &&
     (lowerLows || regimeLowerLows) &&
-    drawdownFrom60High < -0.30 &&
+    tDD60High < -0.30 &&
     momentum60 < -0.10;
   if (recentCatastrophicDrop && !preCatastrophicDowntrend) {
     return {
-      trend: 'unknown',
-      strategy: 'NO_TRADE',
-      subtype: 'CHOP',
-      confidence: 20,
+      trend: 'unknown', strategy: 'NO_TRADE', subtype: 'CHOP', confidence: 20,
       ma20, ma50, ma200, scores, metrics,
       reason: `REVIEW: catastrophic drop >25% in last 10 bars — event-driven, chart not yet tradeable. Wait for structure to form.`,
     };
   }
 
-  // ── GDDY fix: post-crash stabilization → IC ──────────────────────────────
-  // Wide 60-day range due to a prior crash, BUT recent 20-bar range is tight = stabilized.
-  // This is a valid IC candidate even though the 60d stats look chaotic.
-  const recentRange20Pct = high20 > 0 ? (high20 - low20) / low20 : 1;
-  const postCrashStabilized =
-    range60 > maxHealthyRange60 &&           // wide 60d range (crash visible)
-    recentRange20Pct < 0.10 &&               // but last 20 bars are tight (<10%)
-    Math.abs(momentum20) < 0.05 &&           // recent price going nowhere
-    Math.abs(momentum40) < 0.12 &&           // medium-term also contained
-    drawdownFrom60High < -0.15;              // confirms there was a real drop
+  // ── STEP 2: Compute regime scores ─────────────────────────────────────────
+  // Three competing scores: trendStrength, rangeScore, chaoticScore.
+  // Classification is determined by which wins, not by gate order.
 
-  // ── ADP/GDDY fix: chop ratio explodes to 99 when net60 ≈ 0 ──────────────
-  // A stock can have a very high chop ratio AND clear directional structure
-  // (ADP: staircase down but net displacement ≈ 0 over 60d due to bounces).
-  // Don't let infinite chop override a clear bearish/bullish score.
-  // Also: GDDY-type post-crash flat ranges have high chop ratio but are valid IC.
-  // Pre-compute bearish/bullish structure here so isChaotic can respect it.
+  // trendStrength: how cleanly directional is this chart?
+  const trendStrength = absScore;
+
+  // rangeScore: evidence the chart is IC-range-bound.
+  // High when: recent range is tight, price is mid-channel, MAs are flat/converging,
+  // no clear directional structure, oscillating behavior.
+  let rangeScore = 0;
+  const recentRange20Pct = high20 > 0 ? (high20 - low20) / low20 : 1;
+  // Tight recent action
+  if (recentRange20Pct < 0.08) rangeScore += 20;
+  else if (recentRange20Pct < 0.12) rangeScore += 12;
+  else if (recentRange20Pct < 0.18) rangeScore += 5;
+  // Flat MAs (converging = sideways regime)
+  const maSpreadPct = Math.abs(pct(ma20, ma50));
+  if (maSpreadPct < 0.015) rangeScore += 18;
+  else if (maSpreadPct < 0.03) rangeScore += 10;
+  else if (maSpreadPct < 0.05) rangeScore += 4;
+  // Weak momentum (price going nowhere on net)
+  if (Math.abs(momentum60) < 0.03) rangeScore += 16;
+  else if (Math.abs(momentum60) < 0.06) rangeScore += 8;
+  else if (Math.abs(momentum60) < 0.10) rangeScore += 2;
+  // Oscillating structure (no consistent higher-high/lower-low pattern)
+  const mixedStructure = (higherHighs && lowerLows) || (lowerHighs && higherLows) ||
+    (!higherHighs && !lowerHighs && !higherLows && !lowerLows);
+  if (mixedStructure) rangeScore += 14;
+  // Chop: only add range score when chop is genuine (trimmed), not spike-induced
+  if (tChopRatio > 4.0) rangeScore += 10;
+  else if (tChopRatio > 2.5) rangeScore += 5;
+  // Price near MA20 (center of range)
+  if (Math.abs(distFromMa20) < 0.03) rangeScore += 8;
+  else if (Math.abs(distFromMa20) < 0.06) rangeScore += 3;
+  // Penalize strong directional MA alignment
+  if (Math.abs(maAlignmentScore) > 22) rangeScore -= 15;
+  else if (Math.abs(maAlignmentScore) > 14) rangeScore -= 8;
+
+  // chaoticScore: evidence the chart is broken/untradeable.
+  let chaoticScore = 0;
+  // Extreme trimmed range (even after spike removal, it's wild)
+  if (tRange60 > maxChaoticRange60) chaoticScore += 30;
+  else if (tRange60 > maxHealthyRange60 * 1.3) chaoticScore += 15;
+  // Strong directional score + exhaustion = broken, not tradeable
+  if (upsideExhausted && directionalScore > 45) chaoticScore += 25;
+  if (downsideExhausted && directionalScore < -45) chaoticScore += 25;
+  // Post-crash stabilization REDUCES chaoticScore — it's actually IC-eligible
+  const postCrashStabilized =
+    range60 > maxHealthyRange60 &&
+    recentRange20Pct < 0.10 &&
+    Math.abs(momentum20) < 0.05 &&
+    Math.abs(momentum40) < 0.12 &&
+    tDD60High < -0.15;
+  if (postCrashStabilized) chaoticScore -= 20;
+
+  // ── STEP 3: Directional memory — overrides marginal range calls ───────────
+  // Two booleans only. Computed from trimmed metrics + structure.
+  // Bearish: lower-high structure + slope confirmed + no strong bounce
   const clearBearishStructure =
     (lowerHighs || regimeLowerHighs) &&
-    (lowerLows || regimeLowerLows || brokePriorSupport ||
-      (ma20Slope < -0.008 && drawdownFrom60High < -0.12)) &&
-    // Use ma50Slope as fallback — catches ADP-type bounces where ma20 is temporarily positive
-    // but the slower MA50 still points down, confirming the broader downtrend
+    (lowerLows || regimeLowerLows || brokePriorSupport || (ma20Slope < -0.008 && tDD60High < -0.12)) &&
     (ma20Slope < -0.005 || momentum40 < -0.03 || ma50Slope < -0.008) &&
-    drawdownFrom60High < -0.06 &&
-    !(momentum90 > 0.25 && drawdownFrom60High < -0.20 && range60 > 0.35); // ANET-type: strongly bullish then event crash — not a clean downtrend
+    tDD60High < -0.06 &&
+    !(momentum90 > 0.25 && tDD60High < -0.20 && tRange60 > 0.35);
 
+  const bearishDirectionalMemory =
+    clearBearishStructure &&
+    directionalScore <= -10 &&
+    !(momentum20 > 0.08 && currentPrice > ma20 && tReb60Low > 0.20) &&
+    !(momentum60 > 0.12 && currentPrice > ma50);
+
+  // Bullish: higher-low structure + price above MA50 + slope confirmed + no sharp breakdown
   const clearBullishStructure =
     (higherLows || regimeHigherLows) &&
     currentPrice > ma50 &&
     (ma20Slope > 0.005 || momentum40 > 0.03) &&
     directionalScore >= 8 &&
-    drawdownFrom60High > -0.25;  // exclude post-crash bounces — if dropped >25% from 60d high, not a clean uptrend
+    tDD60High > -0.25;
 
-  // isChaotic: only fires when there's no clear directional structure
-  const isChaotic = !postCrashStabilized &&
-    !clearBearishStructure &&
-    !clearBullishStructure &&
-    (range60 > maxChaoticRange60 || (chopRatio > 6.0 && absScore < 50));
+  const bullishDirectionalMemory =
+    clearBullishStructure &&
+    directionalScore >= 15 &&
+    !(momentum20 < -0.06 && currentPrice < ma20);
 
-  if (isChaotic) {
-    return {
-      trend: 'sideways',
-      strategy: 'NO_TRADE',
-      subtype: 'CHOP',
-      confidence: Math.max(25, Math.min(48, confidence)),
-      ma20, ma50, ma200, scores, metrics,
-      reason: `NO_TRADE CHOP: 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}, directional score ${scores.total}.`,
-    };
-  }
-
-  // If the move is directional but very mature/vertical, keep it out of automatic spread assignment.
-  if ((upsideExhausted && directionalScore > 45) || (downsideExhausted && directionalScore < -45)) {
-    return {
-      trend: directionalScore > 0 ? 'uptrend' : 'downtrend',
-      strategy: 'NO_TRADE',
-      subtype: 'UNKNOWN',
-      confidence: Math.max(42, Math.min(58, confidence)),
-      ma20, ma50, ma200, scores, metrics,
-      reason: `REVIEW EXTENDED: ${directionalScore > 0 ? 'bullish' : 'bearish'} direction, but move is mature/vertical. 20-day momentum ${(momentum20 * 100).toFixed(1)}%, distance from 50MA ${(distFromMa50 * 100).toFixed(1)}%, 60-day range ${(range60 * 100).toFixed(1)}%.`,
-    };
-  }
-
+  // ── STEP 4: Strong directional patterns (high confidence, fire first) ──────
   const bullishContinuation =
-    directionalScore >= 68 &&
-    ma20 > ma50 &&
-    currentPrice > ma20 &&
-    momentum60 > 0.07 &&
-    (higherLows || regimeHigherLows) &&
-    !upsideExhausted;
+    directionalScore >= 68 && ma20 > ma50 && currentPrice > ma20 &&
+    momentum60 > 0.07 && (higherLows || regimeHigherLows) && !upsideExhausted;
 
   const bearishContinuation =
-    directionalScore <= -62 &&
-    currentPrice < ma20 &&
+    directionalScore <= -62 && currentPrice < ma20 &&
     (ma20 < ma50 || ma20Slope < -0.015) &&
     (momentum60 < -0.06 || momentum20 < -0.08) &&
     (lowerHighs || lowerLows || brokePriorSupport);
 
   const bullishReversal =
-    directionalScore >= 48 &&
-    currentPrice > ma20 &&
-    momentum20 > 0.035 &&
-    momentum60 > 0.07 &&           // raised from 0.045 — filters out flat/ranging stocks with marginal 60d momentum
-    (higherLows || regimeHigherLows) &&
-    regimeHigherLows &&            // require regime-level higher lows, not just 20-bar — rules out UBER-type ranges
-    momentum90 > -0.35 &&
-    !upsideExhausted;
+    directionalScore >= 48 && currentPrice > ma20 &&
+    momentum20 > 0.035 && momentum60 > 0.07 &&
+    (higherLows || regimeHigherLows) && regimeHigherLows &&
+    momentum90 > -0.35 && !upsideExhausted;
 
   const bearishReversal =
-    directionalScore <= -48 &&
-    currentPrice < ma20 &&
+    directionalScore <= -48 && currentPrice < ma20 &&
     momentum20 < -0.035 &&
     (momentum60 < -0.035 || ma20Slope < -0.012 || brokePriorSupport) &&
     (lowerHighs || lowerLows || regimeLowerHighs || regimeLowerLows) &&
     !downsideExhausted;
 
+  // High-vol recovery: confirmed V-bounce above both MAs (catches DDOG/PANW-type recoveries)
+  const volatileRecovery =
+    momentum20 > 0.06 && momentum10 > 0.02 &&
+    currentPrice > ma20 && currentPrice > ma50 &&
+    (higherLows || regimeHigherLows) &&
+    tReb60Low > 0.20 && !upsideExhausted;
+
   if (bullishContinuation) {
-    return {
-      trend: 'uptrend',
-      strategy: 'BPS',
-      subtype: 'CONTINUATION',
-      confidence,
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BPS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.`,
-    };
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'CONTINUATION', confidence,
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BPS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.` };
   }
-
   if (bearishContinuation) {
-    return {
-      trend: 'downtrend',
-      strategy: 'BCS',
-      subtype: 'CONTINUATION',
-      confidence,
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BCS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.`,
-    };
+    return { trend: 'downtrend', strategy: 'BCS', subtype: 'CONTINUATION', confidence,
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BCS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.` };
   }
-
   if (bullishReversal) {
-    return {
-      trend: 'uptrend',
-      strategy: 'BPS',
-      subtype: 'REVERSAL',
-      confidence: Math.max(55, Math.min(74, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BPS REVERSAL: recovery with improving structure. Score ${scores.total}, 20-day momentum ${(momentum20 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%.`,
-    };
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'REVERSAL', confidence: Math.max(55, Math.min(74, confidence)),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BPS REVERSAL: recovery with improving structure. Score ${scores.total}, 20d mom ${(momentum20 * 100).toFixed(1)}%, 60d mom ${(momentum60 * 100).toFixed(1)}%.` };
   }
-
   if (bearishReversal) {
-    return {
-      trend: 'downtrend',
-      strategy: 'BCS',
-      subtype: 'REVERSAL',
-      confidence: Math.max(55, Math.min(74, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BCS REVERSAL: deterioration/failure after prior strength or failed rebound. Score ${scores.total}, 20-day momentum ${(momentum20 * 100).toFixed(1)}%, 60-day momentum ${(momentum60 * 100).toFixed(1)}%.`,
-    };
-  }
-
-  // ── Trend Memory Arbitration ──────────────────────────────────────────────
-
-  // ── GDDY: post-crash stabilized → IC ─────────────────────────────────────
-  if (postCrashStabilized) {
-    return {
-      trend: 'sideways',
-      strategy: 'IC',
-      subtype: 'RANGE',
-      confidence: Math.max(52, Math.min(72, confidence)),
+    return { trend: 'downtrend', strategy: 'BCS', subtype: 'REVERSAL', confidence: Math.max(55, Math.min(74, confidence)),
       ma20, ma50, ma200, scores, metrics,
-      reason: `IC RANGE (post-crash stabilization): 60-day range elevated from prior crash, but last 20 bars tight at ${(recentRange20Pct * 100).toFixed(1)}%, recent momentum flat. Range-bound structure supports IC.`,
-    };
+      reason: `BCS REVERSAL: deterioration/failure after prior strength. Score ${scores.total}, 20d mom ${(momentum20 * 100).toFixed(1)}%, 60d mom ${(momentum60 * 100).toFixed(1)}%.` };
   }
-
-  // ── ERX fix: high-vol name with strong recent recovery ───────────────────
-  const recentBullishRecovery =
-    highVolName &&
-    momentum20 > 0.08 &&
-    momentum10 > 0.03 &&
-    currentPrice > ma20 &&
-    currentPrice > ma50 &&
-    (higherLows || regimeHigherLows) &&
-    reboundFrom60Low > 0.30 &&
-    !upsideExhausted;
-
-  if (recentBullishRecovery) {
-    return {
-      trend: 'uptrend',
-      strategy: 'BPS',
-      subtype: 'REVERSAL',
-      confidence: Math.max(52, Math.min(70, confidence)),
+  if (volatileRecovery) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'REVERSAL', confidence: Math.max(52, Math.min(72, confidence)),
       ma20, ma50, ma200, scores, metrics,
-      reason: `BPS (volatile recovery): high-vol name with strong recent bounce (+${(momentum20 * 100).toFixed(1)}% 20d), price above both MAs, higher-low structure. 60d momentum distorted by prior crash — recent signal trusted.`,
-    };
+      reason: `BPS RECOVERY: confirmed V-bounce above both MAs. Score ${scores.total}, 20d mom +${(momentum20 * 100).toFixed(1)}%, rebound from low ${(tReb60Low * 100).toFixed(1)}%.` };
   }
 
-  // ── Bearish memory: catches ADSK (-22), and now also SPGI/VMC via clearBearishStructure ──
-  // Two tiers:
-  // Strong (-15 and below): full gate including MA50 check
-  // Weak (clearBearishStructure, any score): lower highs + slope confirmed = BCS override
-  const bearishMemoryStrong =
-    directionalScore <= -15 &&
-    (lowerHighs || regimeLowerHighs) &&
-    (lowerLows || regimeLowerLows || brokePriorSupport) &&
-    (currentPrice < ma50 || (lowerHighs && regimeLowerHighs && ma20Slope < -0.005)) &&
-    (ma20Slope < -0.005 || momentum40 < -0.03 || momentum60 < -0.05) &&
-    !(momentum20 > 0.08 && currentPrice > ma20 && reboundFrom60Low > 0.20);
+  // ── STEP 5: Regime classification by score dominance ──────────────────────
+  // Now that strong directional patterns have been handled, decide between
+  // IC (rangeScore wins), BCS/BPS (trendStrength + directional memory wins),
+  // or chaotic/extended (chaoticScore wins).
 
-  // Weak bearish: covers SPGI (+3) and VMC (-7) — low score but clear lower-high structure
-  // with price rolling over and negative slope. Use clearBearishStructure computed above.
-  const bearishMemoryWeak =
-    !bearishMemoryStrong &&
-    clearBearishStructure &&
-    (lowerHighs || regimeLowerHighs) &&
-    drawdownFrom60High < -0.06 &&
-    !(momentum20 > 0.06 && currentPrice > ma20) &&
-    !(momentum60 > 0.12 && currentPrice > ma50);  // block strong 60d recoveries — HOOD-type V-bounces back above MA50
-
-  const bullishMemoryStrong =
-    directionalScore >= 22 &&
-    (higherLows || regimeHigherLows) &&
-    currentPrice > ma50 &&
-    (ma20Slope > 0.008 || momentum40 > 0.05) &&
-    !(momentum20 < -0.06 && currentPrice < ma20);
-
-  // ── Diagnostic strings for IC/Review reason text ──────────────────────────
-  const _diagLH = lowerHighs || regimeLowerHighs;
-  const _diagLL = lowerLows || regimeLowerLows || brokePriorSupport || (ma20Slope < -0.008 && drawdownFrom60High < -0.12);
-  const _diagSlope = ma20Slope < -0.005 || momentum40 < -0.03 || ma50Slope < -0.008;
-  const _diagDD = drawdownFrom60High < -0.06;
-  const _diagNoBnc = !(momentum20 > 0.06 && currentPrice > ma20);
-  const _diagCBS = `CBS[↓Hi=${_diagLH?'✓':'✗'} ↓Lo=${_diagLL?'✓':'✗'} slope=${_diagSlope?'✓':'✗'} dd=${_diagDD?'✓':'✗'}]=${clearBearishStructure?'✓':'✗'}`;
-  const _diagBMSLL = lowerLows || regimeLowerLows || brokePriorSupport;
-  const _diagBMSMA50 = currentPrice < ma50 || (lowerHighs && regimeLowerHighs && ma20Slope < -0.005);
-  const _diagBMSSlope = ma20Slope < -0.005 || momentum40 < -0.03 || momentum60 < -0.05;
-  const _diagBMSNoBnc = !(momentum20 > 0.08 && currentPrice > ma20 && reboundFrom60Low > 0.20);
-  const _diagBMS = `BMS[s≤-15=${directionalScore<=-15?'✓':'✗'} ↓Hi=${_diagLH?'✓':'✗'} ↓Lo=${_diagBMSLL?'✓':'✗'} MA50=${_diagBMSMA50?'✓':'✗'} sl=${_diagBMSSlope?'✓':'✗'} noBnc=${_diagBMSNoBnc?'✓':'✗'}]=${bearishMemoryStrong?'✓':'✗'}`;
-  const _diagBMW = `BMW[CBS=${clearBearishStructure?'✓':'✗'} dd=${_diagDD?'✓':'✗'} noBnc=${_diagNoBnc?'✓':'✗'}]=${bearishMemoryWeak?'✓':'✗'}`;
-  const _diag = `| ${_diagCBS} | ${_diagBMS} | ${_diagBMW}`;
-
-  // True IC range: only if no directional memory gate fires.
-  const rangeLike = absScore <= 28 || chopRatio > 3.0 || (range60 > 0.22 && Math.abs(momentum60) < 0.06);
-
-  if (rangeLike && bearishMemoryStrong) {
-    return {
-      trend: 'downtrend',
-      strategy: 'BCS',
-      subtype: 'CONTINUATION',
-      confidence: Math.max(52, Math.min(70, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BCS (trend memory override): score ${scores.total} — bearish structure persists despite consolidation. Lower highs/lows, price below MA50, slope/momentum confirm direction. Range ${(range60 * 100).toFixed(1)}%, chop ${chopRatio.toFixed(1)}.`,
-    };
+  // Chaotic/extended: broken chart, no clean trade
+  if (chaoticScore >= 30 && chaoticScore > rangeScore && chaoticScore > trendStrength * 0.6) {
+    if (upsideExhausted || downsideExhausted) {
+      return { trend: directionalScore > 0 ? 'uptrend' : 'downtrend', strategy: 'NO_TRADE', subtype: 'UNKNOWN',
+        confidence: Math.max(42, Math.min(58, confidence)), ma20, ma50, ma200, scores, metrics,
+        reason: `REVIEW EXTENDED: ${directionalScore > 0 ? 'bullish' : 'bearish'} direction but move is mature/vertical. 20d mom ${(momentum20 * 100).toFixed(1)}%, dist 50MA ${(distFromMa50 * 100).toFixed(1)}%, trimmed range ${(tRange60 * 100).toFixed(1)}%.` };
+    }
+    return { trend: 'sideways', strategy: 'NO_TRADE', subtype: 'CHOP',
+      confidence: Math.max(25, Math.min(48, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `NO_TRADE CHOP: trimmed 60d range ${(tRange60 * 100).toFixed(1)}%, chop ${tChopRatio.toFixed(1)}, directional score ${scores.total}.` };
   }
 
-  if (rangeLike && bullishMemoryStrong) {
-    return {
-      trend: 'uptrend',
-      strategy: 'BPS',
-      subtype: 'CONTINUATION',
-      confidence: Math.max(52, Math.min(70, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BPS (trend memory override): score ${scores.total} — bullish structure persists despite consolidation. Higher lows, price above MA50, slope/momentum confirm direction. Range ${(range60 * 100).toFixed(1)}%, chop ${chopRatio.toFixed(1)}.`,
-    };
-  }
-
-  // ── SPGI/VMC/ADP: weak score but confirmed bearish structure ─────────────
-  // Must fire before rangeLike IC check, otherwise these fall through to IC.
-  if (bearishMemoryWeak) {
-    return {
-      trend: 'downtrend',
-      strategy: 'BCS',
-      subtype: 'REVERSAL',
-      confidence: Math.max(45, Math.min(62, confidence)),
+  // Directional memory overrides IC when structure is confirmed
+  if (bearishDirectionalMemory && rangeScore < trendStrength + 15) {
+    const isStrong = directionalScore <= -15 && (currentPrice < ma50 || (lowerHighs && regimeLowerHighs));
+    return { trend: 'downtrend', strategy: 'BCS',
+      subtype: isStrong ? 'CONTINUATION' : 'REVERSAL',
+      confidence: Math.max(isStrong ? 52 : 45, Math.min(isStrong ? 70 : 62, confidence)),
       ma20, ma50, ma200, scores, metrics,
-      reason: `BCS (weak bearish memory): score ${scores.total} — lower highs confirmed, price rolling over, negative slope. Structure supports BCS despite low directional score. Range ${(range60 * 100).toFixed(1)}%.`,
-    };
+      reason: `BCS (bearish structure): score ${scores.total} — lower highs/lows confirmed, price rolling over. Trimmed range ${(tRange60 * 100).toFixed(1)}%, chop ${tChopRatio.toFixed(1)}.` };
   }
 
-  if (rangeLike) {
-    return {
-      trend: 'sideways',
-      strategy: 'IC',
-      subtype: 'RANGE',
-      confidence: Math.max(55, Math.min(78, 100 - absScore - Math.round(penalty * 0.35))),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `IC RANGE: overlapping/mixed structure; score ${scores.total}, 60-day range ${(range60 * 100).toFixed(1)}%, chop ratio ${chopRatio.toFixed(1)}. ${_diag}`,
-    };
+  if (bullishDirectionalMemory && rangeScore < trendStrength + 15) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'CONTINUATION',
+      confidence: Math.max(52, Math.min(70, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `BPS (bullish structure): score ${scores.total} — higher lows, price above MA50, slope confirms direction. Trimmed range ${(tRange60 * 100).toFixed(1)}%, chop ${tChopRatio.toFixed(1)}.` };
   }
 
-  // ── Final fallback: only truly ambiguous signals reach here ──────────────
-  // If we have a weak directional lean but no clean pattern, try one more time
-  // to assign BCS/BPS before sending to Review.
+  // IC: range wins when rangeScore clearly dominates and no directional memory override
+  const rangeDominates = rangeScore >= 40 && rangeScore > trendStrength * 0.7;
+  if (rangeDominates || postCrashStabilized) {
+    return { trend: 'sideways', strategy: 'IC', subtype: 'RANGE',
+      confidence: Math.max(55, Math.min(78, Math.round(rangeScore * 0.78))),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `IC RANGE: range score ${Math.round(rangeScore)} vs trend strength ${Math.round(trendStrength)}. Trimmed range ${(tRange60 * 100).toFixed(1)}%, chop ${tChopRatio.toFixed(1)}, MA spread ${(maSpreadPct * 100).toFixed(1)}%.${postCrashStabilized ? ` Post-crash stabilization: last 20 bars tight at ${(recentRange20Pct * 100).toFixed(1)}%.` : ''}` };
+  }
+
+  // Weak directional leans — assign direction if there's any structural support
   if (directionalScore <= -18 && currentPrice < ma50 && (lowerHighs || brokePriorSupport)) {
-    return {
-      trend: 'downtrend',
-      strategy: 'BCS',
-      subtype: 'REVERSAL',
-      confidence: Math.max(40, Math.min(55, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BCS (weak lean): score ${scores.total} — below MA50 with lower-high or support break structure, but signal is not clean. Monitor carefully.`,
-    };
+    return { trend: 'downtrend', strategy: 'BCS', subtype: 'REVERSAL',
+      confidence: Math.max(40, Math.min(55, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `BCS (weak lean): score ${scores.total} — below MA50 with lower-high or support break. Monitor carefully.` };
+  }
+  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows) && momentum60 > 0.05) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'REVERSAL',
+      confidence: Math.max(40, Math.min(55, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `BPS (weak lean): score ${scores.total} — above MA50 with higher-low structure. Monitor carefully.` };
+  }
+  if (directionalScore >= 45 && currentPrice > ma50 && momentum60 > 0.04 && ma20Slope > 0) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'REVERSAL',
+      confidence: Math.max(42, Math.min(58, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `BPS (strong score, recovering): score ${scores.total} — above MA50, positive slope and momentum. Higher-low structure not yet confirmed.` };
   }
 
-  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows) && momentum60 > 0.05 && !rangeLike) {
-    return {
-      trend: 'uptrend',
-      strategy: 'BPS',
-      subtype: 'REVERSAL',
-      confidence: Math.max(40, Math.min(55, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BPS (weak lean): score ${scores.total} — above MA50 with higher-low structure, but signal is not clean. Monitor carefully.`,
-    };
-  }
-
-  // Second pass: strong score above MA50 even without confirmed higher lows — catches RY-type
-  // stocks with strong directional scores that just pulled back far enough to disrupt the lows structure
-  if (directionalScore >= 45 && currentPrice > ma50 && momentum60 > 0.04 && ma20Slope > 0 && !rangeLike) {
-    return {
-      trend: 'uptrend',
-      strategy: 'BPS',
-      subtype: 'REVERSAL',
-      confidence: Math.max(42, Math.min(58, confidence)),
-      ma20,
-      ma50,
-      ma200,
-      scores,
-      metrics,
-      reason: `BPS (strong score, recovering): score ${scores.total} — above MA50 with positive slope and momentum. Higher-low structure not yet confirmed but directional lean is clear.`,
-    };
-  }
-
+  // Final fallback: genuinely ambiguous
   return {
-    trend: 'unknown',
-    strategy: 'NO_TRADE',
-    subtype: 'UNKNOWN',
+    trend: 'unknown', strategy: 'NO_TRADE', subtype: 'UNKNOWN',
     confidence: Math.max(35, Math.min(54, confidence)),
-    ma20,
-    ma50,
-    ma200,
-    scores,
-    metrics,
-    reason: `REVIEW: genuinely conflicting signals; score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}. No clear directional or range pattern. ${_diag}`,
+    ma20, ma50, ma200, scores, metrics,
+    reason: `REVIEW: conflicting signals — score ${scores.total}, range score ${Math.round(rangeScore)}, trend strength ${Math.round(trendStrength)}. Momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure ${scores.structure}.`,
   };
 }
 
