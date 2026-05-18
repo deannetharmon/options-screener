@@ -1633,7 +1633,7 @@ function TradeModal({ result, th, onClose }: {
   const marginReq = bpEffect?.['change-in-margin-requirement'];
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4">
       <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-md`} onClick={e => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h2 className={`text-sm font-bold ${th.text} tracking-widest`}>PLACE ORDER — {result.symbol}</h2>
@@ -1738,18 +1738,16 @@ function TradeModal({ result, th, onClose }: {
   );
 }
 
-function ResultCard({ result, th, rules, screenMode, rankConfig }: {
+function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
   screenMode?: 'filter' | 'rank';
   rankConfig?: RankConfig;
+  onTrade?: (result: ScreenResult) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
-  const [showTradeModal, setShowTradeModal] = useState(false);
-  const [isMounted, setIsMounted] = useState(false);
-  useEffect(() => { setIsMounted(true); }, []);
 
   const c = result.bestCandidate;
   const t = result.trendResult;
@@ -1910,7 +1908,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig }: {
           <div className="flex gap-2 mt-2">
             {c && (
               <button
-                onClick={(e) => { e.stopPropagation(); setShowTradeModal(true); }}
+                onClick={(e) => { e.stopPropagation(); onTrade?.(result); }}
                 className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors"
               >
                 ⚡ TRADE THIS
@@ -1926,14 +1924,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig }: {
         </div>
       )}
 
-      {/* Trade Modal */}
-      {isMounted && showTradeModal && c && createPortal(
-        <TradeModal result={result} th={th} onClose={() => setShowTradeModal(false)} />,
-        document.body
-      )}
-
       {/* Best Opportunity Modal — rendered via portal to escape card click handler */}
-      {isMounted && showBestFinder && createPortal(
+      {showBestFinder && createPortal(
         <BestOpportunityFinder
           symbol={result.symbol}
           onClose={() => setShowBestFinder(false)}
@@ -3277,6 +3269,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
+  const [tradeResult, setTradeResult] = useState<ScreenResult | null>(null);
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
   const [runtimeEtfRules, setRuntimeEtfRules] = useState<RulesType>(getSavedEtfRules);
@@ -3718,13 +3711,13 @@ export default function Home() {
                   {qualified.length > 0 && (
                     <div>
                       <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} />)}</div>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} />)}</div>
                     </div>
                   )}
                   {disqualified.length > 0 && (
                     <div>
                       <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} />)}</div>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} />)}</div>
                     </div>
                   )}
                 </>
@@ -3744,6 +3737,7 @@ export default function Home() {
         </div>
       </div>
 
+      {tradeResult && tradeResult.bestCandidate && <TradeModal result={tradeResult} th={th} onClose={() => setTradeResult(null)} />}
       <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} th={th} />
       {showRulesModal && <RulesModal stockRules={runtimeStockRules} etfRules={runtimeEtfRules} rankConfig={rankConfig} onClose={() => setShowRulesModal(false)} onRun={(sRules, eRules, sLabel, eLabel, rCfg) => { setShowRulesModal(false); setRuntimeStockRules(sRules); setRuntimeEtfRules(eRules); setStockPresetLabel(sLabel); setEtfPresetLabel(eLabel); setRankConfig(rCfg); runScreen(sRules, eRules, sLabel, eLabel); }} th={th} />}
     </div>
