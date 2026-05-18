@@ -511,16 +511,12 @@ interface RankConfig {
   weightRange: number;     // 0–20
   weightTechnical: number; // 0–15
   weightLiquidity: number; // 0–10
-  dteSweetSpot: number;    // DTE center (default 38)
-  dteRange: number;        // ± around sweet spot for full score (default 7)
-  thresholdGreen: number;  // default 75
-  thresholdYellow: number; // default 55
-  thresholdOrange: number; // default 35
-  // legacy — kept for backwards compat but unused
-  weightCredit: number;
-  weightRoc: number;
-  weightPop: number;
-  weightDte: number;
+  dteSweetSpot: number;
+  dteRange: number;
+  thresholdGreen: number;
+  thresholdYellow: number;
+  thresholdOrange: number;
+  weightCredit: number; weightRoc: number; weightPop: number; weightDte: number;
 }
 
 const DEFAULT_RANK_CONFIG: RankConfig = {
@@ -544,62 +540,75 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
   const t = result.trendResult;
   const c = result.bestCandidate;
 
-  // ── Momentum (30pts) ─────────────────────────────────────────────────────
-  // Uses trend engine momentum score if available, else falls back to trend confidence
+  // ── Momentum (30pts) ──────────────────────────────────────────────────────
+  // trend engine momentum is signed (-48..+48); normalize by direction alignment
   let momentumRaw = 0;
   if (t?.scores?.momentum != null) {
-    // trend engine scores momentum 0–100 internally; normalize to 0–1
-    momentumRaw = t.scores.momentum / 100;
+    const raw = t.scores.momentum;
+    const absNorm = clamp(Math.abs(raw) / 45);
+    const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
+    const aligned = expectedSign === 0 ? 0.7 : (Math.sign(raw) === expectedSign ? 1.0 : 0.3);
+    momentumRaw = absNorm * aligned;
   } else if (t?.confidence != null) {
-    momentumRaw = t.confidence / 100;
+    momentumRaw = clamp(t.confidence / 80);
+    if (t.trend === 'sideways' || t.trend === 'unknown') momentumRaw *= 0.5;
+  } else if (c) {
+    const pop = c.pop ?? 70;
+    momentumRaw = clamp((pop - 60) / 25);
   }
-  // Strong directional trend (BPS/BCS) gets full score; sideways/unknown gets half
-  if (t?.strategy === 'IC' || t?.trend === 'sideways') momentumRaw *= 0.6;
-  if (t?.trend === 'unknown') momentumRaw *= 0.3;
   const momentumScore = clamp(momentumRaw) * cfg.weightMomentum;
 
   // ── IV Quality (25pts) ────────────────────────────────────────────────────
-  // Peaks at IVR 65, slight penalty above 80 (earnings risk territory)
   const ivr = result.ivr ?? 0;
   const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
   const ivrScore = clamp(ivrRaw) * cfg.weightIvr;
 
   // ── 52W Range Position (20pts) ────────────────────────────────────────────
-  // BPS: want stock near lows (high range % = near highs = bad for BPS)
-  // BCS: want stock near highs (low range % = near lows = bad for BCS)
-  // IC: neutral, mid-range is best
-  let rangeRaw = 0.5; // default neutral
+  let rangeRaw = 0.5;
   if (t?.metrics?.range60 != null) {
-    const range60 = t.metrics.range60; // 0 = at 60d low, 1 = at 60d high
-    if (t.strategy === 'BPS') rangeRaw = 1 - range60; // near lows = good
-    else if (t.strategy === 'BCS') rangeRaw = range60; // near highs = good
-    else rangeRaw = 1 - Math.abs(range60 - 0.5) * 2; // IC: mid-range = good
+    const r60 = clamp(t.metrics.range60);
+    if (t.strategy === 'BPS') rangeRaw = 1 - r60;
+    else if (t.strategy === 'BCS') rangeRaw = r60;
+    else rangeRaw = 1 - Math.abs(r60 - 0.5) * 2;
   } else if (t?.metrics?.distFromMa50 != null) {
-    // fallback: use distance from MA50 as proxy
-    const dist = Math.abs(t.metrics.distFromMa50);
-    rangeRaw = clamp(1 - dist / 0.20); // within 20% of MA50 = full score
+    const dist = t.metrics.distFromMa50;
+    if (t.strategy === 'BPS') rangeRaw = clamp(1 - (dist + 0.15) / 0.30);
+    else if (t.strategy === 'BCS') rangeRaw = clamp((dist + 0.15) / 0.30);
+    else rangeRaw = clamp(1 - Math.abs(dist) / 0.20);
+  } else if (c) {
+    rangeRaw = clamp(c.roc / 40);
   }
   const rangeScore = clamp(rangeRaw) * cfg.weightRange;
 
   // ── Technical (15pts) ─────────────────────────────────────────────────────
-  // MA alignment + slope from trend engine
+  // MA alignment signed (-34..+34), slope signed (-22..+22)
   let technicalRaw = 0;
   if (t?.scores != null) {
-    const maScore = (t.scores.maAlignment ?? 0) / 100;
-    const slopeScore = (t.scores.slope ?? 0) / 100;
-    technicalRaw = (maScore * 0.6 + slopeScore * 0.4);
+    const maRaw = t.scores.maAlignment ?? 0;
+    const slopeRaw = t.scores.slope ?? 0;
+    const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
+    const maNorm = expectedSign === 0
+      ? clamp(Math.abs(maRaw) / 34)
+      : clamp((maRaw * expectedSign + 34) / 68);
+    const slopeNorm = expectedSign === 0
+      ? clamp(Math.abs(slopeRaw) / 22)
+      : clamp((slopeRaw * expectedSign + 22) / 44);
+    technicalRaw = maNorm * 0.6 + slopeNorm * 0.4;
   } else if (t?.confidence != null) {
-    technicalRaw = t.confidence / 100 * 0.5;
+    technicalRaw = clamp(t.confidence / 100) * 0.6;
+  } else if (c) {
+    const delta = c.shortDelta;
+    technicalRaw = delta >= 0.20 && delta <= 0.30 ? 1.0 : clamp(1 - Math.abs(delta - 0.25) / 0.15);
   }
   const technicalScore = clamp(technicalRaw) * cfg.weightTechnical;
 
   // ── Liquidity (10pts) ─────────────────────────────────────────────────────
-  // OI and credit ratio — can we actually get filled at a good price?
-  let liquidityRaw = 0.5; // default when no candidate
+  let liquidityRaw = 0.4;
   if (c) {
-    const oiScore = clamp((Math.min(c.shortOI, c.longOI) - 100) / 900); // 100 OI = 0, 1000+ OI = 1
-    const creditRatioScore = clamp((c.creditRatio - 0.15) / 0.35); // 0.15 = 0, 0.50+ = 1
-    liquidityRaw = oiScore * 0.5 + creditRatioScore * 0.5;
+    const oiScore = clamp((Math.min(c.shortOI, c.longOI) - 50) / 950);
+    const creditRatioScore = clamp((c.creditRatio - 0.15) / 0.35);
+    const rocScore = clamp(c.roc / 35);
+    liquidityRaw = oiScore * 0.4 + creditRatioScore * 0.3 + rocScore * 0.3;
   }
   const liquidityScore = clamp(liquidityRaw) * cfg.weightLiquidity;
 
@@ -1853,7 +1862,6 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
           </span>
         )}
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
-        {/* Dual strategy badge — show IC when BPS/BCS also qualifies as condor leg */}
         {(result.strategy === 'BPS' || result.strategy === 'BCS') && result.ivr != null && result.ivr >= 30 && (
           <span className="text-[9px] px-1.5 py-0.5 border border-blue-500/50 text-blue-400/80 rounded shrink-0">+ IC</span>
         )}
@@ -1896,7 +1904,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
                 {[
                   { label: 'Momentum', val: scored.dims.momentum, max: rankConfig!.weightMomentum },
                   { label: 'IV', val: scored.dims.ivr, max: rankConfig!.weightIvr },
-                  { label: '52W Range', val: scored.dims.range, max: rankConfig!.weightRange },
+                  { label: 'Range', val: scored.dims.range, max: rankConfig!.weightRange },
                   { label: 'Technical', val: scored.dims.technical, max: rankConfig!.weightTechnical },
                   { label: 'Liquidity', val: scored.dims.liquidity, max: rankConfig!.weightLiquidity },
                 ].map(d => (
