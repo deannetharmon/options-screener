@@ -244,8 +244,11 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
 
   const tickers: string[] = [];
   for (const line of rawText.split('\n')) {
-    const ticker = normalizeTickerToken(line.trim());
-    if (ticker) tickers.push(ticker);
+    // Split each line into tokens to handle grid/badge layouts (multiple tickers per line)
+    for (const token of line.split(/[\s,|•·]+/)) {
+      const ticker = normalizeTickerToken(token.trim());
+      if (ticker) tickers.push(ticker);
+    }
   }
 
   return Array.from(new Set(tickers));
@@ -2470,8 +2473,14 @@ async function runTrendDetection(
           distributions.broken.push(symbol);
         }
       } catch (e: any) {
-        console.warn(e?.message ?? e);
-        distributions.broken.push(symbol);
+        const msg = e?.message ?? '';
+        const isInvalidSymbol = msg.includes('404') || msg.includes('no bars') || msg.includes('Not enough valid');
+        if (isInvalidSymbol) {
+          console.warn(`Skipping invalid/no-data symbol: ${symbol} — ${msg}`);
+        } else {
+          console.warn(`Trend detection error for ${symbol}: ${msg}`);
+          distributions.broken.push(symbol);
+        }
       } finally {
         completed += 1;
         setStatus(`Analyzed ${completed}/${autoList.length} tickers...`);
@@ -2554,7 +2563,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
   });
 
   if (closes.length < 90) {
-    return unknownResult('Not enough valid Yahoo daily closing prices for vNext trend detection');
+    throw new Error(`no bars: ${cleanSymbol} returned only ${closes.length} closes — likely invalid symbol`);
   }
 
   const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
