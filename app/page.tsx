@@ -3456,7 +3456,7 @@ export default function Home() {
             ))}
           </div>
         </div>
-        <img src="/header-bg.png" alt="" className="flex-1 mx-6 hidden sm:block pointer-events-none" style={{height: '57px', marginTop: '-1rem', marginBottom: '-1rem', objectFit: 'cover'}} />
+        
         <div className="flex items-center gap-3">
           <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
           <ThemeToggle theme={theme} setTheme={setTheme} />
