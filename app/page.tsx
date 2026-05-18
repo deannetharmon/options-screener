@@ -589,9 +589,26 @@ function trafficLight(score: number, cfg: RankConfig): { emoji: string; label: s
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 
+const LS_ACCESS_TOKEN = 'tt_access_token_cache';
+const LS_ACCESS_TOKEN_EXPIRY = 'tt_access_token_expiry';
+
 async function getAccessToken(): Promise<string> {
-  const cached = sessionStorage.getItem('tt_access_token');
-  if (cached) return cached;
+  // 1. Check sessionStorage first (fastest, in-memory)
+  const sessionCached = sessionStorage.getItem('tt_access_token');
+  if (sessionCached) return sessionCached;
+
+  // 2. Check localStorage cache — survives rebuilds/page reloads
+  // Access tokens are valid for ~24h; we cache for 23h to be safe
+  try {
+    const lsCached = localStorage.getItem(LS_ACCESS_TOKEN);
+    const expiry = localStorage.getItem(LS_ACCESS_TOKEN_EXPIRY);
+    if (lsCached && expiry && Date.now() < parseInt(expiry)) {
+      sessionStorage.setItem('tt_access_token', lsCached);
+      return lsCached;
+    }
+  } catch {}
+
+  // 3. Use refresh token to get a new access token
   const refreshToken = localStorage.getItem('tt_refresh_token');
   const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ?? '';
   if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
@@ -601,16 +618,22 @@ async function getAccessToken(): Promise<string> {
     body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: CLIENT_ID, client_secret: clientSecret }),
   });
   if (!res.ok) {
-    // Don't clear the refresh token on a non-200 — the token might still be valid
-    // and we may be hitting a temporary server error. Only redirect, don't nuke.
     sessionStorage.removeItem('tt_access_token');
+    try { localStorage.removeItem(LS_ACCESS_TOKEN); localStorage.removeItem(LS_ACCESS_TOKEN_EXPIRY); } catch {}
     window.location.href = '/login';
     throw new Error('Session expired');
   }
   const data = await res.json();
   const token = data.access_token;
   if (!token) { window.location.href = '/login'; throw new Error('No token'); }
+
+  // Store in both sessionStorage and localStorage
   sessionStorage.setItem('tt_access_token', token);
+  try {
+    localStorage.setItem(LS_ACCESS_TOKEN, token);
+    localStorage.setItem(LS_ACCESS_TOKEN_EXPIRY, String(Date.now() + 23 * 60 * 60 * 1000));
+  } catch {}
+
   // Save rotated refresh token if TastyTrade issued a new one
   if (data.refresh_token && data.refresh_token !== refreshToken) {
     localStorage.setItem('tt_refresh_token', data.refresh_token);
@@ -621,8 +644,9 @@ async function getAccessToken(): Promise<string> {
 async function ttFetch(path: string, token: string): Promise<any> {
   const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
   if (res.status === 401) {
-    // Token expired mid-session — clear it, get a fresh one, retry once
+    // Token expired mid-session — clear both caches, get a fresh one, retry once
     sessionStorage.removeItem('tt_access_token');
+    try { localStorage.removeItem(LS_ACCESS_TOKEN); localStorage.removeItem(LS_ACCESS_TOKEN_EXPIRY); } catch {}
     const freshToken = await getAccessToken();
     const retry = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${freshToken}` } });
     if (!retry.ok) { const text = await retry.text(); throw new Error(`${path} failed (${retry.status}): ${text.slice(0, 200)}`); }
