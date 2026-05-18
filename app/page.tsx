@@ -789,9 +789,9 @@ function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, 
     return b.roc - a.roc;
   })[0];
 }
-function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, price: number | null, RULES: RulesType, minCallStrike?: number): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number; pop: number } | null {
+function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, price: number | null, RULES: RulesType, minCallStrike?: number): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number; pop: number; shortOccSymbol?: string; longOccSymbol?: string } | null {
   const bidAskMax = getBidAskMax(price);
-  const candidates: { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number; pop: number }[] = [];
+  const candidates: { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number; pop: number; shortOccSymbol?: string; longOccSymbol?: string }[] = [];
   for (const shortLeg of legs) {
     if (side === 'call' && minCallStrike != null && shortLeg.strikePrice <= minCallStrike) continue;
     const delta = shortLeg.delta; if (delta == null) continue;
