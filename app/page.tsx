@@ -39,6 +39,8 @@ interface SpreadCandidate {
   roc: number; pop: number | null; shortOI: number; longOI: number;
   shortCallStrike?: number; longCallStrike?: number;
   callCredit?: number; callWidth?: number; totalCredit?: number; optimized?: boolean;
+  shortOccSymbol?: string; longOccSymbol?: string;
+  shortCallOccSymbol?: string; longCallOccSymbol?: string;
 }
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
@@ -740,7 +742,7 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
       const oi = parseInt(item['open-interest'] ?? '0', 10);
       if (!expirations.includes(meta.expDate)) expirations.push(meta.expDate);
       if (!chains[meta.expDate]) chains[meta.expDate] = [];
-      chains[meta.expDate].push({ strikePrice: meta.strike, expirationDate: meta.expDate, optionType: meta.optionType, delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2 });
+      chains[meta.expDate].push({ strikePrice: meta.strike, expirationDate: meta.expDate, optionType: meta.optionType, delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2, occSymbol: item.symbol });
     }
   }
   expirations.sort(); return { expirations, chains, isEtfOrIndex };
@@ -762,7 +764,7 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
     const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_SPREAD) continue;
     const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
-    candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop, optimized: true });
+    candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop, optimized: true, shortOccSymbol: shortLeg.occSymbol, longOccSymbol: longLeg.occSymbol });
   }
   if (candidates.length === 0) return null;
   // Pick best POP; use ROC as tiebreaker when POP difference is < 5%
@@ -803,7 +805,7 @@ function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, pric
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
     const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
     const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
-    candidates.push({ shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, credit, creditRatio, roc, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, pop });
+    candidates.push({ shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, credit, creditRatio, roc, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, pop, shortOccSymbol: shortLeg.occSymbol, longOccSymbol: longLeg.occSymbol });
   }
   if (candidates.length === 0) return null;
   // Pick best POP; ROC tiebreaker within 5%
@@ -826,7 +828,7 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
   const totalCredit = parseFloat((bestPut.credit + bestCall.credit).toFixed(2));
   const maxLoss = Math.max(bestPut.width - bestPut.credit, bestCall.width - bestCall.credit);
   const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_IC) return null;
-  return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true };
+  return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true, shortOccSymbol: bestPut.shortOccSymbol, longOccSymbol: bestPut.longOccSymbol, shortCallOccSymbol: bestCall.shortOccSymbol, longCallOccSymbol: bestCall.longOccSymbol };
 }
 
 
@@ -1529,6 +1531,213 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
 
+
+// ── Order Placement ────────────────────────────────────────────────────────
+async function getAccountNumber(): Promise<string> {
+  const token = await getAccessToken();
+  const data = await ttFetch('/customers/me/accounts', token);
+  const acct = data?.data?.items?.[0]?.account?.['account-number'];
+  if (!acct) throw new Error('No account found');
+  return acct;
+}
+
+function buildOrderLegs(result: ScreenResult, c: SpreadCandidate): any[] {
+  const legs: any[] = [];
+  if (c.strategy === 'BPS') {
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+  } else if (c.strategy === 'BCS') {
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+  } else if (c.strategy === 'IC') {
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortCallOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longCallOccSymbol!, quantity: 1, action: 'Buy to Open' });
+  }
+  return legs;
+}
+
+function buildOrderPayload(c: SpreadCandidate, quantity: number, legs: any[]): any {
+  const credit = ((c.totalCredit ?? c.credit) * quantity).toFixed(2);
+  return {
+    'time-in-force': 'GTC',
+    'order-type': 'Limit',
+    price: credit,
+    'price-effect': 'Credit',
+    legs: legs.map(l => ({ ...l, quantity })),
+  };
+}
+
+function TradeModal({ result, th, onClose }: {
+  result: ScreenResult; th: typeof THEMES[Theme]; onClose: () => void;
+}) {
+  const c = result.bestCandidate!;
+  const [quantity, setQuantity] = useState(1);
+  const [phase, setPhase] = useState<'confirm' | 'dryrun' | 'placing' | 'done' | 'error'>('confirm');
+  const [dryRunResult, setDryRunResult] = useState<any>(null);
+  const [error, setError] = useState('');
+  const [orderId, setOrderId] = useState<string>('');
+
+  const hasOccSymbols = c.shortOccSymbol && c.longOccSymbol &&
+    (c.strategy !== 'IC' || (c.shortCallOccSymbol && c.longCallOccSymbol));
+
+  const credit = (c.totalCredit ?? c.credit) * quantity;
+  const maxLoss = (c.spreadWidth - (c.totalCredit ?? c.credit)) * quantity * 100;
+
+  const runDryRun = async () => {
+    setPhase('dryrun'); setError('');
+    try {
+      const token = await getAccessToken();
+      const accountNumber = await getAccountNumber();
+      const legs = buildOrderLegs(result, c);
+      const payload = buildOrderPayload(c, quantity, legs);
+      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders/dry-run`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Dry run failed (${res.status})`);
+      setDryRunResult(data?.data);
+      setPhase('confirm');
+    } catch (e: any) {
+      setError(e.message); setPhase('error');
+    }
+  };
+
+  const placeOrder = async () => {
+    setPhase('placing'); setError('');
+    try {
+      const token = await getAccessToken();
+      const accountNumber = await getAccountNumber();
+      const legs = buildOrderLegs(result, c);
+      const payload = buildOrderPayload(c, quantity, legs);
+      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Order failed (${res.status})`);
+      setOrderId(data?.data?.order?.id ?? 'submitted');
+      setPhase('done');
+    } catch (e: any) {
+      setError(e.message); setPhase('error');
+    }
+  };
+
+  const bpEffect = dryRunResult?.['buying-power-effect'];
+  const bpChange = bpEffect?.['change-in-buying-power'];
+  const bpEffect2 = bpEffect?.['change-in-buying-power-effect'];
+  const marginReq = bpEffect?.['change-in-margin-requirement'];
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4" onClick={onClose}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-md`} onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className={`text-sm font-bold ${th.text} tracking-widest`}>PLACE ORDER — {result.symbol}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl">✕</button>
+        </div>
+
+        {!hasOccSymbols && (
+          <div className="p-3 bg-yellow-500/10 border border-yellow-600 rounded-lg mb-4">
+            <p className="text-xs text-yellow-400">OCC symbols not available for this spread — rescan to populate them.</p>
+          </div>
+        )}
+
+        {/* Trade summary */}
+        <div className={`${th.card} border ${th.border} rounded-xl p-4 mb-4 space-y-2`}>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Strategy</span>
+            <span className={`font-bold ${c.strategy === 'BPS' ? 'text-emerald-400' : c.strategy === 'BCS' ? 'text-red-400' : 'text-blue-400'}`}>{c.strategy}</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Strikes</span>
+            <span className={th.text}>{c.shortStrike} / {c.longStrike}{c.strategy === 'IC' ? ` · ${c.shortCallStrike} / ${c.longCallStrike}` : ''}</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Expiry</span>
+            <span className={th.text}>{c.expiration} ({c.dte}d)</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Credit / contract</span>
+            <span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Order type</span>
+            <span className={th.text}>Limit · GTC</span>
+          </div>
+        </div>
+
+        {/* Quantity selector */}
+        <div className="flex items-center gap-3 mb-4">
+          <span className={`text-xs ${th.textFaint}`}>Contracts</span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setQuantity(q => Math.max(1, q - 1))} className={`w-7 h-7 rounded border ${th.border} ${th.textMuted} hover:border-blue-500 text-sm`}>−</button>
+            <span className={`text-sm font-bold ${th.text} w-6 text-center`}>{quantity}</span>
+            <button onClick={() => setQuantity(q => Math.min(20, q + 1))} className={`w-7 h-7 rounded border ${th.border} ${th.textMuted} hover:border-blue-500 text-sm`}>+</button>
+          </div>
+          <div className="ml-auto text-right">
+            <p className="text-emerald-400 font-bold text-sm">${credit.toFixed(2)} credit</p>
+            <p className={`text-[10px] ${th.textFaint}`}>Max loss ~${maxLoss.toFixed(0)}</p>
+          </div>
+        </div>
+
+        {/* Dry run result */}
+        {dryRunResult && (
+          <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4 space-y-1">
+            <p className="text-[10px] text-emerald-400 font-bold tracking-wider">DRY RUN PASSED</p>
+            {bpChange && <p className="text-xs text-emerald-300">Buying power: {bpEffect2 === 'Debit' ? '−' : '+'}${parseFloat(bpChange).toFixed(2)}</p>}
+            {marginReq && <p className="text-xs text-emerald-300">Margin required: ${parseFloat(marginReq).toFixed(2)}</p>}
+          </div>
+        )}
+
+        {phase === 'done' && (
+          <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4">
+            <p className="text-xs text-emerald-400 font-bold">✓ Order submitted — ID {orderId}</p>
+            <p className="text-[10px] text-emerald-400/70 mt-1">GTC limit order placed. Check tastytrade to confirm fill.</p>
+          </div>
+        )}
+
+        {phase === 'error' && error && (
+          <div className="p-3 bg-red-500/10 border border-red-600 rounded-lg mb-4">
+            <p className="text-xs text-red-400">{error}</p>
+          </div>
+        )}
+
+        {phase !== 'done' && (
+          <div className="flex gap-2">
+            {!dryRunResult ? (
+              <button onClick={runDryRun} disabled={!hasOccSymbols || phase === 'dryrun'}
+                className="flex-1 py-2.5 border border-blue-600 text-blue-400 rounded-xl text-xs font-bold tracking-widest hover:bg-blue-500/10 transition-colors disabled:opacity-40">
+                {phase === 'dryrun' ? 'VALIDATING...' : 'VALIDATE ORDER'}
+              </button>
+            ) : (
+              <>
+                <button onClick={runDryRun} disabled={phase === 'dryrun'}
+                  className={`py-2.5 px-3 border ${th.border} ${th.textFaint} rounded-xl text-xs hover:border-blue-500 transition-colors disabled:opacity-40`}>
+                  ↺
+                </button>
+                <button onClick={placeOrder} disabled={phase === 'placing'}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors disabled:opacity-40">
+                  {phase === 'placing' ? 'PLACING...' : `PLACE ORDER · $${credit.toFixed(2)} CREDIT`}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {phase === 'done' && (
+          <button onClick={onClose} className={`w-full py-2.5 border ${th.border} ${th.textMuted} rounded-xl text-xs font-bold tracking-widest`}>
+            CLOSE
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ResultCard({ result, th, rules, screenMode, rankConfig }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
@@ -1538,6 +1747,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
+  const [showTradeModal, setShowTradeModal] = useState(false);
 
   const c = result.bestCandidate;
   const t = result.trendResult;
@@ -1694,14 +1904,30 @@ function ResultCard({ result, th, rules, screenMode, rankConfig }: {
             </div>
           )}
 
-          {/* Best Opportunity Button */}
-          <button
-            onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
-            className="w-full py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-sm font-medium tracking-wider transition-colors mt-2"
-          >
-            🔍 FIND BEST OPPORTUNITY FOR {result.symbol}
-          </button>
+          {/* Action Buttons */}
+          <div className="flex gap-2 mt-2">
+            {c && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowTradeModal(true); }}
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors"
+              >
+                ⚡ TRADE THIS
+              </button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
+              className="flex-1 py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-xs font-medium tracking-wider transition-colors"
+            >
+              🔍 FIND BEST
+            </button>
+          </div>
         </div>
+      )}
+
+      {/* Trade Modal */}
+      {showTradeModal && c && typeof document !== 'undefined' && createPortal(
+        <TradeModal result={result} th={th} onClose={() => setShowTradeModal(false)} />,
+        document.body
       )}
 
       {/* Best Opportunity Modal — rendered via portal to escape card click handler */}
