@@ -533,7 +533,12 @@ interface DimensionScore {
 
 function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
   const c = result.bestCandidate;
-  if (!c) return null;
+  if (!c) {
+    const ivr = result.ivr ?? 0;
+    const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
+    const ivrScore = Math.round(Math.max(0, Math.min(1, ivrRaw)) * cfg.weightIvr);
+    return { score: ivrScore, dims: { ivr: ivrScore, credit: 0, roc: 0, pop: 0, dte: 0, total: ivrScore } };
+  }
   const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 
   // IVR — curves up, peaks ~65, slightly penalizes >80 (earnings risk territory)
@@ -1462,7 +1467,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig }: {
   const t = result.trendResult;
 
   // Ranking
-  const scored = rankConfig && c ? scoreCandidate(result, rankConfig) : null;
+  const scored = rankConfig ? scoreCandidate(result, rankConfig) : null;
   const light = scored ? trafficLight(scored.score, rankConfig!) : null;
   const isRankMode = screenMode === 'rank';
   const stratBadge = result.strategy === 'BPS'
