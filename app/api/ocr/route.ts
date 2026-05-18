@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(req: NextRequest) {
   try {
     const { base64, mediaType } = await req.json();
-
     if (!base64 || !mediaType) {
       return NextResponse.json({ error: 'Missing base64 or mediaType' }, { status: 400 });
     }
@@ -24,21 +23,24 @@ export async function POST(req: NextRequest) {
               type: 'image_url',
               image_url: {
                 url: `data:${mediaType};base64,${base64}`,
-                detail: 'low',
+                detail: 'high',
               },
             },
             {
               type: 'text',
-              text: `This is a screenshot containing US stock ticker symbols. Extract every ticker symbol you can see.
+              text: `This screenshot shows US stock ticker symbols. They may appear as:
+- A simple vertical list (one ticker per line)
+- A grid of badge/pill UI elements (multiple tickers per row)
+
+Extract every ticker symbol visible. Return ONLY the ticker symbols as a comma-separated list on a single line, nothing else.
 
 Rules:
-- Return ONLY the ticker symbols, one per line, nothing else
 - Tickers are 2-5 uppercase letters (e.g. AAPL, MSFT, BRK-B)
 - Do NOT include: single letters, common words, UI labels, column headers, numbers, percentages
 - Do NOT include: ETF, BPS, BCS, IC, IVR, DTE, ROC, POP, NYSE, NASDAQ, or any other non-ticker text
 - Preserve hyphens for tickers like BRK-B
-- If you are uncertain whether something is a ticker, omit it
-- Return nothing except the ticker symbols, one per line`,
+- If uncertain whether something is a ticker, omit it
+- Return nothing except the comma-separated ticker symbols`,
             },
           ],
         }],
@@ -56,7 +58,6 @@ Rules:
     const data = await response.json();
     const text: string = data?.choices?.[0]?.message?.content ?? '';
     return NextResponse.json({ text });
-
   } catch (e: any) {
     return NextResponse.json({ error: e.message ?? 'Internal error' }, { status: 500 });
   }
