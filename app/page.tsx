@@ -536,7 +536,7 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
   if (!c) {
     const ivr = result.ivr ?? 0;
     const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
-    const ivrScore = Math.round(Math.max(0, Math.min(1, ivrRaw)) * cfg.weightIvr);
+    const ivrScore = Math.round(Math.max(0, Math.min(1, ivrRaw)) * 100);
     return { score: ivrScore, dims: { ivr: ivrScore, credit: 0, roc: 0, pop: 0, dte: 0, total: ivrScore } };
   }
   const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
@@ -3136,8 +3136,8 @@ export default function Home() {
       if (screenMode === 'rank') {
         // Sort by score descending; no-candidate results go to the bottom
         uniqueResults.sort((a, b) => {
-          const sA = a.bestCandidate ? (scoreCandidate(a, rankConfig)?.score ?? 0) : -1;
-          const sB = b.bestCandidate ? (scoreCandidate(b, rankConfig)?.score ?? 0) : -1;
+          const sA = scoreCandidate(a, rankConfig)?.score ?? 0;
+          const sB = scoreCandidate(b, rankConfig)?.score ?? 0;
           return sB - sA;
         });
       } else {
@@ -3399,10 +3399,10 @@ export default function Home() {
                     </>
                   ) : (
                     <>
-                      <span className="text-emerald-400">{results.filter(r => { const s = r.bestCandidate ? scoreCandidate(r, rankConfig)?.score ?? 0 : 0; return s >= rankConfig.thresholdGreen; }).length} 🟢</span>
-                      <span className="text-yellow-400">{results.filter(r => { const s = r.bestCandidate ? scoreCandidate(r, rankConfig)?.score ?? 0 : 0; return s >= rankConfig.thresholdYellow && s < rankConfig.thresholdGreen; }).length} 🟡</span>
-                      <span className="text-orange-400">{results.filter(r => { const s = r.bestCandidate ? scoreCandidate(r, rankConfig)?.score ?? 0 : 0; return s >= rankConfig.thresholdOrange && s < rankConfig.thresholdYellow; }).length} 🟠</span>
-                      <span className="text-red-400">{results.filter(r => { const s = r.bestCandidate ? scoreCandidate(r, rankConfig)?.score ?? 0 : 0; return s < rankConfig.thresholdOrange; }).length} 🔴</span>
+                      <span className="text-emerald-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s >= rankConfig.thresholdGreen; }).length} 🟢</span>
+                      <span className="text-yellow-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s >= rankConfig.thresholdYellow && s < rankConfig.thresholdGreen; }).length} 🟡</span>
+                      <span className="text-orange-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s >= rankConfig.thresholdOrange && s < rankConfig.thresholdYellow; }).length} 🟠</span>
+                      <span className="text-red-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s < rankConfig.thresholdOrange; }).length} 🔴</span>
                     </>
                   )}
                   <span className={th.textFaint}>{results.length} SCANNED</span>
