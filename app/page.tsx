@@ -506,22 +506,28 @@ const LS_SESSION_LOADED_AT = 'prosper-session-loaded-at';
 
 // ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
-  weightIvr: number;       // 0–40
-  weightCredit: number;    // 0–40
-  weightRoc: number;       // 0–30
-  weightPop: number;       // 0–20
-  weightDte: number;       // 0–20
+  weightMomentum: number;  // 0–30
+  weightIvr: number;       // 0–25
+  weightRange: number;     // 0–20
+  weightTechnical: number; // 0–15
+  weightLiquidity: number; // 0–10
   dteSweetSpot: number;    // DTE center (default 38)
   dteRange: number;        // ± around sweet spot for full score (default 7)
   thresholdGreen: number;  // default 75
   thresholdYellow: number; // default 55
   thresholdOrange: number; // default 35
+  // legacy — kept for backwards compat but unused
+  weightCredit: number;
+  weightRoc: number;
+  weightPop: number;
+  weightDte: number;
 }
 
 const DEFAULT_RANK_CONFIG: RankConfig = {
-  weightIvr: 25, weightCredit: 25, weightRoc: 20, weightPop: 15, weightDte: 15,
+  weightMomentum: 30, weightIvr: 25, weightRange: 20, weightTechnical: 15, weightLiquidity: 10,
   dteSweetSpot: 38, dteRange: 7,
   thresholdGreen: 75, thresholdYellow: 55, thresholdOrange: 35,
+  weightCredit: 25, weightRoc: 20, weightPop: 15, weightDte: 15,
 };
 
 function getSavedRankConfig(): RankConfig {
@@ -530,52 +536,83 @@ function getSavedRankConfig(): RankConfig {
 }
 
 interface DimensionScore {
-  ivr: number; credit: number; roc: number; pop: number; dte: number; total: number;
+  momentum: number; ivr: number; range: number; technical: number; liquidity: number; total: number;
 }
 
 function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
-  const c = result.bestCandidate;
-  if (!c) {
-    const ivr = result.ivr ?? 0;
-    const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
-    const ivrScore = Math.round(Math.max(0, Math.min(1, ivrRaw)) * 100);
-    return { score: ivrScore, dims: { ivr: ivrScore, credit: 0, roc: 0, pop: 0, dte: 0, total: ivrScore } };
-  }
   const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+  const t = result.trendResult;
+  const c = result.bestCandidate;
 
-  // IVR — curves up, peaks ~65, slightly penalizes >80 (earnings risk territory)
+  // ── Momentum (30pts) ─────────────────────────────────────────────────────
+  // Uses trend engine momentum score if available, else falls back to trend confidence
+  let momentumRaw = 0;
+  if (t?.scores?.momentum != null) {
+    // trend engine scores momentum 0–100 internally; normalize to 0–1
+    momentumRaw = t.scores.momentum / 100;
+  } else if (t?.confidence != null) {
+    momentumRaw = t.confidence / 100;
+  }
+  // Strong directional trend (BPS/BCS) gets full score; sideways/unknown gets half
+  if (t?.strategy === 'IC' || t?.trend === 'sideways') momentumRaw *= 0.6;
+  if (t?.trend === 'unknown') momentumRaw *= 0.3;
+  const momentumScore = clamp(momentumRaw) * cfg.weightMomentum;
+
+  // ── IV Quality (25pts) ────────────────────────────────────────────────────
+  // Peaks at IVR 65, slight penalty above 80 (earnings risk territory)
   const ivr = result.ivr ?? 0;
   const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
   const ivrScore = clamp(ivrRaw) * cfg.weightIvr;
 
-  // Credit ratio — linear from 0.20 (min) to 0.50 (max)
-  const creditRaw = (c.creditRatio - 0.20) / 0.30;
-  const creditScore = clamp(creditRaw) * cfg.weightCredit;
+  // ── 52W Range Position (20pts) ────────────────────────────────────────────
+  // BPS: want stock near lows (high range % = near highs = bad for BPS)
+  // BCS: want stock near highs (low range % = near lows = bad for BCS)
+  // IC: neutral, mid-range is best
+  let rangeRaw = 0.5; // default neutral
+  if (t?.metrics?.range60 != null) {
+    const range60 = t.metrics.range60; // 0 = at 60d low, 1 = at 60d high
+    if (t.strategy === 'BPS') rangeRaw = 1 - range60; // near lows = good
+    else if (t.strategy === 'BCS') rangeRaw = range60; // near highs = good
+    else rangeRaw = 1 - Math.abs(range60 - 0.5) * 2; // IC: mid-range = good
+  } else if (t?.metrics?.distFromMa50 != null) {
+    // fallback: use distance from MA50 as proxy
+    const dist = Math.abs(t.metrics.distFromMa50);
+    rangeRaw = clamp(1 - dist / 0.20); // within 20% of MA50 = full score
+  }
+  const rangeScore = clamp(rangeRaw) * cfg.weightRange;
 
-  // ROC — logarithmic, diminishing returns above 50%
-  const rocRaw = Math.log(1 + c.roc / 50) / Math.log(2);
-  const rocScore = clamp(rocRaw) * cfg.weightRoc;
+  // ── Technical (15pts) ─────────────────────────────────────────────────────
+  // MA alignment + slope from trend engine
+  let technicalRaw = 0;
+  if (t?.scores != null) {
+    const maScore = (t.scores.maAlignment ?? 0) / 100;
+    const slopeScore = (t.scores.slope ?? 0) / 100;
+    technicalRaw = (maScore * 0.6 + slopeScore * 0.4);
+  } else if (t?.confidence != null) {
+    technicalRaw = t.confidence / 100 * 0.5;
+  }
+  const technicalScore = clamp(technicalRaw) * cfg.weightTechnical;
 
-  // POP — bell curve, peaks at 72%, drops above 85% (strike too tight)
-  const pop = c.pop ?? 70;
-  const popRaw = pop <= 72 ? (pop - 55) / 17 : 1 - (pop - 72) / 30;
-  const popScore = clamp(popRaw) * cfg.weightPop;
+  // ── Liquidity (10pts) ─────────────────────────────────────────────────────
+  // OI and credit ratio — can we actually get filled at a good price?
+  let liquidityRaw = 0.5; // default when no candidate
+  if (c) {
+    const oiScore = clamp((Math.min(c.shortOI, c.longOI) - 100) / 900); // 100 OI = 0, 1000+ OI = 1
+    const creditRatioScore = clamp((c.creditRatio - 0.15) / 0.35); // 0.15 = 0, 0.50+ = 1
+    liquidityRaw = oiScore * 0.5 + creditRatioScore * 0.5;
+  }
+  const liquidityScore = clamp(liquidityRaw) * cfg.weightLiquidity;
 
-  // DTE — bell curve centered on sweet spot
-  const dteDiff = Math.abs(c.dte - cfg.dteSweetSpot);
-  const dteRaw = dteDiff <= cfg.dteRange ? 1 : 1 - (dteDiff - cfg.dteRange) / 15;
-  const dteScore = clamp(dteRaw) * cfg.weightDte;
-
-  const total = Math.round(ivrScore + creditScore + rocScore + popScore + dteScore);
+  const total = Math.round(momentumScore + ivrScore + rangeScore + technicalScore + liquidityScore);
   return {
-    score: total,
+    score: Math.min(100, total),
     dims: {
+      momentum: Math.round(momentumScore),
       ivr: Math.round(ivrScore),
-      credit: Math.round(creditScore),
-      roc: Math.round(rocScore),
-      pop: Math.round(popScore),
-      dte: Math.round(dteScore),
-      total,
+      range: Math.round(rangeScore),
+      technical: Math.round(technicalScore),
+      liquidity: Math.round(liquidityScore),
+      total: Math.min(100, total),
     },
   };
 }
@@ -1816,6 +1853,10 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
           </span>
         )}
         <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
+        {/* Dual strategy badge — show IC when BPS/BCS also qualifies as condor leg */}
+        {(result.strategy === 'BPS' || result.strategy === 'BCS') && result.ivr != null && result.ivr >= 30 && (
+          <span className="text-[9px] px-1.5 py-0.5 border border-blue-500/50 text-blue-400/80 rounded shrink-0">+ IC</span>
+        )}
         {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
         <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
 
@@ -1853,11 +1894,11 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
               </div>
               <div className="grid grid-cols-5 gap-2">
                 {[
-                  { label: 'IVR', val: scored.dims.ivr, max: rankConfig!.weightIvr },
-                  { label: 'Credit', val: scored.dims.credit, max: rankConfig!.weightCredit },
-                  { label: 'ROC', val: scored.dims.roc, max: rankConfig!.weightRoc },
-                  { label: 'POP', val: scored.dims.pop, max: rankConfig!.weightPop },
-                  { label: 'DTE', val: scored.dims.dte, max: rankConfig!.weightDte },
+                  { label: 'Momentum', val: scored.dims.momentum, max: rankConfig!.weightMomentum },
+                  { label: 'IV', val: scored.dims.ivr, max: rankConfig!.weightIvr },
+                  { label: '52W Range', val: scored.dims.range, max: rankConfig!.weightRange },
+                  { label: 'Technical', val: scored.dims.technical, max: rankConfig!.weightTechnical },
+                  { label: 'Liquidity', val: scored.dims.liquidity, max: rankConfig!.weightLiquidity },
                 ].map(d => (
                   <div key={d.label} className="text-center">
                     <p className={`text-[8px] ${th.textFaint} mb-1`}>{d.label}</p>
@@ -2284,7 +2325,7 @@ function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
       fmt={fmt} onChange={v => setRankEdited(prev => ({ ...prev, [key]: v }))} th={th} />
   );
 
-  const totalWeight = rankEdited.weightIvr + rankEdited.weightCredit + rankEdited.weightRoc + rankEdited.weightPop + rankEdited.weightDte;
+  const totalWeight = rankEdited.weightMomentum + rankEdited.weightIvr + rankEdited.weightRange + rankEdited.weightTechnical + rankEdited.weightLiquidity;
 
 
   return (
@@ -2317,11 +2358,11 @@ function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
                   <span className={`text-[8px] font-bold ${totalWeight === 100 ? 'text-emerald-400' : 'text-yellow-400'}`}>{totalWeight}/100 pts</span>
                 </div>
                 <div className="space-y-3">
-                  {sl('weightIvr',    'IVR Quality',   'Peaks ~65, slight penalty >80', 0, 40)}
-                  {sl('weightCredit', 'Credit Ratio',  'Linear 0.20→0.50',             0, 40)}
-                  {sl('weightRoc',    'ROC',           'Log scale, dims >50%',          0, 30)}
-                  {sl('weightPop',    'POP',           'Bell curve, peaks at 72%',      0, 20)}
-                  {sl('weightDte',    'DTE Quality',   'Bell curve around sweet spot',  0, 20)}
+                  {sl('weightMomentum',  'Momentum',   '14d trend strength + direction', 0, 40)}
+                  {sl('weightIvr',       'IV Quality', 'IVR, peaks ~65, penalty >80',    0, 35)}
+                  {sl('weightRange',     '52W Range',  'Price position vs strategy',     0, 30)}
+                  {sl('weightTechnical', 'Technical',  'MA alignment + slope',           0, 25)}
+                  {sl('weightLiquidity', 'Liquidity',  'OI + credit ratio quality',      0, 20)}
                 </div>
               </div>
               <div>
