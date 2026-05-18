@@ -3437,7 +3437,7 @@ export default function Home() {
     <div className={`min-h-screen ${th.bg} text-slate-100 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
       onClick={(e) => {
         const t = e.target as HTMLElement;
-        console.log('[CLICK DEBUG] tag:', t.tagName, 'class:', t.className, 'href:', (t as any).href ?? 'none', 'path:', e.composedPath().slice(0,5).map((el: any) => el.tagName + (el.className ? '.' + String(el.className).split(' ')[0] : '')).join(' > '));
+        const nativeEvent = e.nativeEvent as MouseEvent; console.log('[CLICK DEBUG] tag:', t.tagName, 'class:', t.className, 'href:', (t as any).href ?? 'none', 'path:', nativeEvent.composedPath().slice(0,5).map((el: any) => el.tagName + (el.className ? '.' + String(el.className).split(' ')[0] : '')).join(' > '));
       }}
     >
       {/* Header */}
