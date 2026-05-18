@@ -3047,15 +3047,20 @@ function BestOpportunityFinder({
   const scoreCandidate = (result: ScreenResult, strat: string): BestSetup | null => {
     if (!result.qualified || !result.bestCandidate) return null;
     const c = result.bestCandidate;
-    const score = (c.roc || 0) * 0.45 + ((c.pop || 70) * 0.35) + (c.creditRatio * 100 * 0.2);
-    let grade: BestSetup['grade'] = 'C';
-    if (score > 88) grade = 'A+'; else if (score > 75) grade = 'A'; else if (score > 60) grade = 'B';
+    // NEW
+  const ivrScore = Math.min(result.ivr ?? 30, 100);
+  const score = (c.roc || 0) * 0.35 + ((c.pop || 70) * 0.30) + (c.creditRatio * 100 * 0.15) + (ivrScore * 0.20);
+  let grade: BestSetup['grade'] = 'C';
+  if (score > 75) grade = 'A+'; else if (score > 62) grade = 'A'; else if (score > 50) grade = 'B';
     const notes: string[] = [];
     if (c.dte < 35) notes.push(`DTE is ${c.dte} — shorter side, watch 21 DTE closely`);
     if (c.dte < 29) notes.push(`⚠ Short term setup — active daily management required, gamma risk elevated`);
     if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% elevated — verify no binary event`);
+    // line 3059-3061 should read:
+    if (result.ivr && result.ivr < 35) notes.push(`IVR ${result.ivr.toFixed(0)}% — low volatility environment, premium is thin, size down or wait`);
+    else if (result.ivr && result.ivr < 50) notes.push(`IVR ${result.ivr.toFixed(0)}% — moderate volatility, grade reflects reduced premium opportunity`);
     if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
-    if (notes.length === 0) notes.push('Clean setup — all rules pass');
+    if (notes.length === 0) notes.push('Clean setup — all rules pass');    
     return { strategy: strat, grade, setup: c, score, notes, result };
   };
 
