@@ -1748,6 +1748,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig }: {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
   const [showTradeModal, setShowTradeModal] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => { setIsMounted(true); }, []);
 
   const c = result.bestCandidate;
   const t = result.trendResult;
@@ -1925,13 +1927,13 @@ function ResultCard({ result, th, rules, screenMode, rankConfig }: {
       )}
 
       {/* Trade Modal */}
-      {showTradeModal && c && typeof document !== 'undefined' && createPortal(
+      {isMounted && showTradeModal && c && createPortal(
         <TradeModal result={result} th={th} onClose={() => setShowTradeModal(false)} />,
         document.body
       )}
 
       {/* Best Opportunity Modal — rendered via portal to escape card click handler */}
-      {showBestFinder && typeof document !== 'undefined' && createPortal(
+      {isMounted && showBestFinder && createPortal(
         <BestOpportunityFinder
           symbol={result.symbol}
           onClose={() => setShowBestFinder(false)}
