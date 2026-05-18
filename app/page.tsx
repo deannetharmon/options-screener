@@ -863,6 +863,11 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < effectiveRules.DTE_MIN || dte > effectiveRules.DTE_MAX) return false; if (!isIndex && earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, effectiveRules) : findBestSpread(chainItems, strategy, exp, price, effectiveRules); if (bestCandidate) break; } }
+  // Rank mode fallback: if strict rules found nothing, try relaxed rules to always show best available spread
+  if (!bestCandidate && ivrCheck.status !== 'fail' && validExpirations.length > 0) {
+    const relaxedRules: RulesType = { ...effectiveRules, CREDIT_RATIO_MIN: 0.15, ROC_MIN_SPREAD: 8, ROC_MIN_IC: 12, OI_MIN: 50, POP_MIN: 55, SPREAD_DELTA_MIN: 0.10, SPREAD_DELTA_MAX: 0.40, IC_DELTA_MIN: 0.10, IC_DELTA_MAX: 0.35 };
+    for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, relaxedRules) : findBestSpread(chainItems, strategy, exp, price, relaxedRules); if (bestCandidate) break; }
+  }
   if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
   else if (!bestCandidate && validExpirations.length > 0 && !failReasons.length) failReasons.push('No qualifying strikes found');
   const oiCheck: CheckResult = bestCandidate ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: `Both legs ≥ ${effectiveRules.OI_MIN}` } : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
@@ -3297,13 +3302,13 @@ export default function Home() {
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
-          <button onClick={() => setShowRulesModal(true)} disabled={loading}
+          <button onClick={() => screenMode === 'rank' ? runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel) : setShowRulesModal(true)} disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
 
-          {/* Last Rules Used */}
-          <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
+          {/* Last Rules Used — hidden in rank mode */}
+          {screenMode === 'filter' && <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
             <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>ACTIVE RULES</p>
             <div className="space-y-3">
               {[
@@ -3330,7 +3335,7 @@ export default function Home() {
                 </div>
               ))}
             </div>
-          </div>
+          </div>}
         </div>
 
         {/* Main content */}
