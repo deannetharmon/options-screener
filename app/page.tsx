@@ -610,7 +610,7 @@ async function getAccessToken(): Promise<string> {
 
   // 3. Use refresh token to get a new access token
   const refreshToken = localStorage.getItem('tt_refresh_token');
-  const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ?? '';
+  const clientSecret = localStorage.getItem('tt_client_secret') ?? '';
   if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
   const res = await fetch(`${BASE}/oauth/token`, {
     method: 'POST',
@@ -829,6 +829,49 @@ function findBestIC(chain: any[], expDate: string, price: number | null, RULES: 
   return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true };
 }
 
+
+// ── Rank Mode — Unfiltered Spread Finder ──────────────────────────────────
+// In rank mode we always want to show the best available spread regardless
+// of rules. Only gates: delta must exist, long leg must exist, credit > 0.
+function findBestSpreadUnfiltered(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null): SpreadCandidate | null {
+  const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === (strategy === 'BPS' ? 'P' : 'C'));
+  const candidates: SpreadCandidate[] = [];
+  const stepSize = price == null ? 5 : price >= 2000 ? 25 : 5;
+  const maxWidth = price == null ? 100 : Math.min(price * 0.15, 500);
+  for (let width = stepSize; width <= maxWidth; width += stepSize) {
+    for (const shortLeg of legs) {
+      const delta = shortLeg.delta; if (delta == null) continue;
+      const absDelta = Math.abs(delta); if (absDelta < 0.05 || absDelta > 0.60) continue;
+      const longStrike = strategy === 'BPS' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
+      const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
+      if (!longLeg) continue;
+      const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
+      const creditRatio = credit / width;
+      const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
+      const pop = (1 - absDelta) * 100;
+      candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest ?? 0, longOI: longLeg.openInterest ?? 0, credit, spreadWidth: width, creditRatio, roc, pop, optimized: false });
+    }
+  }
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => {
+    const popDiff = (b.pop ?? 0) - (a.pop ?? 0);
+    if (Math.abs(popDiff) >= 5) return popDiff;
+    return b.roc - a.roc;
+  })[0];
+}
+
+function findBestICUnfiltered(chain: any[], expDate: string, price: number | null): SpreadCandidate | null {
+  const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P');
+  const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C');
+  const putSpread = findBestSpreadUnfiltered([...puts.map((o: any) => ({ ...o, optionType: 'P' })), ...puts.map((o: any) => ({ ...o, optionType: 'P' }))], 'BPS', expDate, price);
+  const callSpread = findBestSpreadUnfiltered([...calls.map((o: any) => ({ ...o, optionType: 'C' })), ...calls.map((o: any) => ({ ...o, optionType: 'C' }))], 'BCS', expDate, price);
+  if (!putSpread || !callSpread) return null;
+  const totalCredit = parseFloat((putSpread.credit + callSpread.credit).toFixed(2));
+  const maxLoss = Math.max(putSpread.spreadWidth - putSpread.credit, callSpread.spreadWidth - callSpread.credit);
+  const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0;
+  return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: putSpread.shortStrike, longStrike: putSpread.longStrike, shortDelta: putSpread.shortDelta, shortOI: putSpread.shortOI, longOI: putSpread.longOI, credit: putSpread.credit, spreadWidth: putSpread.spreadWidth, creditRatio: putSpread.creditRatio, roc, pop: (1 - putSpread.shortDelta - callSpread.shortDelta) * 100, shortCallStrike: callSpread.shortStrike, longCallStrike: callSpread.longStrike, callCredit: callSpread.credit, callWidth: callSpread.spreadWidth, totalCredit, optimized: false };
+}
+
 function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, STOCK_RULES: RulesType, trendResult?: TrendResult, stockPresetLabel?: string, ETF_RULES_PARAM?: RulesType, etfPresetLabel?: string): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
   const isIndex = chainData.isEtfOrIndex ?? INDEX_TICKERS.has(symbol.toUpperCase());
@@ -863,10 +906,14 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < effectiveRules.DTE_MIN || dte > effectiveRules.DTE_MAX) return false; if (!isIndex && earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, effectiveRules) : findBestSpread(chainItems, strategy, exp, price, effectiveRules); if (bestCandidate) break; } }
-  // Rank mode fallback: if strict rules found nothing, try relaxed rules to always show best available spread
+  // Rank mode fallback: if strict rules found nothing, try relaxed rules first, then fully unfiltered
   if (!bestCandidate && ivrCheck.status !== 'fail' && validExpirations.length > 0) {
     const relaxedRules: RulesType = { ...effectiveRules, CREDIT_RATIO_MIN: 0.15, ROC_MIN_SPREAD: 8, ROC_MIN_IC: 12, OI_MIN: 50, POP_MIN: 55, SPREAD_DELTA_MIN: 0.10, SPREAD_DELTA_MAX: 0.40, IC_DELTA_MIN: 0.10, IC_DELTA_MAX: 0.35 };
     for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, relaxedRules) : findBestSpread(chainItems, strategy, exp, price, relaxedRules); if (bestCandidate) break; }
+  }
+  // Last resort: fully unfiltered — show best available strike regardless of rules
+  if (!bestCandidate && validExpirations.length > 0) {
+    for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestICUnfiltered(chainItems, exp, price) : findBestSpreadUnfiltered(chainItems, strategy, exp, price); if (bestCandidate) break; }
   }
   if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
   else if (!bestCandidate && validExpirations.length > 0 && !failReasons.length) failReasons.push('No qualifying strikes found');
