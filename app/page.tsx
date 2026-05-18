@@ -3451,7 +3451,7 @@ export default function Home() {
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
-            <Link href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
+            <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
           </nav>
           {/* Mode toggle in header */}
           <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
