@@ -1838,12 +1838,17 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
     && result.earningsDate
     && daysUntil(result.earningsDate) >= 0;
 
-  const cardBorder = result.qualified
-    ? (isApproaching ? 'border-yellow-500/50' : th.border)
-    : th.borderLight;
+  const scoreBorderL = light
+    ? light.emoji === '🟢' ? 'border-l-4 border-l-emerald-500'
+    : light.emoji === '🟡' ? 'border-l-4 border-l-yellow-400'
+    : light.emoji === '🟠' ? 'border-l-4 border-l-orange-400'
+    : 'border-l-4 border-l-red-500'
+    : strategyAccent(result.strategy);
+
+  const cardBorder = isApproaching ? 'border-yellow-500/50' : th.border;
 
   return (
-    <div className={`border ${cardBorder} ${result.qualified ? `${th.cardQualified} ${strategyAccent(result.strategy)}` : `${th.card} opacity-60`} rounded-lg cursor-pointer transition-all hover:shadow-md`}
+    <div className={`border ${cardBorder} ${scoreBorderL} ${result.qualified ? th.cardQualified : `${th.card} opacity-50`} rounded-lg cursor-pointer transition-all hover:shadow-md`}
          onClick={() => setExpanded(!expanded)}>
 
       {/* Header Row */}
