@@ -542,13 +542,19 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
 
   // ── Momentum (30pts) ──────────────────────────────────────────────────────
   // trend engine momentum is signed (-48..+48); normalize by direction alignment
+  // When total directional score is very strong (>100), boost momentum slightly
   let momentumRaw = 0;
   if (t?.scores?.momentum != null) {
     const raw = t.scores.momentum;
+    const totalScore = Math.abs(t.scores.total ?? raw);
+    // normalize: 45 = typical max momentum; total score >100 = very strong signal
     const absNorm = clamp(Math.abs(raw) / 45);
+    const totalBoost = clamp(totalScore / 120); // strong total score adds up to 15% boost
     const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
     const aligned = expectedSign === 0 ? 0.7 : (Math.sign(raw) === expectedSign ? 1.0 : 0.3);
-    momentumRaw = absNorm * aligned;
+    // IVR boost: when momentum is very strong, reduce IVR penalty weight
+    // (WFC fix: strong -135 BCS signal should rank high even with 39% IVR)
+    momentumRaw = clamp(absNorm * 0.75 + totalBoost * 0.25) * aligned;
   } else if (t?.confidence != null) {
     momentumRaw = clamp(t.confidence / 80);
     if (t.trend === 'sideways' || t.trend === 'unknown') momentumRaw *= 0.5;
@@ -559,17 +565,30 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
   const momentumScore = clamp(momentumRaw) * cfg.weightMomentum;
 
   // ── IV Quality (25pts) ────────────────────────────────────────────────────
+  // When momentum is very strong, reduce effective IVR weight so it doesn't
+  // dominate over a clear directional signal (WFC: 39% IVR but -135 momentum)
   const ivr = result.ivr ?? 0;
   const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
-  const ivrScore = clamp(ivrRaw) * cfg.weightIvr;
+  const momentumStrength = t?.scores?.total != null ? clamp(Math.abs(t.scores.total) / 150) : 0;
+  const effectiveIvrWeight = cfg.weightIvr * (1 - momentumStrength * 0.35);
+  const ivrScore = clamp(ivrRaw) * effectiveIvrWeight;
 
   // ── 52W Range Position (20pts) ────────────────────────────────────────────
+  // BPS near 52W highs (r60 > 0.85) gets penalized — stock is stretched
+  // BCS near 52W lows (r60 < 0.15) gets penalized — stock is stretched
+  // (CAT/GOOGL fix: at 93-97% of range, BPS is a risky setup)
   let rangeRaw = 0.5;
   if (t?.metrics?.range60 != null) {
     const r60 = clamp(t.metrics.range60);
-    if (t.strategy === 'BPS') rangeRaw = 1 - r60;
-    else if (t.strategy === 'BCS') rangeRaw = r60;
-    else rangeRaw = 1 - Math.abs(r60 - 0.5) * 2;
+    if (t.strategy === 'BPS') {
+      // near lows = good, but also penalize if stock is at extreme highs (exhaustion risk)
+      rangeRaw = r60 > 0.85 ? (1 - r60) * 2 : 1 - r60;
+    } else if (t.strategy === 'BCS') {
+      // near highs = good, but penalize extreme lows
+      rangeRaw = r60 < 0.15 ? r60 * 2 : r60;
+    } else {
+      rangeRaw = 1 - Math.abs(r60 - 0.5) * 2;
+    }
   } else if (t?.metrics?.distFromMa50 != null) {
     const dist = t.metrics.distFromMa50;
     if (t.strategy === 'BPS') rangeRaw = clamp(1 - (dist + 0.15) / 0.30);
