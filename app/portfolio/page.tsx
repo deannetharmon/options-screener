@@ -1,4 +1,4 @@
-'use client';
+    'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
@@ -821,11 +821,6 @@ function CloseModal({ positions, selected, onClose, th }: {
     grouped.get(action)!.push(pos);
   }
 
-  const openAll = () => {
-    selectedPositions.forEach(p => {
-      window.open(`https://my.tastytrade.com/trade?symbol=${encodeURIComponent(p.symbol)}&action=BTC`, '_blank');
-    });
-  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
@@ -882,9 +877,9 @@ function CloseModal({ positions, selected, onClose, th }: {
         </div>
 
         <div className="px-5 py-4 flex gap-3">
-          <button onClick={openAll}
-            className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
-            OPEN ALL IN TASTYTRADE →
+          <button onClick={onClose}
+          className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
+          DONE
           </button>
           <button onClick={onClose}
             className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:${th.text} transition-colors`}>
