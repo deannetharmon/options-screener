@@ -446,7 +446,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
   const rec = getRecommendation(pos, trend);
 
   const ttActionUrl = (_action: ActionType): string =>
-    `https://my.tastytrade.com/app.html#/trading/positions`;
+  `https://my.tastytrade.com/trade?symbol=${encodeURIComponent(pos.symbol)}`;
 
   const ttActionTooltip = (action: ActionType): string => {
     switch (action) {
@@ -823,7 +823,7 @@ function CloseModal({ positions, selected, onClose, th }: {
 
   const openAll = () => {
     selectedPositions.forEach(p => {
-      window.open(`https://my.tastytrade.com/trade?symbol=${p.symbol}`, '_blank');
+      window.open(`https://my.tastytrade.com/trade?symbol=${encodeURIComponent(p.symbol)}&action=BTC`, '_blank');
     });
   };
 
