@@ -1846,9 +1846,10 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
     : strategyAccent(result.strategy);
 
   const cardBorder = isApproaching ? 'border-yellow-500/50' : th.border;
+  const cardBg = result.qualified ? th.cardQualified : isRankMode ? th.card : `${th.card} opacity-50`;
 
   return (
-    <div className={`border ${cardBorder} ${scoreBorderL} ${result.qualified ? th.cardQualified : `${th.card} opacity-50`} rounded-lg cursor-pointer transition-all hover:shadow-md`}
+    <div className={`border ${cardBorder} ${scoreBorderL} ${cardBg} rounded-lg cursor-pointer transition-all hover:shadow-md`}
          onClick={() => setExpanded(!expanded)}>
 
       {/* Header Row */}
@@ -2221,6 +2222,76 @@ function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] 
 }
 
 // ── Rules Modal ────────────────────────────────────────────────────────────
+// ── Run Mode Modal ─────────────────────────────────────────────────────────
+const FILTER_PRESETS = [
+  { key: 'strict',    label: 'Strict',      color: 'border-red-500 text-red-400',         desc: 'Tightest rules — high conviction only' },
+  { key: 'course',   label: 'Course',      color: 'border-blue-500 text-blue-400',        desc: 'Baseline rules — balanced approach' },
+  { key: 'relaxed',  label: 'Relaxed',     color: 'border-emerald-500 text-emerald-400',  desc: 'Looser rules — more opportunities' },
+  { key: 'lowvol',   label: 'Low Vol',     color: 'border-yellow-500 text-yellow-400',    desc: 'Adapted for low IVR environments' },
+  { key: 'shortterm',label: 'Short Term',  color: 'border-orange-500 text-orange-400',    desc: '14–28 DTE — active daily management' },
+];
+
+function RunModeModal({ th, lastMode, lastPreset, onRun, onClose }: {
+  th: typeof THEMES[Theme];
+  lastMode: 'filter' | 'rank';
+  lastPreset: string;
+  onRun: (mode: 'filter' | 'rank', preset?: string) => void;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<'filter' | 'rank'>(lastMode);
+  const [preset, setPreset] = useState(lastPreset || 'course');
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className={`${th.card} border ${th.border} rounded-2xl shadow-2xl w-[420px] p-6 flex flex-col gap-5`}>
+        <div className="flex items-center justify-between">
+          <p className={`text-sm font-bold tracking-widest ${th.text}`}>RUN HUNTER</p>
+          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg leading-none`}>✕</button>
+        </div>
+
+        {/* Mode selection */}
+        <div className="flex gap-3">
+          {(['filter', 'rank'] as const).map(m => (
+            <button key={m} onClick={() => setMode(m)}
+              className={`flex-1 py-3 rounded-xl border text-xs font-bold tracking-wider transition-all ${
+                mode === m
+                  ? m === 'filter' ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-purple-500/20 border-purple-500 text-purple-400'
+                  : `${th.card} ${th.border} ${th.textFaint} hover:${th.textMuted}`
+              }`}>
+              {m === 'filter' ? '⊘ FILTER' : '⬡ RANK'}
+              <p className={`text-[9px] mt-1 font-normal opacity-70`}>
+                {m === 'filter' ? 'Gate by rules — pass/fail' : 'Score & sort all tickers'}
+              </p>
+            </button>
+          ))}
+        </div>
+
+        {/* Preset selection — only shown in filter mode */}
+        {mode === 'filter' && (
+          <div className="flex flex-col gap-2">
+            <p className={`text-[9px] tracking-widest font-medium ${th.textFaint}`}>SELECT PRESET</p>
+            {FILTER_PRESETS.map(p => (
+              <button key={p.key} onClick={() => setPreset(p.key)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-all ${
+                  preset === p.key ? `${p.color} bg-white/5` : `${th.border} ${th.textFaint} hover:${th.textMuted}`
+                }`}>
+                <span className={`text-[10px] font-bold w-20 shrink-0 ${preset === p.key ? p.color.split(' ')[1] : ''}`}>{p.label}</span>
+                <span className="text-[9px] opacity-70">{p.desc}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <button onClick={() => onRun(mode, mode === 'filter' ? preset : undefined)}
+          className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-xl text-xs font-bold tracking-widest transition-colors shadow-lg border border-blue-400/30">
+          RUN HUNTER →
+        </button>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
   stockRules: RulesType;
   etfRules: RulesType;
@@ -3221,6 +3292,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
+  const [showRunModal, setShowRunModal] = useState(false);
   const [tradeResult, setTradeResult] = useState<ScreenResult | null>(null);
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
@@ -3398,15 +3470,6 @@ export default function Home() {
             <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
             <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
           </nav>
-          {/* Mode toggle in header */}
-          <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-            {(['filter', 'rank'] as const).map(mode => (
-              <button key={mode} onClick={() => { setScreenMode(mode); try { localStorage.setItem(LS_SCREEN_MODE, mode); } catch {} }}
-                className={`text-xs px-3 py-1.5 rounded transition-colors tracking-wider font-medium ${screenMode === mode ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
-                {mode === 'filter' ? '⊘ Filter' : '⬡ Rank'}
-              </button>
-            ))}
-          </div>
         </div>
         
         <div className="flex items-center gap-3">
@@ -3522,7 +3585,7 @@ export default function Home() {
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
-          <button onClick={() => screenMode === 'rank' ? runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel) : setShowRulesModal(true)} disabled={loading}
+          <button onClick={() => setShowRunModal(true)} disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
@@ -3651,6 +3714,9 @@ export default function Home() {
                     </button>
                   )}
                   <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
+                  <button onClick={() => setShowRunModal(true)} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-purple-500 hover:text-purple-400 transition-colors tracking-wider`}>
+                    {screenMode === 'filter' ? '⊘ Filter' : '⬡ Rank'} ↺
+                  </button>
                 </div>
               </div>
 
@@ -3691,6 +3757,30 @@ export default function Home() {
 
       {tradeResult && tradeResult.bestCandidate && <TradeModal result={tradeResult} th={th} onClose={() => setTradeResult(null)} />}
       <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} th={th} />
+      {showRunModal && (
+        <RunModeModal
+          th={th}
+          lastMode={screenMode}
+          lastPreset={stockPresetLabel}
+          onClose={() => setShowRunModal(false)}
+          onRun={(mode, preset) => {
+            setShowRunModal(false);
+            setScreenMode(mode);
+            try { localStorage.setItem(LS_SCREEN_MODE, mode); } catch {}
+            if (mode === 'rank') {
+              runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+            } else {
+              // Find matching preset rules and apply them
+              const found = FILTER_PRESETS.find(p => p.key === preset);
+              if (found) {
+                setStockPresetLabel(found.label);
+                setShowRulesModal(false);
+              }
+              runScreen(runtimeStockRules, runtimeEtfRules, found?.label ?? stockPresetLabel, etfPresetLabel);
+            }
+          }}
+        />
+      )}
       {showRulesModal && <RulesModal stockRules={runtimeStockRules} etfRules={runtimeEtfRules} rankConfig={rankConfig} onClose={() => setShowRulesModal(false)} onRun={(sRules, eRules, sLabel, eLabel, rCfg) => { setShowRulesModal(false); setRuntimeStockRules(sRules); setRuntimeEtfRules(eRules); setStockPresetLabel(sLabel); setEtfPresetLabel(eLabel); setRankConfig(rCfg); runScreen(sRules, eRules, sLabel, eLabel); }} th={th} />}
     </div>
   );
