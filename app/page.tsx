@@ -3347,7 +3347,7 @@ export default function Home() {
     );
   };
 
-  const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string) => {
+  const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
     setError('');
     setResults([]);
     setAutoTrendEntries([]);
@@ -3430,7 +3430,7 @@ export default function Home() {
         index === self.findIndex(t => t.symbol === r.symbol && t.strategy === r.strategy)
       );
 
-      if (screenMode === 'rank') {
+      if ((modeOverride ?? screenMode) === 'rank') {
         // Sort by score descending; no-candidate results go to the bottom
         uniqueResults.sort((a, b) => {
           const sA = scoreCandidate(a, rankConfig)?.score ?? 0;
@@ -3768,15 +3768,14 @@ export default function Home() {
             setScreenMode(mode);
             try { localStorage.setItem(LS_SCREEN_MODE, mode); } catch {}
             if (mode === 'rank') {
-              runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+              runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel, 'rank');
             } else {
-              // Find matching preset rules and apply them
               const found = FILTER_PRESETS.find(p => p.key === preset);
               if (found) {
                 setStockPresetLabel(found.label);
                 setShowRulesModal(false);
               }
-              runScreen(runtimeStockRules, runtimeEtfRules, found?.label ?? stockPresetLabel, etfPresetLabel);
+              runScreen(runtimeStockRules, runtimeEtfRules, found?.label ?? stockPresetLabel, etfPresetLabel, 'filter');
             }
           }}
         />
