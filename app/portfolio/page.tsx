@@ -767,9 +767,10 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
   }, 0);
 
   const totalTheta = positions.reduce((sum, p) => {
-    if (p.currentValue != null && p.dte > 0) return sum + (p.currentValue / p.dte);
-    return sum;
-  }, 0);
+  if (p.currentValue != null && p.dte > 0) return sum + (p.currentValue / p.dte);
+  if (p.dte > 0) return sum + (p.creditReceived / p.dte);
+  return sum;
+}, 0);
 
   return (
     <div className={`grid grid-cols-5 border-b ${th.border}`}>
