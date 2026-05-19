@@ -978,6 +978,10 @@ export default function PortfolioPage() {
         </div>
         <div className="flex items-center gap-3">
           {lastRefresh && <span className="text-[10px] text-white/30">Updated {lastRefresh.toLocaleTimeString()}</span>}
+           <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
+            className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider">
+            TastyTrade ↗
+          </a>
           <button onClick={fetchPositions} disabled={loading}
             className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider disabled:opacity-40">
             {loading ? 'LOADING...' : '↻ REFRESH'}
