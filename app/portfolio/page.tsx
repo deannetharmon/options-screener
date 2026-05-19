@@ -259,9 +259,21 @@ async function loadPositions(): Promise<Position[]> {
     };
   });
 
+  const actionPriority: Record<string, number> = {
+    CLOSE_ROLL: 0, CUT_LOSSES: 1, TAKE_PROFIT: 2, MANAGE: 3, WATCH: 4, HOLD: 5,
+  };
+
   positions.sort((a, b) => {
+    // needsClose always first regardless of action
     if (a.needsClose && !b.needsClose) return -1;
     if (!a.needsClose && b.needsClose) return 1;
+    // then by recommended action priority
+    const aRec = getRecommendation(a, null).action;
+    const bRec = getRecommendation(b, null).action;
+    const aPri = actionPriority[aRec] ?? 9;
+    const bPri = actionPriority[bRec] ?? 9;
+    if (aPri !== bPri) return aPri - bPri;
+    // then by DTE ascending
     return a.dte - b.dte;
   });
   return positions;
@@ -445,7 +457,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
 
   const rec = getRecommendation(pos, trend);
 
-  const ttActionUrl = (_action: ActionType): string => `https://my.tastytrade.com/positions`;
+  const ttActionUrl = (_action: ActionType): string => `https://my.tastytrade.com/`;
 
   const ttActionTooltip = (action: ActionType): string => {
     switch (action) {
