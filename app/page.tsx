@@ -690,6 +690,7 @@ async function getAccessToken(): Promise<string> {
   if (!res.ok) {
     sessionStorage.removeItem('tt_access_token');
     try { localStorage.removeItem(LS_ACCESS_TOKEN); localStorage.removeItem(LS_ACCESS_TOKEN_EXPIRY); } catch {}
+    localStorage.removeItem('tt_refresh_token');
     window.location.href = '/login';
     throw new Error('Session expired');
   }
