@@ -104,7 +104,9 @@ async function loadPositions(): Promise<Position[]> {
         for (const item of priceData?.data?.items ?? []) {
           const bid = parseFloat(item.bid ?? '0');
           const ask = parseFloat(item.ask ?? '0');
-          currentPrices[item.symbol] = (bid + ask) / 2;
+          const mark = parseFloat(item.mark ?? item['mark-price'] ?? '0');
+          const mid = (bid + ask) / 2;
+          currentPrices[item.symbol?.replace(/\s+/g, '')] = mid > 0 ? mid : mark;
         }
       }
     } catch { /* prices optional */ }
