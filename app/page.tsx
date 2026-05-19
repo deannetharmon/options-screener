@@ -625,12 +625,17 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
   const technicalScore = clamp(technicalRaw) * cfg.weightTechnical;
 
   // ── Liquidity (10pts) ─────────────────────────────────────────────────────
+  // OI is weighted heavily here — low OI means the spread is physically untradeable
+  // regardless of how good the other metrics look. OI < 100 is near-zero; OI >= 500 is full score.
   let liquidityRaw = 0.4;
   if (c) {
-    const oiScore = clamp((Math.min(c.shortOI, c.longOI) - 50) / 950);
+    const minOI = Math.min(c.shortOI, c.longOI);
+    // Steep curve: OI=0→0, OI=100→0.18, OI=300→0.54, OI=500→1.0, OI>500→1.0
+    const oiScore = minOI <= 0 ? 0 : clamp(Math.pow(minOI / 500, 0.7));
     const creditRatioScore = clamp((c.creditRatio - 0.15) / 0.35);
     const rocScore = clamp(c.roc / 35);
-    liquidityRaw = oiScore * 0.4 + creditRatioScore * 0.3 + rocScore * 0.3;
+    // OI now carries 60% of liquidity score (was 40%) — low OI is a much bigger drag
+    liquidityRaw = oiScore * 0.6 + creditRatioScore * 0.2 + rocScore * 0.2;
   }
   const liquidityScore = clamp(liquidityRaw) * cfg.weightLiquidity;
 
@@ -988,7 +993,15 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   }
   if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
   else if (!bestCandidate && validExpirations.length > 0 && !failReasons.length) failReasons.push('No qualifying strikes found');
-  const oiCheck: CheckResult = bestCandidate ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: `Both legs ≥ ${effectiveRules.OI_MIN}` } : { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' };
+  const oiCheck: CheckResult = !bestCandidate
+    ? { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' }
+    : (() => {
+        const minOI = Math.min(bestCandidate.shortOI, bestCandidate.longOI);
+        const val = `${bestCandidate.shortOI}/${bestCandidate.longOI}`;
+        if (minOI >= effectiveRules.OI_MIN) return { status: 'pass' as const, value: val, reason: `Both legs ≥ ${effectiveRules.OI_MIN}` };
+        if (minOI >= 100) return { status: 'warn' as const, value: val, reason: `Below target (${effectiveRules.OI_MIN}) — fills may be difficult` };
+        return { status: 'warn' as const, value: val, reason: `Very low OI — spread likely untradeable` };
+      })();
   const deltaCheck: CheckResult = bestCandidate ? { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Within target range' } : { status: 'pending', value: '—', reason: 'No candidate' };
 
   const rawCredit = bestCandidate ? (bestCandidate.totalCredit ?? bestCandidate.credit) : 0;
