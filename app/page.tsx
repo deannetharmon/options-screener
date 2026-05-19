@@ -1846,14 +1846,15 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
     : strategyAccent(result.strategy);
 
   const cardBorder = isApproaching ? 'border-yellow-500/50' : th.border;
-  const cardBg = result.qualified ? th.cardQualified : isRankMode ? th.card : `${th.card} opacity-50`;
+  const cardBg = result.qualified ? th.cardQualified : `${th.card} opacity-50`;
 
   return (
     <div className={`border ${cardBorder} ${scoreBorderL} ${cardBg} rounded-lg cursor-pointer transition-all hover:shadow-md`}
          onClick={() => setExpanded(!expanded)}>
 
       {/* Header Row */}
-      <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
+      <div className="px-4 py-3 flex items-center gap-2">
+        {/* Col 1: Symbol + price — fixed */}
         <div className="w-16 shrink-0">
           <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
           {result.price && <p className={`text-[10px] ${th.textFaint}`}>${result.price.toFixed(2)}</p>}
@@ -1863,58 +1864,62 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
             </p>
           )}
         </div>
-        {/* Rule set badge */}
-        {result.ruleSetApplied && (
-          <span className={`text-[8px] px-1.5 py-0.5 border rounded shrink-0 font-medium tracking-wider
-            ${result.ruleSetApplied.includes('ETF')
-              ? 'border-blue-800 text-blue-400/80 bg-blue-500/5'
-              : result.ruleSetApplied === 'Strict'
-              ? 'border-red-900 text-red-400/70 bg-red-500/5'
-              : result.ruleSetApplied === 'Course'
-              ? 'border-slate-700 text-slate-400/70'
-              : result.ruleSetApplied === 'Relaxed'
-              ? 'border-emerald-900 text-emerald-400/70 bg-emerald-500/5'
-              : result.ruleSetApplied === 'Low Vol'
-              ? 'border-yellow-900 text-yellow-400/70 bg-yellow-500/5'
-              : result.ruleSetApplied === 'Short Term'
-              ? 'border-orange-900 text-orange-400/70 bg-orange-500/5'
-              : 'border-slate-700 text-slate-500'
-            }`}>
-            {result.ruleSetApplied}
-          </span>
-        )}
-        {/* Rank score badge */}
-        {isRankMode && scored && light && (
-          <span className={`text-[9px] px-2 py-0.5 border rounded shrink-0 font-bold ${light.color} ${light.border} ${light.bg}`}>
-            {light.emoji} {scored.score} — {light.label}
-          </span>
-        )}
-        <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
-        {(result.strategy === 'BPS' || result.strategy === 'BCS') && result.ivr != null && result.ivr >= 30 && (
-          <span className="text-[9px] px-1.5 py-0.5 border border-blue-500/50 text-blue-400/80 rounded shrink-0">+ IC</span>
-        )}
-        {t && <span className={`text-[10px] shrink-0 font-medium ${trendColor(t.trend)}`}>{trendIcon(t.trend)} {t.trend}</span>}
-        <div className={`text-xs ${th.label} shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
-
-        {c && <>
-          <div className="text-xs shrink-0"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= dteCloseTarget ? 'text-red-500' : c.dte <= dteAlertThreshold ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
-          <StrikesDisplay c={c} th={th} />
-          <div className="text-xs shrink-0"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-          <div className="text-xs shrink-0"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
-          {c.pop != null && <div className="text-xs shrink-0"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop.toFixed(0)}%</span></div>}
-          <div className="text-xs shrink-0"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
-          <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
-          {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
-          {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
-        </>}
-
-        {!result.qualified && result.failReasons.length > 0 && (
-          <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
-            <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
-            {hasEarningsBlock && result.earningsDate && <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>}
-          </div>
-        )}
-        <div className={`ml-auto ${th.textFaint} text-xs shrink-0`}>{expanded ? '▲' : '▼'}</div>
+        {/* Col 2: Badges — fixed width */}
+        <div className="w-52 shrink-0 flex items-center gap-1 flex-wrap">
+          {result.ruleSetApplied && (
+            <span className={`text-[8px] px-1.5 py-0.5 border rounded shrink-0 font-medium tracking-wider
+              ${result.ruleSetApplied.includes('ETF')
+                ? 'border-blue-800 text-blue-400/80 bg-blue-500/5'
+                : result.ruleSetApplied === 'Strict'
+                ? 'border-red-900 text-red-400/70 bg-red-500/5'
+                : result.ruleSetApplied === 'Course'
+                ? 'border-slate-700 text-slate-400/70'
+                : result.ruleSetApplied === 'Relaxed'
+                ? 'border-emerald-900 text-emerald-400/70 bg-emerald-500/5'
+                : result.ruleSetApplied === 'Low Vol'
+                ? 'border-yellow-900 text-yellow-400/70 bg-yellow-500/5'
+                : result.ruleSetApplied === 'Short Term'
+                ? 'border-orange-900 text-orange-400/70 bg-orange-500/5'
+                : 'border-slate-700 text-slate-500'
+              }`}>
+              {result.ruleSetApplied}
+            </span>
+          )}
+          {isRankMode && scored && light && (
+            <span className={`text-[9px] px-2 py-0.5 border rounded shrink-0 font-bold ${light.color} ${light.border} ${light.bg}`}>
+              {light.emoji} {scored.score} — {light.label}
+            </span>
+          )}
+          <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
+          {(result.strategy === 'BPS' || result.strategy === 'BCS') && result.ivr != null && result.ivr >= 30 && (
+            <span className="text-[9px] px-1.5 py-0.5 border border-blue-500/50 text-blue-400/80 rounded shrink-0">+ IC</span>
+          )}
+        </div>
+        {/* Col 3: Data fields — fixed widths */}
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div className={`text-xs ${th.label} w-20 shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
+          {c && <>
+            <div className="text-xs shrink-0 w-36"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= dteCloseTarget ? 'text-red-500' : c.dte <= dteAlertThreshold ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
+            <div className="w-28 shrink-0"><StrikesDisplay c={c} th={th} /></div>
+            <div className="text-xs shrink-0 w-20"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+            <div className="text-xs shrink-0 w-16"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
+            <div className="text-xs shrink-0 w-16"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
+            <div className="text-xs shrink-0 w-12"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+            <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
+            {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
+            {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
+          </>}
+          {!result.qualified && result.failReasons.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
+              {hasEarningsBlock && result.earningsDate && <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>}
+            </div>
+          )}
+        </div>
+        {/* Col 4: Expand + re-screen — right aligned */}
+        <div className="flex items-center gap-2 ml-auto shrink-0">
+          <div className={`${th.textFaint} text-xs`}>{expanded ? '▲' : '▼'}</div>
+        </div>
       </div>
 
       {/* Expanded Content */}
