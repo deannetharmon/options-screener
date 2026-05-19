@@ -810,7 +810,7 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
       <div className="p-5 flex flex-col items-center text-center">
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Est. Theta / Day</p>
         <p className="text-3xl font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-          {totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—'}
+          {totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '\u2014'}
         </p>
         </p>
         <p className={`text-[10px] ${th.textFaint} mt-1`}>est. daily decay across all positions</p>
