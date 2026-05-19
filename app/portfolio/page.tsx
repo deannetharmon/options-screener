@@ -93,13 +93,13 @@ async function loadPositions(): Promise<Position[]> {
     groups[key].push(pos);
   }
 
-  const allOptionSymbols = optionPositions.map((p: any) => p.symbol).filter(Boolean);
+  const allOptionSymbols = optionPositions.map((p: any) => p.symbol?.replace(/\s+/g, '')).filter(Boolean);
   const currentPrices: Record<string, number> = {};
   if (allOptionSymbols.length > 0) {
     try {
       for (let i = 0; i < allOptionSymbols.length; i += 50) {
         const chunk = allOptionSymbols.slice(i, i + 50);
-        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
+        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s.replace(/\s+/g, ''))}`).join('&');
         const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
         for (const item of priceData?.data?.items ?? []) {
           const bid = parseFloat(item.bid ?? '0');
@@ -196,15 +196,10 @@ async function loadPositions(): Promise<Position[]> {
     let currentValue = 0;
     let hasCurrentPrices = true;
     for (const leg of legs) {
-    console.log('LEG:', symbol, {
-      symbol: leg.symbol,
-      direction: leg['quantity-direction'],
-      quantity: leg['quantity'],
-      avgOpenPrice: leg['average-open-price'],
-    });
-    const qty = parseInt(leg['quantity'] ?? '1', 10);
-    const avgPrice = parseFloat(leg['average-open-price'] ?? '0');
-    creditReceived += leg['quantity-direction'] === 'Short' ? avgPrice * qty : -(avgPrice * qty);
+      const qty = parseInt(leg['quantity'] ?? '1', 10);
+      const price = currentPrices[leg.symbol?.replace(/\s+/g, '')];
+      if (price == null) { hasCurrentPrices = false; break; }
+      currentValue += leg['quantity-direction'] === 'Short' ? price * qty : -(price * qty);
     }
     currentValue = currentValue * 100;
 
@@ -225,7 +220,7 @@ async function loadPositions(): Promise<Position[]> {
           direction: l['quantity-direction'] as 'Short' | 'Long',
           quantity: parseInt(l['quantity'] ?? '1', 10),
           avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
-          currentPrice: currentPrices[l.symbol] ?? null,
+          currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
         };
       }),
       creditReceived: Math.abs(creditReceived),
@@ -267,18 +262,14 @@ async function loadPositions(): Promise<Position[]> {
   const actionPriority: Record<string, number> = {
     CLOSE_ROLL: 0, CUT_LOSSES: 1, TAKE_PROFIT: 2, MANAGE: 3, WATCH: 4, HOLD: 5,
   };
-
   positions.sort((a, b) => {
-    // needsClose always first regardless of action
     if (a.needsClose && !b.needsClose) return -1;
     if (!a.needsClose && b.needsClose) return 1;
-    // then by recommended action priority
     const aRec = getRecommendation(a, null).action;
     const bRec = getRecommendation(b, null).action;
     const aPri = actionPriority[aRec] ?? 9;
     const bPri = actionPriority[bRec] ?? 9;
     if (aPri !== bPri) return aPri - bPri;
-    // then by DTE ascending
     return a.dte - b.dte;
   });
   return positions;
@@ -462,7 +453,8 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
 
   const rec = getRecommendation(pos, trend);
 
-  const ttActionUrl = (_action: ActionType): string => `https://my.tastytrade.com/`;
+  const ttActionUrl = (_action: ActionType): string =>
+    `https://my.tastytrade.com/`;
 
   const ttActionTooltip = (action: ActionType): string => {
     switch (action) {
@@ -706,7 +698,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
               <div className="flex flex-col items-center justify-center gap-1 px-3 min-w-[110px]">
                 {actionDef.show ? (
                   <a
-                    href="https://my.tastytrade.com/positions"
+                    href="https://my.tastytrade.com"
                     target="_blank"
                     rel="noopener noreferrer"
                     className={`text-[9px] px-3 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors w-full text-center ${actionDef.btnClass}`}>
@@ -777,10 +769,6 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
     return sum;
   }, 0);
 
-  // Net credit = sum of per-position net spread credits (what you actually keep)
-  const profitTarget50 = totalCredit * 0.5;
-  const profitTargetPct = totalCredit > 0 ? (totalPnl / profitTarget50) * 100 : 0;
-
   return (
     <div className={`grid grid-cols-5 border-b ${th.border}`}>
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
@@ -801,12 +789,12 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>50% Profit Target</p>
         <p className="text-3xl font-bold text-yellow-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-          ${profitTarget50.toFixed(0)}
+          ${(totalCredit * 0.5).toFixed(0)}
         </p>
         <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
           <span className={th.textFaint}>cycle goal · </span>
-          <span className={totalPnl >= profitTarget50 ? 'text-emerald-400' : th.textFaint}>
-            {profitTargetPct.toFixed(0)}% of target captured
+          <span className={totalPnl >= totalCredit * 0.5 ? 'text-emerald-400' : th.textFaint}>
+            {totalCredit > 0 ? ((totalPnl / (totalCredit * 0.5)) * 100).toFixed(0) : '0'}% of target captured
           </span>
         </p>
       </div>
@@ -999,7 +987,7 @@ export default function PortfolioPage() {
         </div>
         <div className="flex items-center gap-3">
           {lastRefresh && <span className="text-[10px] text-white/30">Updated {lastRefresh.toLocaleTimeString()}</span>}
-           <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
+          <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
             className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider">
             TastyTrade ↗
           </a>
