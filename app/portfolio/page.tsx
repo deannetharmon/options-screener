@@ -752,7 +752,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
 // ── Summary Bar ────────────────────────────────────────────────────────────
 function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
   const totalCredit = positions.reduce((sum, p) => sum + p.creditReceived, 0);
-  const totalPnl = positions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+  const totalPnl = positions.reduce((sum, p) => sum + (p.pnl ?? p.plOpen ?? 0), 0);
   const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
 
   const totalAtRisk = positions.reduce((sum, p) => {
