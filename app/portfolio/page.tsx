@@ -781,7 +781,7 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Captured</p>
         <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(0)}
+          {(totalPnl >= 0 ? '+' : '') + '$' + Math.abs(totalPnl).toFixed(0)}
         </p>
         <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
           <span className={`font-bold ${th.textMuted}`}>of ${totalCredit.toFixed(0)} collected</span>
@@ -791,27 +791,26 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>50% Profit Target</p>
         <p className="text-3xl font-bold text-yellow-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-          ${(totalCredit * 0.5).toFixed(0)}
+          {'$' + Math.round(totalCredit * 0.5)}
         </p>
         <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
           <span className={th.textFaint}>cycle goal · </span>
           <span className={totalPnl >= totalCredit * 0.5 ? 'text-emerald-400' : th.textFaint}>
-            {totalCredit > 0 ? ((totalPnl / (totalCredit * 0.5)) * 100).toFixed(0) : '0'}% of target captured
+            {totalCredit > 0 ? Math.round((totalPnl / (totalCredit * 0.5)) * 100) : 0}% of target captured
           </span>
         </p>
       </div>
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>At Risk</p>
         <p className={`text-3xl font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          ${totalAtRisk.toFixed(0)}
+          {'$' + totalAtRisk.toFixed(0)}
         </p>
         <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all expire worthless</p>
       </div>
       <div className="p-5 flex flex-col items-center text-center">
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Est. Theta / Day</p>
         <p className="text-3xl font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-        {totalTheta > 0 ? '+$' + totalTheta.toFixed(2) : '—'}          
-        </p>
+          {totalTheta > 0 ? '+$' + totalTheta.toFixed(2) : '—'}
         </p>
         <p className={`text-[10px] ${th.textFaint} mt-1`}>est. daily decay across all positions</p>
       </div>
