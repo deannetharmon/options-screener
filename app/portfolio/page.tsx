@@ -196,10 +196,15 @@ async function loadPositions(): Promise<Position[]> {
     let currentValue = 0;
     let hasCurrentPrices = true;
     for (const leg of legs) {
-      const qty = parseInt(leg['quantity'] ?? '1', 10);
-      const price = currentPrices[leg.symbol];
-      if (price == null) { hasCurrentPrices = false; break; }
-      currentValue += leg['quantity-direction'] === 'Short' ? price * qty : -(price * qty);
+    console.log('LEG:', pos_symbol ?? key, {
+      symbol: leg.symbol,
+      direction: leg['quantity-direction'],
+      quantity: leg['quantity'],
+      avgOpenPrice: leg['average-open-price'],
+    });
+    const qty = parseInt(leg['quantity'] ?? '1', 10);
+    const avgPrice = parseFloat(leg['average-open-price'] ?? '0');
+    creditReceived += leg['quantity-direction'] === 'Short' ? avgPrice * qty : -(avgPrice * qty);
     }
     currentValue = currentValue * 100;
 
