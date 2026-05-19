@@ -22,7 +22,7 @@ async function getAccessToken(): Promise<string> {
   if (cached) return cached;
 
   const refreshToken = localStorage.getItem('tt_refresh_token');
-  const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ?? '';
+  const clientSecret = localStorage.getItem('tt_client_secret') ?? '';
   if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
 
   const res = await fetch(`${BASE}/oauth/token`, {
@@ -33,6 +33,7 @@ async function getAccessToken(): Promise<string> {
   if (!res.ok) {
     // Don't clear the refresh token — may be a temporary server error
     sessionStorage.removeItem('tt_access_token');
+    localStorage.removeItem('tt_refresh_token');
     window.location.href = '/login';
     throw new Error('Session expired');
   }
