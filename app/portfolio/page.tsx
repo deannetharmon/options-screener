@@ -674,7 +674,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
                 return (
                   <div
                     key={a.key}
-                    onClick={() => onToggleSelect(pos.key, a.key)}
+                    onClick={() => {}}
                     className={`flex flex-col items-center justify-center px-3 py-2 gap-1.5 border-r ${th.borderLight} w-[70px] cursor-pointer hover:bg-white/5 transition-colors`}
                   >
                     <span className={`text-[9px] text-center leading-tight whitespace-nowrap font-medium ${labelColor}`}>{a.label}</span>
@@ -689,11 +689,13 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
               {/* Action button */}
               <div className="flex flex-col items-center justify-center gap-1 px-3 min-w-[110px]">
                 {actionDef.show ? (
-                  <button
-                    onClick={() => onToggleSelect(pos.key, effectiveAction)}
+  
+                    href={ttActionUrl(effectiveAction)}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className={`text-[9px] px-3 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors w-full text-center ${actionDef.btnClass}`}>
                     {actionDef.label}
-                  </button>
+                  </a>
                 ) : (
                   <span className={`text-[9px] px-3 py-1.5 border rounded whitespace-nowrap w-full text-center font-medium ${actionDef.pillClass}`}>
                     {actionDef.label}
