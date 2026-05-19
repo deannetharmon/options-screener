@@ -196,7 +196,7 @@ async function loadPositions(): Promise<Position[]> {
     let currentValue = 0;
     let hasCurrentPrices = true;
     for (const leg of legs) {
-    console.log('LEG:', pos_symbol ?? key, {
+    console.log('LEG:', symbol, {
       symbol: leg.symbol,
       direction: leg['quantity-direction'],
       quantity: leg['quantity'],
