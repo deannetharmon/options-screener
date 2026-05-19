@@ -444,9 +444,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
   }, [pos.symbol]);
 
   const rec = getRecommendation(pos, trend);
-
-  const ttActionUrl = (_action: ActionType): string =>
-  `https://my.tastytrade.com/trade?symbol=${encodeURIComponent(pos.symbol)}`;
+  const ttActionUrl = (_action: ActionType): string => `https://my.tastytrade.com/trade?symbol=${encodeURIComponent(pos.symbol)}`;
 
   const ttActionTooltip = (action: ActionType): string => {
     switch (action) {
