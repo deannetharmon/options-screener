@@ -772,8 +772,12 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
     return sum;
   }, 0);
 
+  // Net credit = sum of per-position net spread credits (what you actually keep)
+  const profitTarget50 = totalCredit * 0.5;
+  const profitTargetPct = totalCredit > 0 ? (totalPnl / profitTarget50) * 100 : 0;
+
   return (
-    <div className={`grid grid-cols-4 border-b ${th.border}`}>
+    <div className={`grid grid-cols-5 border-b ${th.border}`}>
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
         <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Open Positions</p>
         <p className={`text-3xl font-bold ${th.text}`}>{positions.length}</p>
@@ -787,6 +791,18 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
         <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
           <span className={`font-bold ${th.textMuted}`}>of ${totalCredit.toFixed(0)} collected</span>
           <span className={`ml-1 ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>· {capturedPct.toFixed(0)}%</span>
+        </p>
+      </div>
+      <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
+        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>50% Profit Target</p>
+        <p className="text-3xl font-bold text-yellow-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+          ${profitTarget50.toFixed(0)}
+        </p>
+        <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
+          <span className={th.textFaint}>cycle goal · </span>
+          <span className={totalPnl >= profitTarget50 ? 'text-emerald-400' : th.textFaint}>
+            {profitTargetPct.toFixed(0)}% of target captured
+          </span>
         </p>
       </div>
       <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
