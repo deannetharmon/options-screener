@@ -1,4 +1,4 @@
-    'use client';
+'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
@@ -22,7 +22,7 @@ async function getAccessToken(): Promise<string> {
   if (cached) return cached;
 
   const refreshToken = localStorage.getItem('tt_refresh_token');
-  const clientSecret = localStorage.getItem('tt_client_secret') ?? '';
+  const clientSecret = process.env.NEXT_PUBLIC_TASTYTRADE_CLIENT_SECRET ?? '';
   if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
 
   const res = await fetch(`${BASE}/oauth/token`, {
@@ -33,7 +33,6 @@ async function getAccessToken(): Promise<string> {
   if (!res.ok) {
     // Don't clear the refresh token — may be a temporary server error
     sessionStorage.removeItem('tt_access_token');
-    localStorage.removeItem('tt_refresh_token');
     window.location.href = '/login';
     throw new Error('Session expired');
   }
@@ -444,6 +443,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
   }, [pos.symbol]);
 
   const rec = getRecommendation(pos, trend);
+
   const ttActionUrl = (_action: ActionType): string => `https://my.tastytrade.com/trade?symbol=${encodeURIComponent(pos.symbol)}`;
 
   const ttActionTooltip = (action: ActionType): string => {
@@ -687,7 +687,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
               {/* Action button */}
               <div className="flex flex-col items-center justify-center gap-1 px-3 min-w-[110px]">
                 {actionDef.show ? (
-  
+                  <a
                     href={ttActionUrl(effectiveAction)}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -821,6 +821,11 @@ function CloseModal({ positions, selected, onClose, th }: {
     grouped.get(action)!.push(pos);
   }
 
+  const openAll = () => {
+    selectedPositions.forEach(p => {
+      window.open(`https://my.tastytrade.com/trade?symbol=${p.symbol}`, '_blank');
+    });
+  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
@@ -877,9 +882,9 @@ function CloseModal({ positions, selected, onClose, th }: {
         </div>
 
         <div className="px-5 py-4 flex gap-3">
-          <button onClick={onClose}
-          className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
-          DONE
+          <button onClick={openAll}
+            className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
+            OPEN ALL IN TASTYTRADE →
           </button>
           <button onClick={onClose}
             className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:${th.text} transition-colors`}>
@@ -1031,23 +1036,6 @@ export default function PortfolioPage() {
             </div>
           </div>
         </>
-      )}
-
-      {/* Floating action bar */}
-      {selected.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
-          <div className="flex items-center gap-3 bg-[#111] border border-[#333] rounded-2xl px-5 py-3 shadow-2xl">
-            <span className="text-xs text-white font-medium">{selected.size} position{selected.size !== 1 ? 's' : ''} selected</span>
-            <button onClick={() => setShowCloseModal(true)}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-wider transition-colors">
-              REVIEW SELECTED →
-            </button>
-            <button onClick={() => setSelected(new Map())}
-              className="text-xs text-slate-400 hover:text-white transition-colors">
-              Clear
-            </button>
-          </div>
-        </div>
       )}
 
       {showCloseModal && (
