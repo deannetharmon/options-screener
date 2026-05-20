@@ -153,6 +153,9 @@ async function loadPositions(): Promise<Position[]> {
       ...((liveData.status === 'fulfilled' ? liveData.value?.data?.items : null) ?? []),
       ...((searchData.status === 'fulfilled' ? searchData.value?.data?.items : null) ?? []),
     ];
+
+    // TEMPORARY DEBUG
+    console.log('ALL ORDERS RAW:', JSON.stringify(allOrders, null, 2));
   
     for (const order of allOrders) {
       const status = (order['status'] ?? '').toLowerCase();
