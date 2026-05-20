@@ -93,7 +93,10 @@ async function loadPositions(): Promise<Position[]> {
     groups[key].push(pos);
   }
 
-  const allOptionSymbols = optionPositions.map((p: any) => p.symbol?.replace(/\s+/g, '')).filter(Boolean);
+  // Keep original symbols with spaces for market data API — TastyTrade requires OCC space-padded format
+  const allOptionSymbols = optionPositions.map((p: any) => p.symbol).filter(Boolean);
+  // Also keep stripped versions for lookup keys (consistent with position data)
+  const allOptionSymbolsStripped = allOptionSymbols.map((s: string) => s.replace(/\s+/g, ''));
   const currentPrices: Record<string, number> = {};
   const thetaMap: Record<string, number> = {};
   const gammaMap: Record<string, number> = {};
@@ -101,11 +104,11 @@ async function loadPositions(): Promise<Position[]> {
     try {
       for (let i = 0; i < allOptionSymbols.length; i += 50) {
         const chunk = allOptionSymbols.slice(i, i + 50);
-        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s.replace(/\s+/g, ''))}`).join('&');
+        // Send with spaces encoded — TastyTrade market-data requires space-padded OCC symbols
+        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
         const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
         const items = priceData?.data?.items ?? [];
         console.log('MARKET DATA RAW COUNT:', items.length, 'QS:', qs.slice(0, 200));
-        console.log('MARKET DATA FULL RESPONSE:', JSON.stringify(priceData, null, 2));
         if (items.length > 0) console.log('MARKET DATA SAMPLE:', JSON.stringify(items[0], null, 2));
         for (const item of items) {
           const sym = item.symbol?.replace(/\s+/g, '');
@@ -121,7 +124,7 @@ async function loadPositions(): Promise<Position[]> {
           if (!isNaN(gamma)) gammaMap[sym] = gamma;
         }
         console.log('currentPrices keys sample:', Object.keys(currentPrices).slice(0, 3));
-        console.log('allOptionSymbols sample:', allOptionSymbols.slice(0, 3));
+        console.log('allOptionSymbolsStripped sample:', allOptionSymbolsStripped.slice(0, 3));
       }
     } catch (e) { console.error('Market data fetch error:', e); }
   }
