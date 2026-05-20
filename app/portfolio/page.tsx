@@ -104,6 +104,8 @@ async function loadPositions(): Promise<Position[]> {
         const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s.replace(/\s+/g, ''))}`).join('&');
         const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
         const items = priceData?.data?.items ?? [];
+        console.log('MARKET DATA RAW COUNT:', items.length, 'QS:', qs.slice(0, 200));
+        console.log('MARKET DATA FULL RESPONSE:', JSON.stringify(priceData, null, 2));
         if (items.length > 0) console.log('MARKET DATA SAMPLE:', JSON.stringify(items[0], null, 2));
         for (const item of items) {
           const sym = item.symbol?.replace(/\s+/g, '');
