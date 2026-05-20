@@ -610,7 +610,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
   ];
 
   return (
-    <div className={`border ${borderClass} ${th.card} rounded-lg transition-all overflow-x-auto`}>
+    <div className={`border ${borderClass} ${th.card} rounded-lg transition-all`} style={{ overflowX: 'auto' }}>
       {pos.needsClose && (
         <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
           <span className="text-red-400 text-xs">⚠</span>
@@ -627,7 +627,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         </div>
       )}
 
-      <div className="flex items-stretch" style={{ minWidth: '1380px' }}>
+      <div className="flex items-stretch" style={{ minWidth: '1100px' }}>
         {/* Expand toggle */}
         <button
           onClick={() => setExpanded(!expanded)}
@@ -639,20 +639,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           {/* Symbol + strategy */}
           <div>
-            <div className="flex items-center gap-1">
-              <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
-              
-                href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Open in TradingView"
-                className="text-[#808080] hover:text-emerald-400 transition-colors"
-                onClick={e => e.stopPropagation()}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                </svg>
-              </a>
-            </div>
+            <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
             <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
           </div>
 
@@ -787,57 +774,56 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
           </div>
         </div>
 
-        {/* Action columns + button */}
-        <div className={`flex items-stretch border-l ${th.border} shrink-0`} onClick={e => e.stopPropagation()}>
+        {/* Action dropdown + TastyTrade button */}
+        <div className={`flex items-center gap-2 border-l ${th.border} px-3 shrink-0`} onClick={e => e.stopPropagation()}>
           {trendLoading ? (
-            <div className="flex items-center px-4">
-              <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
-            </div>
+            <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
           ) : (
             <>
-              {actions.map(a => {
-                const isSelected = selectedAction === a.key;
-                const isRec = rec.action === a.key && selectedAction === null;
-                const labelColor = isSelected || isRec ? a.labelColor : th.textFaint;
-                return (
-                  <div
-                    key={a.key}
-                    onClick={() => {}}
-                    className={`flex flex-col items-center justify-center px-3 py-2 gap-1.5 border-r ${th.borderLight} w-[70px] cursor-pointer hover:bg-white/5 transition-colors`}
-                  >
-                    <span className={`text-[9px] text-center leading-tight whitespace-nowrap font-medium ${labelColor}`}>{a.label}</span>
-                    <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center transition-all
-                      ${isSelected ? a.activeColor : isRec ? 'border-slate-500 ring-1 ' + a.ringColor : 'border-slate-700'}`}>
-                      {(isSelected || isRec) && <span className="text-[8px] font-bold text-white">✓</span>}
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* Action button */}
-              <div className="flex flex-col items-center justify-center gap-1 px-3 min-w-[110px]">
-                {actionDef.show ? (
-                  <a
-                    href="https://my.tastytrade.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={`text-[9px] px-3 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors w-full text-center ${actionDef.btnClass}`}>
-                    {actionDef.label}
-                  </a>
-                ) : (
-                  <span className={`text-[9px] px-3 py-1.5 border rounded whitespace-nowrap w-full text-center font-medium ${actionDef.pillClass}`}>
-                    {actionDef.label}
-                  </span>
-                )}
-                <a
-                  href={ttActionUrl(effectiveAction)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[8px] text-white/30 hover:text-white/70 tracking-wider transition-colors whitespace-nowrap"
-                  title={ttActionTooltip(effectiveAction)}>
-                  → TastyTrade ↗
-                </a>
+              {/* Dropdown */}
+              <div className="flex flex-col gap-0.5">
+                <p className={`text-[8px] ${th.textFaint} tracking-wider uppercase`}>Action</p>
+                <select
+                  value={selectedAction ?? ''}
+                  onChange={e => {
+                    const val = e.target.value as ActionType;
+                    if (val) onToggleSelect(pos.key, val);
+                    else onToggleSelect(pos.key, rec.action);
+                  }}
+                  className={`text-[10px] font-bold border rounded px-2 py-1 cursor-pointer focus:outline-none focus:border-emerald-500 transition-colors ${
+                    selectedAction
+                      ? actionConfig[selectedAction].pillClass || actionConfig[selectedAction].btnClass
+                      : actionConfig[rec.action].pillClass || actionConfig[rec.action].btnClass
+                  } bg-transparent`}
+                  style={{ minWidth: '140px' }}
+                >
+                  {/* Suggested option */}
+                  {!selectedAction && (
+                    <option value="" style={{ background: '#1a1a1a' }}>
+                      ✦ {actionConfig[rec.action].label.replace(/^[●⚠⚡✓✕↻]\s*/, '')} (suggested)
+                    </option>
+                  )}
+                  {actions.map(a => (
+                    <option key={a.key} value={a.key} style={{ background: '#1a1a1a' }}>
+                      {selectedAction === a.key ? '✓ ' : '  '}{actionConfig[a.key].label.replace(/^[●⚠⚡✓✕↻]\s*/, '')}
+                      {!selectedAction && rec.action === a.key ? ' (suggested)' : ''}
+                    </option>
+                  ))}
+                  {selectedAction && (
+                    <option value="" style={{ background: '#1a1a1a' }}>— Reset to suggested</option>
+                  )}
+                </select>
               </div>
+
+              {/* TastyTrade button */}
+              <a
+                href="https://my.tastytrade.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                title={ttActionTooltip(effectiveAction)}
+                className="text-[9px] px-2 py-1 border border-white/20 text-white/50 rounded hover:border-white/40 hover:text-white/80 transition-colors whitespace-nowrap">
+                TT ↗
+              </a>
             </>
           )}
         </div>
@@ -1150,8 +1136,8 @@ export default function PortfolioPage() {
         <>
           <SummaryBar positions={positions} th={th} />
 
-          <div className="overflow-x-auto">
-            <div className="p-6 space-y-6" style={{ minWidth: '1600px' }}>
+          <div>
+            <div className="p-6 space-y-6">
 
               {needsClose.length > 0 && (
                 <div>
