@@ -110,8 +110,10 @@ async function loadPositions(): Promise<Position[]> {
           const mark = parseFloat(item.mark ?? item['mark-price'] ?? '0');
           const mid = (bid + ask) / 2;
           currentPrices[sym] = mid > 0 ? mid : mark;
-          const theta = parseFloat(item.theta ?? 'NaN');
-          const gamma = parseFloat(item.gamma ?? 'NaN');
+          const theta = parseFloat(item.theta ?? item['theta'] ?? item['implied-volatility'] ?? 'NaN');
+          const gamma = parseFloat(item.gamma ?? item['gamma'] ?? 'NaN');
+          // Log first item to verify field names
+          if (i === 0 && thetaMap && Object.keys(thetaMap).length === 0) console.log('OPTION MARKET DATA SAMPLE:', JSON.stringify(item, null, 2));
           if (!isNaN(theta)) thetaMap[sym] = theta;
           if (!isNaN(gamma)) gammaMap[sym] = gamma;
         }
@@ -625,7 +627,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         </button>
 
         {/* Data columns */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 55px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 50px 50px 60px', gap: '0 10px', alignItems: 'center' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
