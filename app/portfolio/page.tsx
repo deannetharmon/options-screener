@@ -103,22 +103,25 @@ async function loadPositions(): Promise<Position[]> {
         const chunk = allOptionSymbols.slice(i, i + 50);
         const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s.replace(/\s+/g, ''))}`).join('&');
         const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
-        for (const item of priceData?.data?.items ?? []) {
+        const items = priceData?.data?.items ?? [];
+        if (items.length > 0) console.log('MARKET DATA SAMPLE:', JSON.stringify(items[0], null, 2));
+        for (const item of items) {
           const sym = item.symbol?.replace(/\s+/g, '');
+          if (!sym) continue;
           const bid = parseFloat(item.bid ?? '0');
           const ask = parseFloat(item.ask ?? '0');
           const mark = parseFloat(item.mark ?? item['mark-price'] ?? '0');
           const mid = (bid + ask) / 2;
-          currentPrices[sym] = mid > 0 ? mid : mark;
-          const theta = parseFloat(item.theta ?? item['theta'] ?? item['implied-volatility'] ?? 'NaN');
-          const gamma = parseFloat(item.gamma ?? item['gamma'] ?? 'NaN');
-          // Log first item to verify field names
-          if (i === 0 && thetaMap && Object.keys(thetaMap).length === 0) console.log('OPTION MARKET DATA SAMPLE:', JSON.stringify(item, null, 2));
+          currentPrices[sym] = mid > 0 ? mid : mark > 0 ? mark : 0;
+          const theta = parseFloat(item.theta ?? 'NaN');
+          const gamma = parseFloat(item.gamma ?? 'NaN');
           if (!isNaN(theta)) thetaMap[sym] = theta;
           if (!isNaN(gamma)) gammaMap[sym] = gamma;
         }
+        console.log('currentPrices keys sample:', Object.keys(currentPrices).slice(0, 3));
+        console.log('allOptionSymbols sample:', allOptionSymbols.slice(0, 3));
       }
-    } catch { /* prices optional */ }
+    } catch (e) { console.error('Market data fetch error:', e); }
   }
 
   const ivrMap: Record<string, number | null> = {};
@@ -311,7 +314,6 @@ async function loadPositions(): Promise<Position[]> {
         if (optType === 'C') return ((shortStrike - stock) / stock) * 100;
         return null;
       })(),
-      // Net theta and gamma across all legs (short legs subtract, long legs add)
       theta: (() => {
         let net = 0; let any = false;
         for (const l of legs) {
@@ -319,7 +321,8 @@ async function loadPositions(): Promise<Position[]> {
           const val = thetaMap[sym];
           if (val == null) continue;
           const qty = parseInt(l['quantity'] ?? '1', 10);
-          net += l['quantity-direction'] === 'Short' ? val * qty : -(val * qty);
+          // For a short spread, short legs collect theta (positive), long legs pay it (negative)
+          net += l['quantity-direction'] === 'Short' ? Math.abs(val) * qty : -Math.abs(val) * qty;
           any = true;
         }
         return any ? parseFloat(net.toFixed(4)) : null;
@@ -331,7 +334,8 @@ async function loadPositions(): Promise<Position[]> {
           const val = gammaMap[sym];
           if (val == null) continue;
           const qty = parseInt(l['quantity'] ?? '1', 10);
-          net += l['quantity-direction'] === 'Short' ? -(val * qty) : val * qty;
+          // Short gamma is expected — negative net gamma for credit spreads
+          net += l['quantity-direction'] === 'Short' ? -Math.abs(val) * qty : Math.abs(val) * qty;
           any = true;
         }
         return any ? parseFloat(net.toFixed(4)) : null;
@@ -627,7 +631,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         </button>
 
         {/* Data columns */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 50px 50px 60px', gap: '0 10px', alignItems: 'center' }}>
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
