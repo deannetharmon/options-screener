@@ -143,14 +143,21 @@ async function loadPositions(): Promise<Position[]> {
 
   const gtcSymbols = new Set<string>();
   try {
-    const ordersData = await ttFetch(`/accounts/${accountNumber}/orders/live`, token);
-    for (const order of ordersData?.data?.items ?? []) {
+  const ordersData = await ttFetch(
+    `/accounts/${accountNumber}/orders?status=working&per-page=250`, 
+    token
+  );
+  for (const order of ordersData?.data?.items ?? []) {
+    const tif = order['time-in-force'] ?? '';
+    const status = order['status'] ?? '';
+    if (status === 'working' && (tif === 'GTC' || tif === 'GTD')) {
       for (const leg of order.legs ?? []) {
         const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
         if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
       }
     }
-  } catch { /* GTC optional */ }
+  }
+} catch { /* GTC optional */ }
 
   const plBySymbol: Record<string, number> = {};
   try {
