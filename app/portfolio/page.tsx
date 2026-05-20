@@ -639,7 +639,20 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           {/* Symbol + strategy */}
           <div>
-            <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
+            <div className="flex items-center gap-1">
+              <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
+              
+                href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open in TradingView"
+                className="text-[#808080] hover:text-emerald-400 transition-colors"
+                onClick={e => e.stopPropagation()}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                </svg>
+              </a>
+            </div>
             <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
           </div>
 
