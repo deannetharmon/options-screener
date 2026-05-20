@@ -610,7 +610,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
   ];
 
   return (
-    <div className={`border ${borderClass} ${th.card} rounded-lg transition-all`} style={{ overflowX: 'auto' }}>
+    <div className={`border ${borderClass} ${th.card} rounded-lg transition-all overflow-x-auto`}>
       {pos.needsClose && (
         <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
           <span className="text-red-400 text-xs">⚠</span>
@@ -1137,8 +1137,8 @@ export default function PortfolioPage() {
         <>
           <SummaryBar positions={positions} th={th} />
 
-          <div>
-            <div className="p-6 space-y-6">
+          <div className="overflow-x-auto">
+            <div className="p-6 space-y-6" style={{ minWidth: '1600px' }}>
 
               {needsClose.length > 0 && (
                 <div>
