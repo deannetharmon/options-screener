@@ -69,7 +69,10 @@ function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: n
   return { optionType: match[3] as 'P' | 'C', strikePrice };
 }
 
-async function loadPositions(): Promise<Position[]> {
+interface AccountBalances { netLiq: number | null; buyingPower: number | null; dayPnl: number | null; }
+interface LoadResult { positions: Position[]; balances: AccountBalances; }
+
+async function loadPositions(): Promise<LoadResult> {
   const token = await getAccessToken();
 
   const accountsData = await ttFetch('/customers/me/accounts', token);
@@ -93,40 +96,23 @@ async function loadPositions(): Promise<Position[]> {
     groups[key].push(pos);
   }
 
-  // Keep original symbols with spaces for market data API — TastyTrade requires OCC space-padded format
-  const allOptionSymbols = optionPositions.map((p: any) => p.symbol).filter(Boolean);
-  // Also keep stripped versions for lookup keys (consistent with position data)
-  const allOptionSymbolsStripped = allOptionSymbols.map((s: string) => s.replace(/\s+/g, ''));
+  const allOptionSymbols = optionPositions.map((p: any) => p.symbol?.replace(/\s+/g, '')).filter(Boolean);
   const currentPrices: Record<string, number> = {};
-  const thetaMap: Record<string, number> = {};
-  const gammaMap: Record<string, number> = {};
   if (allOptionSymbols.length > 0) {
     try {
       for (let i = 0; i < allOptionSymbols.length; i += 50) {
         const chunk = allOptionSymbols.slice(i, i + 50);
-        // Send with spaces encoded — TastyTrade market-data requires space-padded OCC symbols
-        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
+        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s.replace(/\s+/g, ''))}`).join('&');
         const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
-        const items = priceData?.data?.items ?? [];
-        console.log('MARKET DATA RAW COUNT:', items.length, 'QS:', qs.slice(0, 200));
-        if (items.length > 0) console.log('MARKET DATA SAMPLE:', JSON.stringify(items[0], null, 2));
-        for (const item of items) {
-          const sym = item.symbol?.replace(/\s+/g, '');
-          if (!sym) continue;
+        for (const item of priceData?.data?.items ?? []) {
           const bid = parseFloat(item.bid ?? '0');
           const ask = parseFloat(item.ask ?? '0');
           const mark = parseFloat(item.mark ?? item['mark-price'] ?? '0');
           const mid = (bid + ask) / 2;
-          currentPrices[sym] = mid > 0 ? mid : mark > 0 ? mark : 0;
-          const theta = parseFloat(item.theta ?? 'NaN');
-          const gamma = parseFloat(item.gamma ?? 'NaN');
-          if (!isNaN(theta)) thetaMap[sym] = theta;
-          if (!isNaN(gamma)) gammaMap[sym] = gamma;
+          currentPrices[item.symbol?.replace(/\s+/g, '')] = mid > 0 ? mid : mark;
         }
-        console.log('currentPrices keys sample:', Object.keys(currentPrices).slice(0, 3));
-        console.log('allOptionSymbolsStripped sample:', allOptionSymbolsStripped.slice(0, 3));
       }
-    } catch (e) { console.error('Market data fetch error:', e); }
+    } catch { /* prices optional */ }
   }
 
   const ivrMap: Record<string, number | null> = {};
@@ -228,6 +214,20 @@ async function loadPositions(): Promise<Position[]> {
     }
   } catch { /* plOpen optional */ }
 
+  // Fetch account balances — net liq, buying power, day P&L
+  let accountBalances: { netLiq: number | null; buyingPower: number | null; dayPnl: number | null } = { netLiq: null, buyingPower: null, dayPnl: null };
+  try {
+    const balData = await ttFetch(`/accounts/${accountNumber}/balances`, token);
+    const bal = balData?.data;
+    if (bal) {
+      accountBalances = {
+        netLiq: parseFloat(bal['net-liquidating-value'] ?? bal['net-liq'] ?? 'NaN') || null,
+        buyingPower: parseFloat(bal['derivative-buying-power'] ?? bal['buying-power'] ?? bal['cash-balance'] ?? 'NaN') || null,
+        dayPnl: parseFloat(bal['realized-day-gain'] ?? bal['day-trading-buying-power'] ?? 'NaN') || null,
+      };
+    }
+  } catch { /* balances optional */ }
+
   let profitTargets: Record<string, number> = {};
   try { profitTargets = JSON.parse(localStorage.getItem(LS_PROFIT_TARGETS) ?? '{}'); } catch {}
 
@@ -319,32 +319,6 @@ async function loadPositions(): Promise<Position[]> {
         if (optType === 'C') return ((shortStrike - stock) / stock) * 100;
         return null;
       })(),
-      theta: (() => {
-        let net = 0; let any = false;
-        for (const l of legs) {
-          const sym = l.symbol?.replace(/\s+/g, '');
-          const val = thetaMap[sym];
-          if (val == null) continue;
-          const qty = parseInt(l['quantity'] ?? '1', 10);
-          // For a short spread, short legs collect theta (positive), long legs pay it (negative)
-          net += l['quantity-direction'] === 'Short' ? Math.abs(val) * qty : -Math.abs(val) * qty;
-          any = true;
-        }
-        return any ? parseFloat(net.toFixed(4)) : null;
-      })(),
-      gamma: (() => {
-        let net = 0; let any = false;
-        for (const l of legs) {
-          const sym = l.symbol?.replace(/\s+/g, '');
-          const val = gammaMap[sym];
-          if (val == null) continue;
-          const qty = parseInt(l['quantity'] ?? '1', 10);
-          // Short gamma is expected — negative net gamma for credit spreads
-          net += l['quantity-direction'] === 'Short' ? -Math.abs(val) * qty : Math.abs(val) * qty;
-          any = true;
-        }
-        return any ? parseFloat(net.toFixed(4)) : null;
-      })(),
     };
   });
 
@@ -361,7 +335,7 @@ async function loadPositions(): Promise<Position[]> {
     if (aPri !== bPri) return aPri - bPri;
     return a.dte - b.dte;
   });
-  return positions;
+  return { positions, balances: accountBalances };
 }
 
 type Theme = 'dark' | 'medium' | 'light';
@@ -481,8 +455,6 @@ interface Position {
   hasGtc: boolean;
   stockPrice: number | null;
   buffer: number | null;
-  theta: number | null;
-  gamma: number | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -610,7 +582,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
   ];
 
   return (
-    <div className={`border ${borderClass} ${th.card} rounded-lg transition-all`}>
+    <div className={`border ${borderClass} ${th.card} rounded-lg overflow-hidden transition-all`}>
       {pos.needsClose && (
         <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
           <span className="text-red-400 text-xs">⚠</span>
@@ -635,9 +607,8 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
           <span className="text-[10px]">{expanded ? '▲' : '▼'}</span>
         </button>
 
-        {/* Data columns — scrollable */}
-        <div className="overflow-x-auto flex-1">
-        <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center', minWidth: '900px' }}>
+        {/* Data columns */}
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -694,6 +665,15 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
             <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
           </div>
 
+          {/* P&L */}
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>P&L</p>
+            <p className={`text-xs font-bold ${pnlColor(pos.pnl)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)}` : '—'}
+              {pos.pnlPct != null && <span className="ml-1 text-[10px] font-normal">({pos.pnlPct.toFixed(0)}%)</span>}
+            </p>
+          </div>
+
           {/* Profit Target — click to edit */}
           <div onClick={e => e.stopPropagation()}>
             <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
@@ -733,22 +713,6 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
             </p>
           </div>
 
-          {/* Theta */}
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>Theta</p>
-            <p className={`text-xs font-bold ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
-            </p>
-          </div>
-
-          {/* Gamma */}
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
-            <p className={`text-xs font-bold ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
-            </p>
-          </div>
-
           {/* IVR */}
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
@@ -766,56 +730,57 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
           </div>
         </div>
 
-         </div>{/* end scrollable metrics */}
-        {/* Action dropdown + TastyTrade button */}        <div className={`flex items-center gap-2 border-l ${th.border} px-3 shrink-0`} onClick={e => e.stopPropagation()}>
+        {/* Action columns + button */}
+        <div className={`flex items-stretch border-l ${th.border} shrink-0`} onClick={e => e.stopPropagation()}>
           {trendLoading ? (
-            <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
+            <div className="flex items-center px-4">
+              <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
+            </div>
           ) : (
             <>
-              {/* Dropdown */}
-              <div className="flex flex-col gap-0.5">
-                <p className={`text-[8px] ${th.textFaint} tracking-wider uppercase`}>Action</p>
-                <select
-                  value={selectedAction ?? ''}
-                  onChange={e => {
-                    const val = e.target.value as ActionType;
-                    if (val) onToggleSelect(pos.key, val);
-                    else onToggleSelect(pos.key, rec.action);
-                  }}
-                  className={`text-[10px] font-bold border rounded px-2 py-1 cursor-pointer focus:outline-none focus:border-emerald-500 transition-colors ${
-                    selectedAction
-                      ? actionConfig[selectedAction].pillClass || actionConfig[selectedAction].btnClass
-                      : actionConfig[rec.action].pillClass || actionConfig[rec.action].btnClass
-                  } bg-transparent`}
-                  style={{ minWidth: '140px' }}
-                >
-                  {/* Suggested option */}
-                  {!selectedAction && (
-                    <option value="" style={{ background: '#1a1a1a' }}>
-                      ✦ {actionConfig[rec.action].label.replace(/^[●⚠⚡✓✕↻]\s*/, '')} — suggested
-                    </option>
-                  )}
-                  {actions.map(a => (
-                    <option key={a.key} value={a.key} style={{ background: '#1a1a1a' }}>
-                      {actionConfig[a.key].label.replace(/^[●⚠⚡✓✕↻]\s*/, '')}
-                      {!selectedAction && rec.action === a.key ? ' (suggested)' : ''}
-                    </option>
-                  ))}
-                  {selectedAction && (
-                    <option value="" style={{ background: '#1a1a1a' }}>— Reset to suggested</option>
-                  )}
-                </select>
-              </div>
+              {actions.map(a => {
+                const isSelected = selectedAction === a.key;
+                const isRec = rec.action === a.key && selectedAction === null;
+                const labelColor = isSelected || isRec ? a.labelColor : th.textFaint;
+                return (
+                  <div
+                    key={a.key}
+                    onClick={() => {}}
+                    className={`flex flex-col items-center justify-center px-3 py-2 gap-1.5 border-r ${th.borderLight} w-[70px] cursor-pointer hover:bg-white/5 transition-colors`}
+                  >
+                    <span className={`text-[9px] text-center leading-tight whitespace-nowrap font-medium ${labelColor}`}>{a.label}</span>
+                    <div className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center transition-all
+                      ${isSelected ? a.activeColor : isRec ? 'border-slate-500 ring-1 ' + a.ringColor : 'border-slate-700'}`}>
+                      {(isSelected || isRec) && <span className="text-[8px] font-bold text-white">✓</span>}
+                    </div>
+                  </div>
+                );
+              })}
 
-              {/* TastyTrade button */}
-              <a
-                href="https://my.tastytrade.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                title={ttActionTooltip(effectiveAction)}
-                className="text-[9px] px-2 py-1 border border-white/20 text-white/50 rounded hover:border-white/40 hover:text-white/80 transition-colors whitespace-nowrap">
-                TT ↗
-              </a>
+              {/* Action button */}
+              <div className="flex flex-col items-center justify-center gap-1 px-3 min-w-[110px]">
+                {actionDef.show ? (
+                  <a
+                    href="https://my.tastytrade.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`text-[9px] px-3 py-1.5 border rounded font-bold tracking-wider whitespace-nowrap transition-colors w-full text-center ${actionDef.btnClass}`}>
+                    {actionDef.label}
+                  </a>
+                ) : (
+                  <span className={`text-[9px] px-3 py-1.5 border rounded whitespace-nowrap w-full text-center font-medium ${actionDef.pillClass}`}>
+                    {actionDef.label}
+                  </span>
+                )}
+                <a
+                  href={ttActionUrl(effectiveAction)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[8px] text-white/30 hover:text-white/70 tracking-wider transition-colors whitespace-nowrap"
+                  title={ttActionTooltip(effectiveAction)}>
+                  → TastyTrade ↗
+                </a>
+              </div>
             </>
           )}
         </div>
@@ -846,7 +811,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
 }
 
 // ── Summary Bar ────────────────────────────────────────────────────────────
-function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
+function SummaryBar({ positions, balances, th }: { positions: Position[]; balances: AccountBalances; th: typeof THEMES[Theme] }) {
   const totalCredit = positions.reduce((sum, p) => sum + p.creditReceived, 0);
   const totalPnl = positions.reduce((sum, p) => sum + (p.pnl ?? p.plOpen ?? 0), 0);
   const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
@@ -868,48 +833,78 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
   return sum;
 }, 0);
 
+  const cell = 'flex flex-col items-center text-center p-5';
+  const divider = `border-r ${th.border}`;
+
   return (
-    <div className={`grid grid-cols-5 border-b ${th.border}`}>
-      <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Open Positions</p>
-        <p className={`text-3xl font-bold ${th.text}`}>{positions.length}</p>
-        <p className={`text-[10px] ${th.textFaint} mt-1`}>{positions.length === 1 ? '1 position' : `${positions.length} positions`}</p>
+    <div className={`border-b ${th.border}`}>
+      {/* Row 1 — Position health */}
+      <div className={`grid grid-cols-4 border-b ${th.border}`}>
+        <div className={`${cell} ${divider}`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Open Positions</p>
+          <p className={`text-3xl font-bold ${th.text}`}>{positions.length}</p>
+          <p className={`text-[10px] ${th.textFaint} mt-1`}>{positions.length === 1 ? '1 position' : `${positions.length} positions`}</p>
+        </div>
+        <div className={`${cell} ${divider}`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Captured</p>
+          <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+            {(totalPnl >= 0 ? '+' : '') + '$' + Math.abs(totalPnl).toFixed(0)}
+          </p>
+          <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
+            <span className={`font-bold ${th.textMuted}`}>of ${totalCredit.toFixed(0)} collected</span>
+            <span className={`ml-1 ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>· {capturedPct.toFixed(0)}%</span>
+          </p>
+        </div>
+        <div className={`${cell} ${divider}`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>50% Profit Target</p>
+          <p className="text-3xl font-bold text-yellow-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+            {'$' + Math.round(totalCredit * 0.5)}
+          </p>
+          <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
+            <span className={th.textFaint}>cycle goal · </span>
+            <span className={totalPnl >= totalCredit * 0.5 ? 'text-emerald-400' : th.textFaint}>
+              {totalCredit > 0 ? Math.round((totalPnl / (totalCredit * 0.5)) * 100) : 0}% of target captured
+            </span>
+          </p>
+        </div>
+        <div className={`${cell}`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>At Risk</p>
+          <p className={`text-3xl font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+            {'$' + totalAtRisk.toFixed(0)}
+          </p>
+          <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all expire worthless</p>
+        </div>
       </div>
-      <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Captured</p>
-        <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          {(totalPnl >= 0 ? '+' : '') + '$' + Math.abs(totalPnl).toFixed(0)}
-        </p>
-        <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          <span className={`font-bold ${th.textMuted}`}>of ${totalCredit.toFixed(0)} collected</span>
-          <span className={`ml-1 ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>· {capturedPct.toFixed(0)}%</span>
-        </p>
-      </div>
-      <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>50% Profit Target</p>
-        <p className="text-3xl font-bold text-yellow-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-          {'$' + Math.round(totalCredit * 0.5)}
-        </p>
-        <p className={`text-[10px] mt-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          <span className={th.textFaint}>cycle goal · </span>
-          <span className={totalPnl >= totalCredit * 0.5 ? 'text-emerald-400' : th.textFaint}>
-            {totalCredit > 0 ? Math.round((totalPnl / (totalCredit * 0.5)) * 100) : 0}% of target captured
-          </span>
-        </p>
-      </div>
-      <div className={`p-5 border-r ${th.border} flex flex-col items-center text-center`}>
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>At Risk</p>
-        <p className={`text-3xl font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-          {'$' + totalAtRisk.toFixed(0)}
-        </p>
-        <p className={`text-[10px] ${th.textFaint} mt-1`}>max loss if all expire worthless</p>
-      </div>
-      <div className="p-5 flex flex-col items-center text-center">
-        <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Est. Theta / Day</p>
-        <p className="text-3xl font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-          {totalTheta > 0 ? '+$' + totalTheta.toFixed(2) : '—'}
-        </p>
-        <p className={`text-[10px] ${th.textFaint} mt-1`}>est. daily decay across all positions</p>
+      {/* Row 2 — Account health */}
+      <div className="grid grid-cols-4">
+        <div className={`${cell} ${divider}`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Net Liquidity</p>
+          <p className={`text-3xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+            {balances.netLiq != null ? '$' + balances.netLiq.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'}
+          </p>
+          <p className={`text-[10px] ${th.textFaint} mt-1`}>total account value</p>
+        </div>
+        <div className={`${cell} ${divider}`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Buying Power</p>
+          <p className={`text-3xl font-bold text-blue-400`} style={{ fontFamily: "'DM Mono', monospace" }}>
+            {balances.buyingPower != null ? '$' + balances.buyingPower.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'}
+          </p>
+          <p className={`text-[10px] ${th.textFaint} mt-1`}>available to deploy</p>
+        </div>
+        <div className={`${cell} ${divider}`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Day P&L</p>
+          <p className={`text-3xl font-bold ${balances.dayPnl != null ? (balances.dayPnl >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+            {balances.dayPnl != null ? (balances.dayPnl >= 0 ? '+' : '') + '$' + Math.abs(balances.dayPnl).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'}
+          </p>
+          <p className={`text-[10px] ${th.textFaint} mt-1`}>today across all positions</p>
+        </div>
+        <div className={`${cell}`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>Est. Theta / Day</p>
+          <p className="text-3xl font-bold text-purple-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+            {totalTheta > 0 ? '+$' + totalTheta.toFixed(2) : '—'}
+          </p>
+          <p className={`text-[10px] ${th.textFaint} mt-1`}>est. daily decay across positions</p>
+        </div>
       </div>
     </div>
   );
@@ -1017,6 +1012,7 @@ export default function PortfolioPage() {
   const th = THEMES[theme];
 
   const [positions, setPositions] = useState<Position[]>([]);
+  const [balances, setBalances] = useState<AccountBalances>({ netLiq: null, buyingPower: null, dayPnl: null });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -1049,8 +1045,9 @@ export default function PortfolioPage() {
   const fetchPositions = async () => {
     setLoading(true); setError(''); setSelected(new Map());
     try {
-      const data = await loadPositions();
+      const { positions: data, balances: bal } = await loadPositions();
       setPositions(data);
+      setBalances(bal);
       setLastRefresh(new Date());
     } catch (e: any) {
       if (e.message === 'Not authenticated' || e.message === 'Session expired') {
@@ -1126,10 +1123,10 @@ export default function PortfolioPage() {
       {/* Content */}
       {positions.length > 0 && (
         <>
-          <SummaryBar positions={positions} th={th} />
+          <SummaryBar positions={positions} balances={balances} th={th} />
 
           <div className="overflow-x-auto">
-            <div className="p-6 space-y-6" style={{ minWidth: '1200px' }}>  
+            <div className="p-6 space-y-6" style={{ minWidth: '1400px' }}>
 
               {needsClose.length > 0 && (
                 <div>
