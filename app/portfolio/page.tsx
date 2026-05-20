@@ -627,7 +627,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         </div>
       )}
 
-      <div className="flex items-stretch" style={{ minWidth: '1100px' }}>
+      <div className="flex items-stretch">
         {/* Expand toggle */}
         <button
           onClick={() => setExpanded(!expanded)}
@@ -635,8 +635,9 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
           <span className="text-[10px]">{expanded ? '▲' : '▼'}</span>
         </button>
 
-        {/* Data columns */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+        {/* Data columns — scrollable */}
+        <div className="overflow-x-auto flex-1">
+        <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center', minWidth: '900px' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -765,8 +766,8 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
           </div>
         </div>
 
-        {/* Action dropdown + TastyTrade button */}
-        <div className={`flex items-center gap-2 border-l ${th.border} px-3 shrink-0`} onClick={e => e.stopPropagation()}>
+         </div>{/* end scrollable metrics */}
+        {/* Action dropdown + TastyTrade button */}        <div className={`flex items-center gap-2 border-l ${th.border} px-3 shrink-0`} onClick={e => e.stopPropagation()}>
           {trendLoading ? (
             <span className={`text-[10px] ${th.textFaint}`}>analyzing...</span>
           ) : (
