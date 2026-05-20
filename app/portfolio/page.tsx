@@ -167,6 +167,32 @@ async function loadPositions(): Promise<Position[]> {
     }
   } catch { /* GTC optional */ }
 
+  // Also check complex orders — bracket orders on SPX/index options are stored here
+  try {
+    const complexData = await ttFetch(
+      `/accounts/${accountNumber}/complex-orders`, 
+      token
+    );
+    for (const order of complexData?.data?.items ?? []) {
+      const status = (order['status'] ?? '').toLowerCase();
+      if (['working', 'live', 'contingent', 'received', 'routed'].includes(status)) {
+        // Complex orders have nested orders with legs
+        for (const nestedOrder of order.orders ?? []) {
+          for (const leg of nestedOrder.legs ?? []) {
+            const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+            if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+          }
+        }
+        // Also check top-level legs if they exist
+        for (const leg of order.legs ?? []) {
+          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+        }
+      }
+    }
+  } catch { /* complex orders optional */ }
+
+  
   const plBySymbol: Record<string, number> = {};
   try {
     const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
