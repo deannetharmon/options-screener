@@ -143,21 +143,29 @@ async function loadPositions(): Promise<Position[]> {
 
   const gtcSymbols = new Set<string>();
   try {
-  const ordersData = await ttFetch(
-    `/accounts/${accountNumber}/orders?status=working&per-page=250`, 
-    token
-  );
-  for (const order of ordersData?.data?.items ?? []) {
-    const tif = order['time-in-force'] ?? '';
-    const status = order['status'] ?? '';
-    if (status === 'working' && (tif === 'GTC' || tif === 'GTD')) {
-      for (const leg of order.legs ?? []) {
-        const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
-        if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+    // Fetch all live/working orders — no status filter param
+    const [liveData, searchData] = await Promise.allSettled([
+      ttFetch(`/accounts/${accountNumber}/orders/live`, token),
+      ttFetch(`/accounts/${accountNumber}/orders?per-page=250`, token),
+    ]);
+  
+    const allOrders = [
+      ...((liveData.status === 'fulfilled' ? liveData.value?.data?.items : null) ?? []),
+      ...((searchData.status === 'fulfilled' ? searchData.value?.data?.items : null) ?? []),
+    ];
+  
+    for (const order of allOrders) {
+      const status = (order['status'] ?? '').toLowerCase();
+      const tif = (order['time-in-force'] ?? '');
+      // Accept working orders regardless of TIF — bracket orders may show as 'contingent'
+      if (['working', 'live', 'contingent', 'received'].includes(status)) {
+        for (const leg of order.legs ?? []) {
+          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+        }
       }
     }
-  }
-} catch { /* GTC optional */ }
+  } catch { /* GTC optional */ }
 
   const plBySymbol: Record<string, number> = {};
   try {
