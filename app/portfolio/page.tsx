@@ -636,7 +636,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         </button>
 
         {/* Data columns */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -691,15 +691,6 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
           <div>
             <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
             <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
-          </div>
-
-          {/* P&L */}
-          <div>
-            <p className={`text-[9px] ${th.textFaint}`}>P&L</p>
-            <p className={`text-xs font-bold ${pnlColor(pos.pnl)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              {pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)}` : '—'}
-              {pos.pnlPct != null && <span className="ml-1 text-[10px] font-normal">({pos.pnlPct.toFixed(0)}%)</span>}
-            </p>
           </div>
 
           {/* Profit Target — click to edit */}
