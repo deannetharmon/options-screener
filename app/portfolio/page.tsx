@@ -792,12 +792,12 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
                   {/* Suggested option */}
                   {!selectedAction && (
                     <option value="" style={{ background: '#1a1a1a' }}>
-                      ✦ {actionConfig[rec.action].label.replace(/^[●⚠⚡✓✕↻]\s*/, '')} (suggested)
+                      ✦ {actionConfig[rec.action].label.replace(/^[●⚠⚡✓✕↻]\s*/, '')} — suggested
                     </option>
                   )}
                   {actions.map(a => (
                     <option key={a.key} value={a.key} style={{ background: '#1a1a1a' }}>
-                      {selectedAction === a.key ? '✓ ' : '  '}{actionConfig[a.key].label.replace(/^[●⚠⚡✓✕↻]\s*/, '')}
+                      {actionConfig[a.key].label.replace(/^[●⚠⚡✓✕↻]\s*/, '')}
                       {!selectedAction && rec.action === a.key ? ' (suggested)' : ''}
                     </option>
                   ))}
