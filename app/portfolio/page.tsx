@@ -95,6 +95,8 @@ async function loadPositions(): Promise<Position[]> {
 
   const allOptionSymbols = optionPositions.map((p: any) => p.symbol?.replace(/\s+/g, '')).filter(Boolean);
   const currentPrices: Record<string, number> = {};
+  const thetaMap: Record<string, number> = {};
+  const gammaMap: Record<string, number> = {};
   if (allOptionSymbols.length > 0) {
     try {
       for (let i = 0; i < allOptionSymbols.length; i += 50) {
@@ -102,11 +104,16 @@ async function loadPositions(): Promise<Position[]> {
         const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s.replace(/\s+/g, ''))}`).join('&');
         const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
         for (const item of priceData?.data?.items ?? []) {
+          const sym = item.symbol?.replace(/\s+/g, '');
           const bid = parseFloat(item.bid ?? '0');
           const ask = parseFloat(item.ask ?? '0');
           const mark = parseFloat(item.mark ?? item['mark-price'] ?? '0');
           const mid = (bid + ask) / 2;
-          currentPrices[item.symbol?.replace(/\s+/g, '')] = mid > 0 ? mid : mark;
+          currentPrices[sym] = mid > 0 ? mid : mark;
+          const theta = parseFloat(item.theta ?? 'NaN');
+          const gamma = parseFloat(item.gamma ?? 'NaN');
+          if (!isNaN(theta)) thetaMap[sym] = theta;
+          if (!isNaN(gamma)) gammaMap[sym] = gamma;
         }
       }
     } catch { /* prices optional */ }
@@ -302,6 +309,31 @@ async function loadPositions(): Promise<Position[]> {
         if (optType === 'C') return ((shortStrike - stock) / stock) * 100;
         return null;
       })(),
+      // Net theta and gamma across all legs (short legs subtract, long legs add)
+      theta: (() => {
+        let net = 0; let any = false;
+        for (const l of legs) {
+          const sym = l.symbol?.replace(/\s+/g, '');
+          const val = thetaMap[sym];
+          if (val == null) continue;
+          const qty = parseInt(l['quantity'] ?? '1', 10);
+          net += l['quantity-direction'] === 'Short' ? val * qty : -(val * qty);
+          any = true;
+        }
+        return any ? parseFloat(net.toFixed(4)) : null;
+      })(),
+      gamma: (() => {
+        let net = 0; let any = false;
+        for (const l of legs) {
+          const sym = l.symbol?.replace(/\s+/g, '');
+          const val = gammaMap[sym];
+          if (val == null) continue;
+          const qty = parseInt(l['quantity'] ?? '1', 10);
+          net += l['quantity-direction'] === 'Short' ? -(val * qty) : val * qty;
+          any = true;
+        }
+        return any ? parseFloat(net.toFixed(4)) : null;
+      })(),
     };
   });
 
@@ -438,6 +470,8 @@ interface Position {
   hasGtc: boolean;
   stockPrice: number | null;
   buffer: number | null;
+  theta: number | null;
+  gamma: number | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -591,7 +625,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
         </button>
 
         {/* Data columns */}
-        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
+        <div className="grid px-4 py-3 flex-1 min-w-0" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 90px 70px 55px 55px 60px', gap: '0 12px', alignItems: 'center' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -693,6 +727,22 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
             <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
             <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
               {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
+            </p>
+          </div>
+
+          {/* Theta */}
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Theta</p>
+            <p className={`text-xs font-bold ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
+            </p>
+          </div>
+
+          {/* Gamma */}
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
+            <p className={`text-xs font-bold ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
             </p>
           </div>
 
