@@ -69,6 +69,74 @@ function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: n
   return { optionType: match[3] as 'P' | 'C', strikePrice };
 }
 
+// ── Stop Loss / GTC Order Check ────────────────────────────────────────────
+type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
+
+interface GtcOrderLeg {
+  symbol: string;
+  action: string;
+}
+
+interface GtcOrder {
+  id: string;
+  price: string;
+  legs: GtcOrderLeg[];
+}
+
+interface StopLossInfo {
+  status: StopStatus;
+  price: number | null;
+}
+
+function normalizeOccSymbol(symbol: string): string {
+  return symbol.replace(/\s+/g, '');
+}
+
+async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
+  try {
+    const data = await ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=200`, token);
+    return (data?.data?.items ?? [])
+      .filter((o: any) => o['time-in-force'] === 'GTC' && o['order-type'] === 'Limit')
+      .map((o: any) => ({
+        id: String(o.id ?? ''),
+        price: String(o.price ?? ''),
+        legs: (o.legs ?? []).map((l: any) => ({
+          symbol: normalizeOccSymbol(String(l.symbol ?? '')),
+          action: String(l.action ?? ''),
+        })),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function classifyPositionStopLoss(
+  position: Pick<Position, 'legs' | 'creditReceived'>,
+  gtcOrders: GtcOrder[]
+): StopLossInfo {
+  const shortLeg = position.legs.find(l => l.direction === 'Short');
+  if (!shortLeg?.symbol) return { status: 'unknown', price: null };
+
+  const creditPerContract = shortLeg.quantity > 0
+    ? position.creditReceived / (shortLeg.quantity * 100)
+    : position.creditReceived / 100;
+  const stopThreshold = parseFloat((creditPerContract * 2).toFixed(2));
+  const shortSymbol = normalizeOccSymbol(shortLeg.symbol);
+
+  const match = gtcOrders.find(order =>
+    order.legs.some(leg =>
+      normalizeOccSymbol(leg.symbol) === shortSymbol && leg.action === 'Buy to Close'
+    )
+  );
+
+  if (!match) return { status: 'none', price: null };
+
+  const orderPrice = parseFloat(match.price);
+  if (isNaN(orderPrice)) return { status: 'unknown', price: null };
+  if (orderPrice <= stopThreshold + 0.01) return { status: 'live', price: orderPrice };
+  return { status: 'loose', price: orderPrice };
+}
+
 async function loadPositions(): Promise<Position[]> {
   const token = await getAccessToken();
 
@@ -158,7 +226,14 @@ async function loadPositions(): Promise<Position[]> {
     }
   } catch { /* stock prices optional */ }
 
+  const gtcOrders = await fetchGtcOrders(accountNumber, token);
   const gtcSymbols = new Set<string>();
+  for (const order of gtcOrders) {
+    for (const leg of order.legs) {
+      const parsed = parseOptionSymbol(leg.symbol);
+      if (parsed.strikePrice > 0) gtcSymbols.add(leg.symbol.split(/\d{6}/)[0].trim());
+    }
+  }
   try {
     // Fetch all live/working orders — no status filter param
     const [liveData, searchData] = await Promise.allSettled([
@@ -271,21 +346,26 @@ async function loadPositions(): Promise<Position[]> {
     const profitTarget = profitTargets[key] ?? 0.5;
     const targetPrice = Math.abs(creditReceived) * profitTarget;
     const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * profitTarget;
+    const positionLegs: PositionLeg[] = legs.map((l: any) => {
+      const parsed = parseOptionSymbol(l.symbol);
+      return {
+        symbol: l.symbol,
+        optionType: parsed.optionType,
+        strikePrice: parsed.strikePrice,
+        direction: l['quantity-direction'] as 'Short' | 'Long',
+        quantity: parseInt(l['quantity'] ?? '1', 10),
+        avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
+        currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
+      };
+    });
+    const stopLoss = classifyPositionStopLoss(
+      { legs: positionLegs, creditReceived: Math.abs(creditReceived) },
+      gtcOrders
+    );
 
     return {
       key, symbol, expDate, dte, strategy,
-      legs: legs.map((l: any) => {
-        const parsed = parseOptionSymbol(l.symbol);
-        return {
-          symbol: l.symbol,
-          optionType: parsed.optionType,
-          strikePrice: parsed.strikePrice,
-          direction: l['quantity-direction'] as 'Short' | 'Long',
-          quantity: parseInt(l['quantity'] ?? '1', 10),
-          avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
-          currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
-        };
-      }),
+      legs: positionLegs,
       creditReceived: Math.abs(creditReceived),
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, profitTarget, hitTarget,
@@ -307,6 +387,8 @@ async function loadPositions(): Promise<Position[]> {
       accountNumber,
       ivr: ivrMap[symbol] ?? null,
       hasGtc: gtcSymbols.has(symbol),
+      stopLossStatus: stopLoss.status,
+      stopLossPrice: stopLoss.price,
       stockPrice: stockPrices[symbol] ?? null,
       buffer: (() => {
         const stock = stockPrices[symbol];
@@ -479,6 +561,8 @@ interface Position {
   accountNumber: string;
   ivr: number | null;
   hasGtc: boolean;
+  stopLossStatus: StopStatus;
+  stopLossPrice: number | null;
   stockPrice: number | null;
   buffer: number | null;
   theta: number | null;
@@ -637,7 +721,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
 
         {/* Data columns — scrollable */}
         <div className="overflow-x-auto flex-1">
-        <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px', gap: '0 12px', alignItems: 'center', minWidth: '900px' }}>
+        <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 110px', gap: '0 12px', alignItems: 'center', minWidth: '900px' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -757,12 +841,24 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
             </p>
           </div>
 
-          {/* GTC */}
+          {/* Stop Loss */}
           <div>
-            <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
-            <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>
-              {pos.hasGtc ? '✓ Live' : '✕ None'}
-            </p>
+            <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
+            {(() => {
+              const sl =
+                pos.stopLossStatus === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-400' } :
+                pos.stopLossStatus === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
+                pos.stopLossStatus === 'none'  ? { icon: '✕', label: 'None',  cls: 'text-red-400'     } :
+                                                  { icon: '—', label: '?',     cls: th.textFaint      };
+              return (
+                <p className={`text-xs font-bold ${sl.cls}`}>
+                  {sl.icon} {sl.label}
+                  {pos.stopLossPrice != null && (
+                    <span className={`ml-1 ${th.textFaint} text-[10px]`}>${pos.stopLossPrice.toFixed(2)}</span>
+                  )}
+                </p>
+              );
+            })()}
           </div>
         </div>
 
