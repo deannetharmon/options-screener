@@ -721,7 +721,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
 
         {/* Data columns — scrollable */}
         <div className="overflow-x-auto flex-1">
-        <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 110px', gap: '0 12px', alignItems: 'center', minWidth: '900px' }}>
+        <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px 110px', gap: '0 12px', alignItems: 'center', minWidth: '900px' }}>
           {/* Symbol + strategy */}
           <div>
             <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -838,6 +838,14 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
             <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
             <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
               {pos.ivr != null ? `${pos.ivr}` : '—'}
+            </p>
+          </div>
+
+          {/* GTC */}
+          <div>
+            <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
+            <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>
+              {pos.hasGtc ? '✓ Live' : '✕ None'}
             </p>
           </div>
 
