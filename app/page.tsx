@@ -1866,13 +1866,14 @@ function TradeModal({ result, th, onClose }: {
   );
 }
 
-function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
+function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrders }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
   screenMode?: 'filter' | 'rank';
   rankConfig?: RankConfig;
   onTrade?: (result: ScreenResult) => void;
+  gtcOrders?: GtcOrder[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
@@ -1965,6 +1966,23 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade }: {
             <div className="text-xs shrink-0 w-16"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
             <div className="text-xs shrink-0 w-16"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
             <div className="text-xs shrink-0 w-12"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+            {(() => {
+              const stop = classifyStopLoss(c, gtcOrders ?? []);
+              const sl =
+                stop.status === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-500' } :
+                stop.status === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
+                stop.status === 'none'  ? { icon: '✗', label: 'None',  cls: 'text-red-500'     } :
+                                          { icon: '—', label: '?',     cls: 'text-slate-400'   };
+              return (
+                <div className="text-xs shrink-0 w-28">
+                  <span className={th.label}>Stop </span>
+                  <span className={`font-medium ${sl.cls}`}>{sl.icon} {sl.label}</span>
+                  {stop.price != null && (
+                    <span className={`ml-1 ${th.textFaint} text-[10px]`}>${stop.price.toFixed(2)}</span>
+                  )}
+                </div>
+              );
+            })()}
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
             {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
             {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
@@ -3437,6 +3455,14 @@ export default function Home() {
 
       const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic]));
 
+      setStatus('Fetching GTC orders...');
+      const accountNumberForGtc = await getAccountNumber();
+      const liveGtcOrders = await fetchGtcOrders(accountNumberForGtc, token);
+      setGtcOrders(liveGtcOrders);
+
+      setStatus('Fetching market metrics...');
+      const metricsArray = await getMarketMetrics(allSymbols, token);
+
       const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
 
       const screenResults: ScreenResult[] = [];
@@ -3793,13 +3819,13 @@ export default function Home() {
                   {qualified.length > 0 && (
                     <div>
                       <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} />)}</div>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} />)}</div>
                     </div>
                   )}
                   {disqualified.length > 0 && (
                     <div>
                       <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} />)}</div>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} />)}</div>
                     </div>
                   )}
                 </>
@@ -3809,7 +3835,7 @@ export default function Home() {
                   <div className="space-y-2">{results.map((r, i) => (
                     <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} /></div>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} gtcOrders={gtcOrders} /></div>
                     </div>
                   ))}</div>
                 </div>
