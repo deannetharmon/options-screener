@@ -775,6 +775,52 @@ async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
   return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
 }
+// ── Stop Loss / GTC Order Check ────────────────────────────────────────────
+type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
+
+interface GtcOrderLeg {
+  symbol: string;
+  action: string;
+}
+interface GtcOrder {
+  id: string;
+  price: string;
+  legs: GtcOrderLeg[];
+}
+
+async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
+  try {
+    const data = await ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=200`, token);
+    return (data?.data?.items ?? [])
+      .filter((o: any) => o['time-in-force'] === 'GTC' && o['order-type'] === 'Limit')
+      .map((o: any) => ({
+        id: o.id,
+        price: o.price,
+        legs: (o.legs ?? []).map((l: any) => ({ symbol: l.symbol, action: l.action })),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function classifyStopLoss(
+  candidate: SpreadCandidate,
+  gtcOrders: GtcOrder[]
+): { status: StopStatus; price: number | null } {
+  if (!candidate.shortOccSymbol) return { status: 'unknown', price: null };
+  const credit = candidate.totalCredit ?? candidate.credit;
+  const stopThreshold = parseFloat((credit * 2).toFixed(2));
+  const match = gtcOrders.find(order =>
+    order.legs.some(
+      leg => leg.symbol === candidate.shortOccSymbol && leg.action === 'Buy to Close'
+    )
+  );
+  if (!match) return { status: 'none', price: null };
+  const orderPrice = parseFloat(match.price);
+  if (isNaN(orderPrice)) return { status: 'unknown', price: null };
+  if (orderPrice <= stopThreshold + 0.01) return { status: 'live', price: orderPrice };
+  return { status: 'loose', price: orderPrice };
+}
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
     const data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
@@ -3330,7 +3376,7 @@ export default function Home() {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
   });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
-
+  const [gtcOrders, setGtcOrders] = useState<GtcOrder[]>([]);
   useEffect(() => {
     try {
       setBpsTickers(localStorage.getItem(LS_BPS) || '');
@@ -3390,8 +3436,7 @@ export default function Home() {
       const token = await getAccessToken();
 
       const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic]));
-      setStatus('Fetching market metrics...');
-      const metricsArray = await getMarketMetrics(allSymbols, token);
+
       const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
 
       const screenResults: ScreenResult[] = [];
