@@ -80,6 +80,9 @@ interface GtcOrderLeg {
 interface GtcOrder {
   id: string;
   price: string;
+  stopPrice: string | null;
+  orderType: string;
+  timeInForce: string;
   legs: GtcOrderLeg[];
 }
 
@@ -89,22 +92,83 @@ interface StopLossInfo {
 }
 
 function normalizeOccSymbol(symbol: string): string {
-  return symbol.replace(/\s+/g, '');
+  return String(symbol ?? '').replace(/\s+/g, '').trim();
+}
+
+function normalizeOrderAction(action: string): string {
+  return String(action ?? '').replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function isBuyToCloseAction(action: string): boolean {
+  const normalized = normalizeOrderAction(action);
+  return normalized === 'buy to close' || normalized === 'btc';
+}
+
+function isStopOrder(order: GtcOrder): boolean {
+  const type = order.orderType.toLowerCase();
+  return Boolean(order.stopPrice) || type.includes('stop');
+}
+
+function pickOrderField(o: any, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = o?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return String(value);
+  }
+  return null;
+}
+
+function mapGtcOrder(o: any): GtcOrder {
+  return {
+    id: String(o?.id ?? ''),
+    price: String(o?.price ?? o?.['limit-price'] ?? ''),
+    stopPrice: pickOrderField(o, ['stop-trigger', 'stop-price', 'stopPrice', 'stop', 'trigger-price']),
+    orderType: String(o?.['order-type'] ?? o?.orderType ?? ''),
+    timeInForce: String(o?.['time-in-force'] ?? o?.timeInForce ?? ''),
+    legs: (o?.legs ?? []).map((l: any) => ({
+      symbol: normalizeOccSymbol(String(l?.symbol ?? '')),
+      action: String(l?.action ?? ''),
+    })),
+  };
+}
+
+function collectRawOrders(raw: any): any[] {
+  const out: any[] = [];
+  const visit = (order: any) => {
+    if (!order || typeof order !== 'object') return;
+    if (Array.isArray(order.legs) && order.legs.length > 0) out.push(order);
+    for (const nested of order.orders ?? []) visit(nested);
+  };
+  for (const item of raw?.data?.items ?? []) visit(item);
+  return out;
 }
 
 async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
   try {
-    const data = await ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=200`, token);
-    return (data?.data?.items ?? [])
-      .filter((o: any) => o['time-in-force'] === 'GTC' && o['order-type'] === 'Limit')
-      .map((o: any) => ({
-        id: String(o.id ?? ''),
-        price: String(o.price ?? ''),
-        legs: (o.legs ?? []).map((l: any) => ({
-          symbol: normalizeOccSymbol(String(l.symbol ?? '')),
-          action: String(l.action ?? ''),
-        })),
-      }));
+    const requests = await Promise.allSettled([
+      ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=250`, token),
+      ttFetch(`/accounts/${accountNumber}/orders/live`, token),
+      ttFetch(`/accounts/${accountNumber}/orders?per-page=250`, token),
+      ttFetch(`/accounts/${accountNumber}/complex-orders`, token),
+    ]);
+
+    const rawOrders = requests.flatMap(result =>
+      result.status === 'fulfilled' ? collectRawOrders(result.value) : []
+    );
+
+    const seen = new Set<string>();
+    return rawOrders
+      .map(mapGtcOrder)
+      .filter(order => {
+        const tif = order.timeInForce.toUpperCase();
+        const type = order.orderType.toLowerCase();
+        const isGtc = tif === 'GTC';
+        const isExitType = type.includes('limit') || type.includes('stop');
+        if (!isGtc || !isExitType || order.legs.length === 0) return false;
+        const key = `${order.id}|${order.orderType}|${order.price}|${order.stopPrice ?? ''}|${order.legs.map(l => `${l.symbol}:${l.action}`).join(',')}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
   } catch {
     return [];
   }
@@ -124,19 +188,19 @@ function classifyPositionStopLoss(
   const shortSymbol = normalizeOccSymbol(shortLeg.symbol);
 
   const match = gtcOrders.find(order =>
+    isStopOrder(order) &&
     order.legs.some(leg =>
-      normalizeOccSymbol(leg.symbol) === shortSymbol && leg.action === 'Buy to Close'
+      normalizeOccSymbol(leg.symbol) === shortSymbol && isBuyToCloseAction(leg.action)
     )
   );
 
   if (!match) return { status: 'none', price: null };
 
-  const orderPrice = parseFloat(match.price);
+  const orderPrice = parseFloat(match.stopPrice ?? match.price);
   if (isNaN(orderPrice)) return { status: 'unknown', price: null };
-  if (orderPrice <= stopThreshold + 0.01) return { status: 'live', price: orderPrice };
+  if (orderPrice <= stopThreshold + 0.02) return { status: 'live', price: orderPrice };
   return { status: 'loose', price: orderPrice };
 }
-
 async function loadPositions(): Promise<Position[]> {
   const token = await getAccessToken();
 
