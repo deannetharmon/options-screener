@@ -62,6 +62,103 @@ async function ttFetch(path: string, token: string) {
   return res.json();
 }
 
+async function ttPost(path: string, token: string, body: unknown) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message ?? data?.['error-message'] ?? `POST ${path} failed (${res.status})`);
+  return data;
+}
+
+async function ttDelete(path: string, token: string) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  if (!res.ok) { const text = await res.text(); throw new Error(`DELETE ${path} failed (${res.status}): ${text.slice(0, 100)}`); }
+  return res.status === 204 ? {} : res.json();
+}
+
+// ── OCC Symbol Helpers ─────────────────────────────────────────────────────
+// TastyTrade order legs require the OCC symbol in space-padded format
+function occToOrderSymbol(symbol: string): string {
+  // Strip extra whitespace, re-pad to OCC standard: AAAAAAAAYYMMDDCNNNNNNN
+  // TastyTrade accepts the symbol as returned by the positions API (already padded)
+  return symbol.trim();
+}
+
+// ── Order Builders ─────────────────────────────────────────────────────────
+// Returns a TastyTrade order body ready to POST to /accounts/{num}/orders
+
+interface OrderLeg { symbol: string; quantity: number; action: 'Buy to Close' | 'Sell to Open' | 'Buy to Open' | 'Sell to Close'; 'instrument-type': 'Equity Option' | 'Index Option'; }
+interface OrderBody {
+  'order-type': 'Limit' | 'Market';
+  'time-in-force': 'GTC' | 'Day';
+  price?: string; // debit = positive (we pay), credit = negative (we receive)
+  legs: OrderLeg[];
+  source?: string;
+}
+
+function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' = 'Day'): OrderBody {
+  // Closing a spread = Buy to Close all short legs, Sell to Close all long legs
+  const instrType = pos.symbol.startsWith('$') || ['SPX','NDX','RUT','VIX'].includes(pos.symbol) ? 'Index Option' : 'Equity Option';
+  const legs: OrderLeg[] = pos.legs.map(leg => ({
+    symbol: occToOrderSymbol(leg.symbol),
+    quantity: leg.quantity,
+    action: leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close',
+    'instrument-type': instrType,
+  }));
+  return {
+    'order-type': 'Limit',
+    'time-in-force': tif,
+    price: limitPrice.toFixed(2), // debit = positive number (cost to close)
+    legs,
+    source: 'WEB',
+  };
+}
+
+function buildGtcProfitOrder(pos: Position): OrderBody {
+  // Place a GTC limit order to close at 50% of credit received
+  const targetClose = parseFloat((pos.creditReceived * pos.profitTarget / 100).toFixed(2));
+  return buildCloseOrder(pos, targetClose, 'GTC');
+}
+
+// For Roll: close current expiry (Day order) + open new spread (GTC) — submitted sequentially
+interface RollOrders { close: OrderBody; open: OrderBody | null }
+function buildRollOrders(pos: Position, newExpiry: string, newShortStrike: number, newLongStrike: number, newCredit: number): RollOrders {
+  const instrType: 'Equity Option' | 'Index Option' = pos.symbol.startsWith('$') || ['SPX','NDX','RUT','VIX'].includes(pos.symbol) ? 'Index Option' : 'Equity Option';
+
+  // Close current position at market/mid
+  const closePrice = pos.currentValue != null ? parseFloat((pos.currentValue / 100).toFixed(2)) : 0;
+  const close = buildCloseOrder(pos, closePrice, 'Day');
+
+  // Rebuild OCC symbols for the new legs
+  // Format: UNDERLYING + YYMMDD + C/P + 8-digit strike (1/1000)
+  const exp = newExpiry.replace(/-/g, '').slice(2); // YYMMDD
+  const optType = pos.strategy === 'BCS' ? 'C' : 'P';
+  const underlying = pos.symbol.padEnd(6, ' ');
+  const fmtStrike = (s: number) => String(Math.round(s * 1000)).padStart(8, '0');
+  const shortSym = `${underlying}${exp}${optType}${fmtStrike(newShortStrike)}`;
+  const longSym  = `${underlying}${exp}${optType}${fmtStrike(newLongStrike)}`;
+
+  const open: OrderBody = {
+    'order-type': 'Limit',
+    'time-in-force': 'GTC',
+    price: (-Math.abs(newCredit)).toFixed(2), // negative = credit received
+    legs: [
+      { symbol: shortSym, quantity: pos.legs[0]?.quantity ?? 1, action: 'Sell to Open', 'instrument-type': instrType },
+      { symbol: longSym,  quantity: pos.legs[0]?.quantity ?? 1, action: 'Buy to Open',  'instrument-type': instrType },
+    ],
+    source: 'WEB',
+  };
+
+  return { close, open };
+}
+
 function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
   const match = sym.trim().replace(/\s+/g, '').match(/^([A-Z/]+)(\d{6})([CP])(\d{8})$/);
   if (!match) return { optionType: 'C', strikePrice: 0 };
@@ -526,7 +623,7 @@ interface TrendResult {
   reason: string;
 }
 
-type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL';
+type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
 
 interface Recommendation {
   action: ActionType;
@@ -672,18 +769,20 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 }
 
 // ── Position Card ──────────────────────────────────────────────────────────
-function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetChange }: {
+function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetChange, onRefresh }: {
   pos: Position;
   th: typeof THEMES[Theme];
   selectedAction: ActionType | null;
   onToggleSelect: (key: string, action: ActionType) => void;
   onProfitTargetChange: (key: string, value: number) => void;
+  onRefresh?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
   const [trendLoading, setTrendLoading] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetInput, setTargetInput] = useState(String(Math.round(pos.profitTarget * 100)));
+  const [executeAction, setExecuteAction] = useState<ActionType | null>(null);
 
   useEffect(() => {
     setTrendLoading(true);
@@ -692,19 +791,6 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
 
   const rec = getRecommendation(pos, trend);
 
-  const ttActionUrl = (_action: ActionType): string =>
-    `https://my.tastytrade.com/`;
-
-  const ttActionTooltip = (action: ActionType): string => {
-    switch (action) {
-      case 'TAKE_PROFIT':  return `Open TastyTrade Positions → close ${pos.symbol} at ${Math.round(pos.profitTarget * 100)}% profit`;
-      case 'CUT_LOSSES':   return `Open TastyTrade Positions → close ${pos.symbol} to cut losses`;
-      case 'CLOSE_ROLL':   return `Open TastyTrade Positions → close or roll ${pos.symbol}`;
-      case 'MANAGE':       return `Open TastyTrade Positions → manage ${pos.symbol}`;
-      case 'WATCH':        return `Open TastyTrade Positions → monitor ${pos.symbol}`;
-      default:             return `Open TastyTrade Positions`;
-    }
-  };
 
   const shortPuts  = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Short');
   const longPuts   = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Long');
@@ -744,6 +830,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
     TAKE_PROFIT: { label: '✓ Take Profit',  btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/10', pillClass: '', show: true },
     CUT_LOSSES:  { label: '✕ Cut Losses',   btnClass: 'border-red-600 text-red-400 hover:bg-red-600/10',           pillClass: '', show: true },
     CLOSE_ROLL:  { label: '↻ Close / Roll', btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/10',  pillClass: '', show: true },
+    PLACE_GTC:   { label: '⏱ Place GTC',   btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/10',        pillClass: '', show: true },
   };
 
   const actionDef = actionConfig[effectiveAction];
@@ -755,6 +842,7 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
     { key: 'TAKE_PROFIT', label: 'Take profit',  activeColor: 'bg-emerald-500 border-emerald-500', ringColor: 'ring-emerald-500', labelColor: 'text-emerald-400' },
     { key: 'CUT_LOSSES',  label: 'Cut losses',   activeColor: 'bg-red-500 border-red-500',        ringColor: 'ring-red-500',     labelColor: 'text-red-400' },
     { key: 'CLOSE_ROLL',  label: 'Close / roll', activeColor: 'bg-purple-500 border-purple-500',  ringColor: 'ring-purple-500',  labelColor: 'text-purple-400' },
+    { key: 'PLACE_GTC',   label: 'Place GTC',    activeColor: 'bg-blue-500 border-blue-500',      ringColor: 'ring-blue-500',    labelColor: 'text-blue-400' },
   ];
 
   return (
@@ -975,15 +1063,27 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
                 </select>
               </div>
 
-              {/* TastyTrade button */}
-              <a
-                href="https://my.tastytrade.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                title={ttActionTooltip(effectiveAction)}
-                className="text-[9px] px-2 py-1 border border-white/20 text-white/50 rounded hover:border-white/40 hover:text-white/80 transition-colors whitespace-nowrap">
-                TT ↗
-              </a>
+              {/* Execute button */}
+              {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(effectiveAction) ? (
+                <button
+                  onClick={() => setExecuteAction(effectiveAction)}
+                  className={`text-[9px] px-2 py-1 border rounded font-bold whitespace-nowrap transition-colors ${
+                    effectiveAction === 'TAKE_PROFIT' ? 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/20' :
+                    effectiveAction === 'CUT_LOSSES'  ? 'border-red-600 text-red-400 hover:bg-red-600/20' :
+                    effectiveAction === 'CLOSE_ROLL'  ? 'border-purple-600 text-purple-400 hover:bg-purple-600/20' :
+                    'border-blue-600 text-blue-400 hover:bg-blue-600/20'
+                  }`}>
+                  Execute ↗
+                </button>
+              ) : (
+                <a
+                  href="https://my.tastytrade.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[9px] px-2 py-1 border border-white/20 text-white/50 rounded hover:border-white/40 hover:text-white/80 transition-colors whitespace-nowrap">
+                  TT ↗
+                </a>
+              )}
             </>
           )}
         </div>
@@ -1008,6 +1108,17 @@ function PositionCard({ pos, th, selectedAction, onToggleSelect, onProfitTargetC
             ))}
           </div>
         </div>
+      )}
+
+      {/* Execute modal */}
+      {executeAction && (
+        <ExecuteModal
+          pos={pos}
+          action={executeAction}
+          onClose={() => setExecuteAction(null)}
+          onSuccess={() => { setExecuteAction(null); onRefresh?.(); }}
+          th={th}
+        />
       )}
     </div>
   );
@@ -1083,100 +1194,288 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
   );
 }
 
-// ── Close Summary Modal ───────────────────────────────────────────────────
-function CloseModal({ positions, selected, onClose, th }: {
-  positions: Position[];
-  selected: Map<string, ActionType>;
+// ── Execute Modal ─────────────────────────────────────────────────────────
+// Replaces the stub CloseModal with real order submission via TastyTrade API.
+// Supports: Take Profit (BTC at 50% target), Cut Losses (BTC at mid/market),
+//           Close & Roll (BTC now + prompt for new expiry/strikes),
+//           Place GTC (set a GTC profit order without closing now).
+
+type ExecStatus = 'preview' | 'submitting' | 'done' | 'error';
+
+interface ExecResult { symbol: string; action: ActionType; orderId?: string; error?: string; }
+
+function ExecuteModal({ pos, action, onClose, onSuccess, th }: {
+  pos: Position;
+  action: ActionType;
   onClose: () => void;
+  onSuccess: () => void;
   th: typeof THEMES[Theme];
 }) {
-  const selectedPositions = positions.filter(p => selected.has(p.key));
-  const totalCredit = selectedPositions.reduce((sum, p) => sum + p.creditReceived, 0);
-  const totalPnl = selectedPositions.reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+  const [status, setStatus] = useState<ExecStatus>('preview');
+  const [results, setResults] = useState<ExecResult[]>([]);
+  const [errorMsg, setErrorMsg] = useState('');
 
-  const actionLabels: Record<ActionType, { label: string; color: string }> = {
-    HOLD:        { label: 'Hold',           color: 'text-blue-400 border-blue-600' },
-    WATCH:       { label: '⚠ Watch',        color: 'text-yellow-400 border-yellow-600' },
-    MANAGE:      { label: '⚡ Manage',       color: 'text-orange-400 border-orange-600' },
-    TAKE_PROFIT: { label: '✓ Take profit',  color: 'text-emerald-400 border-emerald-600' },
-    CUT_LOSSES:  { label: '✕ Cut losses',   color: 'text-red-400 border-red-600' },
-    CLOSE_ROLL:  { label: '↻ Close / roll', color: 'text-purple-400 border-purple-600' },
+  // Roll-specific state
+  const [rollExpiry, setRollExpiry] = useState('');
+  const [rollShortStrike, setRollShortStrike] = useState('');
+  const [rollLongStrike, setRollLongStrike] = useState('');
+  const [rollCredit, setRollCredit] = useState('');
+
+  const closePrice = pos.currentValue != null
+    ? parseFloat((pos.currentValue / 100).toFixed(2))
+    : parseFloat((pos.creditReceived * 0.5 / 100).toFixed(2));
+
+  const targetClose = parseFloat((pos.creditReceived * pos.profitTarget / 100).toFixed(2));
+
+  const orderDescription = () => {
+    switch (action) {
+      case 'TAKE_PROFIT': return { title: '✓ Take Profit', subtitle: `Buy to Close all legs — limit $${targetClose.toFixed(2)} (${Math.round(pos.profitTarget * 100)}% of credit)`, tif: 'Day', color: 'text-emerald-400', price: targetClose };
+      case 'CUT_LOSSES':  return { title: '✕ Cut Losses',  subtitle: `Buy to Close all legs — limit $${closePrice.toFixed(2)} (current mid price)`, tif: 'Day', color: 'text-red-400', price: closePrice };
+      case 'CLOSE_ROLL':  return { title: '↻ Close & Roll', subtitle: `Step 1: Buy to Close current spread at mid. Step 2: Sell new spread.`, tif: 'Day', color: 'text-purple-400', price: closePrice };
+      case 'PLACE_GTC':   return { title: '⏱ Place GTC Profit Order', subtitle: `Good-Till-Cancelled limit order at $${targetClose.toFixed(2)} — fires automatically when profit target hit`, tif: 'GTC', color: 'text-blue-400', price: targetClose };
+      default: return { title: action, subtitle: '', tif: 'Day', color: 'text-white', price: closePrice };
+    }
   };
 
-  const grouped = new Map<ActionType, Position[]>();
-  for (const pos of selectedPositions) {
-    const action = selected.get(pos.key)!;
-    if (!grouped.has(action)) grouped.set(action, []);
-    grouped.get(action)!.push(pos);
-  }
+  const desc = orderDescription();
+
+  const submit = async () => {
+    setStatus('submitting');
+    setErrorMsg('');
+    try {
+      const token = await getAccessToken();
+      const acct = pos.accountNumber;
+
+      if (action === 'TAKE_PROFIT') {
+        const body = buildCloseOrder(pos, targetClose, 'Day');
+        const res = await ttPost(`/accounts/${acct}/orders`, token, body);
+        const orderId = res?.data?.order?.id ?? res?.data?.id;
+        setResults([{ symbol: pos.symbol, action, orderId: String(orderId ?? 'submitted') }]);
+
+      } else if (action === 'CUT_LOSSES') {
+        const body = buildCloseOrder(pos, closePrice, 'Day');
+        const res = await ttPost(`/accounts/${acct}/orders`, token, body);
+        const orderId = res?.data?.order?.id ?? res?.data?.id;
+        setResults([{ symbol: pos.symbol, action, orderId: String(orderId ?? 'submitted') }]);
+
+      } else if (action === 'PLACE_GTC') {
+        const body = buildGtcProfitOrder(pos);
+        const res = await ttPost(`/accounts/${acct}/orders`, token, body);
+        const orderId = res?.data?.order?.id ?? res?.data?.id;
+        setResults([{ symbol: pos.symbol, action, orderId: String(orderId ?? 'submitted') }]);
+
+      } else if (action === 'CLOSE_ROLL') {
+        const expiry = rollExpiry.trim();
+        const shortS = parseFloat(rollShortStrike);
+        const longS  = parseFloat(rollLongStrike);
+        const credit = parseFloat(rollCredit);
+        if (!expiry || isNaN(shortS) || isNaN(longS) || isNaN(credit)) {
+          throw new Error('Fill in all roll fields before submitting.');
+        }
+        const { close, open } = buildRollOrders(pos, expiry, shortS, longS, credit);
+        // Submit close first
+        const closeRes = await ttPost(`/accounts/${acct}/orders`, token, close);
+        const closeId = closeRes?.data?.order?.id ?? closeRes?.data?.id;
+        // Then submit open
+        const openRes = await ttPost(`/accounts/${acct}/orders`, token, open!);
+        const openId = openRes?.data?.order?.id ?? openRes?.data?.id;
+        setResults([
+          { symbol: pos.symbol, action: 'CUT_LOSSES',   orderId: `Close #${closeId}` },
+          { symbol: pos.symbol, action: 'TAKE_PROFIT', orderId: `Open #${openId}` },
+        ]);
+      }
+
+      setStatus('done');
+    } catch (e: any) {
+      setErrorMsg(e.message ?? 'Unknown error');
+      setStatus('error');
+    }
+  };
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4">
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-lg`}>
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-md`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+
+        {/* Header */}
         <div className={`flex items-center justify-between px-5 py-4 border-b ${th.border}`}>
           <div>
-            <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>CLOSE {selectedPositions.length} POSITION{selectedPositions.length !== 1 ? 'S' : ''}</h2>
-            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>Buy to close — set limit at mid price in TastyTrade</p>
+            <p className={`text-[10px] tracking-widest font-bold ${desc.color}`}>{desc.title}</p>
+            <h2 className={`text-base font-bold ${th.text} mt-0.5`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {pos.symbol} <span className={`text-xs ${stratColor(pos.strategy).split(' ')[0]}`}>{pos.strategy}</span>
+            </h2>
+            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>{pos.expDate} · {pos.dte} DTE</p>
           </div>
           <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
         </div>
 
-        <div className="px-5 py-3 space-y-4 max-h-80 overflow-auto">
-          {Array.from(grouped.entries()).map(([action, poses]) => (
-            <div key={action}>
-              <p className={`text-[9px] font-bold tracking-widest mb-2 uppercase ${actionLabels[action].color.split(' ')[0]}`}>
-                {actionLabels[action].label}
-              </p>
-              <div className="space-y-2">
-                {poses.map(p => {
-                  const closeTarget = (p.currentValue ?? p.creditReceived * p.profitTarget).toFixed(2);
-                  return (
-                    <div key={p.key} className={`flex items-center justify-between py-2 border-b ${th.borderLight}`}>
-                      <div className="flex items-center gap-3">
-                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{p.symbol}</span>
-                        <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(p.strategy)}`}>{p.strategy}</span>
-                        <span className={`text-[10px] ${th.textFaint}`}>{p.expDate} · {p.dte}d</span>
-                      </div>
-                      <div className="text-right">
-                        {(action === 'TAKE_PROFIT' || action === 'CUT_LOSSES' || action === 'CLOSE_ROLL') && (
-                          <p className="text-xs font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>BTC @ ${closeTarget}</p>
-                        )}
-                        {p.pnl != null && <p className={`text-[10px] ${p.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{p.pnl >= 0 ? '+' : ''}${p.pnl.toFixed(2)}</p>}
-                      </div>
-                    </div>
-                  );
-                })}
+        {/* Body */}
+        <div className="px-5 py-4 space-y-4">
+
+          {status === 'preview' && (
+            <>
+              {/* Order summary */}
+              <div className={`rounded-lg border ${th.border} p-4 space-y-2`}>
+                <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Order Preview</p>
+                <p className={`text-xs ${th.textMuted}`}>{desc.subtitle}</p>
+                <div className="flex items-center justify-between mt-2">
+                  <span className={`text-[10px] ${th.textFaint}`}>Time in force</span>
+                  <span className={`text-[10px] font-bold ${th.text}`}>{desc.tif}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className={`text-[10px] ${th.textFaint}`}>Limit price (debit)</span>
+                  <span className={`text-[10px] font-bold text-blue-400`} style={{ fontFamily: "'DM Mono', monospace" }}>${desc.price.toFixed(2)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className={`text-[10px] ${th.textFaint}`}>Credit collected</span>
+                  <span className={`text-[10px] font-bold text-emerald-400`} style={{ fontFamily: "'DM Mono', monospace" }}>${(pos.creditReceived / 100).toFixed(2)}</span>
+                </div>
+                {pos.pnl != null && (
+                  <div className="flex items-center justify-between">
+                    <span className={`text-[10px] ${th.textFaint}`}>Est. P&L at close</span>
+                    <span className={`text-[10px] font-bold ${pos.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                      {pos.pnl >= 0 ? '+' : ''}${pos.pnl.toFixed(2)}
+                    </span>
+                  </div>
+                )}
               </div>
+
+              {/* Legs */}
+              <div className={`rounded-lg border ${th.border} p-4`}>
+                <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Legs</p>
+                <div className="space-y-1.5">
+                  {pos.legs.map((leg, i) => {
+                    const closeAction = leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close';
+                    return (
+                      <div key={i} className="flex items-center justify-between text-[10px]">
+                        <span className={`font-bold ${leg.direction === 'Short' ? 'text-red-400' : 'text-emerald-400'} w-12`}>{leg.direction}</span>
+                        <span className={`${th.textFaint} flex-1`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                          {leg.quantity}x {leg.strikePrice} {leg.optionType === 'P' ? 'Put' : 'Call'}
+                        </span>
+                        <span className={`text-blue-400 font-bold`}>{closeAction}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Roll-specific inputs */}
+              {action === 'CLOSE_ROLL' && (
+                <div className={`rounded-lg border border-purple-700/50 bg-purple-500/5 p-4 space-y-3`}>
+                  <p className={`text-[9px] text-purple-400 uppercase tracking-widest`}>New Spread (Roll Target)</p>
+                  <p className={`text-[10px] ${th.textFaint}`}>Enter the details for the new spread to open after closing this one.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <p className={`text-[9px] ${th.textFaint} mb-1`}>New Expiry (YYYY-MM-DD)</p>
+                      <input value={rollExpiry} onChange={e => setRollExpiry(e.target.value)} placeholder="2025-08-15"
+                        className={`w-full text-xs px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-purple-500`} style={{ fontFamily: "'DM Mono', monospace" }} />
+                    </div>
+                    <div>
+                      <p className={`text-[9px] ${th.textFaint} mb-1`}>Target Credit ($)</p>
+                      <input value={rollCredit} onChange={e => setRollCredit(e.target.value)} placeholder="1.50" type="number" step="0.05"
+                        className={`w-full text-xs px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-purple-500`} style={{ fontFamily: "'DM Mono', monospace" }} />
+                    </div>
+                    <div>
+                      <p className={`text-[9px] ${th.textFaint} mb-1`}>New Short Strike</p>
+                      <input value={rollShortStrike} onChange={e => setRollShortStrike(e.target.value)} placeholder="490" type="number"
+                        className={`w-full text-xs px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-purple-500`} style={{ fontFamily: "'DM Mono', monospace" }} />
+                    </div>
+                    <div>
+                      <p className={`text-[9px] ${th.textFaint} mb-1`}>New Long Strike</p>
+                      <input value={rollLongStrike} onChange={e => setRollLongStrike(e.target.value)} placeholder="485" type="number"
+                        className={`w-full text-xs px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-purple-500`} style={{ fontFamily: "'DM Mono', monospace" }} />
+                    </div>
+                  </div>
+                  <p className={`text-[9px] text-yellow-400`}>⚠ Roll submits two separate orders: close (Day) then open (GTC). Verify fills before leaving.</p>
+                </div>
+              )}
+
+              <p className={`text-[9px] ${th.textFaint} text-center`}>Orders are submitted directly to TastyTrade. Verify in your Positions tab after submission.</p>
+            </>
+          )}
+
+          {status === 'submitting' && (
+            <div className="py-8 flex flex-col items-center gap-3">
+              <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <p className={`text-xs ${th.textFaint} tracking-widest`}>SUBMITTING ORDER...</p>
             </div>
-          ))}
+          )}
+
+          {status === 'done' && (
+            <div className="py-4 space-y-3">
+              <div className="flex flex-col items-center gap-2 py-2">
+                <span className="text-2xl">✓</span>
+                <p className="text-sm font-bold text-emerald-400 tracking-wider">ORDER SUBMITTED</p>
+              </div>
+              {results.map((r, i) => (
+                <div key={i} className={`flex items-center justify-between p-3 rounded-lg border ${th.border}`}>
+                  <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
+                  <span className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>Order #{r.orderId}</span>
+                </div>
+              ))}
+              <p className={`text-[10px] ${th.textFaint} text-center`}>Check your TastyTrade Working Orders tab to confirm.</p>
+            </div>
+          )}
+
+          {status === 'error' && (
+            <div className="py-4 space-y-3">
+              <div className="flex flex-col items-center gap-2 py-2">
+                <span className="text-2xl">✕</span>
+                <p className="text-sm font-bold text-red-400 tracking-wider">ORDER FAILED</p>
+              </div>
+              <div className={`p-3 rounded-lg bg-red-500/10 border border-red-500/40`}>
+                <p className="text-xs text-red-300" style={{ fontFamily: "'DM Mono', monospace" }}>{errorMsg}</p>
+              </div>
+              <p className={`text-[10px] ${th.textFaint} text-center`}>No order was placed. Check credentials and try again, or go to TastyTrade directly.</p>
+            </div>
+          )}
         </div>
 
-        <div className={`px-5 py-3 border-t ${th.border} flex items-center justify-between`}>
-          <div>
-            <p className={`text-[10px] ${th.textFaint}`}>Total credit collected</p>
-            <p className="text-sm font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${totalCredit.toFixed(2)}</p>
-          </div>
-          <div className="text-right">
-            <p className={`text-[10px] ${th.textFaint}`}>Estimated P&L</p>
-            <p className={`text-sm font-bold ${totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-              {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
-            </p>
-          </div>
-        </div>
-
-        <div className="px-5 py-4 flex gap-3">
-          <button onClick={onClose}
-            className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
-            DONE
-          </button>
-          <button onClick={onClose}
-            className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:${th.text} transition-colors`}>
-            Cancel
-          </button>
+        {/* Footer */}
+        <div className={`px-5 py-4 border-t ${th.border} flex gap-3`}>
+          {status === 'preview' && (
+            <>
+              <button onClick={submit}
+                className={`flex-1 py-3 rounded-xl text-xs font-bold tracking-widest transition-colors ${
+                  action === 'TAKE_PROFIT' ? 'bg-emerald-600 hover:bg-emerald-500 text-white' :
+                  action === 'CUT_LOSSES'  ? 'bg-red-600 hover:bg-red-500 text-white' :
+                  action === 'CLOSE_ROLL'  ? 'bg-purple-600 hover:bg-purple-500 text-white' :
+                  action === 'PLACE_GTC'   ? 'bg-blue-600 hover:bg-blue-500 text-white' :
+                  'bg-slate-600 hover:bg-slate-500 text-white'
+                }`}>
+                SUBMIT ORDER
+              </button>
+              <button onClick={onClose}
+                className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium transition-colors hover:border-white/30`}>
+                Cancel
+              </button>
+            </>
+          )}
+          {(status === 'done' || status === 'error') && (
+            <>
+              <button onClick={() => { onSuccess(); onClose(); }}
+                className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
+                DONE — REFRESH POSITIONS
+              </button>
+              <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
+                className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors flex items-center`}>
+                TT ↗
+              </a>
+            </>
+          )}
+          {status === 'submitting' && (
+            <button disabled className="flex-1 py-3 bg-slate-700 text-slate-400 rounded-xl text-xs font-bold tracking-widest">
+              SUBMITTING...
+            </button>
+          )}
         </div>
       </div>
     </div>
   );
+}
+
+// Legacy alias kept so nothing else breaks
+function CloseModal({ positions, selected, onClose, th }: { positions: Position[]; selected: Map<string, ActionType>; onClose: () => void; th: typeof THEMES[Theme] }) {
+  return null; // replaced by ExecuteModal — kept to avoid import errors
 }
 
 // ── Main Page ──────────────────────────────────────────────────────────────
@@ -1189,7 +1488,6 @@ export default function PortfolioPage() {
   const [error, setError] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [selected, setSelected] = useState<Map<string, ActionType>>(new Map());
-  const [showCloseModal, setShowCloseModal] = useState(false);
 
   const toggleSelected = (key: string, action: ActionType) => {
     setSelected(prev => {
@@ -1302,21 +1600,21 @@ export default function PortfolioPage() {
               {needsClose.length > 0 && (
                 <div>
                   <p className="text-[10px] text-red-400 tracking-widest mb-3 font-bold uppercase">⚠ Close Now — Decayed to 21 DTE or Less</p>
-                  <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                  <div className="space-y-2">{needsClose.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} onRefresh={fetchPositions} />)}</div>
                 </div>
               )}
 
               {hitTarget.length > 0 && (
                 <div>
                   <p className="text-[10px] text-emerald-400 tracking-widest mb-3 font-bold uppercase">✓ Profit Target Hit</p>
-                  <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                  <div className="space-y-2">{hitTarget.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} onRefresh={fetchPositions} />)}</div>
                 </div>
               )}
 
               {normal.length > 0 && (
                 <div>
                   <p className={`text-[10px] ${th.textFaint} tracking-widest mb-3 font-bold uppercase`}>Active Positions</p>
-                  <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} />)}</div>
+                  <div className="space-y-2">{normal.map(p => <PositionCard key={p.key} pos={p} th={th} selectedAction={selected.get(p.key) ?? null} onToggleSelect={toggleSelected} onProfitTargetChange={handleProfitTargetChange} onRefresh={fetchPositions} />)}</div>
                 </div>
               )}
 
@@ -1325,14 +1623,6 @@ export default function PortfolioPage() {
         </>
       )}
 
-      {showCloseModal && (
-        <CloseModal
-          positions={positions}
-          selected={selected}
-          onClose={() => setShowCloseModal(false)}
-          th={th}
-        />
-      )}
     </div>
   );
 }
