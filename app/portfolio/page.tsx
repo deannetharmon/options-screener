@@ -3167,6 +3167,22 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
     if (needsOco && (isNaN(gtcLimit) || gtcLimit <= 0)) {
       setResult('error'); setResultMsg('Enter a valid GTC profit-target price'); return;
     }
+
+    // Preflight: if current spread value <= GTC limit, TastyTrade rejects with
+    // "invalid_oco_price / would execute immediately". Catch this before cancelling the old GTC.
+    if (needsOco && pos.currentValue != null) {
+      const currentPerContract = pos.currentValue / 100;
+      if (gtcLimit >= currentPerContract) {
+        setResult('error');
+        setResultMsg(
+          `GTC $${gtcLimit.toFixed(2)} is at or above current spread value $${currentPerContract.toFixed(2)} — ` +
+          `TastyTrade rejects OCOs that would execute immediately. ` +
+          `Your profit target is already hit — use Take Profit to close, or raise the GTC price above $${(currentPerContract + 0.01).toFixed(2)}.`
+        );
+        return;
+      }
+    }
+
     setLoading(true);
     setResult(null);
     setPhase('');
@@ -3261,11 +3277,25 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
             <span className={`text-[9px] font-bold ${th.textFaint}`}>{pos.symbol} {pos.strategy}</span>
           </div>
 
+          {/* Already-hit target warning — shown before OCO warning to be most prominent */}
+          {needsOco && pos.currentValue != null && parseFloat(gtcPrice || '0') >= pos.currentValue / 100 && (
+            <div className="mb-3 p-2.5 rounded-lg border border-red-600/50 bg-red-500/8">
+              <p className="text-[10px] text-red-300 leading-relaxed font-bold">
+                ⚠ Profit target already hit
+              </p>
+              <p className="text-[10px] text-red-300 leading-relaxed mt-0.5">
+                GTC ${'{'}gtcPrice{'}'} is at or above current spread value ${'{'}(pos.currentValue / 100).toFixed(2){'}'}.
+                TastyTrade will reject this OCO. Use <span className="font-bold">Take Profit</span> to close now,
+                or raise the GTC price above ${'{'}(pos.currentValue / 100 + 0.01).toFixed(2){'}'}.
+              </p>
+            </div>
+          )}
+
           {/* OCO warning */}
           {needsOco && (
             <div className="mb-3 p-2.5 rounded-lg border border-yellow-600/40 bg-yellow-500/5">
               <p className="text-[10px] text-yellow-300 leading-relaxed">
-                <span className="font-bold">⚠ Existing GTC (${existingGtcPrice.toFixed(2)}) will be cancelled</span> and resubmitted with the stop as an OCO pair. One fills → the other cancels automatically.
+                <span className="font-bold">⚠ Existing GTC (${'{'}existingGtcPrice.toFixed(2){'}'}) will be cancelled</span> and resubmitted with the stop as an OCO pair. One fills → the other cancels automatically.
               </p>
             </div>
           )}
