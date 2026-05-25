@@ -3386,27 +3386,46 @@ interface StopGtcSuggestion {
 
 const STOP_GTC_SYSTEM_PROMPT = `You are an expert options trader specializing in credit spreads using the Prosper Trading methodology. Your job is to recommend optimal GTC profit-target and stop-loss prices for an open spread position.
 
-PROSPER RULES (apply these as your baseline — deviate only with clear justification):
-- GTC profit target: standard is 50% of credit received. Can tighten to 40% if DTE < 25, or loosen to 60-65% if DTE > 35, trend strongly confirms, and IVR is elevated (more premium to capture).
-- Stop loss: standard exit trigger is when the spread has lost 2× the credit received (i.e. spread value = 3× original credit). However, adjust based on:
-  - Buffer to short strike: if buffer < 5%, tighten the stop — the position is already at risk
-  - Buffer > 15%: a looser stop (2.5×) is acceptable since the stock has room
-  - DTE < 21: irrelevant — should be closing regardless. Flag this.
-  - High IVR (>60): spreads can swing wildly on normal days; avoid a stop so tight it triggers on noise
-  - Low IVR (<30): IV is collapsing; edge is gone; tighter stop (1.5×) is appropriate
-  - Earnings within expiry: tighten stop significantly — binary event risk
-  - Trend against strategy: tighten stop — thesis may be broken
-  - Trend confirms strategy: standard or slightly looser stop acceptable
+CRITICAL RULE — STOP MUST BE ABOVE CURRENT SPREAD VALUE:
+The stop trigger price MUST be strictly above the current spread value (buyback cost). A stop at or below the current value would execute immediately and be rejected by the broker. This is a hard constraint — never violate it.
+
+CRITICAL RULE — GTC MUST BE BELOW CURRENT SPREAD VALUE:
+The GTC profit-target price MUST be strictly below the current spread value. A GTC at or above current value would execute immediately. This is a hard constraint — never violate it.
+
+STOP LOSS PHILOSOPHY — ANCHOR TO CURRENT VALUE, NOT ORIGINAL CREDIT:
+The "2× original credit" rule is an ENTRY rule designed for when you first open the position. Once significant profit has been captured, it becomes meaningless and dangerous — a position at 80% profit with a 2× credit stop has virtually no protection.
+
+CORRECT APPROACH: Anchor the stop to the CURRENT spread value, not original credit.
+- Ask: "How much of my captured profit am I willing to give back before stopping out?"
+- A position at 50%+ profit captured: stop should be set to protect most of that gain — typically current value × 2.0 to 3.0 (allowing the spread to double or triple from here before stopping)
+- A position at 20-40% profit: more room needed — current value × 2.5 to 4.0
+- A position at 0-20% profit or a loss: tighter protection — current value × 1.5 to 2.5
+
+ADDITIONAL STOP ADJUSTMENTS (on top of current-value anchor):
+- Buffer < 5%: tighten — position is near breach, use current value × 1.5 to 2.0
+- Buffer > 15%: can use current value × 3.0 to 4.0 — stock has room to move
+- DTE < 21: position should be closing anyway — note this and set tight stop
+- DTE > 35: more time = more room for noise — slightly looser stop acceptable
+- High IVR (>60): spreads swing more on normal days — use current value × 2.5 minimum to avoid noise triggers
+- Low IVR (<30): IV collapsing, edge gone — tighter stop appropriate, current value × 1.5 to 2.0
+- Earnings within expiry: binary event risk — tighten significantly, current value × 1.5
+- Trend against strategy: thesis may be broken — tighten to current value × 1.5 to 2.0
+
+GTC PROFIT TARGET:
+- Standard: 50% of original credit received
+- Tighten to 40% if: DTE < 25, buffer < 5%, earnings approaching, or significant profit already captured (>60%) and you want to lock it in
+- Loosen to 60-65% if: DTE > 35, trend strongly confirms, IVR elevated with more premium to capture
+- The GTC price = credit_per_contract × (1 - target_pct/100). MUST be below current spread value.
 
 OUTPUT FORMAT — JSON only, nothing else:
 {
-  "gtcPrice": <number: BTC limit price at which to close for profit>,
+  "gtcPrice": <number: BTC limit price, MUST be below current spread value>,
   "gtcPct": <number: percentage of credit this represents, e.g. 50>,
-  "stopPrice": <number: stop trigger price>,
-  "stopMultiple": <number: how many times the credit this represents, e.g. 2.0>,
-  "rationale": "<2-3 sentence overall rationale>",
+  "stopPrice": <number: stop trigger price, MUST be above current spread value>,
+  "stopMultiple": <number: how many times the CURRENT spread value this represents — NOT original credit>,
+  "rationale": "<2-3 sentence overall rationale — reference actual numbers from the position>",
   "gtcRationale": "<1-2 sentences specifically about the GTC choice>",
-  "stopRationale": "<1-2 sentences specifically about the stop choice>",
+  "stopRationale": "<1-2 sentences specifically about the stop — reference current spread value, not original credit>",
   "confidence": "HIGH|MEDIUM|LOW",
   "deviatesFromRules": true|false,
   "deviationNote": null or "<explanation if deviating from standard rules>"
@@ -3414,44 +3433,62 @@ OUTPUT FORMAT — JSON only, nothing else:
 
 function buildStopGtcPrompt(pos: Position): string {
   const creditPerContract = pos.creditReceived / 100;
+  const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
+  const currentValuePerContract = pos.currentValue != null ? pos.currentValue / (qty * 100) : null;
   const pnlPct = pos.pnl != null && pos.creditReceived > 0
     ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
+  const profitCaptured = currentValuePerContract != null
+    ? parseFloat(((1 - currentValuePerContract / creditPerContract) * 100).toFixed(1))
+    : null;
   const currentGtcPct = pos.gtcOrderPrice != null
     ? Math.round((1 - pos.gtcOrderPrice / creditPerContract) * 100)
     : Math.round(pos.profitTarget * 100);
 
-  return `Recommend optimal GTC profit-target and stop-loss prices for this position:
+  const gtcMax  = currentValuePerContract != null ? (currentValuePerContract - 0.01).toFixed(2) : 'N/A';
+  const stopMin = currentValuePerContract != null ? (currentValuePerContract + 0.01).toFixed(2) : 'N/A';
+  const stopMax = (creditPerContract * 3.0).toFixed(2);
+
+  return `Recommend optimal GTC profit-target and stop-loss prices for this position.
+
+HARD PRICE CONSTRAINTS (broker rejects violations):
+Current spread value (live): ${currentValuePerContract?.toFixed(2) ?? 'unknown'}/contract
+GTC MUST be below: ${gtcMax} (below current spread value)
+Stop MUST be between: ${stopMin} and ${stopMax} (above current value, below 3x original credit)
 
 POSITION: ${pos.symbol} ${pos.strategy}
 Expiry: ${pos.expDate} | DTE: ${pos.dte} | Entry DTE: ${pos.entryDte}
-Strikes: ${pos.legs.map(l => `${l.direction} ${l.strikePrice}${l.optionType}`).join(', ')}
-Credit received: $${pos.creditReceived.toFixed(2)} total | $${creditPerContract.toFixed(2)} per contract
-Current spread value (buyback): $${pos.currentValue != null ? (pos.currentValue / 100).toFixed(2) : 'unknown'} per contract
-Current P&L: ${pnlPct}% of credit captured
+Strikes: ${pos.legs.map(l => l.direction + ' ' + l.strikePrice + l.optionType).join(', ')}
+
+CREDIT AND P&L:
+Original credit: ${creditPerContract.toFixed(2)}/contract (${pos.creditReceived.toFixed(2)} total)
+Current spread value: ${currentValuePerContract?.toFixed(2) ?? 'unknown'}/contract
+Profit captured: ${profitCaptured != null ? profitCaptured + '%' : pnlPct + '%'} of original credit
+P&L dollars: ${pos.pnl?.toFixed(2) ?? 'unknown'}
+${profitCaptured != null && profitCaptured > 50 ? 'WARNING: ' + profitCaptured + '% profit already captured. Stop must protect this gain — anchor to current spread value, NOT original credit. A stop at 2x original credit is meaningless here.' : ''}
 
 MARKET DATA:
-Stock price: $${pos.stockPrice?.toFixed(2) ?? 'unknown'}
+Stock price: ${pos.stockPrice?.toFixed(2) ?? 'unknown'}
 Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
 IVR: ${pos.ivr ?? 'unknown'} | IV: ${pos.iv ?? 'unknown'}% | HV30: ${pos.hv30 ?? 'unknown'}%
 Theta/day: ${pos.theta?.toFixed(4) ?? 'unknown'} | Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
-Earnings within expiry: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None'}
+Earnings within expiry: ${pos.earningsDate ? 'YES — ' + pos.earningsDate : 'None'}
 
-CURRENT ORDER STATUS:
-GTC profit-target: ${pos.hasGtc ? `Yes — working at $${pos.gtcOrderPrice?.toFixed(2) ?? '?'} per contract (${currentGtcPct}% profit)` : 'None set'}
-Stop loss: ${pos.stopLossStatus} ${pos.stopLossPrice ? `@ $${pos.stopLossPrice.toFixed(2)} per contract` : ''}
+CURRENT ORDERS:
+GTC profit-target: ${pos.hasGtc ? 'Yes — at $' + (pos.gtcOrderPrice?.toFixed(2) ?? '?') + '/contract (' + currentGtcPct + '% profit)' : 'None set'}
+Stop loss: ${pos.stopLossStatus}${pos.stopLossPrice ? ' @ $' + pos.stopLossPrice.toFixed(2) + '/contract' : ''}
 
-Flags: ${[
-  pos.needsClose ? '⚠ AT 21 DTE — should close regardless' : '',
-  pos.buffer != null && pos.buffer < 3 ? `⚠ CRITICAL buffer ${pos.buffer.toFixed(1)}%` : '',
-  pos.buffer != null && pos.buffer < 7 && pos.buffer >= 3 ? `⚠ TIGHT buffer ${pos.buffer.toFixed(1)}%` : '',
-  pos.earningsDate ? `⚠ EARNINGS ${pos.earningsDate}` : '',
-  (pos.ivr ?? 0) < 30 ? '⚠ IVR BELOW 30 — edge thin' : '',
-  (pos.ivr ?? 0) > 70 ? '⚠ IVR ABOVE 70 — elevated volatility' : '',
-].filter(Boolean).join(', ') || 'None'}
+FLAGS: ${[
+  pos.needsClose ? 'AT 21 DTE — closing soon anyway' : '',
+  pos.buffer != null && pos.buffer < 3 ? 'CRITICAL buffer ' + pos.buffer.toFixed(1) + '% — near breach' : '',
+  pos.buffer != null && pos.buffer < 7 && pos.buffer >= 3 ? 'TIGHT buffer ' + pos.buffer.toFixed(1) + '%' : '',
+  pos.earningsDate ? 'EARNINGS ' + pos.earningsDate : '',
+  (pos.ivr ?? 0) < 30 ? 'IVR BELOW 30 — edge thin' : '',
+  (pos.ivr ?? 0) > 70 ? 'IVR ABOVE 70 — elevated volatility' : '',
+  profitCaptured != null && profitCaptured > 70 ? profitCaptured + '% PROFIT CAPTURED — stop must protect gains, anchor to current value' : '',
+].filter(Boolean).join(' | ') || 'None'}
 
-Give me specific dollar prices for both the GTC profit target and the stop trigger. Use per-contract prices (credit / 100). Respond as JSON only.`;
+IMPORTANT: stopMultiple in your response should be relative to the CURRENT spread value (${currentValuePerContract?.toFixed(2) ?? '?'}), not original credit. Respond as JSON only.`;
 }
-
 async function fetchStopGtcSuggestion(pos: Position): Promise<StopGtcSuggestion> {
   const prompt = buildStopGtcPrompt(pos);
   const res = await fetch('/api/analyze', {
