@@ -794,7 +794,19 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
 }
 
 // ── AI Analysis ───────────────────────────────────────────────────────────
-const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
+const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
+
+You are in a live conversation about a specific position or portfolio. The trader has already seen a structured analysis. They are now asking follow-up questions to dig deeper.
+
+RESPOND IN PLAIN CONVERSATIONAL PROSE. No JSON. No bullet headers. No structured output format. Talk like a senior trader giving direct advice over the phone — clear, specific, and honest. Use numbers when they matter. Be direct about risk. Don't hedge everything with disclaimers.
+
+You know the methodology deeply:
+- BPS for bullish/neutral, BCS for bearish, IC for range-bound
+- 50% profit target with GTC at entry, hard close at 21 DTE
+- IVR ≥ 30 for edge, buffer % to short strike is critical, gamma accelerates near expiry
+- When to deviate: high IV exceptions, broken thesis, early close to protect profits
+
+Keep responses focused and concise — 3-6 sentences unless the question genuinely requires more. If the trader asks about rolling, give specific guidance on strikes and expiry. If they ask about risk, quantify it. If they're thinking about something wrong, say so directly.`; and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
 
 CORE METHODOLOGY (know it deeply, apply it intelligently):
 - Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound
@@ -1797,6 +1809,7 @@ function AnalysisPanel({ analysis, pos, th }: { analysis: PositionAnalysis; pos:
 
       <ChatThread
         initialContext={chatContext}
+        systemPrompt={TRADING_CHAT_PROMPT}
         placeholder={`Ask about ${analysis.symbol}... e.g. "Should I roll to next month?"`}
         th={th}
       />
@@ -1917,6 +1930,7 @@ function PortfolioAnalysisPanel({ analysis, positions, onClose, th }: {
 
           <ChatThread
             initialContext={chatContext}
+            systemPrompt={TRADING_CHAT_PROMPT}
             placeholder='Ask anything — e.g. "Which position should I close first if I need cash?" or "Am I too long tech?"'
             th={th}
           />
