@@ -3000,35 +3000,172 @@ async function ttPostComplex(path: string, token: string, body: unknown) {
   return data;
 }
 
+// ── Stop/GTC AI suggestion ─────────────────────────────────────────────────
+interface StopGtcSuggestion {
+  gtcPrice: number;       // recommended profit-target BTC price
+  gtcPct: number;         // what % of credit that represents
+  stopPrice: number;      // recommended stop trigger price
+  stopMultiple: number;   // how many × credit that is
+  rationale: string;      // 2-3 sentence explanation
+  gtcRationale: string;   // why this GTC level specifically
+  stopRationale: string;  // why this stop level specifically
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  deviatesFromRules: boolean;
+  deviationNote: string | null;
+}
+
+const STOP_GTC_SYSTEM_PROMPT = `You are an expert options trader specializing in credit spreads using the Prosper Trading methodology. Your job is to recommend optimal GTC profit-target and stop-loss prices for an open spread position.
+
+PROSPER RULES (apply these as your baseline — deviate only with clear justification):
+- GTC profit target: standard is 50% of credit received. Can tighten to 40% if DTE < 25, or loosen to 60-65% if DTE > 35, trend strongly confirms, and IVR is elevated (more premium to capture).
+- Stop loss: standard exit trigger is when the spread has lost 2× the credit received (i.e. spread value = 3× original credit). However, adjust based on:
+  - Buffer to short strike: if buffer < 5%, tighten the stop — the position is already at risk
+  - Buffer > 15%: a looser stop (2.5×) is acceptable since the stock has room
+  - DTE < 21: irrelevant — should be closing regardless. Flag this.
+  - High IVR (>60): spreads can swing wildly on normal days; avoid a stop so tight it triggers on noise
+  - Low IVR (<30): IV is collapsing; edge is gone; tighter stop (1.5×) is appropriate
+  - Earnings within expiry: tighten stop significantly — binary event risk
+  - Trend against strategy: tighten stop — thesis may be broken
+  - Trend confirms strategy: standard or slightly looser stop acceptable
+
+OUTPUT FORMAT — JSON only, nothing else:
+{
+  "gtcPrice": <number: BTC limit price at which to close for profit>,
+  "gtcPct": <number: percentage of credit this represents, e.g. 50>,
+  "stopPrice": <number: stop trigger price>,
+  "stopMultiple": <number: how many times the credit this represents, e.g. 2.0>,
+  "rationale": "<2-3 sentence overall rationale>",
+  "gtcRationale": "<1-2 sentences specifically about the GTC choice>",
+  "stopRationale": "<1-2 sentences specifically about the stop choice>",
+  "confidence": "HIGH|MEDIUM|LOW",
+  "deviatesFromRules": true|false,
+  "deviationNote": null or "<explanation if deviating from standard rules>"
+}`;
+
+function buildStopGtcPrompt(pos: Position): string {
+  const creditPerContract = pos.creditReceived / 100;
+  const pnlPct = pos.pnl != null && pos.creditReceived > 0
+    ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
+  const currentGtcPct = pos.gtcOrderPrice != null
+    ? Math.round((1 - pos.gtcOrderPrice / creditPerContract) * 100)
+    : Math.round(pos.profitTarget * 100);
+
+  return `Recommend optimal GTC profit-target and stop-loss prices for this position:
+
+POSITION: ${pos.symbol} ${pos.strategy}
+Expiry: ${pos.expDate} | DTE: ${pos.dte} | Entry DTE: ${pos.entryDte}
+Strikes: ${pos.legs.map(l => `${l.direction} ${l.strikePrice}${l.optionType}`).join(', ')}
+Credit received: $${pos.creditReceived.toFixed(2)} total | $${creditPerContract.toFixed(2)} per contract
+Current spread value (buyback): $${pos.currentValue != null ? (pos.currentValue / 100).toFixed(2) : 'unknown'} per contract
+Current P&L: ${pnlPct}% of credit captured
+
+MARKET DATA:
+Stock price: $${pos.stockPrice?.toFixed(2) ?? 'unknown'}
+Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
+IVR: ${pos.ivr ?? 'unknown'} | IV: ${pos.iv ?? 'unknown'}% | HV30: ${pos.hv30 ?? 'unknown'}%
+Theta/day: ${pos.theta?.toFixed(4) ?? 'unknown'} | Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
+Earnings within expiry: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None'}
+
+CURRENT ORDER STATUS:
+GTC profit-target: ${pos.hasGtc ? `Yes — working at $${pos.gtcOrderPrice?.toFixed(2) ?? '?'} per contract (${currentGtcPct}% profit)` : 'None set'}
+Stop loss: ${pos.stopLossStatus} ${pos.stopLossPrice ? `@ $${pos.stopLossPrice.toFixed(2)} per contract` : ''}
+
+Flags: ${[
+  pos.needsClose ? '⚠ AT 21 DTE — should close regardless' : '',
+  pos.buffer != null && pos.buffer < 3 ? `⚠ CRITICAL buffer ${pos.buffer.toFixed(1)}%` : '',
+  pos.buffer != null && pos.buffer < 7 && pos.buffer >= 3 ? `⚠ TIGHT buffer ${pos.buffer.toFixed(1)}%` : '',
+  pos.earningsDate ? `⚠ EARNINGS ${pos.earningsDate}` : '',
+  (pos.ivr ?? 0) < 30 ? '⚠ IVR BELOW 30 — edge thin' : '',
+  (pos.ivr ?? 0) > 70 ? '⚠ IVR ABOVE 70 — elevated volatility' : '',
+].filter(Boolean).join(', ') || 'None'}
+
+Give me specific dollar prices for both the GTC profit target and the stop trigger. Use per-contract prices (credit / 100). Respond as JSON only.`;
+}
+
+async function fetchStopGtcSuggestion(pos: Position): Promise<StopGtcSuggestion> {
+  const prompt = buildStopGtcPrompt(pos);
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 500,
+      system: STOP_GTC_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!res.ok) throw new Error(`AI request failed: ${res.status}`);
+  const data = await res.json();
+  const text = (data?.content?.find((b: any) => b.type === 'text')?.text ?? '')
+    .replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  return JSON.parse(text) as StopGtcSuggestion;
+}
+
 function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [phase, setPhase] = useState('');   // shown while loading
+  const [phase, setPhase] = useState('');
   const [result, setResult] = useState<'success' | 'error' | null>(null);
   const [resultMsg, setResultMsg] = useState('');
   const [stopPrice, setStopPrice] = useState('');
+  const [gtcPrice, setGtcPrice] = useState('');
 
-  // Suggested stop: 2× credit per contract (standard rule)
-  const shortLeg = pos.legs.find(l => l.direction === 'Short');
-  const qty = shortLeg?.quantity ?? 1;
-  const suggestedStop = parseFloat(((pos.creditReceived / (qty * 100)) * 2).toFixed(2));
+  // AI suggestion state
+  const [suggestion, setSuggestion] = useState<StopGtcSuggestion | null>(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
 
   // Whether we need OCO (existing standalone GTC profit-target order present)
   const needsOco = pos.hasGtc && !!pos.gtcOrderId;
-  // Current profit-target price on that GTC order (to rebuild it in OCO)
-  const gtcLimitPrice = pos.gtcOrderPrice ?? parseFloat(((pos.creditReceived / 100) * (1 - pos.profitTarget)).toFixed(2));
+  // Current profit-target BTC price per contract on existing GTC order
+  const existingGtcPrice = pos.gtcOrderPrice ?? parseFloat(((pos.creditReceived / 100) * (1 - pos.profitTarget)).toFixed(2));
+
+  // Fallback naive stop: 2× credit per contract
+  const naiveStop = parseFloat(((pos.creditReceived / 100) * 2).toFixed(2));
 
   const handleOpen = () => {
     setOpen(true);
     setResult(null);
     setPhase('');
-    setStopPrice(pos.stopLossPrice != null ? pos.stopLossPrice.toFixed(2) : suggestedStop.toFixed(2));
+    setSuggestion(null);
+    setSuggestionError(null);
+    // Pre-fill inputs with existing values or naive defaults
+    setStopPrice(pos.stopLossPrice != null ? pos.stopLossPrice.toFixed(2) : naiveStop.toFixed(2));
+    setGtcPrice(existingGtcPrice.toFixed(2));
+    // Auto-fetch AI suggestion on open
+    fetchSuggestion();
+  };
+
+  const fetchSuggestion = async () => {
+    setSuggestionLoading(true);
+    setSuggestionError(null);
+    try {
+      const s = await fetchStopGtcSuggestion(pos);
+      setSuggestion(s);
+      // Pre-fill inputs with AI suggestion
+      setStopPrice(s.stopPrice.toFixed(2));
+      setGtcPrice(s.gtcPrice.toFixed(2));
+    } catch (e: any) {
+      setSuggestionError(e.message ?? 'AI suggestion failed');
+    } finally {
+      setSuggestionLoading(false);
+    }
+  };
+
+  const applySuggestion = () => {
+    if (!suggestion) return;
+    setStopPrice(suggestion.stopPrice.toFixed(2));
+    setGtcPrice(suggestion.gtcPrice.toFixed(2));
   };
 
   const submit = async () => {
     const stopTrigger = parseFloat(stopPrice);
+    const gtcLimit = parseFloat(gtcPrice);
     if (isNaN(stopTrigger) || stopTrigger <= 0) {
       setResult('error'); setResultMsg('Enter a valid stop price'); return;
+    }
+    if (needsOco && (isNaN(gtcLimit) || gtcLimit <= 0)) {
+      setResult('error'); setResultMsg('Enter a valid GTC profit-target price'); return;
     }
     setLoading(true);
     setResult(null);
@@ -3044,38 +3181,23 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       }));
 
       if (needsOco) {
-        // Step 1: cancel the existing standalone GTC limit order
         setPhase('Cancelling existing GTC order...');
         console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
         await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
 
-        // Step 2: submit OCO complex order with both profit target + stop
         setPhase('Placing OCO order...');
         const ocoBody = {
           type: 'OCO',
           orders: [
-            {
-              'order-type': 'Limit',
-              'time-in-force': 'GTC',
-              price: gtcLimitPrice.toFixed(2),
-              'price-effect': 'Debit',
-              legs,
-            },
-            {
-              'order-type': 'Stop',
-              'time-in-force': 'GTC',
-              'stop-trigger': stopTrigger.toFixed(2),
-              'price-effect': 'Debit',
-              legs,
-            },
+            { 'order-type': 'Limit', 'time-in-force': 'GTC', price: gtcLimit.toFixed(2), 'price-effect': 'Debit', legs },
+            { 'order-type': 'Stop',  'time-in-force': 'GTC', 'stop-trigger': stopTrigger.toFixed(2), 'price-effect': 'Debit', legs },
           ],
         };
         const res = await ttPostComplex(`/accounts/${pos.accountNumber}/complex-orders`, token, ocoBody);
         const orderId = String(res?.data?.['complex-order']?.id ?? res?.data?.id ?? 'submitted');
         setResult('success');
-        setResultMsg(`OCO set — profit @ $${gtcLimitPrice.toFixed(2)} / stop @ $${stopTrigger.toFixed(2)} (ID #${orderId})`);
+        setResultMsg(`OCO set — profit @ $${gtcLimit.toFixed(2)} / stop @ $${stopTrigger.toFixed(2)} (ID #${orderId})`);
       } else {
-        // No existing GTC — submit standalone stop order
         setPhase('Placing stop order...');
         const stopBody = {
           'order-type': 'Stop',
@@ -3106,6 +3228,12 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
     pos.stopLossStatus === 'loose' ? '⚠ Update Stop' :
     '✎ Stop';
 
+  const creditPerContract = pos.creditReceived / 100;
+  const stopParsed = parseFloat(stopPrice || '0');
+  const gtcParsed = parseFloat(gtcPrice || '0');
+  const stopMultiple = creditPerContract > 0 ? (stopParsed / creditPerContract).toFixed(1) : '—';
+  const gtcPct = creditPerContract > 0 ? Math.round((1 - gtcParsed / creditPerContract) * 100) : 0;
+
   return (
     <div className="relative">
       <button
@@ -3123,40 +3251,130 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
 
       {open && (
         <div
-          className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-80`}
+          className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-96`}
           onClick={e => e.stopPropagation()}>
 
-          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>
-            {needsOco ? 'Set Stop Loss — OCO Required' : 'Set Stop Loss (GTC Stop Order)'}
-          </p>
+          <div className="flex items-center justify-between mb-2">
+            <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>
+              {needsOco ? 'Set Stop Loss — OCO Required' : 'Set Stop Loss'}
+            </p>
+            <span className={`text-[9px] font-bold ${th.textFaint}`}>{pos.symbol} {pos.strategy}</span>
+          </div>
 
           {/* OCO warning */}
           {needsOco && (
-            <div className="mb-3 p-2.5 rounded-lg border border-yellow-600/40 bg-yellow-500/8">
+            <div className="mb-3 p-2.5 rounded-lg border border-yellow-600/40 bg-yellow-500/5">
               <p className="text-[10px] text-yellow-300 leading-relaxed">
-                <span className="font-bold">⚠ Your existing GTC profit-target order (${gtcLimitPrice.toFixed(2)}) will be cancelled</span> and resubmitted together with the stop as an OCO pair. Both orders will link — when one fills, the other cancels automatically.
+                <span className="font-bold">⚠ Existing GTC (${existingGtcPrice.toFixed(2)}) will be cancelled</span> and resubmitted with the stop as an OCO pair. One fills → the other cancels automatically.
               </p>
             </div>
           )}
 
-          <p className={`text-[10px] ${th.textFaint} mb-3`}>
-            Suggested: ${suggestedStop.toFixed(2)} <span className={`${th.textFaint}`}>(2× credit/contract)</span>
-            {needsOco && <span className="block mt-0.5">Profit target will stay at ${gtcLimitPrice.toFixed(2)}</span>}
-          </p>
+          {/* AI Suggestion panel */}
+          <div className={`mb-3 rounded-lg border ${th.borderLight} overflow-hidden`}>
+            <div className={`flex items-center justify-between px-3 py-2 ${th.card}`}>
+              <div className="flex items-center gap-1.5">
+                <span className="text-indigo-400 text-[10px]">◈</span>
+                <span className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest">AI Recommendation</span>
+              </div>
+              {!suggestionLoading && (
+                <button
+                  onClick={fetchSuggestion}
+                  className={`text-[9px] ${th.textFaint} hover:text-indigo-400 transition-colors`}>
+                  ↻ Refresh
+                </button>
+              )}
+            </div>
 
-          <div className="flex items-center gap-2 mb-3">
-            <span className={`text-[10px] ${th.textFaint} shrink-0`}>Stop trigger $</span>
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              value={stopPrice}
-              onChange={e => setStopPrice(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') setOpen(false); }}
-              autoFocus
-              className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-orange-500`}
-              style={{ fontFamily: "'DM Mono', monospace" }}
-            />
+            {suggestionLoading && (
+              <div className="flex items-center gap-2 px-3 py-3">
+                <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                <p className="text-[10px] text-indigo-400">Analyzing position...</p>
+              </div>
+            )}
+
+            {suggestionError && !suggestionLoading && (
+              <div className="px-3 py-2">
+                <p className="text-[10px] text-red-400">{suggestionError}</p>
+                <button onClick={fetchSuggestion} className="text-[9px] text-blue-400 hover:underline mt-1">Retry</button>
+              </div>
+            )}
+
+            {suggestion && !suggestionLoading && (
+              <div className="px-3 py-3 space-y-2">
+                {/* Recommended prices */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className={`p-2 rounded border border-emerald-700/40 bg-emerald-500/5`}>
+                    <p className="text-[9px] text-emerald-400 font-bold uppercase tracking-widest mb-0.5">GTC Target</p>
+                    <p className="text-sm font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${suggestion.gtcPrice.toFixed(2)}</p>
+                    <p className={`text-[9px] ${th.textFaint}`}>{suggestion.gtcPct}% profit</p>
+                  </div>
+                  <div className={`p-2 rounded border border-orange-700/40 bg-orange-500/5`}>
+                    <p className="text-[9px] text-orange-400 font-bold uppercase tracking-widest mb-0.5">Stop Trigger</p>
+                    <p className="text-sm font-bold text-orange-400" style={{ fontFamily: "'DM Mono', monospace" }}>${suggestion.stopPrice.toFixed(2)}</p>
+                    <p className={`text-[9px] ${th.textFaint}`}>{suggestion.stopMultiple}× credit</p>
+                  </div>
+                </div>
+
+                {/* Rationale */}
+                <div className="space-y-1">
+                  <p className={`text-[10px] ${th.textFaint} leading-relaxed`}>{suggestion.rationale}</p>
+                  {suggestion.gtcRationale && (
+                    <p className="text-[9px] text-emerald-400/80 leading-relaxed">
+                      <span className="font-bold">GTC: </span>{suggestion.gtcRationale}
+                    </p>
+                  )}
+                  {suggestion.stopRationale && (
+                    <p className="text-[9px] text-orange-400/80 leading-relaxed">
+                      <span className="font-bold">Stop: </span>{suggestion.stopRationale}
+                    </p>
+                  )}
+                  {suggestion.deviatesFromRules && suggestion.deviationNote && (
+                    <p className="text-[9px] text-yellow-400 leading-relaxed">⚡ {suggestion.deviationNote}</p>
+                  )}
+                </div>
+
+                {/* Confidence + apply */}
+                <div className="flex items-center justify-between pt-1">
+                  <span className={`text-[9px] font-bold ${suggestion.confidence === 'HIGH' ? 'text-emerald-400' : suggestion.confidence === 'MEDIUM' ? 'text-yellow-400' : 'text-slate-400'}`}>
+                    {suggestion.confidence} confidence
+                  </span>
+                  <button
+                    onClick={applySuggestion}
+                    className="text-[9px] px-2.5 py-1 border border-indigo-600 text-indigo-400 rounded hover:bg-indigo-600/20 transition-colors font-bold">
+                    Use these values ↓
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Manual inputs */}
+          <div className="space-y-2 mb-3">
+            {needsOco && (
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] ${th.textFaint} w-28 shrink-0`}>GTC target $</span>
+                <input
+                  type="number" min="0.01" step="0.01" value={gtcPrice}
+                  onChange={e => setGtcPrice(e.target.value)}
+                  className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} text-emerald-400 outline-none focus:border-emerald-500`}
+                  style={{ fontFamily: "'DM Mono', monospace" }}
+                />
+                {gtcPct > 0 && <span className={`text-[9px] ${th.textFaint} w-12 shrink-0`}>{gtcPct}%</span>}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <span className={`text-[10px] ${th.textFaint} w-28 shrink-0`}>Stop trigger $</span>
+              <input
+                type="number" min="0.01" step="0.01" value={stopPrice}
+                onChange={e => setStopPrice(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') setOpen(false); }}
+                autoFocus={!needsOco}
+                className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} text-orange-400 outline-none focus:border-orange-500`}
+                style={{ fontFamily: "'DM Mono', monospace" }}
+              />
+              {stopParsed > 0 && <span className={`text-[9px] ${th.textFaint} w-12 shrink-0`}>{stopMultiple}×</span>}
+            </div>
           </div>
 
           <button
@@ -3168,8 +3386,8 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
             {loading
               ? (phase || 'Submitting...')
               : needsOco
-              ? `Cancel GTC & Place OCO @ $${parseFloat(stopPrice || '0').toFixed(2)}`
-              : `Place GTC Stop @ $${parseFloat(stopPrice || '0').toFixed(2)}`}
+              ? `Cancel GTC & Place OCO — profit $${gtcParsed.toFixed(2)} / stop $${stopParsed.toFixed(2)}`
+              : `Place GTC Stop @ $${stopParsed.toFixed(2)}`}
           </button>
 
           {result === 'error' && <p className="text-[9px] text-red-400 mt-2">{resultMsg}</p>}
