@@ -482,6 +482,8 @@ async function ttPatch(path: string, token: string, body: unknown) {
   if (!res.ok) throw new Error(data?.error?.message ?? data?.['error-message'] ?? `PATCH ${path} failed (${res.status})`);
   return data;
 }
+
+async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
   try {
     const requests = await Promise.allSettled([
       ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=250`, token),
