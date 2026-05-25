@@ -933,7 +933,9 @@ Provide portfolio-level analysis as JSON only.`;
 }
 
 async function callAI(userMessage: string): Promise<string> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  // Calls our own Next.js API route which proxies to Anthropic server-side.
+  // Direct browser → api.anthropic.com calls are blocked by CORS.
+  const res = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -943,10 +945,12 @@ async function callAI(userMessage: string): Promise<string> {
       messages: [{ role: 'user', content: userMessage }],
     }),
   });
-  if (!res.ok) throw new Error(`AI API error: ${res.status}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error ?? `API error: ${res.status}`);
+  }
   const data = await res.json();
   const text = data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
-  // Strip any markdown fences
   return text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 }
 
