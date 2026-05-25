@@ -2955,6 +2955,240 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
   );
 }
 
+// ── Set / Update Stop Loss Button ─────────────────────────────────────────
+// When a GTC profit-target order already exists on the position, TastyTrade
+// rejects a second standalone stop order targeting the same legs. The correct
+// approach is to:
+//   1. Cancel the existing standalone GTC limit order
+//   2. Re-submit both the profit target AND the stop together as an OCO
+//      complex order via POST /accounts/{acct}/complex-orders
+// If no existing GTC limit order exists, we submit the stop as a standalone
+// order via POST /accounts/{acct}/orders.
+
+async function ttDelete(path: string, token: string): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message ?? data?.['error-message'] ?? `DELETE ${path} failed (${res.status})`);
+  }
+}
+
+async function ttPostComplex(path: string, token: string, body: unknown) {
+  console.log('TT COMPLEX ORDER BODY:', JSON.stringify(body, null, 2));
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
+  const data = await res.json();
+  console.log('TT COMPLEX ORDER RESPONSE:', JSON.stringify(data, null, 2));
+  if (!res.ok) {
+    const errMsg =
+      data?.error?.message ??
+      data?.['error-message'] ??
+      (Array.isArray(data?.error?.errors)
+        ? data.error.errors.map((e: any) => `${e.domain ?? ''} ${e.reason ?? e.message ?? e}`).join('; ')
+        : null) ??
+      JSON.stringify(data?.error ?? data).slice(0, 300);
+    throw new Error(`Complex order rejected: ${errMsg}`);
+  }
+  return data;
+}
+
+function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState('');   // shown while loading
+  const [result, setResult] = useState<'success' | 'error' | null>(null);
+  const [resultMsg, setResultMsg] = useState('');
+  const [stopPrice, setStopPrice] = useState('');
+
+  // Suggested stop: 2× credit per contract (standard rule)
+  const shortLeg = pos.legs.find(l => l.direction === 'Short');
+  const qty = shortLeg?.quantity ?? 1;
+  const suggestedStop = parseFloat(((pos.creditReceived / (qty * 100)) * 2).toFixed(2));
+
+  // Whether we need OCO (existing standalone GTC profit-target order present)
+  const needsOco = pos.hasGtc && !!pos.gtcOrderId;
+  // Current profit-target price on that GTC order (to rebuild it in OCO)
+  const gtcLimitPrice = pos.gtcOrderPrice ?? parseFloat(((pos.creditReceived / 100) * (1 - pos.profitTarget)).toFixed(2));
+
+  const handleOpen = () => {
+    setOpen(true);
+    setResult(null);
+    setPhase('');
+    setStopPrice(pos.stopLossPrice != null ? pos.stopLossPrice.toFixed(2) : suggestedStop.toFixed(2));
+  };
+
+  const submit = async () => {
+    const stopTrigger = parseFloat(stopPrice);
+    if (isNaN(stopTrigger) || stopTrigger <= 0) {
+      setResult('error'); setResultMsg('Enter a valid stop price'); return;
+    }
+    setLoading(true);
+    setResult(null);
+    setPhase('');
+    try {
+      const token = await getAccessToken();
+      const itype = instrType(pos.symbol);
+      const legs = pos.legs.map(leg => ({
+        symbol: leg.symbol,
+        quantity: leg.quantity,
+        action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as 'Buy to Close' | 'Sell to Close',
+        'instrument-type': itype,
+      }));
+
+      if (needsOco) {
+        // Step 1: cancel the existing standalone GTC limit order
+        setPhase('Cancelling existing GTC order...');
+        console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
+        await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+
+        // Step 2: submit OCO complex order with both profit target + stop
+        setPhase('Placing OCO order...');
+        const ocoBody = {
+          type: 'OCO',
+          orders: [
+            {
+              'order-type': 'Limit',
+              'time-in-force': 'GTC',
+              price: gtcLimitPrice.toFixed(2),
+              'price-effect': 'Debit',
+              legs,
+            },
+            {
+              'order-type': 'Stop',
+              'time-in-force': 'GTC',
+              'stop-trigger': stopTrigger.toFixed(2),
+              'price-effect': 'Debit',
+              legs,
+            },
+          ],
+        };
+        const res = await ttPostComplex(`/accounts/${pos.accountNumber}/complex-orders`, token, ocoBody);
+        const orderId = String(res?.data?.['complex-order']?.id ?? res?.data?.id ?? 'submitted');
+        setResult('success');
+        setResultMsg(`OCO set — profit @ $${gtcLimitPrice.toFixed(2)} / stop @ $${stopTrigger.toFixed(2)} (ID #${orderId})`);
+      } else {
+        // No existing GTC — submit standalone stop order
+        setPhase('Placing stop order...');
+        const stopBody = {
+          'order-type': 'Stop',
+          'time-in-force': 'GTC',
+          'stop-trigger': stopTrigger.toFixed(2),
+          'price-effect': 'Debit',
+          legs,
+        };
+        const res = await ttPost(`/accounts/${pos.accountNumber}/orders`, token, stopBody);
+        const orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
+        setResult('success');
+        setResultMsg(`Stop set @ $${stopTrigger.toFixed(2)} (ID #${orderId})`);
+      }
+      setOpen(false);
+    } catch (e: any) {
+      setResult('error');
+      setResultMsg(e.message ?? 'Failed');
+    } finally {
+      setLoading(false);
+      setPhase('');
+    }
+  };
+
+  const btnLabel =
+    result === 'success' ? '✓ Stop Set' :
+    result === 'error'   ? '✕ Failed'   :
+    pos.stopLossStatus === 'none'  ? '+ Set Stop' :
+    pos.stopLossStatus === 'loose' ? '⚠ Update Stop' :
+    '✎ Stop';
+
+  return (
+    <div className="relative">
+      <button
+        onClick={e => { e.stopPropagation(); open ? setOpen(false) : handleOpen(); }}
+        className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${
+          result === 'success' ? 'border-emerald-600 text-emerald-400' :
+          result === 'error'   ? 'border-red-600 text-red-400' :
+          open ? 'border-orange-500 text-orange-400 bg-orange-500/10' :
+          pos.stopLossStatus === 'none'  ? 'border-red-700 text-red-400 hover:border-orange-500 hover:text-orange-400' :
+          pos.stopLossStatus === 'loose' ? 'border-yellow-700 text-yellow-400 hover:border-orange-500 hover:text-orange-400' :
+          'border-slate-600 text-slate-400 hover:border-orange-500 hover:text-orange-400'
+        }`}>
+        {btnLabel}
+      </button>
+
+      {open && (
+        <div
+          className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-80`}
+          onClick={e => e.stopPropagation()}>
+
+          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>
+            {needsOco ? 'Set Stop Loss — OCO Required' : 'Set Stop Loss (GTC Stop Order)'}
+          </p>
+
+          {/* OCO warning */}
+          {needsOco && (
+            <div className="mb-3 p-2.5 rounded-lg border border-yellow-600/40 bg-yellow-500/8">
+              <p className="text-[10px] text-yellow-300 leading-relaxed">
+                <span className="font-bold">⚠ Your existing GTC profit-target order (${gtcLimitPrice.toFixed(2)}) will be cancelled</span> and resubmitted together with the stop as an OCO pair. Both orders will link — when one fills, the other cancels automatically.
+              </p>
+            </div>
+          )}
+
+          <p className={`text-[10px] ${th.textFaint} mb-3`}>
+            Suggested: ${suggestedStop.toFixed(2)} <span className={`${th.textFaint}`}>(2× credit/contract)</span>
+            {needsOco && <span className="block mt-0.5">Profit target will stay at ${gtcLimitPrice.toFixed(2)}</span>}
+          </p>
+
+          <div className="flex items-center gap-2 mb-3">
+            <span className={`text-[10px] ${th.textFaint} shrink-0`}>Stop trigger $</span>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={stopPrice}
+              onChange={e => setStopPrice(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') setOpen(false); }}
+              autoFocus
+              className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-orange-500`}
+              style={{ fontFamily: "'DM Mono', monospace" }}
+            />
+          </div>
+
+          <button
+            disabled={loading}
+            onClick={submit}
+            className={`w-full py-2 text-white text-[10px] font-bold rounded-lg transition-colors disabled:opacity-50 ${
+              needsOco ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-orange-600 hover:bg-orange-500'
+            }`}>
+            {loading
+              ? (phase || 'Submitting...')
+              : needsOco
+              ? `Cancel GTC & Place OCO @ $${parseFloat(stopPrice || '0').toFixed(2)}`
+              : `Place GTC Stop @ $${parseFloat(stopPrice || '0').toFixed(2)}`}
+          </button>
+
+          {result === 'error' && <p className="text-[9px] text-red-400 mt-2">{resultMsg}</p>}
+          <button onClick={() => setOpen(false)} className={`w-full mt-2 text-[9px] ${th.textFaint} hover:${th.text} text-center`}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {result === 'success' && resultMsg && (
+        <p className="absolute bottom-full mb-1 left-0 text-[9px] text-emerald-400 whitespace-nowrap bg-black/80 px-2 py-1 rounded border border-emerald-700 max-w-xs truncate"
+          title={resultMsg}>
+          {resultMsg}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExecute }: {
   pos: Position;
   th: typeof THEMES[Theme];
@@ -3190,6 +3424,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             );
           })}
           <ExtendProfitButton pos={pos} th={th} />
+          <SetStopLossButton pos={pos} th={th} />
           {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(rec.action) && (
             <span className={`text-[9px] ${th.textFaint} ml-1`}>← suggested</span>
           )}
