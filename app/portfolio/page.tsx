@@ -1346,7 +1346,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
 
         {/* Data columns */}
         <div className="overflow-x-auto flex-1">
-          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px 130px', gap: '0 12px', alignItems: 'center', minWidth: '920px' }}>
+          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'center', minWidth: '1040px' }}>
 
             <div>
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
@@ -1440,6 +1440,25 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
             <div>
               <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
               <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>{pos.hasGtc ? '✓ Live' : '✕ None'}</p>
+            </div>
+
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
+              {(() => {
+                const cfg =
+                  pos.stopLossStatus === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-400' } :
+                  pos.stopLossStatus === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
+                  pos.stopLossStatus === 'none'  ? { icon: '✕', label: 'None',  cls: 'text-red-400'     } :
+                                                   { icon: '—', label: '?',     cls: th.textFaint        };
+                return (
+                  <p className={`text-xs font-bold ${cfg.cls}`}>
+                    {cfg.icon} {cfg.label}
+                    {pos.stopLossPrice != null && (
+                      <span className={`ml-1 ${th.textFaint} text-[10px] font-normal`}>${pos.stopLossPrice.toFixed(2)}</span>
+                    )}
+                  </p>
+                );
+              })()}
             </div>
 
             {/* Recommendation */}
