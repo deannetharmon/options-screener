@@ -1,4 +1,4 @@
-// File: /workspaces/options-screener/app/api/auth/status/route.ts
+// File: /Users/deanharmon/Documents/GitHub/options-screener/app/api/auth/status/route.ts
 import * as entry from '../../../../../../app/api/auth/status/route.js'
 import type { NextRequest } from 'next/server.js'
 

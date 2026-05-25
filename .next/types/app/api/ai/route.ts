@@ -1,4 +1,4 @@
-// File: /workspaces/options-screener/app/api/ai/route.ts
+// File: /Users/deanharmon/Documents/GitHub/options-screener/app/api/ai/route.ts
 import * as entry from '../../../../../app/api/ai/route.js'
 import type { NextRequest } from 'next/server.js'
 

@@ -1,4 +1,4 @@
-// File: /workspaces/options-screener/app/page.tsx
+// File: /Users/deanharmon/Documents/GitHub/options-screener/app/page.tsx
 import * as entry from '../../../app/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
