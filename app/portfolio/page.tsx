@@ -990,7 +990,7 @@ async function analyzePortfolio(positions: Position[]): Promise<PortfolioAnalysi
   };
 }
 
-
+async function getTrend(symbol: string): Promise<TrendResult> {
   const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
   if (!res.ok) return { trend: 'unknown', strategy: 'NO_TRADE', confidence: 0, reason: 'Chart data unavailable' };
   const data = await res.json();
