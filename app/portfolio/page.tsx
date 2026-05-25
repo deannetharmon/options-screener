@@ -19,6 +19,7 @@ const LS_PROFIT_TARGETS = 'prosper-profit-targets';
 const LS_AUDIT_LOG = 'prosper-audit-log';
 const LS_THEME = 'prosper-theme';
 const LS_MEMORY = 'prosper-trading-memory';
+const LS_DRY_RUN = 'prosper-dry-run';
 const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
 const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
 const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
@@ -26,6 +27,13 @@ const STALE_PRICE_THRESHOLD = 0.15; // 15% move triggers warning
 const MARKET_OPEN_HOUR = 9;
 const MARKET_OPEN_MIN = 30;
 const MARKET_CLOSE_HOUR = 16;
+
+function isDryRun(): boolean {
+  try { return localStorage.getItem(LS_DRY_RUN) === 'true'; } catch { return false; }
+}
+function setDryRun(val: boolean) {
+  try { val ? localStorage.setItem(LS_DRY_RUN, 'true') : localStorage.removeItem(LS_DRY_RUN); } catch {}
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
@@ -145,7 +153,7 @@ interface AuditEntry {
   limitPrice: number;
   quantity: number;
   orderId: string;
-  status: 'submitted' | 'error';
+  status: 'submitted' | 'error' | 'dry-run';
   error?: string;
   estPnl?: number;
 }
@@ -1564,10 +1572,11 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 // ── Batch Confirmation Modal ───────────────────────────────────────────────
 type BatchStatus = 'preview' | 'enriching' | 'ready' | 'submitting' | 'done' | 'error';
 
-function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
+function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th }: {
   items: { pos: Position; action: ActionType }[];
   onClose: () => void;
   onSuccess: () => void;
+  dryRun: boolean;
   th: typeof THEMES[Theme];
 }) {
   const [status, setStatus] = useState<BatchStatus>('enriching');
@@ -1676,13 +1685,22 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
     setSubmitProgress(0);
     const results: OrderResult[] = [];
     try {
-      const token = await getAccessToken();
+      // In dry run mode we skip auth and ttPost entirely
+      const token = dryRun ? 'DRY-RUN' : await getAccessToken();
       let completed = 0;
       for (const item of activeItems) {
         try {
-          // Submit close order
-          const res = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, item.orderBody);
-          const orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
+          let orderId: string;
+
+          if (dryRun) {
+            // Simulate a small delay so the progress bar feels real
+            await new Promise(r => setTimeout(r, 300));
+            orderId = `DRY-${Date.now().toString(36).toUpperCase()}`;
+          } else {
+            // Submit close order
+            const res = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, item.orderBody);
+            orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
+          }
 
           // If roll, also submit open order
           if (item.action === 'CLOSE_ROLL') {
@@ -1694,15 +1712,21 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
                 parseFloat(ri.shortStrike), parseFloat(ri.longStrike),
                 item.pos.legs[0]?.quantity ?? 1, parseFloat(ri.credit)
               );
-              const openRes = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, openBody);
-              const openId = String(openRes?.data?.order?.id ?? openRes?.data?.id ?? 'submitted');
+              let openId: string;
+              if (dryRun) {
+                await new Promise(r => setTimeout(r, 200));
+                openId = `DRY-${Date.now().toString(36).toUpperCase()}-OPEN`;
+              } else {
+                const openRes = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, openBody);
+                openId = String(openRes?.data?.order?.id ?? openRes?.data?.id ?? 'submitted');
+              }
 
-              // Log open order separately
               writeAuditEntry({
                 id: crypto.randomUUID(), timestamp: new Date().toISOString(),
                 symbol: item.pos.symbol, strategy: item.pos.strategy, action: 'CLOSE_ROLL',
                 orderType: 'Sell to Open (Roll)', limitPrice: parseFloat(ri.credit),
-                quantity: item.pos.legs[0]?.quantity ?? 1, orderId: openId, status: 'submitted',
+                quantity: item.pos.legs[0]?.quantity ?? 1, orderId: openId,
+                status: dryRun ? 'dry-run' : 'submitted',
               });
 
               results.push({ symbol: item.pos.symbol, action: item.action, orderId: `Close #${orderId} · Open #${openId}`, status: 'working', limitPrice: item.limitPrice, estPnl: item.estPnl });
@@ -1718,7 +1742,9 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
             id: crypto.randomUUID(), timestamp: new Date().toISOString(),
             symbol: item.pos.symbol, strategy: item.pos.strategy, action: item.action,
             orderType: item.orderBody['order-type'], limitPrice: item.limitPrice,
-            quantity: item.pos.legs[0]?.quantity ?? 1, orderId, status: 'submitted', estPnl: item.estPnl ?? undefined,
+            quantity: item.pos.legs[0]?.quantity ?? 1, orderId,
+            status: dryRun ? 'dry-run' : 'submitted',
+            estPnl: item.estPnl ?? undefined,
           });
 
           // Record in trading memory for future verdict learning
@@ -1758,11 +1784,23 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
     <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
 
+        {/* Dry run banner */}
+        {dryRun && (
+          <div className="bg-amber-500/15 border-b border-amber-500/40 px-6 py-2 flex items-center gap-2 shrink-0">
+            <span className="text-amber-400 font-bold text-sm">⚗</span>
+            <span className="text-amber-300 text-xs font-bold tracking-wider">DRY RUN MODE — No real orders will be placed</span>
+          </div>
+        )}
+
         {/* Header */}
         <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
           <div>
             <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>
-              {status === 'done' ? 'ORDER RESULTS' : status === 'submitting' ? 'SUBMITTING ORDERS...' : `REVIEW ${activeItems.length} ORDER${activeItems.length !== 1 ? 'S' : ''}`}
+              {status === 'done'
+                ? dryRun ? 'DRY RUN COMPLETE' : 'ORDER RESULTS'
+                : status === 'submitting'
+                ? dryRun ? 'SIMULATING ORDERS...' : 'SUBMITTING ORDERS...'
+                : `REVIEW ${activeItems.length} ORDER${activeItems.length !== 1 ? 'S' : ''}`}
             </h2>
             <div className="flex items-center gap-3 mt-1">
               <span className={`text-[10px] font-bold ${marketStatus.open ? 'text-emerald-400' : 'text-yellow-400'}`}>{marketStatus.label}</span>
@@ -1820,7 +1858,11 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
                   </div>
                 ))}
               </div>
-              <p className={`text-[10px] ${th.textFaint} text-center`}>Verify working orders in TastyTrade. Positions will refresh on close.</p>
+              <p className={`text-[10px] ${th.textFaint} text-center`}>
+                {dryRun
+                  ? '⚗ Dry run complete — no real orders were placed. Check the Audit Log to see what would have been submitted.'
+                  : 'Verify working orders in TastyTrade. Positions will refresh on close.'}
+              </p>
             </div>
           )}
 
@@ -2034,8 +2076,12 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
                       {!isBlocked && (
                         <>
                           <button onClick={submitAll} disabled={activeItems.length === 0}
-                            className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
-                            SUBMIT {activeItems.length} ORDER{activeItems.length !== 1 ? 'S' : ''}
+                            className={`flex-1 py-3 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${
+                              dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'
+                            }`}>
+                            {dryRun
+                              ? `⚗ DRY RUN — Simulate ${activeItems.length} Order${activeItems.length !== 1 ? 's' : ''}`
+                              : `SUBMIT ${activeItems.length} ORDER${activeItems.length !== 1 ? 'S' : ''}`}
                           </button>
                           <button onClick={onClose} className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
                             Cancel
@@ -2050,13 +2096,15 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
           )}
           {status === 'done' && (
             <div className="flex gap-3">
-              <button onClick={() => { onSuccess(); onClose(); }} className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
-                DONE — REFRESH POSITIONS
+              <button onClick={() => { onSuccess(); onClose(); }} className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'}`}>
+                {dryRun ? 'DRY RUN DONE — Close' : 'DONE — REFRESH POSITIONS'}
               </button>
-              <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
-                className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors flex items-center`}>
-                TT ↗
-              </a>
+              {!dryRun && (
+                <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
+                  className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors flex items-center`}>
+                  TT ↗
+                </a>
+              )}
             </div>
           )}
           {status === 'error' && (
@@ -3264,6 +3312,7 @@ export default function PortfolioPage() {
   const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
+  const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
   const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
 
@@ -3341,6 +3390,16 @@ export default function PortfolioPage() {
         <div className="flex items-center gap-3">
           <span className={`text-[10px] font-bold ${marketStatus.open ? 'text-emerald-400' : 'text-yellow-400'}`}>{marketStatus.label}</span>
           {lastRefresh && <span className="text-[10px] text-white/30">Updated {lastRefresh.toLocaleTimeString()}</span>}
+          {/* Dry Run toggle — always visible */}
+          <button
+            onClick={() => { const next = !dryRunMode; setDryRunMode(next); setDryRun(next); }}
+            className={`text-[10px] px-3 py-1.5 border rounded font-bold transition-colors tracking-wider ${
+              dryRunMode
+                ? 'border-amber-500 text-amber-300 bg-amber-500/15'
+                : 'border-white/10 text-white/30 hover:border-amber-700 hover:text-amber-500'
+            }`}>
+            ⚗ {dryRunMode ? 'Dry Run ON' : 'Dry Run'}
+          </button>
           <button onClick={() => setShowAuditLog(true)}
             className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider">
             📋 Audit Log
@@ -3370,6 +3429,24 @@ export default function PortfolioPage() {
           <ThemeToggle theme={theme} setTheme={setTheme} />
         </div>
       </div>
+
+      {/* Dry run mode banner — persistent, hard to miss */}
+      {dryRunMode && (
+        <div className="bg-amber-500/15 border-b border-amber-500/40 px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-amber-400 text-lg font-bold">⚗</span>
+            <div>
+              <p className="text-amber-300 text-xs font-bold tracking-wider">DRY RUN MODE IS ACTIVE</p>
+              <p className="text-amber-500 text-[10px]">All order actions will be simulated — nothing will be sent to TastyTrade</p>
+            </div>
+          </div>
+          <button
+            onClick={() => { setDryRunMode(false); setDryRun(false); }}
+            className="text-[10px] px-3 py-1.5 border border-amber-600 text-amber-400 rounded hover:bg-amber-500/20 transition-colors font-bold">
+            Turn Off Dry Run
+          </button>
+        </div>
+      )}
 
       {error && <div className="mx-6 mt-4 p-4 bg-red-500/10 border border-red-500 rounded-lg text-red-400 text-sm">{error}</div>}
 
@@ -3448,6 +3525,7 @@ export default function PortfolioPage() {
       {batchItems && (
         <BatchConfirmModal
           items={batchItems}
+          dryRun={dryRunMode}
           onClose={() => setBatchItems(null)}
           onSuccess={fetchPositions}
           th={th}
