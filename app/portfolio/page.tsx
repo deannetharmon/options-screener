@@ -922,7 +922,7 @@ ${lines.join('\n')}
 STRATEGY MIX:
 BPS: ${positions.filter(p => p.strategy === 'BPS').length} | BCS: ${positions.filter(p => p.strategy === 'BCS').length} | IC: ${positions.filter(p => p.strategy === 'IC').length} | Other: ${positions.filter(p => !['BPS','BCS','IC'].includes(p.strategy)).length}
 
-SYMBOLS: ${[...new Set(positions.map(p => p.symbol))].join(', ')}
+SYMBOLS: ${positions.map(p => p.symbol).filter((v, i, a) => a.indexOf(v) === i).join(', ')}
 
 DTE DISTRIBUTION:
 < 21 DTE: ${positions.filter(p => p.dte < 21).length} positions
