@@ -56,7 +56,13 @@ interface Position {
   needsClose: boolean;
   entryDte: number;
   accountNumber: string;
+  // Greeks
   ivr: number | null;
+  iv: number | null;          // current implied volatility %
+  hv30: number | null;        // 30-day historical volatility %
+  beta: number | null;        // beta to SPY
+  netDelta: number | null;    // net position delta
+  netVega: number | null;     // net position vega
   hasGtc: boolean;
   stopLossStatus: StopStatus;
   stopLossPrice: number | null;
@@ -64,6 +70,37 @@ interface Position {
   buffer: number | null;
   theta: number | null;
   gamma: number | null;
+  earningsDate: string | null; // next earnings within 60 days
+}
+
+interface PositionAnalysis {
+  positionKey: string;
+  symbol: string;
+  loading: boolean;
+  error: string | null;
+  recommendation: 'HOLD' | 'CLOSE' | 'ROLL' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'WATCH' | 'MANAGE';
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  summary: string;       // 1-2 sentence TL;DR
+  reasoning: string;     // full reasoning paragraph
+  risks: string[];       // 2-4 bullet risks
+  catalysts: string[];   // 1-3 positive factors
+  deviatesFromRules: boolean;
+  deviationNote: string | null; // when AI recommends outside standard rules, explain why
+  generatedAt: string;
+}
+
+interface PortfolioAnalysis {
+  loading: boolean;
+  error: string | null;
+  netDelta: number | null;
+  dominantRisk: string;
+  sectorConcentration: string[];
+  thetaYield: string;
+  topRisks: string[];
+  priorityActions: string[];
+  marketContext: string;
+  summary: string;
+  generatedAt: string;
 }
 
 type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
@@ -503,13 +540,37 @@ async function loadPositions(): Promise<Position[]> {
   }
 
   const ivrMap: Record<string, number | null> = {};
+  const ivMap:  Record<string, number | null> = {};
+  const hv30Map: Record<string, number | null> = {};
+  const betaMap: Record<string, number | null> = {};
+  const earningsMap: Record<string, string | null> = {};
   try {
     const underlyingSymbols: string[] = (optionPositions as any[]).map((p: any) => String(p['underlying-symbol'])).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
     const metricsData = await ttFetch(`/market-metrics?symbols=${encodeURIComponent(underlyingSymbols.join(','))}`, token);
     for (const item of metricsData?.data?.items ?? []) {
-      const raw = item['implied-volatility-index-rank'] ?? item['iv-rank'] ?? null;
-      const parsed = raw != null ? parseFloat(String(raw)) : NaN;
-      if (!isNaN(parsed)) ivrMap[item['symbol']] = parsed < 1 ? Math.round(parsed * 100) : Math.round(parsed);
+      const sym = item['symbol'];
+      // IVR
+      const rawIvr = item['implied-volatility-index-rank'] ?? item['iv-rank'] ?? null;
+      const parsedIvr = rawIvr != null ? parseFloat(String(rawIvr)) : NaN;
+      if (!isNaN(parsedIvr)) ivrMap[sym] = parsedIvr < 1 ? Math.round(parsedIvr * 100) : Math.round(parsedIvr);
+      // IV (current implied volatility as %)
+      const rawIv = item['implied-volatility'] ?? item['iv'] ?? null;
+      const parsedIv = rawIv != null ? parseFloat(String(rawIv)) : NaN;
+      if (!isNaN(parsedIv)) ivMap[sym] = parsedIv < 1 ? Math.round(parsedIv * 100) : Math.round(parsedIv);
+      // HV30
+      const rawHv = item['hv-30'] ?? item['historical-volatility-30'] ?? item['hv30'] ?? null;
+      const parsedHv = rawHv != null ? parseFloat(String(rawHv)) : NaN;
+      if (!isNaN(parsedHv)) hv30Map[sym] = parsedHv < 1 ? Math.round(parsedHv * 100) : Math.round(parsedHv);
+      // Beta
+      const rawBeta = item['beta'] ?? item['beta-60-day'] ?? null;
+      const parsedBeta = rawBeta != null ? parseFloat(String(rawBeta)) : NaN;
+      if (!isNaN(parsedBeta)) betaMap[sym] = parsedBeta;
+      // Earnings — next earnings date within 60 days
+      const earningsRaw = item['earnings'] ?? item['next-earnings-date'] ?? null;
+      if (earningsRaw) {
+        const eDate = String(earningsRaw?.['expected-report-date'] ?? earningsRaw ?? '');
+        if (eDate && eDate.match(/\d{4}-\d{2}-\d{2}/)) earningsMap[sym] = eDate;
+      }
     }
   } catch {}
 
@@ -649,6 +710,10 @@ async function loadPositions(): Promise<Position[]> {
       })(),
       entryDte, needsClose: entryDte > 21 && dte <= 21, accountNumber,
       ivr: ivrMap[symbol] ?? null,
+      iv: ivMap[symbol] ?? null,
+      hv30: hv30Map[symbol] ?? null,
+      beta: betaMap[symbol] ?? null,
+      earningsDate: earningsMap[symbol] ?? null,
       hasGtc: gtcSymbols.has(symbol),
       stopLossStatus: stopLoss.status, stopLossPrice: stopLoss.price,
       stockPrice: stockPrices[symbol] ?? null,
@@ -683,6 +748,14 @@ async function loadPositions(): Promise<Position[]> {
         }
         return any ? parseFloat(net.toFixed(4)) : null;
       })(),
+      netDelta: (() => {
+        // deltaMap not yet fetched per-leg — approximate from position Greeks
+        // Short spread delta: short leg delta (negative for puts) + long leg delta
+        // For now derive from buffer and strategy as a sign-only approximation
+        // Will be enriched when per-leg delta is added to market data fetch
+        return null;
+      })(),
+      netVega: (() => { return null; })(),
     };
   });
 
@@ -720,7 +793,204 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
 }
 
-async function getTrend(symbol: string): Promise<TrendResult> {
+// ── AI Analysis ───────────────────────────────────────────────────────────
+const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
+
+CORE METHODOLOGY (know it deeply, apply it intelligently):
+- Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound
+- Entry rules (as guidelines): IVR ≥ 30, DTE 30-45, credit ≥ 1/3 spread width, OI ≥ 500, bid-ask ≤ $0.10
+- Target exits: 50% profit (place GTC at entry), hard close at 21 DTE regardless of P&L
+- Short strike deltas: BPS -0.20 to -0.30, BCS +0.20 to +0.30, IC ±0.16 to ±0.20
+- IC requires sideways price action 2+ weeks, no higher highs/lower lows
+
+WHEN TO DEVIATE FROM RULES (apply professional judgment):
+- If IV is very high (IVR > 70) and credit is exceptional, a wider spread or slightly aggressive delta can be justified
+- If a position is at 40% profit but 15 DTE with gamma risk rising sharply, closing early beats waiting for 50%
+- If trend has reversed hard against a spread, cutting losses at 1.5x credit is better than waiting for 2x
+- If IVR just dropped below 30 mid-trade but P&L is positive, holding can still make sense if trend confirms
+- If earnings are within the window but the spread is far OTM with minimal risk, evaluate the actual probability rather than auto-skip
+- Sometimes doing nothing is the hardest but best trade
+
+ANALYSIS PRINCIPLES:
+- Always consider the trend direction vs. the strategy type — a BPS in a downtrend is broken thesis
+- Buffer % to short strike is critical — below 3% demands attention regardless of DTE
+- High gamma near expiry (DTE < 21) magnifies risk exponentially — treat with respect
+- IV vs HV comparison: if IV >> HV (IV premium), edge exists; if IV ≈ HV, edge is thin
+- Theta decay accelerates in final 3 weeks — this is your friend if positioned correctly
+- Net delta tells you your directional exposure — you're supposed to be mostly neutral
+
+OUTPUT FORMAT (JSON only, no prose outside the JSON):
+For position analysis:
+{
+  "recommendation": "HOLD|CLOSE|ROLL|TAKE_PROFIT|CUT_LOSSES|WATCH|MANAGE",
+  "confidence": "HIGH|MEDIUM|LOW",
+  "summary": "1-2 sentence TL;DR",
+  "reasoning": "2-3 sentence explanation of your reasoning, including what the key factors are",
+  "risks": ["risk 1", "risk 2", "risk 3"],
+  "catalysts": ["positive factor 1", "positive factor 2"],
+  "deviatesFromRules": true|false,
+  "deviationNote": "null or explanation of why professional judgment overrides the standard rule"
+}
+
+For portfolio analysis:
+{
+  "netDeltaBias": "BULLISH|BEARISH|NEUTRAL",
+  "dominantRisk": "single sentence describing the biggest portfolio-level risk",
+  "sectorConcentration": ["sector concern 1", "sector concern 2"],
+  "thetaYield": "qualitative assessment of theta capture rate",
+  "topRisks": ["risk 1", "risk 2", "risk 3"],
+  "priorityActions": ["highest priority action", "second priority", "third priority"],
+  "marketContext": "how current market conditions affect this portfolio",
+  "summary": "2-3 sentence overall portfolio assessment"
+}
+
+Be direct. Be honest. If a position is in trouble, say so. If a rule should be broken, explain why.`;
+
+function buildPositionPrompt(pos: Position, trend: TrendResult | null): string {
+  const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
+  const ivEdge = pos.iv != null && pos.hv30 != null ? (pos.iv - pos.hv30) : null;
+
+  return `Analyze this open options position:
+
+POSITION: ${pos.symbol} ${pos.strategy}
+Expiry: ${pos.expDate} | DTE: ${pos.dte} | Entry DTE: ${pos.entryDte}
+Strikes: ${pos.legs.map(l => `${l.direction} ${l.strikePrice}${l.optionType}`).join(', ')}
+Credit received: $${pos.creditReceived.toFixed(2)} | Current buyback: $${pos.currentValue?.toFixed(2) ?? 'unknown'}
+P&L: ${pos.pnl != null ? `$${pos.pnl.toFixed(2)} (${pnlPct}% of credit)` : 'unknown'}
+Profit target: ${Math.round(pos.profitTarget * 100)}% ($${pos.targetPrice.toFixed(2)})
+Max risk: $${pos.maxRisk.toFixed(2)}
+
+MARKET DATA:
+Stock price: $${pos.stockPrice?.toFixed(2) ?? 'unknown'}
+Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
+IVR: ${pos.ivr ?? 'unknown'}
+Current IV: ${pos.iv ?? 'unknown'}%
+HV30: ${pos.hv30 ?? 'unknown'}%
+IV edge (IV - HV30): ${ivEdge != null ? `${ivEdge.toFixed(1)}%` : 'unknown'}
+Beta: ${pos.beta ?? 'unknown'}
+
+GREEKS (net position):
+Theta: ${pos.theta?.toFixed(4) ?? 'unknown'} (daily decay)
+Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
+
+OPERATIONAL STATUS:
+GTC order: ${pos.hasGtc ? 'Yes — profit target working' : 'No — unprotected'}
+Stop loss: ${pos.stopLossStatus} ${pos.stopLossPrice ? `@ $${pos.stopLossPrice}` : ''}
+Earnings within expiry: ${pos.earningsDate ? `Yes — ${pos.earningsDate}` : 'No'}
+
+TREND ANALYSIS:
+Direction: ${trend?.trend ?? 'unknown'} (confidence: ${trend?.confidence ?? 'unknown'}%)
+Suggested strategy: ${trend?.strategy ?? 'unknown'}
+Reason: ${trend?.reason ?? 'none'}
+
+Flags: ${[
+  pos.needsClose ? '⚠ AT 21 DTE — must close or roll' : '',
+  pos.hitTarget ? '✓ Profit target hit' : '',
+  !pos.hasGtc ? '⚠ No GTC order' : '',
+  pos.buffer != null && pos.buffer < 3 ? `⚠ CRITICAL buffer ${pos.buffer.toFixed(1)}% — near breach` : '',
+  pos.buffer != null && pos.buffer < 7 ? `⚠ Tight buffer ${pos.buffer.toFixed(1)}%` : '',
+  pos.earningsDate ? `⚠ Earnings ${pos.earningsDate}` : '',
+].filter(Boolean).join(', ') || 'None'}
+
+Provide your analysis as JSON only.`;
+}
+
+function buildPortfolioPrompt(positions: Position[]): string {
+  const lines = positions.map(p => {
+    const pnlPct = p.pnl != null && p.creditReceived > 0 ? ((p.pnl / p.creditReceived) * 100).toFixed(0) : '?';
+    return `${p.symbol} ${p.strategy}: DTE ${p.dte}, P&L ${pnlPct}%, buffer ${p.buffer?.toFixed(1) ?? '?'}%, IVR ${p.ivr ?? '?'}, ${p.needsClose ? 'NEEDS CLOSE' : p.hitTarget ? 'TARGET HIT' : 'active'}`;
+  });
+
+  const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
+  const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? 0), 0);
+  const totalAtRisk = positions.reduce((s, p) => s + p.maxRisk, 0);
+  const totalTheta = positions.reduce((s, p) => s + (p.theta ?? 0), 0);
+  const urgentCount = positions.filter(p => p.needsClose || p.hitTarget || (p.buffer != null && p.buffer < 5)).length;
+
+  return `Analyze this options portfolio as a whole:
+
+PORTFOLIO SUMMARY:
+${positions.length} open positions | ${urgentCount} requiring immediate attention
+Total credit collected: $${totalCredit.toFixed(2)}
+Current P&L: $${totalPnl.toFixed(2)} (${totalCredit > 0 ? ((totalPnl / totalCredit) * 100).toFixed(1) : 0}% of credit)
+Total at risk: $${totalAtRisk.toFixed(2)}
+Net theta/day: $${totalTheta.toFixed(2)}
+
+POSITIONS:
+${lines.join('\n')}
+
+STRATEGY MIX:
+BPS: ${positions.filter(p => p.strategy === 'BPS').length} | BCS: ${positions.filter(p => p.strategy === 'BCS').length} | IC: ${positions.filter(p => p.strategy === 'IC').length} | Other: ${positions.filter(p => !['BPS','BCS','IC'].includes(p.strategy)).length}
+
+SYMBOLS: ${[...new Set(positions.map(p => p.symbol))].join(', ')}
+
+DTE DISTRIBUTION:
+< 21 DTE: ${positions.filter(p => p.dte < 21).length} positions
+21-30 DTE: ${positions.filter(p => p.dte >= 21 && p.dte <= 30).length} positions
+> 30 DTE: ${positions.filter(p => p.dte > 30).length} positions
+
+Provide portfolio-level analysis as JSON only.`;
+}
+
+async function callAI(userMessage: string): Promise<string> {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1000,
+      system: TRADING_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userMessage }],
+    }),
+  });
+  if (!res.ok) throw new Error(`AI API error: ${res.status}`);
+  const data = await res.json();
+  const text = data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+  // Strip any markdown fences
+  return text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+}
+
+async function analyzePosition(pos: Position, trend: TrendResult | null): Promise<PositionAnalysis> {
+  const prompt = buildPositionPrompt(pos, trend);
+  const raw = await callAI(prompt);
+  const parsed = JSON.parse(raw);
+  return {
+    positionKey: pos.key,
+    symbol: pos.symbol,
+    loading: false,
+    error: null,
+    recommendation: parsed.recommendation,
+    confidence: parsed.confidence,
+    summary: parsed.summary,
+    reasoning: parsed.reasoning,
+    risks: parsed.risks ?? [],
+    catalysts: parsed.catalysts ?? [],
+    deviatesFromRules: parsed.deviatesFromRules ?? false,
+    deviationNote: parsed.deviationNote ?? null,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+async function analyzePortfolio(positions: Position[]): Promise<PortfolioAnalysis> {
+  const prompt = buildPortfolioPrompt(positions);
+  const raw = await callAI(prompt);
+  const parsed = JSON.parse(raw);
+  return {
+    loading: false,
+    error: null,
+    netDelta: null,
+    dominantRisk: parsed.dominantRisk ?? '',
+    sectorConcentration: parsed.sectorConcentration ?? [],
+    thetaYield: parsed.thetaYield ?? '',
+    topRisks: parsed.topRisks ?? [],
+    priorityActions: parsed.priorityActions ?? [],
+    marketContext: parsed.marketContext ?? '',
+    summary: parsed.summary ?? '',
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+
   const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
   if (!res.ok) return { trend: 'unknown', strategy: 'NO_TRADE', confidence: 0, reason: 'Chart data unavailable' };
   const data = await res.json();
@@ -1274,6 +1544,190 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
 }
 
 // ── Position Card ──────────────────────────────────────────────────────────
+// ── Analysis Panel ─────────────────────────────────────────────────────────
+const CONFIDENCE_COLOR: Record<string, string> = {
+  HIGH: 'text-emerald-400', MEDIUM: 'text-yellow-400', LOW: 'text-orange-400',
+};
+const REC_COLOR: Record<string, string> = {
+  HOLD: 'text-slate-400', WATCH: 'text-yellow-400', MANAGE: 'text-orange-400',
+  TAKE_PROFIT: 'text-emerald-400', CUT_LOSSES: 'text-red-400',
+  CLOSE: 'text-red-400', ROLL: 'text-purple-400',
+};
+
+function AnalysisPanel({ analysis, th }: { analysis: PositionAnalysis; th: typeof THEMES[Theme] }) {
+  return (
+    <div className={`border-t ${th.border} px-4 py-4 space-y-3`} style={{ background: 'rgba(99,102,241,0.04)' }}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-[9px] text-indigo-400 tracking-widest font-bold uppercase">AI Analysis</span>
+          <span className={`text-[10px] font-bold ${REC_COLOR[analysis.recommendation] ?? 'text-white'}`}>
+            → {analysis.recommendation.replace('_', ' ')}
+          </span>
+          <span className={`text-[9px] font-bold ${CONFIDENCE_COLOR[analysis.confidence] ?? 'text-slate-400'}`}>
+            {analysis.confidence} confidence
+          </span>
+          {analysis.deviatesFromRules && (
+            <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/50 text-yellow-400 font-bold">
+              ⚡ Outside rules
+            </span>
+          )}
+        </div>
+        <span className={`text-[9px] ${th.textFaint}`}>{new Date(analysis.generatedAt).toLocaleTimeString()}</span>
+      </div>
+
+      {/* Summary */}
+      <p className={`text-xs ${th.textMuted} leading-relaxed`}>{analysis.summary}</p>
+
+      {/* Reasoning */}
+      <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>{analysis.reasoning}</p>
+
+      {/* Deviation note */}
+      {analysis.deviatesFromRules && analysis.deviationNote && (
+        <div className="flex items-start gap-2 p-2 rounded border border-yellow-600/30 bg-yellow-500/5">
+          <span className="text-yellow-400 shrink-0 text-[10px] mt-0.5">⚡</span>
+          <p className="text-[10px] text-yellow-300 leading-relaxed">{analysis.deviationNote}</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
+        {/* Risks */}
+        {analysis.risks.length > 0 && (
+          <div>
+            <p className="text-[9px] text-red-400 uppercase tracking-widest mb-1.5 font-bold">Risks</p>
+            <div className="space-y-1">
+              {analysis.risks.map((r, i) => (
+                <div key={i} className="flex items-start gap-1.5">
+                  <span className="text-red-400 text-[9px] mt-0.5 shrink-0">▸</span>
+                  <p className="text-[10px] text-red-300 leading-snug">{r}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* Catalysts */}
+        {analysis.catalysts.length > 0 && (
+          <div>
+            <p className="text-[9px] text-emerald-400 uppercase tracking-widest mb-1.5 font-bold">In your favor</p>
+            <div className="space-y-1">
+              {analysis.catalysts.map((c, i) => (
+                <div key={i} className="flex items-start gap-1.5">
+                  <span className="text-emerald-400 text-[9px] mt-0.5 shrink-0">▸</span>
+                  <p className="text-[10px] text-emerald-300 leading-snug">{c}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PortfolioAnalysisPanel({ analysis, onClose, th }: {
+  analysis: PortfolioAnalysis; onClose: () => void; th: typeof THEMES[Theme];
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col`}>
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-indigo-400 text-sm">◈</span>
+              <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>PORTFOLIO ANALYSIS</h2>
+            </div>
+            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>Generated {new Date(analysis.generatedAt).toLocaleTimeString()}</p>
+          </div>
+          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          {/* Summary */}
+          <div className={`p-4 rounded-xl border ${th.border}`} style={{ background: 'rgba(99,102,241,0.05)' }}>
+            <p className={`text-xs ${th.textMuted} leading-relaxed`}>{analysis.summary}</p>
+          </div>
+
+          {/* Market context */}
+          {analysis.marketContext && (
+            <div>
+              <p className="text-[9px] text-indigo-400 uppercase tracking-widest mb-2 font-bold">Market Context</p>
+              <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>{analysis.marketContext}</p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-5">
+            {/* Priority actions */}
+            {analysis.priorityActions.length > 0 && (
+              <div>
+                <p className="text-[9px] text-blue-400 uppercase tracking-widest mb-2 font-bold">Priority Actions</p>
+                <div className="space-y-2">
+                  {analysis.priorityActions.map((a, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <span className="text-blue-400 text-[10px] font-bold shrink-0 mt-0.5">{i + 1}.</span>
+                      <p className={`text-[10px] ${th.textMuted} leading-snug`}>{a}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Top risks */}
+            {analysis.topRisks.length > 0 && (
+              <div>
+                <p className="text-[9px] text-red-400 uppercase tracking-widest mb-2 font-bold">Portfolio Risks</p>
+                <div className="space-y-2">
+                  {analysis.topRisks.map((r, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <span className="text-red-400 text-[9px] shrink-0 mt-0.5">▸</span>
+                      <p className="text-[10px] text-red-300 leading-snug">{r}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Dominant risk */}
+          {analysis.dominantRisk && (
+            <div className="flex items-start gap-2 p-3 rounded-lg border border-red-500/20 bg-red-500/5">
+              <span className="text-red-400 shrink-0 text-[10px] mt-0.5 font-bold">!</span>
+              <div>
+                <p className="text-[9px] text-red-400 uppercase tracking-widest mb-1 font-bold">Dominant Risk</p>
+                <p className="text-[10px] text-red-300">{analysis.dominantRisk}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Concentration + theta */}
+          <div className="grid grid-cols-2 gap-5">
+            {analysis.sectorConcentration.length > 0 && (
+              <div>
+                <p className="text-[9px] text-yellow-400 uppercase tracking-widest mb-2 font-bold">Concentration Risk</p>
+                <div className="space-y-1">
+                  {analysis.sectorConcentration.map((s, i) => (
+                    <p key={i} className="text-[10px] text-yellow-300">▸ {s}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+            {analysis.thetaYield && (
+              <div>
+                <p className="text-[9px] text-emerald-400 uppercase tracking-widest mb-2 font-bold">Theta Yield</p>
+                <p className={`text-[10px] ${th.textMuted}`}>{analysis.thetaYield}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className={`px-6 py-4 border-t ${th.border} shrink-0`}>
+          <button onClick={onClose} className={`w-full py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
   pos: Position;
   th: typeof THEMES[Theme];
@@ -1285,6 +1739,25 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
   const [trend, setTrend] = useState<TrendResult | null>(null);
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetInput, setTargetInput] = useState(String(Math.round(pos.profitTarget * 100)));
+  const [analysis, setAnalysis] = useState<PositionAnalysis | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+
+  const handleAnalyze = async () => {
+    setShowAnalysis(true);
+    if (analysis) return; // already have it
+    setAnalysisLoading(true);
+    setAnalysisError(null);
+    try {
+      const result = await analyzePosition(pos, trend);
+      setAnalysis(result);
+    } catch (e: any) {
+      setAnalysisError(e.message ?? 'Analysis failed');
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
 
   useEffect(() => {
     getTrend(pos.symbol).then(t => setTrend(t)).catch(() => {});
@@ -1466,6 +1939,13 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
               <p className={`text-[9px] ${th.textFaint}`}>Suggested</p>
               <span className={`text-[10px] font-bold ${ACTION_META[rec.action].color}`}>{ACTION_META[rec.action].label}</span>
               <p className={`text-[9px] ${th.textFaint} mt-0.5 leading-tight`}>{rec.detail}</p>
+              <button
+                onClick={e => { e.stopPropagation(); handleAnalyze(); }}
+                className={`mt-1.5 text-[9px] px-2 py-0.5 border rounded transition-colors font-bold ${
+                  analysis ? 'border-indigo-500 text-indigo-400 hover:bg-indigo-500/10' : 'border-indigo-700 text-indigo-500 hover:border-indigo-500 hover:text-indigo-400'
+                }`}>
+                {analysisLoading ? '◈ Analyzing...' : analysis ? '◈ AI Analysis ✓' : '◈ Analyze'}
+              </button>
             </div>
           </div>
         </div>
@@ -1486,6 +1966,32 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
             ))}
           </div>
         </div>
+      )}
+
+      {/* AI analysis panel */}
+      {showAnalysis && (
+        <>
+          {analysisLoading && (
+            <div className={`border-t ${th.border} px-4 py-4 flex items-center gap-3`} style={{ background: 'rgba(99,102,241,0.04)' }}>
+              <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+              <p className={`text-xs ${th.textFaint}`}>Analyzing position with AI...</p>
+              <button onClick={() => setShowAnalysis(false)} className={`ml-auto text-[10px] ${th.textFaint} hover:${th.text}`}>✕</button>
+            </div>
+          )}
+          {analysisError && (
+            <div className={`border-t ${th.border} px-4 py-3 flex items-center gap-2`}>
+              <p className="text-[10px] text-red-400">Analysis failed: {analysisError}</p>
+              <button onClick={() => { setAnalysisError(null); handleAnalyze(); }} className="text-[10px] text-blue-400 hover:underline">Retry</button>
+              <button onClick={() => setShowAnalysis(false)} className={`ml-auto text-[10px] ${th.textFaint}`}>✕</button>
+            </div>
+          )}
+          {analysis && !analysisLoading && (
+            <div className="relative">
+              <button onClick={() => setShowAnalysis(false)} className={`absolute top-3 right-3 text-[10px] ${th.textFaint} hover:${th.text} z-10`}>✕</button>
+              <AnalysisPanel analysis={analysis} th={th} />
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1582,6 +2088,21 @@ export default function PortfolioPage() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
+  const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
+  const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
+
+  const handleAnalyzePortfolio = async () => {
+    if (positions.length === 0) return;
+    setPortfolioAnalysisLoading(true);
+    try {
+      const result = await analyzePortfolio(positions);
+      setPortfolioAnalysis(result);
+    } catch (e: any) {
+      setPortfolioAnalysis({ loading: false, error: e.message, netDelta: null, dominantRisk: '', sectorConcentration: [], thetaYield: '', topRisks: [], priorityActions: [], marketContext: '', summary: '', generatedAt: new Date().toISOString() });
+    } finally {
+      setPortfolioAnalysisLoading(false);
+    }
+  };
 
   const marketStatus = getMarketStatus();
 
@@ -1645,6 +2166,12 @@ export default function PortfolioPage() {
             className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider">
             📋 Audit Log
           </button>
+          {positions.length > 0 && (
+            <button onClick={handleAnalyzePortfolio} disabled={portfolioAnalysisLoading}
+              className="text-[10px] px-3 py-1.5 border border-indigo-700 text-indigo-400 rounded hover:border-indigo-500 hover:text-indigo-300 transition-colors tracking-wider disabled:opacity-50 font-bold">
+              {portfolioAnalysisLoading ? '◈ Analyzing...' : '◈ Analyze Portfolio'}
+            </button>
+          )}
           <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
             className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider">
             TastyTrade ↗
@@ -1741,6 +2268,16 @@ export default function PortfolioPage() {
       )}
 
       {showAuditLog && <AuditLogPanel onClose={() => setShowAuditLog(false)} th={th} />}
+
+      {portfolioAnalysis && !portfolioAnalysis.error && (
+        <PortfolioAnalysisPanel analysis={portfolioAnalysis} onClose={() => setPortfolioAnalysis(null)} th={th} />
+      )}
+      {portfolioAnalysis?.error && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-red-900/80 border border-red-500 rounded-lg px-4 py-3 text-xs text-red-300 flex items-center gap-3">
+          Portfolio analysis failed: {portfolioAnalysis.error}
+          <button onClick={() => setPortfolioAnalysis(null)} className="text-red-400 hover:text-red-200">✕</button>
+        </div>
+      )}
     </div>
   );
 }
