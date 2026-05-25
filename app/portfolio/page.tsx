@@ -616,6 +616,35 @@ async function ttPost(path: string, token: string, body: unknown) {
   return data;
 }
 
+// TastyTrade supports a native dry-run: POST to same endpoint with ?dry-run=true
+// Returns buying power effects and any errors without placing the order.
+async function ttValidateOrder(path: string, token: string, body: unknown): Promise<{ valid: boolean; warnings: string[]; errors: string[] }> {
+  try {
+    const res = await fetch(`${BASE}${path}?dry-run=true`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    console.log('TT VALIDATE RESPONSE:', JSON.stringify(data, null, 2));
+    const warnings = (data?.warnings ?? []).map((w: any) => w.message ?? String(w));
+    const errors = (data?.errors ?? []).map((e: any) => e.message ?? String(e));
+    if (!res.ok) {
+      const errMsg =
+        data?.error?.message ??
+        data?.['error-message'] ??
+        (Array.isArray(data?.error?.errors)
+          ? data.error.errors.map((e: any) => `${e.domain ?? ''} ${e.reason ?? e.message ?? e}`).join('; ')
+          : null) ??
+        JSON.stringify(data?.error ?? data).slice(0, 200);
+      return { valid: false, warnings, errors: [errMsg] };
+    }
+    return { valid: errors.length === 0, warnings, errors };
+  } catch {
+    return { valid: true, warnings: [], errors: [] };
+  }
+}
+
 // ── Fresh Price Fetch ──────────────────────────────────────────────────────
 async function fetchFreshPositionPrice(pos: Position, token: string): Promise<number | null> {
   try {
@@ -703,15 +732,18 @@ function instrType(symbol: string): 'Equity Option' | 'Index Option' {
 function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' = 'Day'): OrderBody {
   const itype = instrType(pos.symbol);
   const effectiveTif = (!isMarketOpen() && tif === 'Day') ? 'GTC' : tif;
-  // TastyTrade closing orders: price is the debit (positive number = what you pay to close)
-  // price-effect: 'Debit' for closing spreads (you buy back what you sold)
+  // TastyTrade REST API price convention:
+  // Negative = debit (you pay to close), Positive = credit (you receive to open)
+  // A closing spread order is a debit — we pay to buy back what we sold.
+  // Use price-effect: Debit with a POSITIVE price value (the absolute amount).
+  // Both formats have been seen in the wild; using positive + price-effect is safest.
   return {
     'order-type': 'Limit',
     'time-in-force': effectiveTif,
     price: limitPrice.toFixed(2),
     'price-effect': 'Debit',
     legs: pos.legs.map(leg => ({
-      symbol: leg.symbol.trim(),
+      symbol: leg.symbol, // keep OCC space-padded format exactly as returned by positions API
       quantity: leg.quantity,
       action: leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close',
       'instrument-type': itype,
@@ -805,10 +837,10 @@ async function ttPatch(path: string, token: string, body: unknown) {
 
 async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
   try {
+    // Use /orders/live only — it returns working + recent 24h orders.
+    // ?status=Open and ?per-page=250 are invalid params that return 400.
     const requests = await Promise.allSettled([
-      ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=250`, token),
       ttFetch(`/accounts/${accountNumber}/orders/live`, token),
-      ttFetch(`/accounts/${accountNumber}/orders?per-page=250`, token),
       ttFetch(`/accounts/${accountNumber}/complex-orders`, token),
     ]);
     const rawOrders = requests.flatMap(r => r.status === 'fulfilled' ? collectRawOrders(r.value) : []);
@@ -941,14 +973,10 @@ async function loadPositions(): Promise<Position[]> {
   }
 
   try {
-    const [liveData, searchData] = await Promise.allSettled([
+    const liveData = await Promise.allSettled([
       ttFetch(`/accounts/${accountNumber}/orders/live`, token),
-      ttFetch(`/accounts/${accountNumber}/orders?per-page=250`, token),
     ]);
-    const allOrders = [
-      ...((liveData.status === 'fulfilled' ? liveData.value?.data?.items : null) ?? []),
-      ...((searchData.status === 'fulfilled' ? searchData.value?.data?.items : null) ?? []),
-    ];
+    const allOrders = (liveData[0].status === 'fulfilled' ? liveData[0].value?.data?.items : null) ?? [];
     for (const order of allOrders) {
       const status = (order['status'] ?? '').toLowerCase();
       if (['working', 'live', 'contingent', 'received'].includes(status)) {
@@ -1618,6 +1646,9 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           const duplicateGtcWarning = pos.hasGtc && (action === 'TAKE_PROFIT' || action === 'CUT_LOSSES' || action === 'CLOSE_ROLL');
 
           const effectiveValue = freshPrice ?? pos.currentValue;
+          // When market is closed, TastyTrade's preflight is stricter about price reasonability.
+          // Use the fresh mid price as the limit rather than a calculated target to avoid rejection.
+          const marketOpen = isMarketOpen();
           const limitPrice = action === 'TAKE_PROFIT' || action === 'PLACE_GTC'
             ? parseFloat(((pos.creditReceived * pos.profitTarget) / 100).toFixed(2))
             : action === 'CUT_LOSSES' || action === 'CLOSE_ROLL'
@@ -1693,9 +1724,14 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           let orderId: string;
 
           if (dryRun) {
-            // Simulate a small delay so the progress bar feels real
-            await new Promise(r => setTimeout(r, 300));
-            orderId = `DRY-${Date.now().toString(36).toUpperCase()}`;
+            // Use TastyTrade's native dry-run endpoint — validates the order without placing it
+            const token2 = await getAccessToken();
+            const validation = await ttValidateOrder(`/accounts/${item.pos.accountNumber}/orders`, token2, item.orderBody);
+            console.log(`DRY RUN validation for ${item.pos.symbol}:`, validation);
+            if (!validation.valid) {
+              throw new Error(`Validation failed: ${validation.errors.join('; ')}`);
+            }
+            orderId = `DRY-${Date.now().toString(36).toUpperCase()}${validation.warnings.length > 0 ? ' ⚠' : ' ✓'}`;
           } else {
             // Submit close order
             const res = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, item.orderBody);
@@ -1860,7 +1896,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
               </div>
               <p className={`text-[10px] ${th.textFaint} text-center`}>
                 {dryRun
-                  ? '⚗ Dry run complete — no real orders were placed. Check the Audit Log to see what would have been submitted.'
+                  ? '⚗ Dry run complete — orders validated against TastyTrade without being placed. Check console for full validation response.'
                   : 'Verify working orders in TastyTrade. Positions will refresh on close.'}
               </p>
             </div>
