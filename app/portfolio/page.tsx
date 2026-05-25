@@ -18,6 +18,10 @@ const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 const LS_PROFIT_TARGETS = 'prosper-profit-targets';
 const LS_AUDIT_LOG = 'prosper-audit-log';
 const LS_THEME = 'prosper-theme';
+const LS_MEMORY = 'prosper-trading-memory';
+const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
+const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
+const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
 const STALE_PRICE_THRESHOLD = 0.15; // 15% move triggers warning
 const MARKET_OPEN_HOUR = 9;
 const MARKET_OPEN_MIN = 30;
@@ -104,6 +108,16 @@ interface PortfolioAnalysis {
   summary: string;
   generatedAt: string;
 }
+
+interface ActionVerdict {
+  verdict: 'GO' | 'CAUTION' | 'STOP';
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  headline: string;     // single punchy sentence — the gut-punch
+  reasoning: string;    // 2-3 sentences of specific reasoning with numbers
+  override?: boolean;   // trader consciously overriding a STOP
+}
+
+type EvaluatedAction = 'EXTEND_PROFIT' | 'CLOSE_ROLL' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'PLACE_GTC';
 
 type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
 
@@ -247,6 +261,291 @@ function exportAuditCsv() {
   const a = document.createElement('a');
   a.href = url; a.download = `prosper-audit-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click(); URL.revokeObjectURL(url);
+}
+
+// ── Trading Memory ─────────────────────────────────────────────────────────
+
+interface TradeRecord {
+  id: string;
+  timestamp: string;        // ISO
+  symbol: string;
+  strategy: string;
+  action: string;
+  entryCredit: number;      // per-contract $ at entry (creditReceived / 100)
+  exitPrice: number;        // limit price at close
+  pnlPct: number;           // % of credit captured (positive = profit)
+  dte: number;              // DTE when action taken
+  ivr: number | null;
+  buffer: number | null;
+  aiVerdict: 'GO' | 'CAUTION' | 'STOP' | null;
+  aiOverridden: boolean;    // trader overrode a STOP verdict
+  outcome: 'WIN' | 'LOSS' | 'NEUTRAL'; // pnlPct >= 40 = WIN, <= -50 = LOSS
+}
+
+interface SymbolProfile {
+  symbol: string;
+  tradeCount: number;
+  winRate: number;           // 0-1
+  avgPnlPct: number;
+  bestStrategy: string | null;
+  ivrWinRange: [number, number] | null; // IVR range on winning trades
+  earningsNote: string | null;          // free text from summarization
+  recentTrades: TradeRecord[];          // last N raw trades
+  historySummary: string | null;        // AI summary of older trades
+  lastUpdated: string;
+}
+
+interface BehaviorProfile {
+  totalTrades: number;
+  overrideCount: number;
+  overrideWins: number;       // overrides that turned out profitable
+  ruleDeviationPatterns: string[];   // e.g. "holds past 21 DTE on IC"
+  strengths: string[];
+  weaknesses: string[];
+  summary: string | null;    // AI-generated behavioral summary
+  lastSummarized: string | null;
+}
+
+interface TradingMemory {
+  symbolProfiles: Record<string, SymbolProfile>;
+  behaviorProfile: BehaviorProfile;
+  recentActions: TradeRecord[];   // ring buffer, last MEMORY_RAW_ACTIONS
+  lastSummarized: string | null;
+  version: number;
+}
+
+function emptyMemory(): TradingMemory {
+  return {
+    symbolProfiles: {},
+    behaviorProfile: {
+      totalTrades: 0, overrideCount: 0, overrideWins: 0,
+      ruleDeviationPatterns: [], strengths: [], weaknesses: [],
+      summary: null, lastSummarized: null,
+    },
+    recentActions: [],
+    lastSummarized: null,
+    version: 1,
+  };
+}
+
+function readMemory(): TradingMemory {
+  try {
+    const raw = localStorage.getItem(LS_MEMORY);
+    if (!raw) return emptyMemory();
+    return { ...emptyMemory(), ...JSON.parse(raw) };
+  } catch { return emptyMemory(); }
+}
+
+function writeMemory(mem: TradingMemory) {
+  try { localStorage.setItem(LS_MEMORY, JSON.stringify(mem)); } catch {}
+}
+
+function recordTradeInMemory(
+  pos: Position,
+  action: string,
+  limitPrice: number,
+  verdict: ActionVerdict | null,
+  overridden: boolean
+) {
+  const mem = readMemory();
+  const pnlPct = pos.pnl != null && pos.creditReceived > 0
+    ? (pos.pnl / pos.creditReceived) * 100 : 0;
+  const outcome: TradeRecord['outcome'] = pnlPct >= 40 ? 'WIN' : pnlPct <= -50 ? 'LOSS' : 'NEUTRAL';
+
+  const record: TradeRecord = {
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    symbol: pos.symbol,
+    strategy: pos.strategy,
+    action,
+    entryCredit: pos.creditReceived / 100,
+    exitPrice: limitPrice,
+    pnlPct,
+    dte: pos.dte,
+    ivr: pos.ivr,
+    buffer: pos.buffer,
+    aiVerdict: verdict?.verdict ?? null,
+    aiOverridden: overridden,
+    outcome,
+  };
+
+  // Update symbol profile
+  if (!mem.symbolProfiles[pos.symbol]) {
+    mem.symbolProfiles[pos.symbol] = {
+      symbol: pos.symbol, tradeCount: 0, winRate: 0, avgPnlPct: 0,
+      bestStrategy: null, ivrWinRange: null, earningsNote: null,
+      recentTrades: [], historySummary: null, lastUpdated: new Date().toISOString(),
+    };
+  }
+  const profile = mem.symbolProfiles[pos.symbol];
+  profile.recentTrades = [record, ...profile.recentTrades].slice(0, MEMORY_RAW_TRADES_PER_SYMBOL * 2);
+  profile.tradeCount++;
+  const allTrades = profile.recentTrades;
+  const wins = allTrades.filter(t => t.outcome === 'WIN').length;
+  profile.winRate = allTrades.length > 0 ? wins / allTrades.length : 0;
+  profile.avgPnlPct = allTrades.length > 0
+    ? allTrades.reduce((s, t) => s + t.pnlPct, 0) / allTrades.length : 0;
+  profile.lastUpdated = new Date().toISOString();
+
+  // Update behavior profile
+  mem.behaviorProfile.totalTrades++;
+  if (overridden) {
+    mem.behaviorProfile.overrideCount++;
+    if (outcome === 'WIN') mem.behaviorProfile.overrideWins++;
+  }
+
+  // Ring buffer for recent actions
+  mem.recentActions = [record, ...mem.recentActions].slice(0, MEMORY_RAW_ACTIONS);
+
+  writeMemory(mem);
+  return mem;
+}
+
+function buildMemoryContext(symbol: string, action: string): string {
+  const mem = readMemory();
+  const lines: string[] = [];
+
+  // Symbol-specific history
+  const profile = mem.symbolProfiles[symbol];
+  if (profile && profile.tradeCount > 0) {
+    lines.push(`SYMBOL HISTORY — ${symbol}:`);
+    lines.push(`  ${profile.tradeCount} trades | Win rate: ${Math.round(profile.winRate * 100)}% | Avg P&L: ${profile.avgPnlPct.toFixed(1)}%`);
+    if (profile.bestStrategy) lines.push(`  Best strategy: ${profile.bestStrategy}`);
+    if (profile.earningsNote) lines.push(`  Earnings pattern: ${profile.earningsNote}`);
+    if (profile.historySummary) lines.push(`  History: ${profile.historySummary}`);
+    if (profile.recentTrades.length > 0) {
+      lines.push(`  Recent trades (newest first):`);
+      profile.recentTrades.slice(0, MEMORY_RAW_TRADES_PER_SYMBOL).forEach(t => {
+        const ago = Math.round((Date.now() - new Date(t.timestamp).getTime()) / 86400000);
+        lines.push(`    ${ago}d ago: ${t.strategy} ${t.action} — ${t.pnlPct.toFixed(1)}% P&L at ${t.dte} DTE, IVR ${t.ivr ?? '?'}, buffer ${t.buffer?.toFixed(1) ?? '?'}% → ${t.outcome}${t.aiVerdict ? ` (AI said ${t.aiVerdict}${t.aiOverridden ? ', overridden' : ''})` : ''}`);
+      });
+    }
+  }
+
+  // Behavioral profile
+  const bp = mem.behaviorProfile;
+  if (bp.totalTrades > 0) {
+    lines.push(`\nTRADER BEHAVIORAL PROFILE (${bp.totalTrades} total trades):`);
+    if (bp.overrideCount > 0) {
+      const overrideWinRate = bp.overrideCount > 0
+        ? Math.round((bp.overrideWins / bp.overrideCount) * 100) : 0;
+      lines.push(`  Overrode AI STOP verdicts ${bp.overrideCount} times — was right ${overrideWinRate}% of the time`);
+    }
+    if (bp.strengths.length > 0) lines.push(`  Strengths: ${bp.strengths.join(', ')}`);
+    if (bp.weaknesses.length > 0) lines.push(`  Weaknesses: ${bp.weaknesses.join(', ')}`);
+    if (bp.summary) lines.push(`  Pattern summary: ${bp.summary}`);
+  }
+
+  // Recent portfolio-wide actions for context
+  const recentOther = mem.recentActions
+    .filter(r => r.symbol !== symbol)
+    .slice(0, 5);
+  if (recentOther.length > 0) {
+    lines.push(`\nRECENT OTHER TRADES (for portfolio context):`);
+    recentOther.forEach(t => {
+      const ago = Math.round((Date.now() - new Date(t.timestamp).getTime()) / 86400000);
+      lines.push(`  ${ago}d ago: ${t.symbol} ${t.strategy} ${t.action} → ${t.outcome} (${t.pnlPct.toFixed(1)}%)`);
+    });
+  }
+
+  return lines.length > 0 ? lines.join('\n') : '';
+}
+
+async function summarizeSymbolHistory(symbol: string): Promise<void> {
+  const mem = readMemory();
+  const profile = mem.symbolProfiles[symbol];
+  if (!profile || profile.recentTrades.length <= MEMORY_RAW_TRADES_PER_SYMBOL) return;
+
+  const toSummarize = profile.recentTrades.slice(MEMORY_RAW_TRADES_PER_SYMBOL);
+  const prompt = `Summarize these trading history records for ${symbol} into 2-3 sentences. 
+Focus on: patterns (what worked, what didn't), typical P&L range, IVR conditions, DTE behavior, any notable mistakes.
+Be specific with numbers. Write in second person ("You typically...").
+
+Records:
+${toSummarize.map(t => `${t.strategy} ${t.action}: P&L ${t.pnlPct.toFixed(1)}%, DTE ${t.dte}, IVR ${t.ivr ?? '?'}, buffer ${t.buffer?.toFixed(1) ?? '?'}%, outcome ${t.outcome}`).join('\n')}
+
+Existing summary to merge with (if any): ${profile.historySummary ?? 'none'}
+
+Reply with ONLY the summary text, no JSON, no labels.`;
+
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 200,
+        system: 'You are a concise trading journal summarizer. Respond with plain text only.',
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const summary = data?.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? null;
+    if (summary) {
+      profile.historySummary = summary;
+      profile.recentTrades = profile.recentTrades.slice(0, MEMORY_RAW_TRADES_PER_SYMBOL);
+      writeMemory(mem);
+    }
+  } catch {}
+}
+
+async function summarizeBehaviorProfile(): Promise<void> {
+  const mem = readMemory();
+  const bp = mem.behaviorProfile;
+  if (mem.recentActions.length < 5) return;
+
+  const daysSince = mem.lastSummarized
+    ? (Date.now() - new Date(mem.lastSummarized).getTime()) / 86400000
+    : Infinity;
+  if (daysSince < MEMORY_SUMMARIZE_INTERVAL_DAYS) return;
+
+  const prompt = `Analyze these trading actions and behavioral data to identify patterns for this options trader.
+
+STATS:
+Total trades: ${bp.totalTrades}
+AI override rate: ${bp.overrideCount} overrides out of ${bp.totalTrades} STOP verdicts
+Override success rate: ${bp.overrideCount > 0 ? Math.round((bp.overrideWins / bp.overrideCount) * 100) : 0}%
+
+RECENT ACTIONS (${mem.recentActions.length} records):
+${mem.recentActions.map(t => `${t.symbol} ${t.strategy} ${t.action}: P&L ${t.pnlPct.toFixed(1)}%, DTE ${t.dte}, outcome ${t.outcome}${t.aiOverridden ? ' [overrode AI]' : ''}`).join('\n')}
+
+Existing summary: ${bp.summary ?? 'none'}
+
+Identify:
+1. 1-2 clear strengths (what they do well consistently)
+2. 1-2 clear weaknesses or recurring mistakes
+3. One 3-sentence overall behavioral summary in second person
+
+Reply as JSON: {"strengths": [...], "weaknesses": [...], "summary": "..."}`;
+
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        system: 'You are a trading coach analyzing a trader\'s patterns. Return JSON only.',
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const text = (data?.content?.find((b: any) => b.type === 'text')?.text ?? '')
+      .replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(text);
+    bp.strengths = parsed.strengths ?? bp.strengths;
+    bp.weaknesses = parsed.weaknesses ?? bp.weaknesses;
+    bp.summary = parsed.summary ?? bp.summary;
+    bp.lastSummarized = new Date().toISOString();
+    mem.lastSummarized = new Date().toISOString();
+    writeMemory(mem);
+  } catch {}
+}
+
+function clearMemory() {
+  try { localStorage.removeItem(LS_MEMORY); } catch {}
 }
 
 // ── Auth & API ─────────────────────────────────────────────────────────────
@@ -982,6 +1281,130 @@ DTE DISTRIBUTION:
 Provide portfolio-level analysis as JSON only.`;
 }
 
+const TRADING_VERDICT_PROMPT = `You are the most experienced options trader in the world. You have traded through every market cycle since the 1980s — Black Monday, the dot-com crash, 2008, COVID. You have made and lost fortunes and learned exactly when to hold, when to run, and when greed kills a good trade.
+
+A trader is about to take an action on an open options position. Your job is to evaluate that specific action and deliver a verdict — instantly, honestly, without hedging.
+
+You are NOT a financial advisor covering yourself with disclaimers. You are a mentor who will tell someone directly when they are about to make a stupid mistake, and who will give them confidence when the move is smart.
+
+VERDICT SCALE:
+- GO: This is a smart move. The data supports it. Execute it.
+- CAUTION: This might work but there are real risks. Proceed carefully and know what you're risking.
+- STOP: This is a mistake. The numbers say so. You need a very good reason to override this.
+
+WHAT TO EVALUATE PER ACTION:
+EXTEND_PROFIT (e.g. moving 50% target to 70%):
+- Is the remaining premium worth the risk? Calculate: remaining_credit = credit × (1 - new_target). Is that worth holding?
+- DTE: if < 21, gamma risk makes holding dangerous. If > 30, extension is more reasonable.
+- Trend: if trend is confirmed aligned, extension has merit. If trend is uncertain or against, don't be greedy.
+- Earnings approaching: never extend through an earnings event for extra premium.
+- Buffer: if buffer < 5%, don't extend — protect the capital.
+
+CLOSE_ROLL (closing and re-entering):
+- Are you rolling a winner (good) or a loser (dangerous — you're often just deferring pain)?
+- Can you collect meaningful credit on the new spread? If not, the roll just costs you money.
+- Is the trend still valid for the original strategy? Rolling a BPS in a downtrend is doubling a broken bet.
+- Mechanically: roll at 21 DTE to avoid gamma, not before.
+
+TAKE_PROFIT (closing for profit):
+- Is this at or near the 50% target? Taking 40-50% is almost always correct.
+- Is there a catalyst (earnings, Fed decision) making early exit smart? Good reason to deviate up.
+- Are they leaving too much on the table? If at 20% profit with 35 DTE, hold.
+
+CUT_LOSSES (closing at a loss):
+- Is the thesis genuinely broken (trend reversed, breach imminent) or is this just uncomfortable?
+- What's the actual loss vs max loss? If at 1x credit loss, cutting is reasonable. Beyond 2x, you should have cut already.
+- Buffer: if < 3% and DTE > 7, cutting is usually right even if painful.
+
+PLACE_GTC (placing a profit target order):
+- Almost always a GO — this is standard practice and protects the position.
+- Only CAUTION if the target price seems wrong (e.g. GTC set at 10% profit which will fire too early).
+
+OUTPUT FORMAT — JSON only, nothing else:
+{
+  "verdict": "GO|CAUTION|STOP",
+  "confidence": "HIGH|MEDIUM|LOW",
+  "headline": "Single blunt sentence. Max 15 words. Make it land.",
+  "reasoning": "2-3 sentences. Be specific — use the actual numbers from the position. Tell them exactly why."
+}`;
+
+function buildVerdictPrompt(pos: Position, action: EvaluatedAction, detail?: string): string {
+  const pnlPct = pos.pnl != null && pos.creditReceived > 0
+    ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
+  const creditPerContract = (pos.creditReceived / 100).toFixed(2);
+
+  const actionDesc = action === 'EXTEND_PROFIT' && detail
+    ? `EXTEND_PROFIT — moving profit target from current to ${detail}% (new BTC price: $${((pos.creditReceived / 100) * (1 - parseInt(detail) / 100)).toFixed(2)})`
+    : action === 'CLOSE_ROLL'
+    ? `CLOSE_ROLL — close current position and re-enter next expiry`
+    : action === 'TAKE_PROFIT'
+    ? `TAKE_PROFIT — close now for ${pnlPct}% of credit ($${pos.pnl?.toFixed(2) ?? '?'})`
+    : action === 'CUT_LOSSES'
+    ? `CUT_LOSSES — close at a loss of ${pnlPct}% (${pos.pnl?.toFixed(2) ?? '?'})`
+    : `PLACE_GTC — set profit target GTC order`;
+
+  // Pull relevant memory context for this symbol and action
+  const memoryContext = buildMemoryContext(pos.symbol, action);
+
+  return `Evaluate this specific action a trader is about to take:
+
+ACTION: ${actionDesc}
+
+POSITION: ${pos.symbol} ${pos.strategy}
+DTE: ${pos.dte} | Entry DTE: ${pos.entryDte}
+Strikes: ${pos.legs.map(l => `${l.direction} ${l.strikePrice}${l.optionType}`).join(', ')}
+Credit (total): $${pos.creditReceived.toFixed(2)} | Per contract: $${creditPerContract}
+Current buyback cost: $${pos.currentValue?.toFixed(2) ?? 'unknown'}
+P&L: $${pos.pnl?.toFixed(2) ?? 'unknown'} (${pnlPct}% of credit)
+Current profit target: ${Math.round(pos.profitTarget * 100)}%
+
+Stock price: $${pos.stockPrice?.toFixed(2) ?? 'unknown'}
+Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
+IVR: ${pos.ivr ?? 'unknown'} | IV: ${pos.iv ?? 'unknown'}% | HV30: ${pos.hv30 ?? 'unknown'}%
+Theta/day: ${pos.theta?.toFixed(4) ?? 'unknown'} | Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
+GTC working: ${pos.hasGtc ? 'Yes' : 'No'}
+Earnings: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None within expiry'}
+
+Flags: ${[
+    pos.needsClose ? 'AT 21 DTE' : '',
+    pos.hitTarget ? 'TARGET HIT' : '',
+    pos.buffer != null && pos.buffer < 3 ? `CRITICAL BUFFER ${pos.buffer.toFixed(1)}%` : '',
+    pos.buffer != null && pos.buffer < 7 && pos.buffer >= 3 ? `TIGHT BUFFER ${pos.buffer.toFixed(1)}%` : '',
+    pos.earningsDate ? `EARNINGS ${pos.earningsDate}` : '',
+    (pos.pnl ?? 0) < -pos.creditReceived ? 'LOSS EXCEEDS 1X CREDIT' : '',
+  ].filter(Boolean).join(', ') || 'None'}
+${memoryContext ? `\n${memoryContext}` : ''}
+Give your verdict as JSON only.`;
+}
+
+async function evaluateAction(pos: Position, action: EvaluatedAction, detail?: string): Promise<ActionVerdict> {
+  const prompt = buildVerdictPrompt(pos, action, detail);
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 400,
+      system: TRADING_VERDICT_PROMPT,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error ?? `API error: ${res.status}`);
+  }
+  const data = await res.json();
+  const text = (data?.content?.find((b: any) => b.type === 'text')?.text ?? '')
+    .replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  const parsed = JSON.parse(text);
+  return {
+    verdict: parsed.verdict,
+    confidence: parsed.confidence,
+    headline: parsed.headline,
+    reasoning: parsed.reasoning,
+  };
+}
+
 async function callAI(userMessage: string): Promise<string> {
   // Calls our own Next.js API route which proxies to Anthropic server-side.
   // Direct browser → api.anthropic.com calls are blocked by CORS.
@@ -1144,6 +1567,8 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
   // Roll state per position
   const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
+  const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
+  const [overrides, setOverrides] = useState<Set<string>>(new Set());
 
   const marketStatus = getMarketStatus();
 
@@ -1205,6 +1630,18 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
 
           enriched.push(item);
           if (!cancelled) setBatchItems([...enriched]);
+
+          // Fetch AI verdict for this action in parallel (non-blocking)
+          const evalAction = action === 'CLOSE_ROLL' ? 'CLOSE_ROLL'
+            : action === 'TAKE_PROFIT' ? 'TAKE_PROFIT'
+            : action === 'CUT_LOSSES' ? 'CUT_LOSSES'
+            : action === 'PLACE_GTC' ? 'PLACE_GTC'
+            : null;
+          if (evalAction) {
+            evaluateAction(pos, evalAction as EvaluatedAction).then(v => {
+              if (!cancelled) setVerdicts(prev => ({ ...prev, [pos.key]: v }));
+            }).catch(() => {});
+          }
         }
 
         if (!cancelled) setStatus('ready');
@@ -1270,6 +1707,17 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
             orderType: item.orderBody['order-type'], limitPrice: item.limitPrice,
             quantity: item.pos.legs[0]?.quantity ?? 1, orderId, status: 'submitted', estPnl: item.estPnl ?? undefined,
           });
+
+          // Record in trading memory for future verdict learning
+          const verdict = verdicts[item.pos.key] ?? null;
+          const overridden = overrides.has(item.pos.key);
+          const updatedMem = recordTradeInMemory(item.pos, item.action, item.limitPrice, verdict, overridden);
+
+          // Trigger summarization if symbol has too many raw trades (non-blocking)
+          const profile = updatedMem.symbolProfiles[item.pos.symbol];
+          if (profile && profile.recentTrades.length > MEMORY_RAW_TRADES_PER_SYMBOL) {
+            summarizeSymbolHistory(item.pos.symbol).catch(() => {});
+          }
 
         } catch (e: any) {
           results.push({ symbol: item.pos.symbol, action: item.action, orderId: '—', status: 'error', error: e.message, limitPrice: item.limitPrice, estPnl: item.estPnl });
@@ -1389,20 +1837,34 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
                   const isExcluded = excluded.has(item.pos.key);
                   const ri = rollInputs[item.pos.key];
                   const suggestion = rollSuggestions[item.pos.key];
+                  const verdict = verdicts[item.pos.key];
+                  const isStopHigh = verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH';
+                  const isOverridden = overrides.has(item.pos.key);
                   return (
-                    <div key={item.pos.key} className={`rounded-lg border transition-all ${isExcluded ? 'opacity-40 border-dashed' : item.stalePriceWarning || item.duplicateGtcWarning ? 'border-yellow-500/50' : th.border}`}>
+                    <div key={item.pos.key} className={`rounded-lg border transition-all ${
+                      isExcluded ? 'opacity-40 border-dashed' :
+                      isStopHigh && !isOverridden ? 'border-red-500/60' :
+                      verdict?.verdict === 'CAUTION' ? 'border-yellow-500/40' :
+                      item.stalePriceWarning || item.duplicateGtcWarning ? 'border-yellow-500/50' :
+                      th.border
+                    }`}>
                       {/* Row header */}
                       <div className="flex items-center gap-3 px-4 py-3">
                         <input type="checkbox" checked={!isExcluded}
                           onChange={() => setExcluded(prev => { const n = new Set(prev); isExcluded ? n.delete(item.pos.key) : n.add(item.pos.key); return n; })}
                           className="w-4 h-4 accent-blue-500 cursor-pointer shrink-0" />
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.pos.symbol}</span>
                             <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(item.pos.strategy)}`}>{item.pos.strategy}</span>
                             <span className={`text-[10px] font-bold ${ACTION_META[item.action].color}`}>{ACTION_META[item.action].label}</span>
+                            {/* Compact verdict badge */}
+                            {verdict && <ActionVerdictBadge verdict={verdict} compact th={th} />}
+                            {!verdict && !isExcluded && (
+                              <span className="text-[9px] text-indigo-500 animate-pulse">◈ evaluating...</span>
+                            )}
                           </div>
-                          <div className="flex items-center gap-3 mt-0.5">
+                          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                             <span className={`text-[10px] ${th.textFaint}`}>{item.pos.expDate} · {item.pos.dte}d</span>
                             {item.stalePriceWarning && (
                               <span className="text-[10px] text-yellow-400 font-bold">
@@ -1413,6 +1875,24 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
                               <span className="text-[10px] text-yellow-400 font-bold">⚠ GTC already working</span>
                             )}
                           </div>
+                          {/* Full verdict reasoning for STOP/CAUTION */}
+                          {verdict && (verdict.verdict === 'STOP' || verdict.verdict === 'CAUTION') && !isExcluded && (
+                            <div className="mt-2">
+                              <p className={`text-[10px] leading-relaxed ${verdict.verdict === 'STOP' ? 'text-red-300' : 'text-yellow-300'}`}>
+                                {verdict.reasoning}
+                              </p>
+                              {isStopHigh && !isOverridden && (
+                                <button
+                                  onClick={() => setOverrides(prev => { const n = new Set(prev); n.add(item.pos.key); return n; })}
+                                  className="mt-1.5 text-[9px] px-2 py-0.5 border border-red-700 text-red-400 rounded hover:bg-red-600/20 transition-colors">
+                                  I understand the risk — override
+                                </button>
+                              )}
+                              {isStopHigh && isOverridden && (
+                                <span className="text-[9px] text-orange-400 mt-1 block">⚡ Override active — proceeding against AI advice</span>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <div className="text-right shrink-0">
                           <p className="text-xs font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
@@ -1505,13 +1985,53 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
                 {excluded.size > 0 && <span className={`text-[10px] ${th.textFaint}`}>{excluded.size} excluded</span>}
               </div>
               <div className="flex gap-3">
-                <button onClick={submitAll} disabled={activeItems.length === 0}
-                  className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
-                  SUBMIT {activeItems.length} ORDER{activeItems.length !== 1 ? 'S' : ''}
-                </button>
-                <button onClick={onClose} className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
-                  Cancel
-                </button>
+                {(() => {
+                  const blockedItems = activeItems.filter(i =>
+                    verdicts[i.pos.key]?.verdict === 'STOP' &&
+                    verdicts[i.pos.key]?.confidence === 'HIGH' &&
+                    !overrides.has(i.pos.key)
+                  );
+                  const isBlocked = blockedItems.length > 0;
+                  return (
+                    <>
+                      {isBlocked && (
+                        <div className="w-full">
+                          <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/40 mb-2">
+                            <span className="text-red-400 shrink-0 font-bold">✕</span>
+                            <div>
+                              <p className="text-[10px] font-bold text-red-400">
+                                {blockedItems.length} position{blockedItems.length !== 1 ? 's' : ''} flagged STOP by AI
+                              </p>
+                              <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
+                                Uncheck or override each flagged position to enable Submit.
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex gap-3">
+                            <button disabled
+                              className="flex-1 py-3 bg-slate-700 text-slate-500 rounded-xl text-xs font-bold tracking-widest cursor-not-allowed">
+                              SUBMIT BLOCKED — OVERRIDE REQUIRED
+                            </button>
+                            <button onClick={onClose} className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {!isBlocked && (
+                        <>
+                          <button onClick={submitAll} disabled={activeItems.length === 0}
+                            className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors">
+                            SUBMIT {activeItems.length} ORDER{activeItems.length !== 1 ? 'S' : ''}
+                          </button>
+                          <button onClick={onClose} className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
+                            Cancel
+                          </button>
+                        </>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -1587,6 +2107,160 @@ function AuditLogPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES
 }
 
 // ── Summary Bar ────────────────────────────────────────────────────────────
+// ── Memory Panel ───────────────────────────────────────────────────────────
+function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
+  const [mem, setMem] = useState<TradingMemory>(readMemory);
+  const [summarizing, setSummarizing] = useState(false);
+
+  const handleSummarizeAll = async () => {
+    setSummarizing(true);
+    try {
+      const m = readMemory();
+      // Summarize all symbols with enough data
+      for (const sym of Object.keys(m.symbolProfiles)) {
+        if (m.symbolProfiles[sym].recentTrades.length > MEMORY_RAW_TRADES_PER_SYMBOL) {
+          await summarizeSymbolHistory(sym);
+        }
+      }
+      // Force behavior summarization regardless of time interval
+      const m2 = readMemory();
+      m2.lastSummarized = null; // reset so summarize runs
+      writeMemory(m2);
+      await summarizeBehaviorProfile();
+      setMem(readMemory());
+    } finally { setSummarizing(false); }
+  };
+
+  const symbols = Object.values(mem.symbolProfiles).sort((a, b) => b.tradeCount - a.tradeCount);
+  const bp = mem.behaviorProfile;
+
+  return (
+    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-purple-400 text-sm">◆</span>
+              <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>TRADING MEMORY</h2>
+            </div>
+            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>
+              {bp.totalTrades} trades recorded · {symbols.length} symbols tracked
+              {mem.lastSummarized ? ` · Last summarized ${Math.round((Date.now() - new Date(mem.lastSummarized).getTime()) / 86400000)}d ago` : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={handleSummarizeAll} disabled={summarizing}
+              className={`text-[10px] px-3 py-1.5 border border-purple-700 text-purple-400 rounded hover:border-purple-500 hover:bg-purple-500/10 transition-colors disabled:opacity-50`}>
+              {summarizing ? '◈ Summarizing...' : '◈ Summarize Now'}
+            </button>
+            <button onClick={() => { clearMemory(); setMem(emptyMemory()); }}
+              className={`text-[10px] px-3 py-1.5 border ${th.border} ${th.textFaint} rounded hover:border-red-500 hover:text-red-400 transition-colors`}>
+              Clear
+            </button>
+            <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {bp.totalTrades === 0 && (
+            <div className="flex flex-col items-center justify-center h-40 gap-2">
+              <p className={`text-sm ${th.textFaint}`}>No trades recorded yet</p>
+              <p className={`text-[10px] ${th.textFaint} text-center max-w-xs`}>
+                Memory builds automatically as you execute trades through Prosper. Each trade teaches the verdict engine your patterns.
+              </p>
+            </div>
+          )}
+
+          {/* Behavioral profile */}
+          {bp.totalTrades > 0 && (
+            <div className={`p-4 rounded-xl border border-purple-700/40 bg-purple-500/5`}>
+              <p className="text-[9px] text-purple-400 uppercase tracking-widest mb-3 font-bold">Your Trading Profile</p>
+              <div className="grid grid-cols-3 gap-4 mb-3">
+                <div>
+                  <p className={`text-[9px] ${th.textFaint}`}>Total trades</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{bp.totalTrades}</p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint}`}>AI overrides</p>
+                  <p className={`text-sm font-bold ${bp.overrideCount > 0 ? 'text-yellow-400' : th.textFaint}`}>
+                    {bp.overrideCount}
+                    {bp.overrideCount > 0 && <span className={`text-[10px] ml-1 ${th.textFaint}`}>({Math.round((bp.overrideWins / bp.overrideCount) * 100)}% right)</span>}
+                  </p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint}`}>Symbols tracked</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{symbols.length}</p>
+                </div>
+              </div>
+              {bp.summary && <p className={`text-[11px] ${th.textFaint} leading-relaxed mb-2`}>{bp.summary}</p>}
+              <div className="grid grid-cols-2 gap-3">
+                {bp.strengths.length > 0 && (
+                  <div>
+                    <p className="text-[9px] text-emerald-400 font-bold mb-1">Strengths</p>
+                    {bp.strengths.map((s, i) => <p key={i} className="text-[10px] text-emerald-300">▸ {s}</p>)}
+                  </div>
+                )}
+                {bp.weaknesses.length > 0 && (
+                  <div>
+                    <p className="text-[9px] text-red-400 font-bold mb-1">Watch out for</p>
+                    {bp.weaknesses.map((w, i) => <p key={i} className="text-[10px] text-red-300">▸ {w}</p>)}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Symbol profiles */}
+          {symbols.length > 0 && (
+            <div>
+              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3 font-bold`}>Symbol History</p>
+              <div className="space-y-3">
+                {symbols.map(profile => (
+                  <div key={profile.symbol} className={`p-4 rounded-lg border ${th.border}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{profile.symbol}</span>
+                        <span className={`text-[10px] ${th.textFaint}`}>{profile.tradeCount} trades</span>
+                        <span className={`text-[10px] font-bold ${profile.winRate >= 0.6 ? 'text-emerald-400' : profile.winRate >= 0.4 ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {Math.round(profile.winRate * 100)}% win rate
+                        </span>
+                        <span className={`text-[10px] font-bold ${profile.avgPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          avg {profile.avgPnlPct.toFixed(1)}% P&L
+                        </span>
+                      </div>
+                    </div>
+                    {profile.historySummary && (
+                      <p className={`text-[10px] ${th.textFaint} leading-relaxed mb-2`}>{profile.historySummary}</p>
+                    )}
+                    {profile.recentTrades.slice(0, 3).map((t, i) => {
+                      const ago = Math.round((Date.now() - new Date(t.timestamp).getTime()) / 86400000);
+                      return (
+                        <div key={i} className={`flex items-center gap-3 text-[9px] py-1 border-t ${th.borderLight} first:border-t-0`}>
+                          <span className={`${th.textFaint} w-12 shrink-0`}>{ago}d ago</span>
+                          <span className={`${th.text} w-16 shrink-0`} style={{ fontFamily: "'DM Mono', monospace" }}>{t.strategy}</span>
+                          <span className={`${th.textFaint} flex-1`}>{t.action} @ {t.dte}d DTE</span>
+                          <span className={`font-bold ${t.outcome === 'WIN' ? 'text-emerald-400' : t.outcome === 'LOSS' ? 'text-red-400' : 'text-slate-400'}`}>
+                            {t.pnlPct >= 0 ? '+' : ''}{t.pnlPct.toFixed(1)}%
+                          </span>
+                          {t.aiVerdict && (
+                            <span className={`${t.aiVerdict === 'STOP' ? 'text-red-400' : t.aiVerdict === 'CAUTION' ? 'text-yellow-400' : 'text-emerald-400'}`}>
+                              AI:{t.aiVerdict}{t.aiOverridden ? '⚡' : ''}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
   const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
   const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
@@ -1990,30 +2664,92 @@ function PortfolioAnalysisPanel({ analysis, positions, onClose, th }: {
   );
 }
 
+// ── Action Verdict Badge ───────────────────────────────────────────────────
+const VERDICT_STYLE = {
+  GO:      { border: 'border-emerald-500/60', bg: 'bg-emerald-500/8',  icon: '✓', iconColor: 'text-emerald-400', labelColor: 'text-emerald-300', label: 'GO' },
+  CAUTION: { border: 'border-yellow-500/60',  bg: 'bg-yellow-500/8',   icon: '⚠', iconColor: 'text-yellow-400',  labelColor: 'text-yellow-300',  label: 'CAUTION' },
+  STOP:    { border: 'border-red-500/60',     bg: 'bg-red-500/8',      icon: '✕', iconColor: 'text-red-400',     labelColor: 'text-red-300',     label: 'STOP' },
+};
+
+function ActionVerdictBadge({ verdict, compact = false, th }: {
+  verdict: ActionVerdict;
+  compact?: boolean;
+  th: typeof THEMES[Theme];
+}) {
+  const style = VERDICT_STYLE[verdict.verdict];
+  if (compact) {
+    return (
+      <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${style.border} ${style.bg}`}>
+        <span className={`text-[10px] font-bold ${style.iconColor}`}>{style.icon}</span>
+        <span className={`text-[10px] font-bold ${style.labelColor}`}>{style.label}</span>
+        <span className={`text-[10px] ${th.textFaint} truncate max-w-[200px]`}>{verdict.headline}</span>
+      </div>
+    );
+  }
+  return (
+    <div className={`rounded-xl border ${style.border} p-4 space-y-2`} style={{ background: 'rgba(0,0,0,0.3)' }}>
+      <div className="flex items-center gap-2">
+        <span className={`text-lg ${style.iconColor}`}>{style.icon}</span>
+        <span className={`text-xs font-bold tracking-widest ${style.labelColor}`}>{style.label}</span>
+        <span className={`text-[9px] font-bold ${verdict.confidence === 'HIGH' ? style.labelColor : 'text-slate-400'} ml-1`}>
+          {verdict.confidence} CONFIDENCE
+        </span>
+      </div>
+      <p className={`text-sm font-bold ${style.labelColor} leading-snug`}>{verdict.headline}</p>
+      <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>{verdict.reasoning}</p>
+    </div>
+  );
+}
+
 // ── Extend Profit Button ───────────────────────────────────────────────────
 function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<'success' | 'error' | null>(null);
   const [resultMsg, setResultMsg] = useState('');
+  const [verdict, setVerdict] = useState<ActionVerdict | null>(null);
+  const [verdictLoading, setVerdictLoading] = useState(false);
+  const [selectedPct, setSelectedPct] = useState<number | null>(null);
 
   if (!pos.gtcOrderId || !pos.hasGtc) return null;
 
-  // Current target % inferred from GTC price vs credit
   const currentTargetPct = pos.gtcOrderPrice != null && pos.creditReceived > 0
     ? Math.round((1 - pos.gtcOrderPrice / (pos.creditReceived / 100)) * 100)
     : Math.round(pos.profitTarget * 100);
 
-  // Offer extensions above current target, up to 90%
   const options = [55, 60, 65, 70, 75, 80, 85, 90].filter(pct => pct > currentTargetPct);
   if (options.length === 0) return null;
+
+  const handleOpen = async () => {
+    setOpen(true);
+    setResult(null);
+    setVerdict(null);
+    setSelectedPct(null);
+    // Fetch a general extend verdict immediately when dropdown opens
+    setVerdictLoading(true);
+    try {
+      const v = await evaluateAction(pos, 'EXTEND_PROFIT', String(options[0]));
+      setVerdict(v);
+    } catch { /* verdict optional */ }
+    finally { setVerdictLoading(false); }
+  };
+
+  const handleSelectPct = async (pct: number) => {
+    setSelectedPct(pct);
+    setVerdict(null);
+    setVerdictLoading(true);
+    try {
+      const v = await evaluateAction(pos, 'EXTEND_PROFIT', String(pct));
+      setVerdict(v);
+    } catch { /* verdict optional */ }
+    finally { setVerdictLoading(false); }
+  };
 
   const extend = async (targetPct: number) => {
     setLoading(true);
     setResult(null);
     try {
       const token = await getAccessToken();
-      // New limit = credit × (1 - targetPct/100) e.g. 60% profit = pay back 40% of credit
       const newPrice = parseFloat(((pos.creditReceived / 100) * (1 - targetPct / 100)).toFixed(2));
       await ttPatch(
         `/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`,
@@ -2033,52 +2769,86 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
 
   return (
     <div className="relative">
-      {/* Trigger button */}
       <button
-        onClick={e => { e.stopPropagation(); setOpen(v => !v); setResult(null); }}
+        onClick={e => { e.stopPropagation(); open ? setOpen(false) : handleOpen(); }}
         className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${
           result === 'success' ? 'border-emerald-600 text-emerald-400' :
           result === 'error'   ? 'border-red-600 text-red-400' :
+          open ? 'border-blue-500 text-blue-400 bg-blue-500/10' :
           'border-slate-600 text-slate-400 hover:border-blue-500 hover:text-blue-400'
         }`}>
         {result === 'success' ? '✓ Extended' : result === 'error' ? '✕ Failed' : '↑ Extend Profit'}
       </button>
 
-      {/* Dropdown */}
       {open && (
-        <div className={`absolute bottom-full mb-1 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3 min-w-[200px]`}
+        <div className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-80`}
           onClick={e => e.stopPropagation()}>
-          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>
+          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>
             Extend target — current: {currentTargetPct}%
           </p>
-          <p className={`text-[9px] ${th.textFaint} mb-2`}>
-            Credit: ${(pos.creditReceived / 100).toFixed(2)} · GTC order #{pos.gtcOrderId}
-          </p>
+
+          {/* Verdict */}
+          {verdictLoading && (
+            <div className="flex items-center gap-2 mb-3 p-2 rounded-lg border border-indigo-700/40 bg-indigo-500/5">
+              <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+              <p className="text-[10px] text-indigo-400">Evaluating move...</p>
+            </div>
+          )}
+          {verdict && !verdictLoading && (
+            <div className="mb-3">
+              <ActionVerdictBadge verdict={verdict} th={th} />
+            </div>
+          )}
+
+          {/* Target options */}
           <div className="space-y-1">
             {options.map(pct => {
               const newPrice = ((pos.creditReceived / 100) * (1 - pct / 100)).toFixed(2);
-              const currentPnl = pos.pnl != null ? ((pos.pnl / pos.creditReceived) * 100).toFixed(0) : null;
+              const isSelected = selectedPct === pct;
+              const isStop = verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH';
               return (
-                <button key={pct}
-                  disabled={loading}
-                  onClick={() => extend(pct)}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors text-[10px] font-bold ${th.border} hover:border-blue-500 hover:bg-blue-500/10 disabled:opacity-50`}>
-                  <span className="text-blue-400">{pct}% profit target</span>
-                  <span className={`${th.textFaint} font-normal`}>BTC @ ${newPrice}</span>
-                </button>
+                <div key={pct} className="space-y-1">
+                  <button
+                    disabled={loading}
+                    onClick={() => handleSelectPct(pct)}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors text-[10px] font-bold ${
+                      isSelected ? 'border-blue-500 bg-blue-500/15' : `${th.border} hover:border-blue-500 hover:bg-blue-500/10`
+                    } disabled:opacity-50`}>
+                    <span className="text-blue-400">{pct}% profit target</span>
+                    <span className={`${th.textFaint} font-normal`}>BTC @ ${newPrice}</span>
+                  </button>
+                  {/* Confirm button shown when selected */}
+                  {isSelected && (
+                    <div className="space-y-1 pl-2">
+                      {isStop && (
+                        <p className={`text-[9px] text-red-400 px-1`}>
+                          AI says STOP — click confirm to override
+                        </p>
+                      )}
+                      <button
+                        disabled={loading}
+                        onClick={() => extend(pct)}
+                        className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${
+                          isStop
+                            ? 'bg-red-600/20 border border-red-600 text-red-400 hover:bg-red-600/40'
+                            : 'bg-blue-600 hover:bg-blue-500 text-white'
+                        } disabled:opacity-50`}>
+                        {loading ? 'Updating...' : isStop ? `Override & Extend to ${pct}%` : `Confirm — Extend to ${pct}%`}
+                      </button>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
-          {result === 'error' && (
-            <p className="text-[9px] text-red-400 mt-2">{resultMsg}</p>
-          )}
-          <button onClick={() => setOpen(false)} className={`w-full mt-2 text-[9px] ${th.textFaint} hover:${th.text} text-center`}>
+
+          {result === 'error' && <p className="text-[9px] text-red-400 mt-2">{resultMsg}</p>}
+          <button onClick={() => setOpen(false)} className={`w-full mt-3 text-[9px] ${th.textFaint} hover:${th.text} text-center`}>
             Cancel
           </button>
         </div>
       )}
 
-      {/* Success toast */}
       {result === 'success' && resultMsg && (
         <p className={`absolute bottom-full mb-1 left-0 text-[9px] text-emerald-400 whitespace-nowrap bg-black/80 px-2 py-1 rounded border border-emerald-700`}>
           {resultMsg}
@@ -2480,8 +3250,12 @@ export default function PortfolioPage() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
   const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
+
+  // Trigger weekly behavior summarization silently on load
+  useEffect(() => { summarizeBehaviorProfile().catch(() => {}); }, []);
 
   const handleAnalyzePortfolio = async () => {
     if (positions.length === 0) return;
@@ -2557,6 +3331,10 @@ export default function PortfolioPage() {
           <button onClick={() => setShowAuditLog(true)}
             className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider">
             📋 Audit Log
+          </button>
+          <button onClick={() => setShowMemory(true)}
+            className="text-[10px] px-3 py-1.5 border border-purple-800 text-purple-400 rounded hover:border-purple-600 hover:text-purple-300 transition-colors tracking-wider">
+            ◆ Memory
           </button>
           {positions.length > 0 && (
             <button onClick={handleAnalyzePortfolio} disabled={portfolioAnalysisLoading}
@@ -2664,6 +3442,7 @@ export default function PortfolioPage() {
       )}
 
       {showAuditLog && <AuditLogPanel onClose={() => setShowAuditLog(false)} th={th} />}
+      {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} th={th} />}
 
       {portfolioAnalysis && !portfolioAnalysis.error && (
         <PortfolioAnalysisPanel analysis={portfolioAnalysis} positions={positions} onClose={() => setPortfolioAnalysis(null)} th={th} />
