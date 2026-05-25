@@ -160,8 +160,8 @@ interface OrderBody {
   'order-type': 'Limit' | 'Market';
   'time-in-force': 'GTC' | 'Day';
   price?: string;
+  'price-effect'?: 'Debit' | 'Credit';
   legs: OrderLeg[];
-  source?: string;
 }
 
 interface BatchOrderItem {
@@ -585,6 +585,7 @@ async function ttFetch(path: string, token: string) {
 }
 
 async function ttPost(path: string, token: string, body: unknown) {
+  console.log('TT ORDER BODY:', JSON.stringify(body, null, 2));
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -592,7 +593,18 @@ async function ttPost(path: string, token: string, body: unknown) {
   });
   if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message ?? data?.['error-message'] ?? `POST ${path} failed (${res.status})`);
+  console.log('TT ORDER RESPONSE:', JSON.stringify(data, null, 2));
+  if (!res.ok) {
+    // TastyTrade returns errors in several shapes — extract all detail possible
+    const errMsg =
+      data?.error?.message ??
+      data?.['error-message'] ??
+      (Array.isArray(data?.error?.errors)
+        ? data.error.errors.map((e: any) => `${e.domain ?? ''} ${e.reason ?? e.message ?? e}`).join('; ')
+        : null) ??
+      JSON.stringify(data?.error ?? data).slice(0, 300);
+    throw new Error(`Order rejected: ${errMsg}`);
+  }
   return data;
 }
 
@@ -682,19 +694,20 @@ function instrType(symbol: string): 'Equity Option' | 'Index Option' {
 // ── Order Builders ─────────────────────────────────────────────────────────
 function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' = 'Day'): OrderBody {
   const itype = instrType(pos.symbol);
-  // If market is closed and tif=Day, auto-upgrade to GTC so it queues for open
   const effectiveTif = (!isMarketOpen() && tif === 'Day') ? 'GTC' : tif;
+  // TastyTrade closing orders: price is the debit (positive number = what you pay to close)
+  // price-effect: 'Debit' for closing spreads (you buy back what you sold)
   return {
     'order-type': 'Limit',
     'time-in-force': effectiveTif,
     price: limitPrice.toFixed(2),
+    'price-effect': 'Debit',
     legs: pos.legs.map(leg => ({
       symbol: leg.symbol.trim(),
       quantity: leg.quantity,
       action: leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close',
       'instrument-type': itype,
     })),
-    source: 'WEB',
   };
 }
 
@@ -708,12 +721,12 @@ function buildOpenSpreadOrder(
   return {
     'order-type': 'Limit',
     'time-in-force': 'GTC',
-    price: (-Math.abs(credit)).toFixed(2), // negative = credit
+    price: Math.abs(credit).toFixed(2),
+    'price-effect': 'Credit',
     legs: [
       { symbol: shortSym, quantity, action: 'Sell to Open', 'instrument-type': itype },
       { symbol: longSym,  quantity, action: 'Buy to Open',  'instrument-type': itype },
     ],
-    source: 'WEB',
   };
 }
 
