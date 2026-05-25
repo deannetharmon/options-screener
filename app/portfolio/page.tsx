@@ -64,6 +64,8 @@ interface Position {
   netDelta: number | null;    // net position delta
   netVega: number | null;     // net position vega
   hasGtc: boolean;
+  gtcOrderId: string | null;       // ID of the working profit-target GTC order
+  gtcOrderPrice: number | null;    // current limit price on that GTC order
   stopLossStatus: StopStatus;
   stopLossPrice: number | null;
   stockPrice: number | null;
@@ -455,7 +457,31 @@ function collectRawOrders(raw: any): any[] {
   return out;
 }
 
-async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
+function findProfitGtcOrder(positionLegs: PositionLeg[], gtcOrders: GtcOrder[]): GtcOrder | null {
+  // Find a GTC limit order (not a stop) that has Buy to Close on the short leg
+  const shortLeg = positionLegs.find(l => l.direction === 'Short');
+  if (!shortLeg?.symbol) return null;
+  const shortSymbol = normalizeOccSymbol(shortLeg.symbol);
+  return gtcOrders.find(order =>
+    !isStopOrder(order) &&
+    order.orderType.toLowerCase().includes('limit') &&
+    order.legs.some(leg =>
+      normalizeOccSymbol(leg.symbol) === shortSymbol && isBuyToCloseAction(leg.action)
+    )
+  ) ?? null;
+}
+
+async function ttPatch(path: string, token: string, body: unknown) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message ?? data?.['error-message'] ?? `PATCH ${path} failed (${res.status})`);
+  return data;
+}
   try {
     const requests = await Promise.allSettled([
       ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=250`, token),
@@ -715,6 +741,14 @@ async function loadPositions(): Promise<Position[]> {
       beta: betaMap[symbol] ?? null,
       earningsDate: earningsMap[symbol] ?? null,
       hasGtc: gtcSymbols.has(symbol),
+      gtcOrderId: (() => {
+        const match = findProfitGtcOrder(positionLegs, gtcOrders);
+        return match?.id ?? null;
+      })(),
+      gtcOrderPrice: (() => {
+        const match = findProfitGtcOrder(positionLegs, gtcOrders);
+        return match ? parseFloat(match.price) || null : null;
+      })(),
       stopLossStatus: stopLoss.status, stopLossPrice: stopLoss.price,
       stockPrice: stockPrices[symbol] ?? null,
       buffer: (() => {
@@ -1954,6 +1988,104 @@ function PortfolioAnalysisPanel({ analysis, positions, onClose, th }: {
   );
 }
 
+// ── Extend Profit Button ───────────────────────────────────────────────────
+function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<'success' | 'error' | null>(null);
+  const [resultMsg, setResultMsg] = useState('');
+
+  if (!pos.gtcOrderId || !pos.hasGtc) return null;
+
+  // Current target % inferred from GTC price vs credit
+  const currentTargetPct = pos.gtcOrderPrice != null && pos.creditReceived > 0
+    ? Math.round((1 - pos.gtcOrderPrice / (pos.creditReceived / 100)) * 100)
+    : Math.round(pos.profitTarget * 100);
+
+  // Offer extensions above current target, up to 90%
+  const options = [55, 60, 65, 70, 75, 80, 85, 90].filter(pct => pct > currentTargetPct);
+  if (options.length === 0) return null;
+
+  const extend = async (targetPct: number) => {
+    setLoading(true);
+    setResult(null);
+    try {
+      const token = await getAccessToken();
+      // New limit = credit × (1 - targetPct/100) e.g. 60% profit = pay back 40% of credit
+      const newPrice = parseFloat(((pos.creditReceived / 100) * (1 - targetPct / 100)).toFixed(2));
+      await ttPatch(
+        `/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`,
+        token,
+        { price: newPrice.toFixed(2), 'time-in-force': 'GTC' }
+      );
+      setResult('success');
+      setResultMsg(`Target extended to ${targetPct}% — GTC updated to $${newPrice.toFixed(2)}`);
+      setOpen(false);
+    } catch (e: any) {
+      setResult('error');
+      setResultMsg(e.message ?? 'Update failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="relative">
+      {/* Trigger button */}
+      <button
+        onClick={e => { e.stopPropagation(); setOpen(v => !v); setResult(null); }}
+        className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${
+          result === 'success' ? 'border-emerald-600 text-emerald-400' :
+          result === 'error'   ? 'border-red-600 text-red-400' :
+          'border-slate-600 text-slate-400 hover:border-blue-500 hover:text-blue-400'
+        }`}>
+        {result === 'success' ? '✓ Extended' : result === 'error' ? '✕ Failed' : '↑ Extend Profit'}
+      </button>
+
+      {/* Dropdown */}
+      {open && (
+        <div className={`absolute bottom-full mb-1 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3 min-w-[200px]`}
+          onClick={e => e.stopPropagation()}>
+          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>
+            Extend target — current: {currentTargetPct}%
+          </p>
+          <p className={`text-[9px] ${th.textFaint} mb-2`}>
+            Credit: ${(pos.creditReceived / 100).toFixed(2)} · GTC order #{pos.gtcOrderId}
+          </p>
+          <div className="space-y-1">
+            {options.map(pct => {
+              const newPrice = ((pos.creditReceived / 100) * (1 - pct / 100)).toFixed(2);
+              const currentPnl = pos.pnl != null ? ((pos.pnl / pos.creditReceived) * 100).toFixed(0) : null;
+              return (
+                <button key={pct}
+                  disabled={loading}
+                  onClick={() => extend(pct)}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors text-[10px] font-bold ${th.border} hover:border-blue-500 hover:bg-blue-500/10 disabled:opacity-50`}>
+                  <span className="text-blue-400">{pct}% profit target</span>
+                  <span className={`${th.textFaint} font-normal`}>BTC @ ${newPrice}</span>
+                </button>
+              );
+            })}
+          </div>
+          {result === 'error' && (
+            <p className="text-[9px] text-red-400 mt-2">{resultMsg}</p>
+          )}
+          <button onClick={() => setOpen(false)} className={`w-full mt-2 text-[9px] ${th.textFaint} hover:${th.text} text-center`}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Success toast */}
+      {result === 'success' && resultMsg && (
+        <p className={`absolute bottom-full mb-1 left-0 text-[9px] text-emerald-400 whitespace-nowrap bg-black/80 px-2 py-1 rounded border border-emerald-700`}>
+          {resultMsg}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExecute }: {
   pos: Position;
   th: typeof THEMES[Theme];
@@ -2175,10 +2307,9 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
       {/* Action + Analyze row */}
       <div className={`flex items-center justify-between px-4 py-2 border-t ${th.borderLight}`}>
         {/* Quick action buttons */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).map(action => {
             const meta = ACTION_META[action];
-            // Only show actions relevant to this position's state
             if (action === 'TAKE_PROFIT' && !pos.hitTarget && rec.action !== 'TAKE_PROFIT') return null;
             if (action === 'PLACE_GTC' && pos.hasGtc) return null;
             return (
@@ -2189,7 +2320,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </button>
             );
           })}
-          {/* Always show the recommended action if not already shown */}
+          <ExtendProfitButton pos={pos} th={th} />
           {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(rec.action) && (
             <span className={`text-[9px] ${th.textFaint} ml-1`}>← suggested</span>
           )}
