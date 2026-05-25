@@ -3527,6 +3527,13 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   // Confirmation step before destructive OCO replace
   const [confirming, setConfirming] = useState(false);
 
+  // Mounted guard — prevents state updates after unmount
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const needsOco = pos.hasGtc && !!pos.gtcOrderId;
   const existingGtcPrice = pos.gtcOrderPrice
     ?? parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
@@ -3557,13 +3564,14 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
 
   // ── Live price fetch ──────────────────────────────────────────────────────
   const fetchLivePrice = async () => {
+    if (!mountedRef.current) return;
     setLivePriceLoading(true);
     setLivePriceError(null);
     try {
       const token = await getAccessToken();
       const fresh = await fetchFreshPositionPrice(pos, token);
+      if (!mountedRef.current) return;
       if (fresh != null) {
-        // fetchFreshPositionPrice returns total value across all contracts × 100
         const perContract = fresh / (qty * 100);
         setLivePrice(perContract);
         console.log(`LIVE PRICE FETCH ${pos.symbol}: $${perContract.toFixed(4)}/contract (total $${fresh.toFixed(2)})`);
@@ -3571,18 +3579,21 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
         setLivePriceError('Could not fetch live price — using last known value');
       }
     } catch (e: any) {
+      if (!mountedRef.current) return;
       setLivePriceError(`Price fetch failed: ${e.message}`);
     } finally {
-      setLivePriceLoading(false);
+      if (mountedRef.current) setLivePriceLoading(false);
     }
   };
 
   // ── AI suggestion ─────────────────────────────────────────────────────────
   const fetchSuggestion = async () => {
+    if (!mountedRef.current) return;
     setSuggestionLoading(true);
     setSuggestionError(null);
     try {
       const s = await fetchStopGtcSuggestion(pos);
+      if (!mountedRef.current) return;
 
       // Clamp AI suggestion to hard bounds before showing
       const clampedGtc  = Math.min(Math.max(s.gtcPrice,  gtcMin),  gtcMax);
@@ -3593,6 +3604,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       const safeGtc  = live != null ? Math.min(clampedGtc,  live - 0.01) : clampedGtc;
       const safeStop = live != null ? Math.max(clampedStop, live + 0.01) : clampedStop;
 
+      if (!mountedRef.current) return;
       setSuggestion({
         ...s,
         gtcPrice:  parseFloat(safeGtc.toFixed(2)),
@@ -3603,9 +3615,10 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       setGtcPrice(safeGtc.toFixed(2));
       setStopPrice(safeStop.toFixed(2));
     } catch (e: any) {
+      if (!mountedRef.current) return;
       setSuggestionError(e.message ?? 'AI suggestion failed');
     } finally {
-      setSuggestionLoading(false);
+      if (mountedRef.current) setSuggestionLoading(false);
     }
   };
 
@@ -3624,7 +3637,9 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
     setLivePriceLoading(true);
     try {
       const token = await getAccessToken();
+      if (!mountedRef.current) return;
       const fresh = await fetchFreshPositionPrice(pos, token);
+      if (!mountedRef.current) return;
       if (fresh != null) {
         const perContract = fresh / (qty * 100);
         setLivePrice(perContract);
@@ -3635,21 +3650,24 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
         setGtcPrice(Math.max(initGtc, gtcMin).toFixed(2));
         setStopPrice(Math.min(initStop, stopMax).toFixed(2));
       } else {
-        setLivePriceError('Could not fetch live price');
+        setLivePriceError('Could not fetch live price — using estimates');
         setGtcPrice(Math.max(existingGtcPrice, gtcMin).toFixed(2));
         const naiveStop = Math.max(creditPerContract * 2.0, stopMin);
         setStopPrice(Math.min(naiveStop, stopMax).toFixed(2));
       }
-    } catch {
-      setLivePriceError('Price fetch failed');
-      setGtcPrice(existingGtcPrice.toFixed(2));
+    } catch (e: any) {
+      if (!mountedRef.current) return;
+      // Keep modal open even on price fetch failure — show error, use fallback values
+      console.warn('SetStopLossButton live price fetch failed:', e.message);
+      setLivePriceError(`Price fetch failed: ${e.message ?? 'unknown error'}`);
+      setGtcPrice(Math.max(existingGtcPrice, gtcMin).toFixed(2));
       setStopPrice(Math.min(creditPerContract * 2.0, stopMax).toFixed(2));
     } finally {
-      setLivePriceLoading(false);
+      if (mountedRef.current) setLivePriceLoading(false);
     }
 
     // Step 2: fetch AI suggestion (non-blocking, runs after live price)
-    fetchSuggestion();
+    if (mountedRef.current) fetchSuggestion();
   };
 
   const applySuggestion = () => {
