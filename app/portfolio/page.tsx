@@ -203,10 +203,27 @@ interface OrderResult {
 
 interface RollSuggestion {
   expiry: string;
+  dte: number;
   shortStrike: number;
   longStrike: number;
-  credit: number;
+  spreadWidth: number;
+  credit: number;           // conservative estimate (mid * 0.7)
+  creditMid: number;        // true mid (bid+ask)/2
+  creditRatio: number;      // credit / spreadWidth — must be >= 1/3
   delta: number;
+  shortSymbol: string;      // native OCC symbol from TastyTrade chain
+  longSymbol: string;       // native OCC symbol from TastyTrade chain
+  shortOi: number | null;
+  longOi: number | null;
+  shortBidAsk: number | null;   // ask - bid on short leg
+  longBidAsk: number | null;    // ask - bid on long leg
+  // Prosper rule checks
+  ruleViolations: string[];     // empty = all clear, strings = specific violations
+  meetsMinCredit: boolean;      // credit >= 1/3 spread width
+  meetsDte: boolean;            // 30-45 DTE
+  meetsDelta: boolean;          // delta within strategy range
+  meetsOi: boolean;             // OI >= 500 on both legs
+  meetsBidAsk: boolean;         // bid-ask <= $0.10 on each leg
 }
 
 // ── Theme ──────────────────────────────────────────────────────────────────
@@ -671,51 +688,132 @@ async function fetchFreshPositionPrice(pos: Position, token: string): Promise<nu
 async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSuggestion | null> {
   try {
     const optType = pos.strategy === 'BCS' ? 'C' : 'P';
+    // Delta targets per Prosper rules: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
     const targetDelta = pos.strategy === 'BCS' ? 0.25 : -0.25;
+    const deltaMin = pos.strategy === 'BCS' ?  0.20 : -0.30;
+    const deltaMax = pos.strategy === 'BCS' ?  0.30 : -0.20;
 
-    // Get expirations
+    // Step 1: get expirations, find one in 30-45 DTE window
     const chainData = await ttFetch(`/option-chains/${encodeURIComponent(pos.symbol)}/expirations`, token);
     const expirations: any[] = chainData?.data?.items ?? [];
 
-    // Find next expiry 30-45 DTE
     const today = new Date();
-    const target = expirations.find((e: any) => {
-      const d = Math.round((new Date(e['expiration-date']).getTime() - today.getTime()) / 86400000);
-      return d >= 28 && d <= 50;
-    });
-    if (!target) return null;
+    // Sort by DTE ascending, find first in 30-45 window (prefer closest to 38 DTE)
+    const candidates = expirations
+      .map((e: any) => ({
+        expiry: e['expiration-date'],
+        dte: Math.round((new Date(e['expiration-date']).getTime() - today.getTime()) / 86400000),
+      }))
+      .filter(e => e.dte >= 28 && e.dte <= 50)
+      .sort((a, b) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38)); // prefer 38 DTE
 
-    const expiry = target['expiration-date'];
+    if (candidates.length === 0) return null;
+    const { expiry, dte } = candidates[0];
+
+    // Step 2: fetch full chain for that expiry — use nested format which includes greeks + OI
     const strikeData = await ttFetch(
       `/option-chains/${encodeURIComponent(pos.symbol)}/nested?expiration-date=${expiry}`,
       token
     );
-
     const strikes: any[] = strikeData?.data?.items?.[0]?.strikes ?? [];
-    // Find the strike closest to target delta
-    let best: any = null;
-    let bestDiff = Infinity;
-    for (const s of strikes) {
-      const legs = s[optType === 'P' ? 'put' : 'call'];
-      if (!legs) continue;
-      const delta = parseFloat(legs?.delta ?? '0');
-      const diff = Math.abs(delta - targetDelta);
-      if (diff < bestDiff) { bestDiff = diff; best = { strike: s['strike-price'], delta, bid: parseFloat(legs?.bid ?? '0'), ask: parseFloat(legs?.ask ?? '0') }; }
-    }
-    if (!best) return null;
 
-    // Spread width = same as original
+    // Step 3: find best short strike — closest to target delta, within range
     const origShort = pos.legs.find(l => l.direction === 'Short');
     const origLong  = pos.legs.find(l => l.direction === 'Long');
     if (!origShort || !origLong) return null;
     const width = Math.abs(origShort.strikePrice - origLong.strikePrice);
 
+    let best: any = null;
+    let bestDiff = Infinity;
+    for (const s of strikes) {
+      const leg = s[optType === 'P' ? 'put' : 'call'];
+      if (!leg) continue;
+      const delta = parseFloat(leg?.delta ?? '0');
+      const diff = Math.abs(delta - targetDelta);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = {
+          strike: s['strike-price'],
+          delta,
+          bid:  parseFloat(leg?.bid  ?? '0'),
+          ask:  parseFloat(leg?.ask  ?? '0'),
+          oi:   parseInt(leg?.['open-interest'] ?? leg?.['oi'] ?? '0', 10),
+          symbol: leg?.symbol ?? null,   // native OCC symbol from TastyTrade
+        };
+      }
+    }
+    if (!best) return null;
+
     const shortStrike = best.strike;
     const longStrike = pos.strategy === 'BCS' ? shortStrike + width : shortStrike - width;
-    const credit = parseFloat(((best.bid + best.ask) / 2 * 0.7).toFixed(2)); // conservative estimate
 
-    return { expiry, shortStrike, longStrike, credit, delta: best.delta };
-  } catch { return null; }
+    // Step 4: find long leg data from chain for OI + bid-ask + native symbol
+    let longLegData: any = null;
+    for (const s of strikes) {
+      if (s['strike-price'] === longStrike) {
+        const leg = s[optType === 'P' ? 'put' : 'call'];
+        if (leg) {
+          longLegData = {
+            bid:  parseFloat(leg?.bid  ?? '0'),
+            ask:  parseFloat(leg?.ask  ?? '0'),
+            oi:   parseInt(leg?.['open-interest'] ?? leg?.['oi'] ?? '0', 10),
+            symbol: leg?.symbol ?? null,
+          };
+        }
+        break;
+      }
+    }
+
+    // Step 5: compute credit values
+    const shortMid = (best.bid + best.ask) / 2;
+    const longMid  = longLegData ? (longLegData.bid + longLegData.ask) / 2 : 0;
+    const creditMid = parseFloat((shortMid - longMid).toFixed(2));
+    const credit    = parseFloat((creditMid * 0.85).toFixed(2)); // 85% of mid — realistic limit
+    const creditRatio = width > 0 ? creditMid / width : 0;
+
+    // Step 6: build native OCC symbols — prefer chain symbols, fall back to builder
+    const shortSymbol = best.symbol ?? buildOccSymbol(pos.symbol, expiry, optType, shortStrike);
+    const longSymbol  = longLegData?.symbol ?? buildOccSymbol(pos.symbol, expiry, optType, longStrike);
+
+    // Step 7: bid-ask spreads per leg
+    const shortBidAsk = parseFloat((best.ask - best.bid).toFixed(2));
+    const longBidAsk  = longLegData ? parseFloat((longLegData.ask - longLegData.bid).toFixed(2)) : null;
+
+    // Step 8: Prosper rule validation
+    const ruleViolations: string[] = [];
+    const meetsMinCredit = creditRatio >= (1/3);
+    const meetsDte       = dte >= 30 && dte <= 45;
+    const meetsDelta     = best.delta >= Math.min(deltaMin, deltaMax) && best.delta <= Math.max(deltaMin, deltaMax);
+    const meetsOi        = (best.oi >= 500) && (longLegData == null || longLegData.oi >= 500);
+    const meetsBidAsk    = shortBidAsk <= 0.10 && (longBidAsk == null || longBidAsk <= 0.10);
+
+    if (!meetsMinCredit) ruleViolations.push(`Credit $${creditMid.toFixed(2)} < 1/3 of $${width} spread ($${(width/3).toFixed(2)} min) — not worth rolling`);
+    if (!meetsDte)       ruleViolations.push(`DTE ${dte} outside 30-45 window`);
+    if (!meetsDelta)     ruleViolations.push(`Delta ${best.delta.toFixed(2)} outside ${pos.strategy === 'BCS' ? '0.20-0.30' : '-0.20 to -0.30'} range`);
+    if (!meetsOi)        ruleViolations.push(`OI too low — short: ${best.oi}, long: ${longLegData?.oi ?? '?'} (need ≥500)`);
+    if (!meetsBidAsk)    ruleViolations.push(`Bid-ask too wide — short: $${shortBidAsk.toFixed(2)}, long: $${longBidAsk?.toFixed(2) ?? '?'} (need ≤$0.10)`);
+
+    console.log(`ROLL SUGGESTION ${pos.symbol}: expiry=${expiry} DTE=${dte} short=${shortStrike} long=${longStrike} credit=$${credit} creditMid=$${creditMid} ratio=${creditRatio.toFixed(2)} violations=${ruleViolations.length}`);
+
+    return {
+      expiry, dte, shortStrike, longStrike, spreadWidth: width,
+      credit, creditMid, creditRatio, delta: best.delta,
+      shortSymbol, longSymbol,
+      shortOi: best.oi || null,
+      longOi: longLegData?.oi || null,
+      shortBidAsk, longBidAsk,
+      ruleViolations, meetsMinCredit, meetsDte, meetsDelta, meetsOi, meetsBidAsk,
+    };
+  } catch (e) {
+    console.error('fetchRollSuggestion failed:', e);
+    return null;
+  }
+}
+
+// ── Roll validation helper ─────────────────────────────────────────────────
+function rollIsBlocking(suggestion: RollSuggestion): boolean {
+  // Only block on hard rule violations — soft warnings can be overridden
+  return !suggestion.meetsMinCredit || !suggestion.meetsDte;
 }
 
 // ── OCC Symbol Builder ─────────────────────────────────────────────────────
@@ -755,11 +853,15 @@ function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' =
 
 function buildOpenSpreadOrder(
   underlying: string, expiry: string, optType: 'P' | 'C',
-  shortStrike: number, longStrike: number, quantity: number, credit: number
+  shortStrike: number, longStrike: number, quantity: number, credit: number,
+  shortSymbolOverride?: string, longSymbolOverride?: string
 ): OrderBody {
   const itype = instrType(underlying);
-  const shortSym = buildOccSymbol(underlying, expiry, optType, shortStrike);
-  const longSym  = buildOccSymbol(underlying, expiry, optType, longStrike);
+  // Prefer native OCC symbols from TastyTrade chain (guaranteed correct format)
+  // Fall back to builder only if chain symbols aren't available
+  const shortSym = shortSymbolOverride ?? buildOccSymbol(underlying, expiry, optType, shortStrike);
+  const longSym  = longSymbolOverride  ?? buildOccSymbol(underlying, expiry, optType, longStrike);
+  console.log(`BUILD OPEN SPREAD: short=${shortSym} long=${longSym} credit=$${credit} qty=${quantity}`);
   return {
     'order-type': 'Limit',
     'time-in-force': 'GTC',
@@ -1843,11 +1945,70 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
             const ri = rollInputs[item.pos.key];
             if (ri?.expiry && ri.shortStrike && ri.longStrike && ri.credit) {
               const optType: 'P' | 'C' = item.pos.strategy === 'BCS' ? 'C' : 'P';
+              const suggestion = rollSuggestions[item.pos.key];
+              const qty = item.pos.legs[0]?.quantity ?? 1;
+
+              // Validate credit ratio before submitting open leg
+              const inputCredit = parseFloat(ri.credit);
+              const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
+              if (inputWidth > 0 && inputCredit < inputWidth / 3) {
+                throw new Error(
+                  `Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). ` +
+                  `This roll doesn't meet the Prosper credit rule. Adjust the credit or skip the roll.`
+                );
+              }
+
+              // Pre-submit live credit re-fetch if suggestion available
+              // Re-fetch the chain to get current mid price and verify it still makes sense
+              let finalCredit = inputCredit;
+              if (!dryRun && suggestion) {
+                try {
+                  const liveChain = await ttFetch(
+                    `/option-chains/${encodeURIComponent(item.pos.symbol)}/nested?expiration-date=${ri.expiry}`,
+                    token
+                  );
+                  const liveStrikes: any[] = liveChain?.data?.items?.[0]?.strikes ?? [];
+                  let shortLive: any = null;
+                  let longLive: any = null;
+                  for (const s of liveStrikes) {
+                    if (s['strike-price'] === parseFloat(ri.shortStrike)) shortLive = s[optType === 'P' ? 'put' : 'call'];
+                    if (s['strike-price'] === parseFloat(ri.longStrike))  longLive  = s[optType === 'P' ? 'put' : 'call'];
+                  }
+                  if (shortLive && longLive) {
+                    const shortMid = (parseFloat(shortLive.bid ?? '0') + parseFloat(shortLive.ask ?? '0')) / 2;
+                    const longMid  = (parseFloat(longLive.bid  ?? '0') + parseFloat(longLive.ask  ?? '0')) / 2;
+                    const liveCreditMid = shortMid - longMid;
+                    const liveCredit85  = parseFloat((liveCreditMid * 0.85).toFixed(2));
+                    console.log(`ROLL LIVE CREDIT REFETCH ${item.pos.symbol}: input=$${inputCredit} liveMid=$${liveCreditMid.toFixed(2)} live85%=$${liveCredit85}`);
+                    // If live credit is significantly different (>20%), use live price
+                    if (liveCreditMid > 0 && Math.abs(liveCreditMid - inputCredit) / inputCredit > 0.20) {
+                      console.warn(`Roll credit moved >20% — updating from $${inputCredit} to $${liveCredit85}`);
+                      finalCredit = liveCredit85;
+                    }
+                    // Block if live credit no longer meets minimum rule
+                    if (inputWidth > 0 && liveCreditMid < inputWidth / 3) {
+                      throw new Error(
+                        `Roll credit dropped to $${liveCreditMid.toFixed(2)} — no longer meets 1/3 rule ($${(inputWidth/3).toFixed(2)} min). ` +
+                        `Market has moved. Skip the open leg or find better strikes.`
+                      );
+                    }
+                  }
+                } catch (creditCheckErr: any) {
+                  if (String(creditCheckErr.message).includes('1/3 rule') || String(creditCheckErr.message).includes('credit rule')) {
+                    throw creditCheckErr; // blocking error — re-throw
+                  }
+                  console.warn(`Roll credit re-fetch failed for ${item.pos.symbol}:`, creditCheckErr.message);
+                }
+              }
+
+              // Use native OCC symbols from suggestion if available, else build
               const openBody = buildOpenSpreadOrder(
                 item.pos.symbol, ri.expiry, optType,
                 parseFloat(ri.shortStrike), parseFloat(ri.longStrike),
-                item.pos.legs[0]?.quantity ?? 1, parseFloat(ri.credit)
+                qty, finalCredit,
+                suggestion?.shortSymbol, suggestion?.longSymbol
               );
+
               let openId: string;
               if (dryRun) {
                 await new Promise(r => setTimeout(r, 200));
@@ -1860,8 +2021,8 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
               writeAuditEntry({
                 id: crypto.randomUUID(), timestamp: new Date().toISOString(),
                 symbol: item.pos.symbol, strategy: item.pos.strategy, action: 'CLOSE_ROLL',
-                orderType: 'Sell to Open (Roll)', limitPrice: parseFloat(ri.credit),
-                quantity: item.pos.legs[0]?.quantity ?? 1, orderId: openId,
+                orderType: 'Sell to Open (Roll)', limitPrice: finalCredit,
+                quantity: qty, orderId: openId,
                 status: dryRun ? 'dry-run' : 'submitted',
               });
 
@@ -2119,21 +2280,86 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                       {/* Roll inputs */}
                       {item.action === 'CLOSE_ROLL' && !isExcluded && (
                         <div className={`px-4 pb-3 border-t ${th.borderLight}`}>
-                          <div className="pt-3">
+                          <div className="pt-3 space-y-3">
+
+                            {/* Suggested roll with full rule check */}
                             {suggestion && (
-                              <div className="flex items-center gap-2 mb-2">
-                                <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">Suggested roll</span>
-                                <span className="text-[10px] text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
-                                  {suggestion.expiry} · {suggestion.shortStrike}/{suggestion.longStrike} · δ{suggestion.delta.toFixed(2)} · ${suggestion.credit.toFixed(2)} cr
-                                </span>
-                                <button onClick={() => setRollInputs(prev => ({
-                                  ...prev,
-                                  [item.pos.key]: { expiry: suggestion.expiry, shortStrike: String(suggestion.shortStrike), longStrike: String(suggestion.longStrike), credit: String(suggestion.credit) }
-                                }))} className="text-[9px] px-2 py-0.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/20 transition-colors">
-                                  Use this
-                                </button>
+                              <div className={`rounded-lg border p-3 space-y-2 ${
+                                rollIsBlocking(suggestion) ? 'border-red-500/50 bg-red-500/5' :
+                                suggestion.ruleViolations.length > 0 ? 'border-yellow-500/40 bg-yellow-500/5' :
+                                'border-blue-500/30 bg-blue-500/5'
+                              }`}>
+                                {/* Header row */}
+                                <div className="flex items-center justify-between flex-wrap gap-2">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">Suggested Roll</span>
+                                    <span className="text-[10px] text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      {suggestion.expiry} ({suggestion.dte}d) · {suggestion.shortStrike}/{suggestion.longStrike} · δ{suggestion.delta.toFixed(2)}
+                                    </span>
+                                  </div>
+                                  <button onClick={() => setRollInputs(prev => ({
+                                    ...prev,
+                                    [item.pos.key]: { expiry: suggestion.expiry, shortStrike: String(suggestion.shortStrike), longStrike: String(suggestion.longStrike), credit: String(suggestion.credit) }
+                                  }))} className="text-[9px] px-2 py-0.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/20 transition-colors">
+                                    Use this
+                                  </button>
+                                </div>
+
+                                {/* Credit & rule metrics */}
+                                <div className="grid grid-cols-4 gap-2">
+                                  <div>
+                                    <p className={`text-[9px] ${th.textFaint}`}>Credit (mid)</p>
+                                    <p className={`text-[10px] font-bold ${suggestion.meetsMinCredit ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      ${suggestion.creditMid.toFixed(2)}
+                                    </p>
+                                    <p className={`text-[9px] ${th.textFaint}`}>{(suggestion.creditRatio * 100).toFixed(0)}% of width</p>
+                                  </div>
+                                  <div>
+                                    <p className={`text-[9px] ${th.textFaint}`}>Limit order</p>
+                                    <p className={`text-[10px] font-bold text-blue-400`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      ${suggestion.credit.toFixed(2)}
+                                    </p>
+                                    <p className={`text-[9px] ${th.textFaint}`}>85% of mid</p>
+                                  </div>
+                                  <div>
+                                    <p className={`text-[9px] ${th.textFaint}`}>OI (short/long)</p>
+                                    <p className={`text-[10px] font-bold ${suggestion.meetsOi ? 'text-emerald-400' : 'text-yellow-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      {suggestion.shortOi ?? '?'} / {suggestion.longOi ?? '?'}
+                                    </p>
+                                    <p className={`text-[9px] ${th.textFaint}`}>need ≥500</p>
+                                  </div>
+                                  <div>
+                                    <p className={`text-[9px] ${th.textFaint}`}>Bid-ask (sh/lg)</p>
+                                    <p className={`text-[10px] font-bold ${suggestion.meetsBidAsk ? 'text-emerald-400' : 'text-yellow-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      ${suggestion.shortBidAsk?.toFixed(2) ?? '?'} / ${suggestion.longBidAsk?.toFixed(2) ?? '?'}
+                                    </p>
+                                    <p className={`text-[9px] ${th.textFaint}`}>need ≤$0.10</p>
+                                  </div>
+                                </div>
+
+                                {/* Rule violations */}
+                                {suggestion.ruleViolations.length > 0 && (
+                                  <div className="space-y-1">
+                                    {suggestion.ruleViolations.map((v, i) => (
+                                      <div key={i} className="flex items-start gap-1.5">
+                                        <span className={`text-[9px] shrink-0 mt-0.5 ${rollIsBlocking(suggestion) ? 'text-red-400' : 'text-yellow-400'}`}>
+                                          {rollIsBlocking(suggestion) ? '✕' : '⚠'}
+                                        </span>
+                                        <p className={`text-[9px] leading-relaxed ${rollIsBlocking(suggestion) ? 'text-red-300' : 'text-yellow-300'}`}>{v}</p>
+                                      </div>
+                                    ))}
+                                    {rollIsBlocking(suggestion) && (
+                                      <p className="text-[9px] text-red-400 font-bold mt-1">This roll does not meet minimum Prosper rules. Consider closing only, or finding a better expiry manually.</p>
+                                    )}
+                                  </div>
+                                )}
+                                {suggestion.ruleViolations.length === 0 && (
+                                  <p className="text-[9px] text-emerald-400">✓ All Prosper rules met</p>
+                                )}
                               </div>
                             )}
+
+                            {/* Manual inputs */}
                             <div className="grid grid-cols-4 gap-2">
                               {[
                                 { label: 'New Expiry', key: 'expiry', placeholder: '2025-08-15' },
@@ -2153,6 +2379,29 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                                 </div>
                               ))}
                             </div>
+
+                            {/* Live credit validation against inputs */}
+                            {ri?.credit && ri?.shortStrike && ri?.longStrike && (() => {
+                              const inputCredit = parseFloat(ri.credit);
+                              const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
+                              const inputRatio  = inputWidth > 0 ? inputCredit / inputWidth : 0;
+                              const minCredit   = inputWidth / 3;
+                              if (inputCredit > 0 && inputRatio < 1/3) {
+                                return (
+                                  <p className="text-[9px] text-red-400">
+                                    ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Prosper credit rule
+                                  </p>
+                                );
+                              }
+                              if (inputCredit > 0) {
+                                return (
+                                  <p className="text-[9px] text-emerald-400">
+                                    ✓ Credit ratio {(inputRatio * 100).toFixed(0)}% of spread width — meets 1/3 rule
+                                  </p>
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
                         </div>
                       )}
