@@ -1117,7 +1117,13 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, th }: {
     async function enrich() {
       setStatus('enriching');
       try {
-        const token = await getAccessToken();
+        let token: string;
+        try {
+          token = await getAccessToken();
+        } catch (authErr: any) {
+          if (!cancelled) { setErrorMsg(`Authentication error: ${authErr.message}. Try refreshing the page.`); setStatus('error'); }
+          return;
+        }
         const enriched: BatchOrderItem[] = [];
 
         for (const { pos, action } of initialItems) {
@@ -1948,12 +1954,13 @@ function PortfolioAnalysisPanel({ analysis, positions, onClose, th }: {
   );
 }
 
-function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
+function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExecute }: {
   pos: Position;
   th: typeof THEMES[Theme];
   checked: boolean;
   onToggle: (key: string) => void;
   onProfitTargetChange: (key: string, value: number) => void;
+  onExecute: (pos: Position, action: ActionType) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
@@ -2165,15 +2172,29 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
         </div>
       </div>
 
-      {/* Analyze button row — always visible, outside the scrollable grid */}
+      {/* Action + Analyze row */}
       <div className={`flex items-center justify-between px-4 py-2 border-t ${th.borderLight}`}>
-        <div className="flex items-center gap-2">
-          {analysis && !analysisLoading && (
-            <span className={`text-[9px] font-bold ${REC_COLOR[analysis.recommendation] ?? 'text-white'}`}>
-              AI → {analysis.recommendation.replace('_', ' ')}
-            </span>
+        {/* Quick action buttons */}
+        <div className="flex items-center gap-1.5">
+          {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).map(action => {
+            const meta = ACTION_META[action];
+            // Only show actions relevant to this position's state
+            if (action === 'TAKE_PROFIT' && !pos.hitTarget && rec.action !== 'TAKE_PROFIT') return null;
+            if (action === 'PLACE_GTC' && pos.hasGtc) return null;
+            return (
+              <button key={action}
+                onClick={e => { e.stopPropagation(); onExecute(pos, action); }}
+                className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${meta.btnClass}`}>
+                {meta.label}
+              </button>
+            );
+          })}
+          {/* Always show the recommended action if not already shown */}
+          {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(rec.action) && (
+            <span className={`text-[9px] ${th.textFaint} ml-1`}>← suggested</span>
           )}
         </div>
+
         <button
           onClick={e => { e.stopPropagation(); if (analysis || analysisLoading) { setShowAnalysis(v => !v); } else { handleAnalyze(); } }}
           className={`text-[10px] px-3 py-1 border rounded-lg transition-colors font-bold flex items-center gap-1.5 ${
@@ -2235,12 +2256,13 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange }: {
 }
 
 // ── Position Section with group-action header ──────────────────────────────
-function PositionSection({ title, titleColor, positions, th, checked, onToggle, onToggleAll, onProfitTargetChange, groupAction, onGroupAction }: {
+function PositionSection({ title, titleColor, positions, th, checked, onToggle, onToggleAll, onProfitTargetChange, groupAction, onGroupAction, onExecute }: {
   title: string; titleColor: string; positions: Position[];
   th: typeof THEMES[Theme]; checked: Set<string>;
   onToggle: (key: string) => void; onToggleAll: (keys: string[], select: boolean) => void;
   onProfitTargetChange: (key: string, value: number) => void;
   groupAction: ActionType; onGroupAction: (positions: Position[], action: ActionType) => void;
+  onExecute: (pos: Position, action: ActionType) => void;
 }) {
   const keys = positions.map(p => p.key);
   const allChecked = keys.length > 0 && keys.every(k => checked.has(k));
@@ -2266,7 +2288,7 @@ function PositionSection({ title, titleColor, positions, th, checked, onToggle, 
       </div>
       <div className="space-y-2">
         {positions.map(p => (
-          <PositionCard key={p.key} pos={p} th={th} checked={checked.has(p.key)} onToggle={onToggle} onProfitTargetChange={onProfitTargetChange} />
+          <PositionCard key={p.key} pos={p} th={th} checked={checked.has(p.key)} onToggle={onToggle} onProfitTargetChange={onProfitTargetChange} onExecute={onExecute} />
         ))}
       </div>
     </div>
@@ -2453,6 +2475,7 @@ export default function PortfolioPage() {
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="CLOSE_ROLL" onGroupAction={onGroupAction}
+                  onExecute={(pos, action) => openBatch([{ pos, action }])}
                 />
               )}
 
@@ -2463,6 +2486,7 @@ export default function PortfolioPage() {
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="TAKE_PROFIT" onGroupAction={onGroupAction}
+                  onExecute={(pos, action) => openBatch([{ pos, action }])}
                 />
               )}
 
@@ -2473,6 +2497,7 @@ export default function PortfolioPage() {
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="PLACE_GTC" onGroupAction={onGroupAction}
+                  onExecute={(pos, action) => openBatch([{ pos, action }])}
                 />
               )}
 
@@ -2483,6 +2508,7 @@ export default function PortfolioPage() {
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="HOLD" onGroupAction={onGroupAction}
+                  onExecute={(pos, action) => openBatch([{ pos, action }])}
                 />
               )}
             </div>
