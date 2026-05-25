@@ -3284,9 +3284,9 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
                 ⚠ Profit target already hit
               </p>
               <p className="text-[10px] text-red-300 leading-relaxed mt-0.5">
-                GTC ${'{'}gtcPrice{'}'} is at or above current spread value ${'{'}(pos.currentValue / 100).toFixed(2){'}'}.
+                GTC ${gtcPrice} is at or above current spread value ${(pos.currentValue / 100).toFixed(2)}.
                 TastyTrade will reject this OCO. Use <span className="font-bold">Take Profit</span> to close now,
-                or raise the GTC price above ${'{'}(pos.currentValue / 100 + 0.01).toFixed(2){'}'}.
+                or raise the GTC price above ${(pos.currentValue / 100 + 0.01).toFixed(2)}.
               </p>
             </div>
           )}
@@ -3295,7 +3295,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
           {needsOco && (
             <div className="mb-3 p-2.5 rounded-lg border border-yellow-600/40 bg-yellow-500/5">
               <p className="text-[10px] text-yellow-300 leading-relaxed">
-                <span className="font-bold">⚠ Existing GTC (${'{'}existingGtcPrice.toFixed(2){'}'}) will be cancelled</span> and resubmitted with the stop as an OCO pair. One fills → the other cancels automatically.
+                <span className="font-bold">⚠ Existing GTC (${existingGtcPrice.toFixed(2)}) will be cancelled</span> and resubmitted with the stop as an OCO pair. One fills → the other cancels automatically.
               </p>
             </div>
           )}
