@@ -4304,6 +4304,49 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
     </div>
   );
 }
+// ── Greek Value Tint Helpers ──────────────────────────────────────────────
+// Returns a faint background class based on how favorable the Greek is
+// for a short premium (credit spread) position.
+
+function thetaTint(theta: number | null): string {
+  if (theta == null) return '';
+  if (theta >= 0.10) return 'bg-emerald-500/20 rounded px-1';
+  if (theta >= 0.05) return 'bg-emerald-500/12 rounded px-1';
+  if (theta >= 0.01) return 'bg-emerald-500/8 rounded px-1';
+  if (theta < 0)     return 'bg-red-500/15 rounded px-1';
+  return '';
+}
+
+function deltaTint(delta: number | null): string {
+  if (delta == null) return '';
+  const abs = Math.abs(delta);
+  if (abs <= 0.05)  return 'bg-emerald-500/20 rounded px-1';
+  if (abs <= 0.10)  return 'bg-emerald-500/12 rounded px-1';
+  if (abs <= 0.15)  return 'bg-yellow-500/12 rounded px-1';
+  if (abs <= 0.25)  return 'bg-orange-500/15 rounded px-1';
+  return 'bg-red-500/20 rounded px-1';
+}
+
+function gammaTint(gamma: number | null): string {
+  if (gamma == null) return '';
+  const abs = Math.abs(gamma);
+  if (abs <= 0.001)  return 'bg-emerald-500/20 rounded px-1';
+  if (abs <= 0.003)  return 'bg-emerald-500/12 rounded px-1';
+  if (abs <= 0.006)  return 'bg-yellow-500/12 rounded px-1';
+  if (abs <= 0.010)  return 'bg-orange-500/15 rounded px-1';
+  return 'bg-red-500/20 rounded px-1';
+}
+
+function vegaTint(vega: number | null): string {
+  if (vega == null) return '';
+  // Short vega (negative) is favorable for premium sellers
+  if (vega <= -0.10) return 'bg-emerald-500/20 rounded px-1';
+  if (vega <= -0.05) return 'bg-emerald-500/12 rounded px-1';
+  if (vega <= -0.01) return 'bg-emerald-500/8 rounded px-1';
+  if (vega >= 0)     return 'bg-red-500/15 rounded px-1';
+  return '';
+}
+
 // ── Buffer Color Helpers ──────────────────────────────────────────────────
 function bufferColor(buffer: number | null, dte: number): string {
   if (buffer == null) return 'text-[#808080]';
@@ -4568,28 +4611,28 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             {/* ── GREEKS ─────────────────────────────── */}
             <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Theta</p>
-              <p className={`text-xs font-bold ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold inline-block ${thetaTint(pos.theta)} ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
               </p>
             </div>
 
             <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Delta</p>
-              <p className={`text-xs font-bold ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold inline-block ${deltaTint(pos.netDelta)} ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
               </p>
             </div>
 
             <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
-              <p className={`text-xs font-bold ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
               </p>
             </div>
 
             <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Vega</p>
-              <p className={`text-xs font-bold ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold inline-block ${vegaTint(pos.netVega)} ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
               </p>
             </div>
