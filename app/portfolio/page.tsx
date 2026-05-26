@@ -4321,11 +4321,14 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             const meta = ACTION_META[action];
             if (action === 'TAKE_PROFIT' && !pos.hitTarget && rec.action !== 'TAKE_PROFIT') return null;
             if (action === 'PLACE_GTC' && pos.hasGtc) return null;
+            const isClosePending = action === 'TAKE_PROFIT' && pos.hasGtc
+              && pos.gtcOrderPrice != null && pos.currentValue != null
+              && Math.abs(pos.gtcOrderPrice - pos.currentValue / 100) / (pos.currentValue / 100) < 0.25;
             return (
               <button key={action}
                 onClick={e => { e.stopPropagation(); onExecute(pos, action); }}
                 className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${meta.btnClass}`}>
-                {meta.label}
+                {isClosePending ? '✎ Modify Close' : meta.label}
               </button>
             );
           })}
