@@ -1088,7 +1088,7 @@ async function loadPositions(): Promise<Position[]> {
     const allOrders = (liveData[0].status === 'fulfilled' ? liveData[0].value?.data?.items : null) ?? [];
     for (const order of allOrders) {
       const status = (order['status'] ?? '').toLowerCase();
-      if (['working', 'live', 'contingent', 'received'].includes(status)) {
+      if (['working', 'live', 'contingent', 'received', 'pending'].includes(status)) {
         for (const leg of order.legs ?? []) {
           const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
           if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
