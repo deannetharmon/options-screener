@@ -4287,24 +4287,23 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             </div>
 
             <div>
-              <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
-              <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-                ${pos.creditReceived.toFixed(2)}
-                {(() => {
+             <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
+             <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
+             {(() => {
                   const short = pos.legs.find(l => l.direction === 'Short');
                   const long  = pos.legs.find(l => l.direction === 'Long');
                   if (!short || !long) return null;
                   const width = Math.abs(short.strikePrice - long.strikePrice);
                   if (width <= 0) return null;
-                  const ratio = pos.creditReceived / (width * 100);
+                  const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
+                  const ratio = pos.creditReceived / (width * qty * 100);
                   const ratioThreshold = getCreditRatioThreshold(pos.underlyingType);
                   const rocThreshold   = getRocThreshold(pos.underlyingType, pos.ivr);
                   const rocOk   = pos.roc != null && pos.roc >= rocThreshold;
                   const ratioOk = ratio >= ratioThreshold;
                   const color   = (rocOk && ratioOk) ? 'text-emerald-400' : (rocOk || ratioOk) ? 'text-yellow-400' : 'text-red-400';
-                  return <span className={`ml-1 text-[9px] font-normal ${color}`}>({Math.round(ratio * 100)}%{pos.roc != null ? ` · ${pos.roc.toFixed(0)}% ROC` : ''})</span>;
+                  return <span className={`text-[9px] font-normal ${color}`}>({Math.round(ratio * 100)}%{pos.roc != null ? ` · ${pos.roc.toFixed(0)}% ROC` : ''})</span>;
                 })()}
-              </p>
             </div>
             
             <div onClick={e => e.stopPropagation()}>
