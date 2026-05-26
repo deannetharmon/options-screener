@@ -4563,7 +4563,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
             {/* Recommendation */}
             <div>
-              <p className={`text-[9px] ${th.textFaint}`}>Suggested</p>
+              <p className={`text-[9px] ${th.textFaint}`}>Suggested Action</p>
               <span className={`text-[10px] font-bold ${ACTION_META[rec.action].color}`}>{ACTION_META[rec.action].label}</span>
               <p className={`text-[9px] ${th.textFaint} mt-0.5 leading-tight`}>{rec.detail}</p>
             </div>
