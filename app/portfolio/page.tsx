@@ -1748,7 +1748,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           // freshPrice = total value across all contracts × 100
           const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
           const freshPerContract = freshPrice != null ? freshPrice / (qty * 100) : null;
-          const creditPerContract = pos.creditReceived / 100;
+          const creditPerContract = pos.creditReceived / (qty * 100);
 
           console.log(`ENRICH ${pos.symbol} ${action}: freshPrice=${freshPrice}, freshPerContract=${freshPerContract?.toFixed(4)}, creditPerContract=${creditPerContract.toFixed(4)}`);
 
@@ -1777,7 +1777,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           const effectivePerContract = freshPerContract ?? (pos.currentValue != null ? pos.currentValue / (qty * 100) : null);
 
           if (action === 'TAKE_PROFIT' || action === 'PLACE_GTC') {
-            const targetPrice = parseFloat((creditPerContract * pos.profitTarget).toFixed(2));
+            const targetPrice = parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
             if (effectivePerContract != null && targetPrice >= effectivePerContract) {
               // Target already hit or exceeded — use live mid so order fills immediately
               limitPrice = parseFloat(Math.max(effectivePerContract - 0.01, 0.01).toFixed(2));
@@ -1802,7 +1802,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
             }
           } else {
             // PLACE_GTC fallback
-            const targetPrice = parseFloat((creditPerContract * pos.profitTarget).toFixed(2));
+            const targetPrice = parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
             limitPrice = effectivePerContract != null
               ? Math.min(targetPrice, parseFloat((effectivePerContract - 0.01).toFixed(2)))
               : targetPrice;
@@ -1906,7 +1906,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
               const liveTotal = await fetchFreshPositionPrice(item.pos, liveToken);
               const qty = item.pos.legs.find((l: PositionLeg) => l.direction === 'Short')?.quantity ?? 1;
               const livePerContract = liveTotal != null ? liveTotal / (qty * 100) : null;
-              const creditPerContract = item.pos.creditReceived / 100;
+              const creditPerContract = item.pos.creditReceived / (qty * 100);
               console.log(`PRE-SUBMIT ${item.pos.symbol} ${item.action}: live=$${livePerContract?.toFixed(4)}, limit=$${item.limitPrice.toFixed(4)}`);
 
               if (livePerContract != null) {
@@ -1921,7 +1921,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                     // Limit is >30% away from live — rebuild with fresh price
                     console.warn(`${item.pos.symbol}: limit $${item.limitPrice.toFixed(2)} is ${(pctFromLive*100).toFixed(0)}% from live $${livePerContract.toFixed(2)} — rebuilding order with fresh price`);
                     const freshLimit = item.action === 'TAKE_PROFIT'
-                      ? parseFloat(Math.min(creditPerContract * item.pos.profitTarget, livePerContract - 0.01).toFixed(2))
+                      ? parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2))
                       : parseFloat((livePerContract * 1.02).toFixed(2));
                     item.orderBody = buildCloseOrder(item.pos, freshLimit, item.orderBody['time-in-force'] as 'GTC' | 'Day');
                     (item as any).limitPrice = freshLimit;
@@ -2298,7 +2298,8 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                           </div>
                           {/* Profit % helper for TAKE_PROFIT / PLACE_GTC */}
                           {(item.action === 'TAKE_PROFIT' || item.action === 'PLACE_GTC') && (() => {
-                            const creditPc = item.pos.creditReceived / 100;
+                            const _qty2 = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
+                            const creditPc = item.pos.creditReceived / (_qty2 * 100);
                             const currentLimit = parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2));
                             const pct = creditPc > 0 ? Math.round((1 - currentLimit / creditPc) * 100) : 0;
                             return (
@@ -2326,7 +2327,8 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                           })()}
                           {/* Stop limit % helper for CUT_LOSSES */}
                           {item.action === 'CUT_LOSSES' && (() => {
-                            const creditPc = item.pos.creditReceived / 100;
+                            const _qty3 = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
+                            const creditPc = item.pos.creditReceived / (_qty3 * 100);
                             const currentLimit = parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2));
                             const lossPct = creditPc > 0 ? Math.round((currentLimit / creditPc) * 100) : 0;
                             return (
