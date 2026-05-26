@@ -4232,9 +4232,20 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
             <div>
               <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
-              <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
+              <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+                ${pos.creditReceived.toFixed(2)}
+                {(() => {
+                  const short = pos.legs.find(l => l.direction === 'Short');
+                  const long  = pos.legs.find(l => l.direction === 'Long');
+                  if (!short || !long) return null;
+                  const width = Math.abs(short.strikePrice - long.strikePrice);
+                  if (width <= 0) return null;
+                  const pct = Math.round((pos.creditReceived / (width * 100)) * 100);
+                  return <span className={`ml-1 text-[9px] font-normal ${pct >= 33 ? 'text-emerald-400' : 'text-yellow-400'}`}>({pct}%)</span>;
+                })()}
+              </p>
             </div>
-
+            
             <div onClick={e => e.stopPropagation()}>
               <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
               {editingTarget ? (
