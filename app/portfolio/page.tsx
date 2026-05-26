@@ -1341,7 +1341,7 @@ WHEN TO DEVIATE FROM RULES (apply professional judgment):
 
 ANALYSIS PRINCIPLES:
 - Always consider the trend direction vs. the strategy type — a BPS in a downtrend is broken thesis
-- Buffer % to short strike is critical — below 3% demands attention regardless of DTE
+- Buffer % to short strike is DTE-dependent — below 2% is always critical; below 3% matters at > 21 DTE; below 5% is only worth noting at > 30 DTE. A 3% buffer at 5 DTE is fine — theta is destroying the spread daily.
 - High gamma near expiry (DTE < 21) magnifies risk exponentially — treat with respect
 - IV vs HV comparison: if IV >> HV (IV premium), edge exists; if IV ≈ HV, edge is thin
 - Theta decay accelerates in final 3 weeks — this is your friend if positioned correctly
@@ -1492,11 +1492,14 @@ TAKE_PROFIT (closing for profit):
 CUT_LOSSES (closing at a loss):
 - Is the thesis genuinely broken (trend reversed, breach imminent) or is this just uncomfortable?
 - What's the actual loss vs max loss? If at 1x credit loss, cutting is reasonable. Beyond 2x, you should have cut already.
-- Buffer: if < 3% and DTE > 7, cutting is usually right even if painful.
+- Buffer: use DTE-aware judgment — < 2% at any DTE is critical; < 3% only concerning if DTE > 21; < 5% only worth noting if DTE > 30. Short-dated positions (< 14 DTE) with thin buffers are often fine — theta is working hard.
 
 PLACE_GTC (placing a profit target order):
 - Almost always a GO — this is standard practice and protects the position.
-- Only CAUTION if the target price seems wrong (e.g. GTC set at 10% profit which will fire too early).
+- Any profit target between 40-85% is valid and should NOT be flagged. The trader knows their target.
+- Only CAUTION if: target is below 20% (fires almost immediately, not worth the order) or above 90% (basically never fires).
+- Do NOT flag the buffer or any other position metric as a reason to CAUTION a PLACE_GTC. The GTC protects the position — placing it is always better than not placing it.
+- Do NOT comment on whether 50% vs 65% vs 75% is the right target. That is the trader's decision.
 
 OUTPUT FORMAT — JSON only, nothing else:
 {
@@ -3549,7 +3552,9 @@ CORRECT APPROACH: Anchor the stop to the CURRENT spread value, not original cred
 - A position at 0-20% profit or a loss: tighter protection — current value × 1.5 to 2.5
 
 ADDITIONAL STOP ADJUSTMENTS (on top of current-value anchor):
-- Buffer < 5%: tighten — position is near breach, use current value × 1.5 to 2.0
+- Buffer < 2%: tighten aggressively — near breach, use current value × 1.5 to 2.0
+- Buffer < 5% AND DTE > 21: tighten — position needs protection, use current value × 1.5 to 2.5
+- Buffer < 5% AND DTE < 14: less urgent — theta working hard, normal stop is fine
 - Buffer > 15%: can use current value × 3.0 to 4.0 — stock has room to move
 - DTE < 21: position should be closing anyway — note this and set tight stop
 - DTE > 35: more time = more room for noise — slightly looser stop acceptable
