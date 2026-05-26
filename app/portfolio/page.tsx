@@ -1723,6 +1723,8 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
+  // User-editable limit price overrides per position key
+  const [limitOverrides, setLimitOverrides] = useState<Record<string, string>>({});
 
   const marketStatus = getMarketStatus();
 
@@ -1867,7 +1869,19 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
     return () => { cancelled = true; };
   }, []);
 
-  const activeItems = batchItems.filter(i => !excluded.has(i.pos.key));
+  const activeItems = batchItems
+    .filter(i => !excluded.has(i.pos.key))
+    .map(i => {
+      const ovr = limitOverrides[i.pos.key];
+      if (ovr !== undefined && ovr !== '') {
+        const parsed = parseFloat(ovr);
+        if (!isNaN(parsed) && parsed > 0) {
+          const updatedBody = buildCloseOrder(i.pos, parsed, i.orderBody['time-in-force'] as 'GTC' | 'Day');
+          return { ...i, limitPrice: parsed, orderBody: updatedBody };
+        }
+      }
+      return i;
+    });
   const totalDebit = activeItems.reduce((s, i) => s + i.limitPrice, 0);
   const totalEstPnl = activeItems.reduce((s, i) => s + (i.estPnl ?? 0), 0);
   const warningCount = activeItems.filter(i => i.stalePriceWarning || i.duplicateGtcWarning).length;
@@ -2264,10 +2278,81 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                             </div>
                           )}
                         </div>
-                        <div className="text-right shrink-0">
-                          <p className={`text-xs font-bold ${item.priceError != null ? 'text-red-400' : 'text-blue-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                            Limit ${item.limitPrice.toFixed(2)}
-                          </p>
+                        <div className="text-right shrink-0 space-y-1 min-w-[140px]">
+                          {/* Editable limit price */}
+                          <div className="flex items-center justify-end gap-1">
+                            <span className={`text-[9px] ${th.textFaint}`}>Limit $</span>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0.01"
+                              value={limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2)}
+                              onChange={e => setLimitOverrides(prev => ({ ...prev, [item.pos.key]: e.target.value }))}
+                              onBlur={e => {
+                                const v = parseFloat(e.target.value);
+                                if (isNaN(v) || v <= 0) setLimitOverrides(prev => { const n = { ...prev }; delete n[item.pos.key]; return n; });
+                                else setLimitOverrides(prev => ({ ...prev, [item.pos.key]: v.toFixed(2) }));
+                              }}
+                              className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${item.priceError != null ? 'border-red-500/60 text-red-400' : 'border-blue-500/40 text-blue-400'} bg-transparent outline-none focus:border-blue-400`}
+                              style={{ fontFamily: "'DM Mono', monospace" }}
+                            />
+                          </div>
+                          {/* Profit % helper for TAKE_PROFIT / PLACE_GTC */}
+                          {(item.action === 'TAKE_PROFIT' || item.action === 'PLACE_GTC') && (() => {
+                            const creditPc = item.pos.creditReceived / 100;
+                            const currentLimit = parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2));
+                            const pct = creditPc > 0 ? Math.round((1 - currentLimit / creditPc) * 100) : 0;
+                            return (
+                              <div className="flex items-center justify-end gap-1">
+                                <span className={`text-[9px] ${th.textFaint}`}>Close at</span>
+                                <input
+                                  type="number"
+                                  step="5"
+                                  min="5"
+                                  max="95"
+                                  value={pct}
+                                  onChange={e => {
+                                    const p = parseInt(e.target.value);
+                                    if (!isNaN(p) && p >= 5 && p <= 95 && creditPc > 0) {
+                                      const newLimit = parseFloat((creditPc * (1 - p / 100)).toFixed(2));
+                                      setLimitOverrides(prev => ({ ...prev, [item.pos.key]: newLimit.toFixed(2) }));
+                                    }
+                                  }}
+                                  className={`w-12 text-[10px] font-bold text-right px-1.5 py-0.5 rounded border border-emerald-600/40 text-emerald-400 bg-transparent outline-none focus:border-emerald-400`}
+                                  style={{ fontFamily: "'DM Mono', monospace" }}
+                                />
+                                <span className={`text-[9px] ${th.textFaint}`}>%</span>
+                              </div>
+                            );
+                          })()}
+                          {/* Stop limit % helper for CUT_LOSSES */}
+                          {item.action === 'CUT_LOSSES' && (() => {
+                            const creditPc = item.pos.creditReceived / 100;
+                            const currentLimit = parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2));
+                            const lossPct = creditPc > 0 ? Math.round((currentLimit / creditPc) * 100) : 0;
+                            return (
+                              <div className="flex items-center justify-end gap-1">
+                                <span className={`text-[9px] ${th.textFaint}`}>Stop at</span>
+                                <input
+                                  type="number"
+                                  step="5"
+                                  min="100"
+                                  max="300"
+                                  value={lossPct}
+                                  onChange={e => {
+                                    const p = parseInt(e.target.value);
+                                    if (!isNaN(p) && p >= 100 && p <= 300 && creditPc > 0) {
+                                      const newLimit = parseFloat((creditPc * (p / 100)).toFixed(2));
+                                      setLimitOverrides(prev => ({ ...prev, [item.pos.key]: newLimit.toFixed(2) }));
+                                    }
+                                  }}
+                                  className={`w-12 text-[10px] font-bold text-right px-1.5 py-0.5 rounded border border-red-600/40 text-red-400 bg-transparent outline-none focus:border-red-400`}
+                                  style={{ fontFamily: "'DM Mono', monospace" }}
+                                />
+                                <span className={`text-[9px] ${th.textFaint}`}>% credit</span>
+                              </div>
+                            );
+                          })()}
                           {item.estPnl != null && (
                             <p className={`text-[10px] font-bold ${item.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                               {item.estPnl >= 0 ? '+' : ''}${item.estPnl.toFixed(2)}
