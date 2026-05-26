@@ -1064,13 +1064,17 @@ async function loadPositions(): Promise<Position[]> {
       const parsedIvr = rawIvr != null ? parseFloat(String(rawIvr)) : NaN;
       if (!isNaN(parsedIvr)) ivrMap[sym] = parsedIvr < 1 ? Math.round(parsedIvr * 100) : Math.round(parsedIvr);
       // IV (current implied volatility as %)
-      const rawIv = item['implied-volatility'] ?? item['iv'] ?? null;
+      const rawIv = item['implied-volatility'] ?? item['iv'] ?? item['implied-volatility-30-day'] ?? item['iv-30-day'] ?? null;
       const parsedIv = rawIv != null ? parseFloat(String(rawIv)) : NaN;
       if (!isNaN(parsedIv)) ivMap[sym] = parsedIv < 1 ? Math.round(parsedIv * 100) : Math.round(parsedIv);
       // HV30
-      const rawHv = item['hv-30'] ?? item['historical-volatility-30'] ?? item['hv30'] ?? null;
+      const rawHv = item['hv-30'] ?? item['historical-volatility-30'] ?? item['hv30'] ?? item['historical-volatility'] ?? null;
       const parsedHv = rawHv != null ? parseFloat(String(rawHv)) : NaN;
       if (!isNaN(parsedHv)) hv30Map[sym] = parsedHv < 1 ? Math.round(parsedHv * 100) : Math.round(parsedHv);
+      // Debug: log raw metrics for indexes so we can see what fields come back
+      if (['SPX','NDX','RUT','VIX'].includes(sym)) {
+        console.log(`METRICS ${sym}:`, JSON.stringify(item).slice(0, 500));
+      }
       // Beta
       const rawBeta = item['beta'] ?? item['beta-60-day'] ?? null;
       const parsedBeta = rawBeta != null ? parseFloat(String(rawBeta)) : NaN;
@@ -1087,11 +1091,20 @@ async function loadPositions(): Promise<Position[]> {
   const stockPrices: Record<string, number | null> = {};
   try {
     const underlyingSymbols: string[] = (optionPositions as any[]).map((p: any) => String(p['underlying-symbol'])).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
-    const qs = underlyingSymbols.map(s => `equity=${encodeURIComponent(s)}`).join('&');
-    const stockData = await ttFetch(`/market-data/by-type?${qs}`, token);
-    for (const item of stockData?.data?.items ?? []) {
-      const bid = parseFloat(item.bid ?? '0'); const ask = parseFloat(item.ask ?? '0');
-      stockPrices[item.symbol] = (bid + ask) / 2;
+    const indexSymbols = underlyingSymbols.filter(s => ['SPX','NDX','RUT','VIX','DJX'].includes(s.toUpperCase()));
+    const equitySymbols = underlyingSymbols.filter(s => !['SPX','NDX','RUT','VIX','DJX'].includes(s.toUpperCase()));
+    const qsParts: string[] = [
+      ...equitySymbols.map(s => `equity=${encodeURIComponent(s)}`),
+      ...indexSymbols.map(s => `index=${encodeURIComponent(s)}`),
+    ];
+    if (qsParts.length > 0) {
+      const stockData = await ttFetch(`/market-data/by-type?${qsParts.join('&')}`, token);
+      for (const item of stockData?.data?.items ?? []) {
+        const bid = parseFloat(item.bid ?? '0'); const ask = parseFloat(item.ask ?? '0');
+        const mark = parseFloat(item.mark ?? item['mark-price'] ?? '0');
+        const mid = (bid + ask) / 2;
+        stockPrices[item.symbol] = mid > 0 ? mid : mark > 0 ? mark : 0;
+      }
     }
   } catch {}
 
@@ -1342,6 +1355,8 @@ WHEN TO DEVIATE FROM RULES (apply professional judgment):
 ANALYSIS PRINCIPLES:
 - Always consider the trend direction vs. the strategy type — a BPS in a downtrend is broken thesis
 - Buffer % to short strike is DTE-dependent — below 2% is always critical; below 3% matters at > 21 DTE; below 5% is only worth noting at > 30 DTE. A 3% buffer at 5 DTE is fine — theta is destroying the spread daily.
+- NEVER label a buffer as "critical threshold" or "minimum acceptable" unless it is actually below 2%. A 3% buffer at 44 DTE is a WATCH item, not a crisis. Use language like "worth monitoring" or "on the tighter side" instead.
+- IV edge = IV minus HV30. If either is unknown, say so but don't list it as a risk unless it's genuinely missing AND relevant to the recommendation.
 - High gamma near expiry (DTE < 21) magnifies risk exponentially — treat with respect
 - IV vs HV comparison: if IV >> HV (IV premium), edge exists; if IV ≈ HV, edge is thin
 - Theta decay accelerates in final 3 weeks — this is your friend if positioned correctly
@@ -1669,8 +1684,18 @@ async function analyzePortfolio(positions: Position[]): Promise<PortfolioAnalysi
   };
 }
 
+// Map index symbols to their chart-compatible equivalents
+const INDEX_CHART_SYMBOLS: Record<string, string> = {
+  'SPX': 'SPY',   // Use SPY as proxy for SPX trend — highly correlated, better data availability
+  'NDX': 'QQQ',   // Use QQQ as proxy for NDX
+  'RUT': 'IWM',   // Use IWM as proxy for RUT
+  'VIX': 'VIX',
+  'DJX': 'DIA',
+};
+
 async function getTrend(symbol: string): Promise<TrendResult> {
-  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+  const chartSymbol = INDEX_CHART_SYMBOLS[symbol.toUpperCase()] ?? symbol;
+  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(chartSymbol)}`, { cache: 'no-store' });
   if (!res.ok) return { trend: 'unknown', strategy: 'NO_TRADE', confidence: 0, reason: 'Chart data unavailable' };
   const data = await res.json();
   const bars: { c: number }[] = data?.bars ?? [];
