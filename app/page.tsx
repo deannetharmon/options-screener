@@ -3274,7 +3274,7 @@ function BestOpportunityFinder({
             <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity — {symbol}</h2>
             <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
               Scans all 4 rule levels. Each level shows the best setup found and what changed vs Course.
-              {preferredStrategy && <span> Preferred: <span className="text-blue-400 font-bold">{preferredStrategy}</span></span>}
+              {preferredStrategy && <span> Ticker placed in <span className="text-blue-400 font-bold">{preferredStrategy}</span> box — other strategies flagged if they contradict</span>}
             </p>
           </div>
           <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white">✕</button>
@@ -3316,6 +3316,9 @@ function BestOpportunityFinder({
                         <div className="flex items-center gap-2">
                           <span className={`text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border ${idx === 0 ? 'border-emerald-500 text-emerald-400' : idx === 1 ? 'border-slate-500 text-slate-400' : 'border-slate-700 text-slate-500'}`}>{idx + 1}</span>
                           <span className={`text-xs font-bold px-2 py-0.5 border rounded ${setup.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : setup.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{setup.strategy}</span>
+                          {preferredStrategy && setup.strategy !== preferredStrategy && (
+                            <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/60 bg-yellow-500/10 text-yellow-400 font-bold">⚠ contradicts {preferredStrategy} box</span>
+                          )}
                           <span className={`text-xs font-bold ${gradeColor(setup.grade)}`}>Grade {setup.grade}</span>
                           <span className={`text-[9px] ${th.textFaint}`}>score {setup.score.toFixed(1)}</span>
                         </div>
