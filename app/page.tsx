@@ -3360,6 +3360,16 @@ function BestOpportunityFinder({
   );
 }
 
+// ── Raw Scan Cache ─────────────────────────────────────────────────────────
+interface RawScanEntry {
+  symbol: string;
+  strategy: 'BPS' | 'BCS' | 'IC';
+  metrics: { symbol: string; ivRank: number | null; earningsExpectedDate: string | null };
+  chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean };
+  price: number | null;
+  trendResult?: TrendResult;
+}
+
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
@@ -3374,6 +3384,7 @@ export default function Home() {
   const [icTickers, setIcTickers] = useState('');
   const [brokenTickers, setBrokenTickers] = useState('');
   const [results, setResults] = useState<ScreenResult[]>([]);
+  const [rawScanCache, setRawScanCache] = useState<RawScanEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
@@ -3407,9 +3418,9 @@ export default function Home() {
     } catch {}
   }, []);
 
-  const handleBpsChange = (v: string) => { setBpsTickers(v); try { localStorage.setItem(LS_BPS, v); } catch {} };
-  const handleBcsChange = (v: string) => { setBcsTickers(v); try { localStorage.setItem(LS_BCS, v); } catch {} };
-  const handleIcChange = (v: string) => { setIcTickers(v); try { localStorage.setItem(LS_IC, v); } catch {} };
+  const handleBpsChange = (v: string) => { setBpsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BPS, v); } catch {} };
+  const handleBcsChange = (v: string) => { setBcsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BCS, v); } catch {} };
+  const handleIcChange = (v: string) => { setIcTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); if (!newBps && !newBcs && !newIc && !newBroken) { setResults([]); setAutoTrendEntries([]); } };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
@@ -3432,6 +3443,42 @@ export default function Home() {
       setAutoTrendEntries, showLoadPrompt
     );
   };
+
+  // ── Apply rules client-side against cached raw scan data ──────────────────
+  // Called instead of runScreen when rules change but tickers haven't changed.
+  // Zero API calls — instant re-filter.
+  const applyRules = useCallback((sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
+    if (rawScanCache.length === 0) return; // No cache yet — need a full scan first
+
+    const screenResults: ScreenResult[] = rawScanCache.map(entry => {
+      try {
+        return runChecklist(entry.symbol, entry.strategy, entry.metrics, entry.chainData, entry.price, sRules, entry.trendResult, sLabel, eRules, eLabel);
+      } catch (e: any) {
+        return {
+          symbol: entry.symbol, strategy: entry.strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+          failReasons: [e.message], trendResult: entry.trendResult,
+          checks: { ivr: { status: 'fail' as const, value: 'Error', reason: e.message }, earnings: { status: 'pending' as const, value: '—', reason: '—' }, oi: { status: 'pending' as const, value: '—', reason: '—' }, delta: { status: 'pending' as const, value: '—', reason: '—' }, credit: { status: 'pending' as const, value: '—', reason: '—' }, roc: { status: 'pending' as const, value: '—', reason: '—' }, pop: { status: 'pending' as const, value: '—', reason: '—' } }
+        };
+      }
+    });
+
+    const effectiveMode = modeOverride ?? screenMode;
+    if (effectiveMode === 'rank') {
+      screenResults.sort((a, b) => {
+        const sA = scoreCandidate(a, rankConfig)?.score ?? 0;
+        const sB = scoreCandidate(b, rankConfig)?.score ?? 0;
+        return sB - sA;
+      });
+    } else {
+      screenResults.sort((a, b) => {
+        if (a.qualified && !b.qualified) return -1;
+        if (!a.qualified && b.qualified) return 1;
+        return (b.ivr ?? 0) - (a.ivr ?? 0);
+      });
+    }
+
+    setResults(screenResults);
+  }, [rawScanCache, screenMode, rankConfig]);
 
   const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
     setError('');
@@ -3469,6 +3516,7 @@ export default function Home() {
       const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
 
       const screenResults: ScreenResult[] = [];
+      const scanCache: RawScanEntry[] = [];
 
       const errResult = (symbol: string, strategy: string, msg: string, trendResult?: TrendResult): ScreenResult => ({
         symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
@@ -3493,6 +3541,7 @@ export default function Home() {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
           const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+          scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
           screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
         } catch (e: any) {
           screenResults.push(errResult(symbol, strategy, e.message, trendResult));
@@ -3511,12 +3560,16 @@ export default function Home() {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
             const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+            scanCache.push({ symbol, strategy, metrics, chainData, price });
             screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
           } catch (e: any) {
             screenResults.push(errResult(symbol, strategy, e.message));
           }
         }
       }
+
+      // Store raw cache for instant re-filtering
+      setRawScanCache(scanCache);
 
       // Remove duplicates and sort
       const uniqueResults = screenResults.filter((r, index, self) =>
@@ -3617,7 +3670,7 @@ export default function Home() {
                 <span className={`text-[9px] font-medium ${th.textFaint}`}>{autoTickerList.length}</span>
               </div>
             </div>
-            <textarea value={autoTickers} onChange={e => setAutoTickers(e.target.value)} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
+            <textarea value={autoTickers} onChange={e => { setAutoTickers(e.target.value); setRawScanCache([]); }} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
               className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
             <div className="flex items-center justify-between mt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Yahoo trend detection</p>
@@ -3787,6 +3840,9 @@ export default function Home() {
                     </>
                   )}
                   <span className={th.textFaint}>{results.length} SCANNED</span>
+                  {rawScanCache.length > 0 && (
+                    <span className="text-purple-400 border border-purple-700 rounded px-1.5 py-0.5 text-[9px]" title="Filters applied to cached scan — click RUN HUNTER to rescan">⚡ cached</span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   {results.some(r => !r.qualified && r.earningsDate && daysUntil(r.earningsDate) >= 0 && r.failReasons.some(f => f.includes('Earnings'))) && (
@@ -3814,7 +3870,14 @@ export default function Home() {
               </div>
 
               {screenMode === 'filter' && (
-                <SmartSuggestionsPanel results={results} rules={runtimeStockRules} th={th} onApplyAndRerun={(r) => runScreen(r, runtimeEtfRules, stockPresetLabel, etfPresetLabel)} />
+                <SmartSuggestionsPanel results={results} rules={runtimeStockRules} th={th} onApplyAndRerun={(r) => {
+                  setRuntimeStockRules(r);
+                  if (rawScanCache.length > 0) {
+                    applyRules(r, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+                  } else {
+                    runScreen(r, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+                  }
+                }} />
               )}
 
               {screenMode === 'filter' ? (
@@ -3873,7 +3936,7 @@ export default function Home() {
           }}
         />
       )}
-      {showRulesModal && <RulesModal stockRules={runtimeStockRules} etfRules={runtimeEtfRules} rankConfig={rankConfig} onClose={() => setShowRulesModal(false)} onRun={(sRules, eRules, sLabel, eLabel, rCfg) => { setShowRulesModal(false); setRuntimeStockRules(sRules); setRuntimeEtfRules(eRules); setStockPresetLabel(sLabel); setEtfPresetLabel(eLabel); setRankConfig(rCfg); runScreen(sRules, eRules, sLabel, eLabel); }} th={th} />}
+      {showRulesModal && <RulesModal stockRules={runtimeStockRules} etfRules={runtimeEtfRules} rankConfig={rankConfig} onClose={() => setShowRulesModal(false)} onRun={(sRules, eRules, sLabel, eLabel, rCfg) => { setShowRulesModal(false); setRuntimeStockRules(sRules); setRuntimeEtfRules(eRules); setStockPresetLabel(sLabel); setEtfPresetLabel(eLabel); setRankConfig(rCfg); if (rawScanCache.length > 0) { applyRules(sRules, eRules, sLabel, eLabel); } else { runScreen(sRules, eRules, sLabel, eLabel); } }} th={th} />}
     </div>
   );
 }
