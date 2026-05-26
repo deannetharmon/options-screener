@@ -4455,7 +4455,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
         {/* Data columns */}
         <div className="overflow-x-auto flex-1">
-          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'center', minWidth: '1040px' }}>
+          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'center', minWidth: '1040px' }}>
 
             <div>
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
