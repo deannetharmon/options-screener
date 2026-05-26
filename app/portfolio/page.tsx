@@ -3760,9 +3760,31 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       }));
 
       if (needsOco) {
-        setPhase('Cancelling existing GTC order...');
-        console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
-        await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+        // Check if existing GTC is still cancellable before attempting delete
+        let gtcNeedsCancel = true;
+        try {
+          const orderCheck = await ttFetch(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+          const orderStatus = orderCheck?.data?.order?.status ?? '';
+          if (['Rejected', 'Filled', 'Cancelled', 'Expired', 'Replaced'].includes(orderStatus)) {
+            console.log(`GTC ${pos.gtcOrderId} already ${orderStatus} — skipping cancel`);
+            gtcNeedsCancel = false;
+          }
+        } catch { /* proceed with cancel attempt */ }
+
+        if (gtcNeedsCancel) {
+          setPhase('Cancelling existing GTC order...');
+          console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
+          try {
+            await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+          } catch (cancelErr: any) {
+            const msg = String(cancelErr.message ?? '').toLowerCase();
+            if (msg.includes('cannot be cancelled') || msg.includes('could not be cancelled') || msg.includes('terminal')) {
+              console.warn(`GTC cancel failed (already terminal): ${cancelErr.message} — proceeding to OCO`);
+            } else {
+              throw cancelErr;
+            }
+          }
+        }
 
         setPhase('Placing OCO order...');
         const ocoBody = {
