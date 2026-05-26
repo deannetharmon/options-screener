@@ -1001,11 +1001,12 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
     return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif)).filter(order => {
       const tif = order.timeInForce.toUpperCase();
       const type = order.orderType.toLowerCase();
-      // Accept GTC and PENDING tif (automation orders show as pending before activation)
-      // Accept empty orderType for combined complex/automation order envelopes
+      // Parent OCO envelope has no tif/type — check nested sub-orders
+      // Accept if any nested order has GTC tif, or if tif is empty (parent envelope)
       const isGtcTif = tif === 'GTC' || tif === '' || tif === 'PENDING';
       const isLimitOrStop = type.includes('limit') || type.includes('stop') || type === '';
-      if (!isGtcTif || !isLimitOrStop || order.legs.length === 0) return false;
+      if ((!isGtcTif || !isLimitOrStop) && order.legs.length === 0) return false;
+      if (order.legs.length === 0) return false;
       const key = `${order.id}|${order.orderType}|${order.price}|${order.stopPrice ?? ''}|${order.legs.map(l => `${l.symbol}:${l.action}`).join(',')}`;
       if (seen.has(key)) return false;
       seen.add(key); return true;
@@ -1167,15 +1168,17 @@ async function loadPositions(): Promise<Position[]> {
   try {
     const complexData = await ttFetch(`/accounts/${accountNumber}/complex-orders`, token);
     for (const order of complexData?.data?.items ?? []) {
-      const status = (order['status'] ?? '').toLowerCase();
-      console.log('COMPLEX ORDER RAW:', JSON.stringify(order).slice(0, 500));
-      if (['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(status)) {
-        for (const nestedOrder of order.orders ?? []) for (const leg of nestedOrder.legs ?? []) {
-          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
-          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
-        }
-        // Also add legs directly on the parent complex order envelope
-        for (const leg of order.legs ?? []) {
+      // Parent OCO envelope has no status/tif/type — check nested sub-orders instead
+      const nestedOrders: any[] = order.orders ?? [];
+      const hasActiveNested = nestedOrders.some(no => {
+        const s = (no['status'] ?? '').toLowerCase();
+        return ['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(s);
+      });
+      // Also accept if parent has no terminal-at (still open) and has nested orders
+      const parentActive = !order['terminal-at'] && nestedOrders.length > 0;
+      console.log(`COMPLEX ORDER: id=${order.id} hasActiveNested=${hasActiveNested} parentActive=${parentActive} nestedStatuses=${nestedOrders.map((o:any) => o['status']).join(',')}`);
+      if (hasActiveNested || parentActive) {
+        for (const nestedOrder of nestedOrders) for (const leg of nestedOrder.legs ?? []) {
           const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
           if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
         }
