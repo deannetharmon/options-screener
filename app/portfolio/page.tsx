@@ -902,10 +902,15 @@ function mapGtcOrder(o: any): GtcOrder {
   };
 }
 
+const TERMINAL_ORDER_STATUSES = new Set(['Rejected', 'Filled', 'Cancelled', 'Expired', 'Replaced', 'Voided']);
+
 function collectRawOrders(raw: any): any[] {
   const out: any[] = [];
   const visit = (order: any) => {
     if (!order || typeof order !== 'object') return;
+    // Skip terminal orders — they are no longer active
+    const status = String(order?.status ?? '');
+    if (TERMINAL_ORDER_STATUSES.has(status)) return;
     if (Array.isArray(order.legs) && order.legs.length > 0) out.push(order);
     for (const nested of order.orders ?? []) visit(nested);
   };
@@ -1193,7 +1198,11 @@ async function loadPositions(): Promise<Position[]> {
       iv: ivMap[symbol] ?? null,
       hv30: hv30Map[symbol] ?? null,
       beta: betaMap[symbol] ?? null,
-      earningsDate: earningsMap[symbol] ?? null,
+      earningsDate: (() => {
+        const ed = earningsMap[symbol];
+        if (!ed || !expDate) return null;
+        return new Date(ed) <= new Date(expDate) ? ed : null;
+      })(),
       hasGtc: gtcSymbols.has(symbol),
       gtcOrderId: (() => {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
@@ -2074,6 +2083,14 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
     }
   };
 
+  const blockedItems = activeItems.filter(i =>
+    verdicts[i.pos.key]?.verdict === 'STOP' &&
+    verdicts[i.pos.key]?.confidence === 'HIGH' &&
+    !overrides.has(i.pos.key)
+  );
+  const priceBlockedItems = activeItems.filter(i => i.priceError != null);
+  const isBlocked = blockedItems.length > 0 || priceBlockedItems.length > 0;
+
   const filledCount  = orderResults.filter(r => r.status === 'filled' || r.status === 'working' || r.status === 'submitted').length;
   const rejectedCount = orderResults.filter(r => r.status === 'error' || r.status === 'rejected').length;
 
@@ -2381,27 +2398,11 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                             </div>
 
                             {/* Live credit validation against inputs */}
-                            {ri?.credit && ri?.shortStrike && ri?.longStrike && (() => {
-                              const inputCredit = parseFloat(ri.credit);
-                              const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
-                              const inputRatio  = inputWidth > 0 ? inputCredit / inputWidth : 0;
-                              const minCredit   = inputWidth / 3;
-                              if (inputCredit > 0 && inputRatio < 1/3) {
-                                return (
-                                  <p className="text-[9px] text-red-400">
-                                    ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Prosper credit rule
-                                  </p>
-                                );
-                              }
-                              if (inputCredit > 0) {
-                                return (
-                                  <p className="text-[9px] text-emerald-400">
-                                    ✓ Credit ratio {(inputRatio * 100).toFixed(0)}% of spread width — meets 1/3 rule
-                                  </p>
-                                );
-                              }
-                              return null;
-                            })()}
+                            {ri?.credit && ri?.shortStrike && ri?.longStrike && parseFloat(ri.credit) > 0 && Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike)) > 0 && (
+                              parseFloat(ri.credit) / Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike)) < 1/3
+                                ? <p className="text-[9px] text-red-400">✕ ${parseFloat(ri.credit).toFixed(2)} &lt; 1/3 of ${Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike))} spread — violates credit rule</p>
+                                : <p className="text-[9px] text-emerald-400">✓ {(parseFloat(ri.credit) / Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike)) * 100).toFixed(0)}% of width — meets 1/3 rule</p>
+                            )}
                           </div>
                         </div>
                       )}
@@ -2438,16 +2439,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                 {excluded.size > 0 && <span className={`text-[10px] ${th.textFaint}`}>{excluded.size} excluded</span>}
               </div>
               <div className="flex gap-3">
-                {(() => {
-                  const blockedItems = activeItems.filter(i =>
-                    verdicts[i.pos.key]?.verdict === 'STOP' &&
-                    verdicts[i.pos.key]?.confidence === 'HIGH' &&
-                    !overrides.has(i.pos.key)
-                  );
-                  const priceBlockedItems = activeItems.filter(i => i.priceError != null);
-                  const isBlocked = blockedItems.length > 0 || priceBlockedItems.length > 0;
-                  return (
-                    <>
+                <>
                       {isBlocked && (
                         <div className="w-full">
                           <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/40 mb-2">
@@ -2494,9 +2486,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                           </button>
                         </>
                       )}
-                    </>
-                  );
-                })()}
+                </>
               </div>
             </div>
           )}
@@ -4285,21 +4275,16 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
             <div>
               <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
-              {(() => {
-                const cfg =
-                  pos.stopLossStatus === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-400' } :
-                  pos.stopLossStatus === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
-                  pos.stopLossStatus === 'none'  ? { icon: '✕', label: 'None',  cls: 'text-red-400'     } :
-                                                   { icon: '—', label: '?',     cls: th.textFaint        };
-                return (
-                  <p className={`text-xs font-bold ${cfg.cls}`}>
-                    {cfg.icon} {cfg.label}
-                    {pos.stopLossPrice != null && (
-                      <span className={`ml-1 ${th.textFaint} text-[10px] font-normal`}>${pos.stopLossPrice.toFixed(2)}</span>
-                    )}
-                  </p>
-                );
-              })()}
+              <p className={`text-xs font-bold ${
+                pos.stopLossStatus === 'live'  ? 'text-emerald-400' :
+                pos.stopLossStatus === 'loose' ? 'text-yellow-400'  :
+                pos.stopLossStatus === 'none'  ? 'text-red-400'     : th.textFaint
+              }`}>
+                {pos.stopLossStatus === 'live' ? '✓ Stop' : pos.stopLossStatus === 'loose' ? '⚠ Loose' : pos.stopLossStatus === 'none' ? '✕ None' : '— ?'}
+                {pos.stopLossPrice != null && (
+                  <span className={`ml-1 ${th.textFaint} text-[10px] font-normal`}>${pos.stopLossPrice.toFixed(2)}</span>
+                )}
+              </p>
             </div>
 
             {/* Recommendation */}
