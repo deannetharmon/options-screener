@@ -1,4 +1,4 @@
-  'use client';
+'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
@@ -37,7 +37,8 @@ function setDryRun(val: boolean) {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
-type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC' | 'WAITING';
+type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
+
 interface PositionLeg {
   symbol: string;
   optionType: 'P' | 'C';
@@ -80,8 +81,6 @@ interface Position {
   stopLossStatus: StopStatus;
   stopLossPrice: number | null;
   stockPrice: number | null;
-  underlyingType: 'stock' | 'etf' | 'index';
-  roc: number | null;  // Return on Capital = credit / max loss × 100
   buffer: number | null;
   theta: number | null;
   gamma: number | null;
@@ -829,40 +828,6 @@ function instrType(symbol: string): 'Equity Option' | 'Index Option' {
   return ['SPX', 'NDX', 'RUT', 'VIX'].includes(symbol.toUpperCase().trim()) ? 'Index Option' : 'Equity Option';
 }
 
-const INDEX_SYMBOLS = new Set(['SPX', 'NDX', 'RUT', 'VIX', 'SPXW', 'XSP']);
-const ETF_SYMBOLS   = new Set([
-  'SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'XLF', 'XLE',
-  'XLK', 'XLV', 'XLP', 'XLY', 'XLI', 'XLB', 'XLU', 'XLRE', 'SMH', 'SOXX',
-  'ARKK', 'EEM', 'EFA', 'VXX', 'UVXY', 'SOXL', 'TQQQ', 'SQQQ', 'GDX', 'GDXJ',
-]);
-
-function classifyUnderlying(symbol: string): 'stock' | 'etf' | 'index' {
-  const s = symbol.toUpperCase().trim();
-  if (INDEX_SYMBOLS.has(s)) return 'index';
-  if (ETF_SYMBOLS.has(s))   return 'etf';
-  return 'stock';
-}
-
-function getRocThreshold(type: 'stock' | 'etf' | 'index', ivr: number | null): number {
-  const iv = ivr ?? 50;
-  if (type === 'index') return iv >= 60 ? 8  : iv >= 30 ? 10 : 13;
-  if (type === 'etf')   return iv >= 60 ? 12 : iv >= 30 ? 15 : 18;
-  return                       iv >= 60 ? 16 : iv >= 30 ? 20 : 24;
-}
-
-function getCreditRatioThreshold(type: 'stock' | 'etf' | 'index'): number {
-  if (type === 'index') return 0.22;
-  if (type === 'etf')   return 0.28;
-  return 0.33;
-}
-
-function calcRoc(creditReceived: number, spreadWidth: number, qty: number): number | null {
-  if (spreadWidth <= 0 || qty <= 0) return null;
-  const maxLoss = (spreadWidth * qty * 100) - creditReceived;
-  if (maxLoss <= 0) return null;
-  return (creditReceived / maxLoss) * 100;
-}
-
 // ── Order Builders ─────────────────────────────────────────────────────────
 function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' = 'Day'): OrderBody {
   const itype = instrType(pos.symbol);
@@ -937,15 +902,10 @@ function mapGtcOrder(o: any): GtcOrder {
   };
 }
 
-const TERMINAL_ORDER_STATUSES = new Set(['Rejected', 'Filled', 'Cancelled', 'Expired', 'Replaced', 'Voided']);
-
 function collectRawOrders(raw: any): any[] {
   const out: any[] = [];
   const visit = (order: any) => {
     if (!order || typeof order !== 'object') return;
-    // Skip terminal orders — they are no longer active
-    const status = String(order?.status ?? '');
-    if (TERMINAL_ORDER_STATUSES.has(status)) return;
     if (Array.isArray(order.legs) && order.legs.length > 0) out.push(order);
     for (const nested of order.orders ?? []) visit(nested);
   };
@@ -1123,7 +1083,7 @@ async function loadPositions(): Promise<Position[]> {
     const allOrders = (liveData[0].status === 'fulfilled' ? liveData[0].value?.data?.items : null) ?? [];
     for (const order of allOrders) {
       const status = (order['status'] ?? '').toLowerCase();
-      if (['working', 'live', 'contingent', 'received', 'pending'].includes(status)) {
+      if (['working', 'live', 'contingent', 'received'].includes(status)) {
         for (const leg of order.legs ?? []) {
           const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
           if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
@@ -1233,11 +1193,7 @@ async function loadPositions(): Promise<Position[]> {
       iv: ivMap[symbol] ?? null,
       hv30: hv30Map[symbol] ?? null,
       beta: betaMap[symbol] ?? null,
-      earningsDate: (() => {
-        const ed = earningsMap[symbol];
-        if (!ed || !expDate) return null;
-        return new Date(ed) <= new Date(expDate) ? ed : null;
-      })(),
+      earningsDate: earningsMap[symbol] ?? null,
       hasGtc: gtcSymbols.has(symbol),
       gtcOrderId: (() => {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
@@ -1249,15 +1205,6 @@ async function loadPositions(): Promise<Position[]> {
       })(),
       stopLossStatus: stopLoss.status, stopLossPrice: stopLoss.price,
       stockPrice: stockPrices[symbol] ?? null,
-      underlyingType: classifyUnderlying(symbol),
-      roc: (() => {
-        const short = positionLegs.find(l => l.direction === 'Short');
-        const long  = positionLegs.find(l => l.direction === 'Long');
-        if (!short || !long) return null;
-        const width = Math.abs(short.strikePrice - long.strikePrice);
-        const qty = short.quantity;
-        return calcRoc(Math.abs(creditReceived), width, qty);
-      })(),
       buffer: (() => {
         const stock = stockPrices[symbol];
         if (stock == null) return null;
@@ -1324,41 +1271,14 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   const trendAligns = trend && ((pos.strategy === 'BPS' && trend.trend === 'uptrend') || (pos.strategy === 'BCS' && trend.trend === 'downtrend') || (pos.strategy === 'IC' && trend.trend === 'sideways'));
   if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
   if (pos.needsClose && pnlPct < 0)  return { action: 'CUT_LOSSES', detail: `${pos.dte} DTE — close to prevent further loss` };
-  if (pos.hitTarget && !pos.hasGtc) return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
-  if (pos.hitTarget && pos.hasGtc) {
-  const currentPerContract = pos.currentValue != null ? pos.currentValue / 100 : null;
-  const gtcIsCloseOrder = pos.gtcOrderPrice != null && currentPerContract != null
-    && Math.abs(pos.gtcOrderPrice - currentPerContract) / currentPerContract < 0.25;
-  return gtcIsCloseOrder
-    ? { action: 'TAKE_PROFIT', detail: `Close order pending — fills at open` }
-    : { action: 'WAITING', detail: `GTC working @ $${pos.gtcOrderPrice?.toFixed(2)} — waiting for fill` };
-  }  
-  // ROC + credit ratio health check — uses tier-aware thresholds
-  const rocThreshold        = getRocThreshold(pos.underlyingType, pos.ivr);
-  const creditRatioThreshold = getCreditRatioThreshold(pos.underlyingType);
-  const _short = pos.legs.find(l => l.direction === 'Short');
-  const _long  = pos.legs.find(l => l.direction === 'Long');
-  const spreadWidth   = _short && _long ? Math.abs(_short.strikePrice - _long.strikePrice) : 0;
-  const creditRatio   = spreadWidth > 0 ? pos.creditReceived / (spreadWidth * 100) : 0;
-  const rocOk         = pos.roc != null && pos.roc >= rocThreshold;
-  const ratioOk       = creditRatio >= creditRatioThreshold;
-  const poorEntry     = !rocOk && !ratioOk;
-
+  if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
   if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
   if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + trend confirms — exit` };
   if (pnlPct < -15)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
-  if (pnlPct >= targetPct && !pos.hasGtc) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
-  if (pnlPct >= targetPct && pos.hasGtc) {
-  const currentPerContract = pos.currentValue != null ? pos.currentValue / 100 : null;
-  const gtcIsCloseOrder = pos.gtcOrderPrice != null && currentPerContract != null
-    && Math.abs(pos.gtcOrderPrice - currentPerContract) / currentPerContract < 0.25;
-  return gtcIsCloseOrder
-    ? { action: 'TAKE_PROFIT', detail: `Close order pending — fills at open` }
-    : { action: 'HOLD', detail: `GTC working @ $${pos.gtcOrderPrice?.toFixed(2)} — waiting for fill` };
-}
+  if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
-  if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy}${poorEntry ? ` — ⚠ low ROC entry (${pos.roc?.toFixed(0) ?? '?'}% vs ${rocThreshold}% min)` : ` — ${pnlPct.toFixed(0)}% profit`}` };
-  return { action: 'HOLD', detail: `${poorEntry ? `⚠ low ROC entry (${pos.roc?.toFixed(0) ?? '?'}% vs ${rocThreshold}% min) — ` : ''}${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
+  if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
+  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
 }
 
 // ── AI Analysis ───────────────────────────────────────────────────────────
@@ -1765,8 +1685,7 @@ const ACTION_META: Record<ActionType, { label: string; color: string; btnClass: 
   TAKE_PROFIT: { label: '✓ Take Profit',  color: 'text-emerald-400', btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/20' },
   CUT_LOSSES:  { label: '✕ Cut Losses',   color: 'text-red-400',     btnClass: 'border-red-600 text-red-400 hover:bg-red-600/20' },
   CLOSE_ROLL:  { label: '↻ Close/Roll',   color: 'text-purple-400',  btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/20' },
-  PLACE_GTC: { label: '+ Place GTC',   color: 'text-blue-400',    btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/20' },
-  WAITING:   { label: '⏳ GTC Working', color: 'text-yellow-400',  btnClass: 'border-yellow-600 text-yellow-400 hover:bg-yellow-600/20' },
+  PLACE_GTC:   { label: '⏱ Place GTC',   color: 'text-blue-400',    btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/20' },
 };
 
 function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
@@ -2155,14 +2074,6 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
     }
   };
 
-  const blockedItems = activeItems.filter(i =>
-    verdicts[i.pos.key]?.verdict === 'STOP' &&
-    verdicts[i.pos.key]?.confidence === 'HIGH' &&
-    !overrides.has(i.pos.key)
-  );
-  const priceBlockedItems = activeItems.filter(i => i.priceError != null);
-  const isBlocked = blockedItems.length > 0 || priceBlockedItems.length > 0;
-
   const filledCount  = orderResults.filter(r => r.status === 'filled' || r.status === 'working' || r.status === 'submitted').length;
   const rejectedCount = orderResults.filter(r => r.status === 'error' || r.status === 'rejected').length;
 
@@ -2470,11 +2381,27 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                             </div>
 
                             {/* Live credit validation against inputs */}
-                            {ri?.credit && ri?.shortStrike && ri?.longStrike && parseFloat(ri.credit) > 0 && Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike)) > 0 && (
-                              parseFloat(ri.credit) / Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike)) < 1/3
-                                ? <p className="text-[9px] text-red-400">✕ ${parseFloat(ri.credit).toFixed(2)} &lt; 1/3 of ${Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike))} spread — violates credit rule</p>
-                                : <p className="text-[9px] text-emerald-400">✓ {(parseFloat(ri.credit) / Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike)) * 100).toFixed(0)}% of width — meets 1/3 rule</p>
-                            )}
+                            {ri?.credit && ri?.shortStrike && ri?.longStrike && (() => {
+                              const inputCredit = parseFloat(ri.credit);
+                              const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
+                              const inputRatio  = inputWidth > 0 ? inputCredit / inputWidth : 0;
+                              const minCredit   = inputWidth / 3;
+                              if (inputCredit > 0 && inputRatio < 1/3) {
+                                return (
+                                  <p className="text-[9px] text-red-400">
+                                    ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Prosper credit rule
+                                  </p>
+                                );
+                              }
+                              if (inputCredit > 0) {
+                                return (
+                                  <p className="text-[9px] text-emerald-400">
+                                    ✓ Credit ratio {(inputRatio * 100).toFixed(0)}% of spread width — meets 1/3 rule
+                                  </p>
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
                         </div>
                       )}
@@ -2511,7 +2438,16 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                 {excluded.size > 0 && <span className={`text-[10px] ${th.textFaint}`}>{excluded.size} excluded</span>}
               </div>
               <div className="flex gap-3">
-                <>
+                {(() => {
+                  const blockedItems = activeItems.filter(i =>
+                    verdicts[i.pos.key]?.verdict === 'STOP' &&
+                    verdicts[i.pos.key]?.confidence === 'HIGH' &&
+                    !overrides.has(i.pos.key)
+                  );
+                  const priceBlockedItems = activeItems.filter(i => i.priceError != null);
+                  const isBlocked = blockedItems.length > 0 || priceBlockedItems.length > 0;
+                  return (
+                    <>
                       {isBlocked && (
                         <div className="w-full">
                           <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/40 mb-2">
@@ -2558,7 +2494,9 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                           </button>
                         </>
                       )}
-                </>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -3822,31 +3760,9 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       }));
 
       if (needsOco) {
-        // Check if existing GTC is still cancellable before attempting delete
-        let gtcNeedsCancel = true;
-        try {
-          const orderCheck = await ttFetch(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
-          const orderStatus = orderCheck?.data?.order?.status ?? '';
-          if (['Rejected', 'Filled', 'Cancelled', 'Expired', 'Replaced'].includes(orderStatus)) {
-            console.log(`GTC ${pos.gtcOrderId} already ${orderStatus} — skipping cancel`);
-            gtcNeedsCancel = false;
-          }
-        } catch { /* proceed with cancel attempt */ }
-
-        if (gtcNeedsCancel) {
-          setPhase('Cancelling existing GTC order...');
-          console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
-          try {
-            await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
-          } catch (cancelErr: any) {
-            const msg = String(cancelErr.message ?? '').toLowerCase();
-            if (msg.includes('cannot be cancelled') || msg.includes('could not be cancelled') || msg.includes('terminal')) {
-              console.warn(`GTC cancel failed (already terminal): ${cancelErr.message} — proceeding to OCO`);
-            } else {
-              throw cancelErr;
-            }
-          }
-        }
+        setPhase('Cancelling existing GTC order...');
+        console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
+        await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
 
         setPhase('Placing OCO order...');
         const ocoBody = {
@@ -4287,25 +4203,10 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             </div>
 
             <div>
-             <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
-             <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
-             {(() => {
-                  const short = pos.legs.find(l => l.direction === 'Short');
-                  const long  = pos.legs.find(l => l.direction === 'Long');
-                  if (!short || !long) return null;
-                  const width = Math.abs(short.strikePrice - long.strikePrice);
-                  if (width <= 0) return null;
-                  const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
-                  const ratio = pos.creditReceived / (width * qty * 100);
-                  const ratioThreshold = getCreditRatioThreshold(pos.underlyingType);
-                  const rocThreshold   = getRocThreshold(pos.underlyingType, pos.ivr);
-                  const rocOk   = pos.roc != null && pos.roc >= rocThreshold;
-                  const ratioOk = ratio >= ratioThreshold;
-                  const color   = (rocOk && ratioOk) ? 'text-emerald-400' : (rocOk || ratioOk) ? 'text-yellow-400' : 'text-red-400';
-                  return <span className={`text-[9px] font-normal ${color}`}>({Math.round(ratio * 100)}%{pos.roc != null ? ` · ${pos.roc.toFixed(0)}% ROC` : ''})</span>;
-                })()}
+              <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
+              <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
             </div>
-            
+
             <div onClick={e => e.stopPropagation()}>
               <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
               {editingTarget ? (
@@ -4362,16 +4263,21 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
             <div>
               <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
-              <p className={`text-xs font-bold ${
-                pos.stopLossStatus === 'live'  ? 'text-emerald-400' :
-                pos.stopLossStatus === 'loose' ? 'text-yellow-400'  :
-                pos.stopLossStatus === 'none'  ? 'text-red-400'     : th.textFaint
-              }`}>
-                {pos.stopLossStatus === 'live' ? '✓ Stop' : pos.stopLossStatus === 'loose' ? '⚠ Loose' : pos.stopLossStatus === 'none' ? '✕ None' : '— ?'}
-                {pos.stopLossPrice != null && (
-                  <span className={`ml-1 ${th.textFaint} text-[10px] font-normal`}>${pos.stopLossPrice.toFixed(2)}</span>
-                )}
-              </p>
+              {(() => {
+                const cfg =
+                  pos.stopLossStatus === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-400' } :
+                  pos.stopLossStatus === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
+                  pos.stopLossStatus === 'none'  ? { icon: '✕', label: 'None',  cls: 'text-red-400'     } :
+                                                   { icon: '—', label: '?',     cls: th.textFaint        };
+                return (
+                  <p className={`text-xs font-bold ${cfg.cls}`}>
+                    {cfg.icon} {cfg.label}
+                    {pos.stopLossPrice != null && (
+                      <span className={`ml-1 ${th.textFaint} text-[10px] font-normal`}>${pos.stopLossPrice.toFixed(2)}</span>
+                    )}
+                  </p>
+                );
+              })()}
             </div>
 
             {/* Recommendation */}
@@ -4392,14 +4298,11 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             const meta = ACTION_META[action];
             if (action === 'TAKE_PROFIT' && !pos.hitTarget && rec.action !== 'TAKE_PROFIT') return null;
             if (action === 'PLACE_GTC' && pos.hasGtc) return null;
-            const isClosePending = action === 'TAKE_PROFIT' && pos.hasGtc
-              && pos.gtcOrderPrice != null && pos.currentValue != null
-              && Math.abs(pos.gtcOrderPrice - pos.currentValue / 100) / (pos.currentValue / 100) < 0.25;
             return (
               <button key={action}
                 onClick={e => { e.stopPropagation(); onExecute(pos, action); }}
                 className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${meta.btnClass}`}>
-                {isClosePending ? '✎ Modify Close' : meta.label}
+                {meta.label}
               </button>
             );
           })}
@@ -4551,6 +4454,195 @@ function BulkActionBar({ selectedKeys, positions, onExecute, onClear, th }: {
 }
 
 // ── Main Page ──────────────────────────────────────────────────────────────
+
+// ── Performance Panel ──────────────────────────────────────────────────────
+function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
+  const auditLog: AuditEntry[] = (() => {
+    try { return JSON.parse(localStorage.getItem('prosper-audit-log') ?? '[]'); } catch { return []; }
+  })();
+
+  const closed = auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
+    (e.action === 'TAKE_PROFIT' || e.action === 'CUT_LOSSES' || e.action === 'CLOSE_ROLL'));
+
+  const winners = closed.filter(e => (e.estPnl ?? 0) > 0);
+  const losers  = closed.filter(e => (e.estPnl ?? 0) <= 0);
+  const winRate    = closed.length > 0 ? (winners.length / closed.length * 100) : 0;
+  const avgWin     = winners.length > 0 ? winners.reduce((s, e) => s + (e.estPnl ?? 0), 0) / winners.length : 0;
+  const avgLoss    = losers.length  > 0 ? Math.abs(losers.reduce((s, e) => s + (e.estPnl ?? 0), 0) / losers.length) : 0;
+  const expectancy = (winRate / 100) * avgWin - (1 - winRate / 100) * avgLoss;
+  const totalPnl   = closed.reduce((s, e) => s + (e.estPnl ?? 0), 0);
+
+  // Monthly bucketing
+  const byMonth: Record<string, { pnl: number; trades: number; wins: number }> = {};
+  for (const e of closed) {
+    const month = e.timestamp.slice(0, 7);
+    if (!byMonth[month]) byMonth[month] = { pnl: 0, trades: 0, wins: 0 };
+    byMonth[month].pnl    += e.estPnl ?? 0;
+    byMonth[month].trades += 1;
+    if ((e.estPnl ?? 0) > 0) byMonth[month].wins += 1;
+  }
+  const months       = Object.keys(byMonth).sort();
+  const last3Months  = months.slice(-3);
+  const last12Months = months.slice(-12);
+  const qPnl = last3Months.reduce((s, m)  => s + byMonth[m].pnl, 0);
+  const yPnl = last12Months.reduce((s, m) => s + byMonth[m].pnl, 0);
+  const mPnl = months.length > 0 ? byMonth[months[months.length - 1]].pnl : 0;
+
+  // By symbol
+  const bySymbol: Record<string, { pnl: number; trades: number; wins: number }> = {};
+  for (const e of closed) {
+    if (!bySymbol[e.symbol]) bySymbol[e.symbol] = { pnl: 0, trades: 0, wins: 0 };
+    bySymbol[e.symbol].pnl    += e.estPnl ?? 0;
+    bySymbol[e.symbol].trades += 1;
+    if ((e.estPnl ?? 0) > 0) bySymbol[e.symbol].wins += 1;
+  }
+  const symbolRows  = Object.entries(bySymbol).sort((a, b) => b[1].pnl - a[1].pnl);
+  const maxSymbolPnl = Math.max(...symbolRows.map(r => Math.abs(r[1].pnl)), 1);
+  const maxBarPnl    = Math.max(...months.map(m => Math.abs(byMonth[m].pnl)), 1);
+
+  const kpis = [
+    { label: 'Win Rate',    value: `${winRate.toFixed(0)}%`,                              sub: `${winners.length}W / ${losers.length}L`,     color: winRate >= 70 ? 'text-emerald-400' : winRate >= 50 ? 'text-yellow-400' : 'text-red-400' },
+    { label: 'Expectancy', value: `${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(0)}`, sub: 'per trade avg',                             color: expectancy >= 0 ? 'text-emerald-400' : 'text-red-400' },
+    { label: 'Total P&L',  value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,    sub: 'all closed trades',                         color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
+    { label: 'Avg Win',    value: `+$${avgWin.toFixed(0)}`,                                sub: `avg loss: -$${avgLoss.toFixed(0)}`,          color: 'text-emerald-400' },
+  ];
+
+  const periods = [
+    { label: 'This Month',   value: mPnl, sub: 'current month' },
+    { label: 'Last Quarter', value: qPnl, sub: 'last 3 months' },
+    { label: 'Last 12 Mo',   value: yPnl, sub: 'rolling annual' },
+  ];
+
+  return (
+    <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col`}>
+
+        {/* Header */}
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
+          <div>
+            <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>PERFORMANCE</h2>
+            <p className={`text-[10px] ${th.textFaint}`}>{closed.length} closed trades · estimated P&L from audit log</p>
+          </div>
+          <button onClick={onClose} className={`${th.textFaint} hover:text-white text-lg leading-none`}>✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {closed.length === 0 ? (
+            <div className={`text-center py-16 ${th.textFaint}`}>
+              <p className="text-3xl mb-3">📊</p>
+              <p className="text-sm">No closed trades in audit log yet.</p>
+              <p className="text-[11px] mt-1 opacity-60">Trades appear here after you submit Take Profit, Cut Losses, or Close/Roll orders.</p>
+            </div>
+          ) : (
+            <>
+              {/* KPI strip */}
+              <div className="grid grid-cols-4 gap-3">
+                {kpis.map(k => (
+                  <div key={k.label} className={`${th.card} border ${th.border} rounded-xl p-4`}>
+                    <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>{k.label}</p>
+                    <p className={`text-xl font-bold ${k.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{k.value}</p>
+                    <p className={`text-[9px] ${th.textFaint} mt-0.5`}>{k.sub}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Period P&L */}
+              <div className="grid grid-cols-3 gap-3">
+                {periods.map(p => (
+                  <div key={p.label} className={`${th.card} border ${th.border} rounded-xl p-4`}>
+                    <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>{p.label}</p>
+                    <p className={`text-xl font-bold ${p.value >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                      {p.value >= 0 ? '+' : ''}${p.value.toFixed(0)}
+                    </p>
+                    <p className={`text-[9px] ${th.textFaint} mt-0.5`}>{p.sub}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Monthly bar chart */}
+              {months.length > 0 && (
+                <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-4`}>Monthly P&L</p>
+                  <div className="flex items-end gap-2" style={{ height: '120px' }}>
+                    {months.slice(-12).map(m => {
+                      const d = byMonth[m];
+                      const pct = Math.abs(d.pnl) / maxBarPnl;
+                      const h = Math.max(pct * 90, 4);
+                      return (
+                        <div key={m} className="flex-1 flex flex-col items-center justify-end gap-1" style={{ height: '120px' }}>
+                          <p className={`text-[8px] ${th.textFaint} text-center`}>{d.pnl >= 0 ? '+' : ''}${d.pnl.toFixed(0)}</p>
+                          <div
+                            className={`w-full rounded-t transition-all ${d.pnl >= 0 ? 'bg-emerald-500/60 hover:bg-emerald-500/80' : 'bg-red-500/60 hover:bg-red-500/80'}`}
+                            style={{ height: `${h}px` }}
+                            title={`${m}: ${d.trades} trades, ${d.wins} wins`}
+                          />
+                          <p className={`text-[8px] ${th.textFaint} text-center`}>{m.slice(5)}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* By Symbol */}
+              {symbolRows.length > 0 && (
+                <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>By Symbol</p>
+                  <div className="space-y-2">
+                    {symbolRows.map(([sym, d]) => (
+                      <div key={sym} className="flex items-center gap-3">
+                        <span className={`text-[10px] font-bold ${th.text} w-16 shrink-0`}>{sym}</span>
+                        <span className={`text-[9px] ${th.textFaint} w-16 shrink-0`}>{d.trades} trade{d.trades !== 1 ? 's' : ''}</span>
+                        <span className={`text-[9px] w-14 shrink-0 ${d.wins / d.trades >= 0.7 ? 'text-emerald-400' : d.wins / d.trades >= 0.5 ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {(d.wins / d.trades * 100).toFixed(0)}% win
+                        </span>
+                        <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${d.pnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}
+                            style={{ width: `${Math.min(Math.abs(d.pnl) / maxSymbolPnl * 100, 100)}%` }}
+                          />
+                        </div>
+                        <span className={`text-[10px] font-bold w-16 text-right shrink-0 ${d.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                          {d.pnl >= 0 ? '+' : ''}${d.pnl.toFixed(0)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Trade log */}
+              <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
+                <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>Trade History</p>
+                <div className="space-y-0 max-h-64 overflow-y-auto">
+                  {[...closed].reverse().map(e => (
+                    <div key={e.id} className={`flex items-center gap-3 py-2 border-b ${th.borderLight} last:border-0`}>
+                      <span className={`text-[9px] ${th.textFaint} w-20 shrink-0`}>{e.timestamp.slice(0, 10)}</span>
+                      <span className={`text-[10px] font-bold ${th.text} w-14 shrink-0`}>{e.symbol}</span>
+                      <span className={`text-[9px] ${th.textFaint} w-10 shrink-0`}>{e.strategy}</span>
+                      <span className={`text-[9px] w-24 shrink-0 ${
+                        e.action === 'TAKE_PROFIT' ? 'text-emerald-400' :
+                        e.action === 'CUT_LOSSES'  ? 'text-red-400'     : 'text-blue-400'
+                      }`}>{e.action.replace(/_/g, ' ')}</span>
+                      <span className={`text-[10px] font-bold ml-auto ${(e.estPnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                        {(e.estPnl ?? 0) >= 0 ? '+' : ''}${(e.estPnl ?? 0).toFixed(0)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <p className={`text-[9px] ${th.textFaint} text-center pb-2`}>
+                ⚠ P&L figures are estimates from order submission. Actual fills may differ. Reconcile with TastyTrade for accurate accounting.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PortfolioPage() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
@@ -4562,6 +4654,7 @@ export default function PortfolioPage() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
+  const [showPerformance, setShowPerformance] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
@@ -4636,6 +4729,7 @@ export default function PortfolioPage() {
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <Link href="/" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
             <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">PORTFOLIO</span>
+            <button onClick={() => setShowPerformance(true)} className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</button>
           </nav>
         </div>
         <div className="flex items-center gap-3">
@@ -4784,6 +4878,7 @@ export default function PortfolioPage() {
       )}
 
       {showAuditLog && <AuditLogPanel onClose={() => setShowAuditLog(false)} th={th} />}
+      {showPerformance && <PerformancePanel onClose={() => setShowPerformance(false)} th={th} />}
       {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} th={th} />}
 
       {portfolioAnalysis && !portfolioAnalysis.error && (
