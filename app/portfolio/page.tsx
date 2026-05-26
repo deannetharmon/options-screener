@@ -3263,7 +3263,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
   const [verdictLoading, setVerdictLoading] = useState(false);
   const [selectedPct, setSelectedPct] = useState<number | null>(null);
 
-  if (!pos.gtcOrderId || !pos.hasGtc) return null;
+  if (!pos.hasGtc) return null;
 
   const currentTargetPct = pos.gtcOrderPrice != null && pos.creditReceived > 0
     ? Math.round((1 - pos.gtcOrderPrice / (pos.creditReceived / 100)) * 100)
@@ -3271,6 +3271,18 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
 
   const options = [55, 60, 65, 70, 75, 80, 85, 90].filter(pct => pct > currentTargetPct);
   if (options.length === 0) return null;
+
+  // Re-fetch the live GTC order ID if it wasn't captured at load time
+  const resolveGtcOrderId = async (token: string): Promise<string | null> => {
+    if (pos.gtcOrderId) return pos.gtcOrderId;
+    const orders = await fetchGtcOrders(pos.accountNumber, token);
+    const shortSymbol = pos.legs.find(l => l.direction === 'Short')?.symbol ?? '';
+    const match = orders.find(o =>
+      !isStopOrder(o) &&
+      o.legs.some(l => normalizeOccSymbol(l.symbol) === normalizeOccSymbol(shortSymbol) && isBuyToCloseAction(l.action))
+    );
+    return match?.id ?? null;
+  };
 
   const handleOpen = async () => {
     setOpen(true);
@@ -3302,9 +3314,13 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
     setResult(null);
     try {
       const token = await getAccessToken();
+      const orderId = await resolveGtcOrderId(token);
+      if (!orderId) {
+        throw new Error('Could not find a working GTC order for this position. It may have already been filled or cancelled. Refresh positions and try again.');
+      }
       const newPrice = parseFloat(((pos.creditReceived / 100) * (1 - targetPct / 100)).toFixed(2));
       await ttPatch(
-        `/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`,
+        `/accounts/${pos.accountNumber}/orders/${orderId}`,
         token,
         { price: newPrice.toFixed(2), 'time-in-force': 'GTC' }
       );
