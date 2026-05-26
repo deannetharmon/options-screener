@@ -1866,7 +1866,7 @@ function TradeModal({ result, th, onClose }: {
   );
 }
 
-function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrders }: {
+function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrders, cachedEntry }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
@@ -1874,6 +1874,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
   rankConfig?: RankConfig;
   onTrade?: (result: ScreenResult) => void;
   gtcOrders?: GtcOrder[];
+  cachedEntry?: RawScanEntry;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
@@ -2092,6 +2093,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
           th={th}
           rules={rules}
           preferredStrategy={result.strategy as 'BPS' | 'BCS' | 'IC'}
+          cachedEntry={cachedEntry}
         />,
         document.body
       )}
@@ -3194,10 +3196,11 @@ function getRuleDiffs(base: RulesType, relaxed: Partial<RulesType>): string[] {
 }
 
 function BestOpportunityFinder({
-  symbol, onClose, th, rules, preferredStrategy,
+  symbol, onClose, th, rules, preferredStrategy, cachedEntry,
 }: {
   symbol: string; onClose: () => void; th: typeof THEMES[Theme];
   rules: RulesType; preferredStrategy?: 'BPS' | 'BCS' | 'IC';
+  cachedEntry?: RawScanEntry;
 }) {
   const [loading, setLoading] = useState(false);
   const [levelResults, setLevelResults] = useState<LevelResult[]>([]);
@@ -3212,45 +3215,61 @@ function BestOpportunityFinder({
     { presetKey: 'shortterm', presetLabel: 'Short Term', presetColor: 'border-orange-500 text-orange-400',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 14, DTE_MAX: 28 } },
   ];
 
-  const scoreCandidate = (result: ScreenResult, strat: string): BestSetup | null => {
+  const scoreCandidateLocal = (result: ScreenResult, strat: string): BestSetup | null => {
     if (!result.qualified || !result.bestCandidate) return null;
     const c = result.bestCandidate;
-    // NEW
-  const ivrScore = Math.min(result.ivr ?? 30, 100);
-  const score = (c.roc || 0) * 0.35 + ((c.pop || 70) * 0.30) + (c.creditRatio * 100 * 0.15) + (ivrScore * 0.20);
-  let grade: BestSetup['grade'] = 'C';
-  if (score > 75) grade = 'A+'; else if (score > 62) grade = 'A'; else if (score > 50) grade = 'B';
+    const ivrScore = Math.min(result.ivr ?? 30, 100);
+    const score = (c.roc || 0) * 0.35 + ((c.pop || 70) * 0.30) + (c.creditRatio * 100 * 0.15) + (ivrScore * 0.20);
+    let grade: BestSetup['grade'] = 'C';
+    if (score > 75) grade = 'A+'; else if (score > 62) grade = 'A'; else if (score > 50) grade = 'B';
     const notes: string[] = [];
     if (c.dte < 35) notes.push(`DTE is ${c.dte} — shorter side, watch 21 DTE closely`);
     if (c.dte < 29) notes.push(`⚠ Short term setup — active daily management required, gamma risk elevated`);
     if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% elevated — verify no binary event`);
-    // line 3059-3061 should read:
     if (result.ivr && result.ivr < 35) notes.push(`IVR ${result.ivr.toFixed(0)}% — low volatility environment, premium is thin, size down or wait`);
     else if (result.ivr && result.ivr < 50) notes.push(`IVR ${result.ivr.toFixed(0)}% — moderate volatility, grade reflects reduced premium opportunity`);
     if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
-    if (notes.length === 0) notes.push('Clean setup — all rules pass');    
+    if (notes.length === 0) notes.push('Clean setup — all rules pass');
     return { strategy: strat, grade, setup: c, score, notes, result };
   };
+
+  // Only run the preferred strategy. If none specified, run all three.
+  // This prevents BCS from surfacing as "best" on a BPS-classified stock.
+  const strategiesToRun: ('BPS' | 'BCS' | 'IC')[] = preferredStrategy
+    ? [preferredStrategy]
+    : ['BPS', 'BCS', 'IC'];
 
   const findBest = async () => {
     setLoading(true); setError(''); setLevelResults([]);
     try {
-      const token = await getAccessToken();
-      const [metricsArray, price] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
-      const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
-      const strategies: ('BPS' | 'BCS' | 'IC')[] = preferredStrategy
-        ? [preferredStrategy, ...(['BPS', 'BCS', 'IC'] as const).filter(s => s !== preferredStrategy)]
-        : ['BPS', 'BCS', 'IC'];
+      let metrics: { symbol: string; ivRank: number | null; earningsExpectedDate: string | null };
+      let price: number | null;
+      let baseChainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean };
+
+      if (cachedEntry) {
+        // Use cached data — zero API calls
+        metrics = cachedEntry.metrics;
+        price = cachedEntry.price;
+        baseChainData = cachedEntry.chainData;
+      } else {
+        // No cache — fetch once, reuse across all levels
+        const token = await getAccessToken();
+        const [metricsArray, fetchedPrice] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
+        metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
+        price = fetchedPrice;
+        baseChainData = await getChain(symbol, token, rules);
+      }
+
       const results: LevelResult[] = [];
       for (const level of levels) {
         const mergedRules = { ...rules, ...level.rules };
-        const chainData = await getChain(symbol, token, mergedRules);
         const ruleDiffs = getRuleDiffs({ ...DEFAULT_RULES, ...COURSE_RULES }, level.rules);
         const candidates: BestSetup[] = [];
         const failures: { strategy: string; reasons: string[] }[] = [];
-        for (const strat of strategies) {
-          const result = runChecklist(symbol, strat, metrics, chainData, price, mergedRules);
-          const setup = scoreCandidate(result, strat);
+        for (const strat of strategiesToRun) {
+          // Re-use the same chain data — only the rule thresholds differ between levels
+          const result = runChecklist(symbol, strat, metrics, baseChainData, price, mergedRules);
+          const setup = scoreCandidateLocal(result, strat);
           if (setup) candidates.push(setup);
           else failures.push({ strategy: strat, reasons: result.failReasons.length > 0 ? result.failReasons : ['No qualifying strikes found'] });
         }
@@ -3264,6 +3283,12 @@ function BestOpportunityFinder({
     }
   };
 
+  // Auto-run immediately if we have cached data — no need to wait for button click
+  useEffect(() => {
+    if (cachedEntry) findBest();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
 
   return (
@@ -3273,8 +3298,8 @@ function BestOpportunityFinder({
           <div>
             <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity — {symbol}</h2>
             <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
-              Scans all 4 rule levels. Each level shows the best setup found and what changed vs Course.
-              {preferredStrategy && <span> Ticker placed in <span className="text-blue-400 font-bold">{preferredStrategy}</span> box — other strategies flagged if they contradict</span>}
+              Tests all rule levels against {preferredStrategy ?? 'all strategies'}. Each level shows the best setup and what changed vs Course.
+              {cachedEntry ? <span className="text-purple-400 ml-1">⚡ Using cached chain data</span> : null}
             </p>
           </div>
           <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white">✕</button>
@@ -3282,7 +3307,7 @@ function BestOpportunityFinder({
 
         <button onClick={findBest} disabled={loading}
           className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors mb-4">
-          {loading ? 'SCANNING ALL RULE LEVELS...' : 'SCAN ALL RULE LEVELS'}
+          {loading ? 'ANALYZING...' : cachedEntry ? '↺ RE-ANALYZE' : 'SCAN ALL RULE LEVELS'}
         </button>
 
         {error && <div className="p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm mb-4">{error}</div>}
@@ -3885,13 +3910,13 @@ export default function Home() {
                   {qualified.length > 0 && (
                     <div>
                       <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} />)}</div>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
                     </div>
                   )}
                   {disqualified.length > 0 && (
                     <div>
                       <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} />)}</div>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
                     </div>
                   )}
                 </>
@@ -3901,7 +3926,7 @@ export default function Home() {
                   <div className="space-y-2">{results.map((r, i) => (
                     <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} gtcOrders={gtcOrders} /></div>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
                     </div>
                   ))}</div>
                 </div>
