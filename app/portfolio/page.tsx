@@ -1168,7 +1168,7 @@ async function loadPositions(): Promise<Position[]> {
     const complexData = await ttFetch(`/accounts/${accountNumber}/complex-orders`, token);
     for (const order of complexData?.data?.items ?? []) {
       const status = (order['status'] ?? '').toLowerCase();
-      console.log(`COMPLEX ORDER: id=${order.id} status=${status} tif=${order['time-in-force']} type=${order['order-type']} orders=${order.orders?.length ?? 0}`);
+      console.log('COMPLEX ORDER RAW:', JSON.stringify(order).slice(0, 500));
       if (['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(status)) {
         for (const nestedOrder of order.orders ?? []) for (const leg of nestedOrder.legs ?? []) {
           const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
