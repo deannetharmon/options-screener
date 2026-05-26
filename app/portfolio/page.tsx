@@ -1179,8 +1179,15 @@ async function loadPositions(): Promise<Position[]> {
       console.log(`COMPLEX ORDER: id=${order.id} hasActiveNested=${hasActiveNested} parentActive=${parentActive} nestedStatuses=${nestedOrders.map((o:any) => o['status']).join(',')}`);
       if (hasActiveNested || parentActive) {
         for (const nestedOrder of nestedOrders) for (const leg of nestedOrder.legs ?? []) {
-          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
-          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+          // Prefer underlying-symbol; fall back to parsing the OCC option symbol
+          const underlying = leg['underlying-symbol'];
+          if (underlying) {
+            gtcSymbols.add(underlying.split(' ')[0].trim());
+          } else if (leg.symbol) {
+            // OCC format: SPX   260726P07290000 — split on first digit sequence
+            const fromOcc = leg.symbol.split(/\d{6}/)[0].trim();
+            if (fromOcc) gtcSymbols.add(fromOcc);
+          }
         }
       }
     }
@@ -4310,40 +4317,40 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
 
 function thetaTint(theta: number | null): string {
   if (theta == null) return '';
-  if (theta >= 0.10) return 'bg-emerald-500/20 rounded px-1';
-  if (theta >= 0.05) return 'bg-emerald-500/12 rounded px-1';
-  if (theta >= 0.01) return 'bg-emerald-500/8 rounded px-1';
-  if (theta < 0)     return 'bg-red-500/15 rounded px-1';
+  if (theta >= 0.10) return 'bg-emerald-500/10 rounded px-1';
+  if (theta >= 0.05) return 'bg-emerald-500/8 rounded px-1';
+  if (theta >= 0.01) return 'bg-emerald-500/5 rounded px-1';
+  if (theta < 0)     return 'bg-red-500/10 rounded px-1';
   return '';
 }
 
 function deltaTint(delta: number | null): string {
   if (delta == null) return '';
   const abs = Math.abs(delta);
-  if (abs <= 0.05)  return 'bg-emerald-500/20 rounded px-1';
-  if (abs <= 0.10)  return 'bg-emerald-500/12 rounded px-1';
-  if (abs <= 0.15)  return 'bg-yellow-500/12 rounded px-1';
-  if (abs <= 0.25)  return 'bg-orange-500/15 rounded px-1';
-  return 'bg-red-500/20 rounded px-1';
+  if (abs <= 0.05)  return 'bg-emerald-500/10 rounded px-1';
+  if (abs <= 0.10)  return 'bg-emerald-500/8 rounded px-1';
+  if (abs <= 0.15)  return 'bg-yellow-500/8 rounded px-1';
+  if (abs <= 0.25)  return 'bg-orange-500/10 rounded px-1';
+  return 'bg-red-500/10 rounded px-1';
 }
 
 function gammaTint(gamma: number | null): string {
   if (gamma == null) return '';
   const abs = Math.abs(gamma);
-  if (abs <= 0.001)  return 'bg-emerald-500/20 rounded px-1';
-  if (abs <= 0.003)  return 'bg-emerald-500/12 rounded px-1';
-  if (abs <= 0.006)  return 'bg-yellow-500/12 rounded px-1';
-  if (abs <= 0.010)  return 'bg-orange-500/15 rounded px-1';
-  return 'bg-red-500/20 rounded px-1';
+  if (abs <= 0.001)  return 'bg-emerald-500/10 rounded px-1';
+  if (abs <= 0.003)  return 'bg-emerald-500/8 rounded px-1';
+  if (abs <= 0.006)  return 'bg-yellow-500/8 rounded px-1';
+  if (abs <= 0.010)  return 'bg-orange-500/10 rounded px-1';
+  return 'bg-red-500/10 rounded px-1';
 }
 
 function vegaTint(vega: number | null): string {
   if (vega == null) return '';
   // Short vega (negative) is favorable for premium sellers
-  if (vega <= -0.10) return 'bg-emerald-500/20 rounded px-1';
-  if (vega <= -0.05) return 'bg-emerald-500/12 rounded px-1';
-  if (vega <= -0.01) return 'bg-emerald-500/8 rounded px-1';
-  if (vega >= 0)     return 'bg-red-500/15 rounded px-1';
+  if (vega <= -0.10) return 'bg-emerald-500/10 rounded px-1';
+  if (vega <= -0.05) return 'bg-emerald-500/8 rounded px-1';
+  if (vega <= -0.01) return 'bg-emerald-500/5 rounded px-1';
+  if (vega >= 0)     return 'bg-red-500/10 rounded px-1';
   return '';
 }
 
