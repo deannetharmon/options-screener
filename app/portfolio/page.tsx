@@ -1281,12 +1281,26 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
   if (pos.needsClose && pnlPct < 0)  return { action: 'CUT_LOSSES', detail: `${pos.dte} DTE — close to prevent further loss` };
   if (pos.hitTarget && !pos.hasGtc) return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
-  if (pos.hitTarget && pos.hasGtc) return { action: 'HOLD', detail: `GTC working — fills at $${pos.gtcOrderPrice?.toFixed(2) ?? pos.targetPrice?.toFixed(2)}` };
+  if (pos.hitTarget && pos.hasGtc) {
+  const currentPerContract = pos.currentValue != null ? pos.currentValue / 100 : null;
+  const gtcIsCloseOrder = pos.gtcOrderPrice != null && currentPerContract != null
+    && Math.abs(pos.gtcOrderPrice - currentPerContract) / currentPerContract < 0.25;
+  return gtcIsCloseOrder
+    ? { action: 'TAKE_PROFIT', detail: `Close order pending — fills at open` }
+    : { action: 'HOLD', detail: `GTC working @ $${pos.gtcOrderPrice?.toFixed(2)} — waiting for fill` };
+  }  
   if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
   if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + trend confirms — exit` };
   if (pnlPct < -15)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
   if (pnlPct >= targetPct && !pos.hasGtc) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
-  if (pnlPct >= targetPct && pos.hasGtc)  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — GTC working` };
+  if (pnlPct >= targetPct && pos.hasGtc) {
+  const currentPerContract = pos.currentValue != null ? pos.currentValue / 100 : null;
+  const gtcIsCloseOrder = pos.gtcOrderPrice != null && currentPerContract != null
+    && Math.abs(pos.gtcOrderPrice - currentPerContract) / currentPerContract < 0.25;
+  return gtcIsCloseOrder
+    ? { action: 'TAKE_PROFIT', detail: `Close order pending — fills at open` }
+    : { action: 'HOLD', detail: `GTC working @ $${pos.gtcOrderPrice?.toFixed(2)} — waiting for fill` };
+}
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
   return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
