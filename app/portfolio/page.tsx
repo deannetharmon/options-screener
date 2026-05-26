@@ -978,7 +978,11 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
     return rawOrders.map(mapGtcOrder).filter(order => {
       const tif = order.timeInForce.toUpperCase();
       const type = order.orderType.toLowerCase();
-      if (tif !== 'GTC' || (!type.includes('limit') && !type.includes('stop')) || order.legs.length === 0) return false;
+      // Accept GTC and PENDING tif (automation orders show as pending before activation)
+      // Accept empty orderType for combined complex/automation order envelopes
+      const isGtcTif = tif === 'GTC' || tif === '' || tif === 'PENDING';
+      const isLimitOrStop = type.includes('limit') || type.includes('stop') || type === '';
+      if (!isGtcTif || !isLimitOrStop || order.legs.length === 0) return false;
       const key = `${order.id}|${order.orderType}|${order.price}|${order.stopPrice ?? ''}|${order.legs.map(l => `${l.symbol}:${l.action}`).join(',')}`;
       if (seen.has(key)) return false;
       seen.add(key); return true;
@@ -1122,7 +1126,7 @@ async function loadPositions(): Promise<Position[]> {
     const allOrders = (liveData[0].status === 'fulfilled' ? liveData[0].value?.data?.items : null) ?? [];
     for (const order of allOrders) {
       const status = (order['status'] ?? '').toLowerCase();
-      if (['working', 'live', 'contingent', 'received'].includes(status)) {
+      if (['working', 'live', 'contingent', 'received', 'pending', 'queued'].includes(status)) {
         for (const leg of order.legs ?? []) {
           const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
           if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
@@ -1135,8 +1139,14 @@ async function loadPositions(): Promise<Position[]> {
     const complexData = await ttFetch(`/accounts/${accountNumber}/complex-orders`, token);
     for (const order of complexData?.data?.items ?? []) {
       const status = (order['status'] ?? '').toLowerCase();
-      if (['working', 'live', 'contingent', 'received', 'routed'].includes(status)) {
+      console.log(`COMPLEX ORDER: id=${order.id} status=${status} tif=${order['time-in-force']} type=${order['order-type']} orders=${order.orders?.length ?? 0}`);
+      if (['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(status)) {
         for (const nestedOrder of order.orders ?? []) for (const leg of nestedOrder.legs ?? []) {
+          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+        }
+        // Also add legs directly on the parent complex order envelope
+        for (const leg of order.legs ?? []) {
           const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
           if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
         }
