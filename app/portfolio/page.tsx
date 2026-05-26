@@ -37,8 +37,7 @@ function setDryRun(val: boolean) {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
-type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
-
+type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC' | 'WAITING';
 interface PositionLeg {
   symbol: string;
   optionType: 'P' | 'C';
@@ -1287,7 +1286,7 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     && Math.abs(pos.gtcOrderPrice - currentPerContract) / currentPerContract < 0.25;
   return gtcIsCloseOrder
     ? { action: 'TAKE_PROFIT', detail: `Close order pending — fills at open` }
-    : { action: 'HOLD', detail: `GTC working @ $${pos.gtcOrderPrice?.toFixed(2)} — waiting for fill` };
+    : { action: 'WAITING', detail: `GTC working @ $${pos.gtcOrderPrice?.toFixed(2)} — waiting for fill` };
   }  
   if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
   if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + trend confirms — exit` };
@@ -1710,7 +1709,8 @@ const ACTION_META: Record<ActionType, { label: string; color: string; btnClass: 
   TAKE_PROFIT: { label: '✓ Take Profit',  color: 'text-emerald-400', btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/20' },
   CUT_LOSSES:  { label: '✕ Cut Losses',   color: 'text-red-400',     btnClass: 'border-red-600 text-red-400 hover:bg-red-600/20' },
   CLOSE_ROLL:  { label: '↻ Close/Roll',   color: 'text-purple-400',  btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/20' },
-  PLACE_GTC:   { label: '⏱ Place GTC',   color: 'text-blue-400',    btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/20' },
+  PLACE_GTC: { label: '+ Place GTC',   color: 'text-blue-400',    btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/20' },
+  WAITING:   { label: '⏳ GTC Working', color: 'text-yellow-400',  btnClass: 'border-yellow-600 text-yellow-400 hover:bg-yellow-600/20' },
 };
 
 function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
