@@ -917,36 +917,59 @@ function pickOrderField(o: any, keys: string[]): string | null {
   return null;
 }
 
-function mapGtcOrder(o: any): GtcOrder {
+function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
+  // Collect legs from direct legs array OR from nested orders' legs (automation/complex orders)
+  let legs = (o?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') }));
+  if (legs.length === 0) {
+    for (const nested of o?.orders ?? []) {
+      const nestedLegs = (nested?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') }));
+      legs = legs.concat(nestedLegs);
+    }
+  }
+  // TIF may be on parent complex order but missing on sub-orders — inherit from parent
+  const tif = String(o?.['time-in-force'] ?? o?.timeInForce ?? parentTif ?? '');
   return {
     id: String(o?.id ?? ''),
     price: String(o?.price ?? o?.['limit-price'] ?? ''),
     stopPrice: pickOrderField(o, ['stop-trigger', 'stop-price', 'stopPrice', 'stop', 'trigger-price']),
     orderType: String(o?.['order-type'] ?? o?.orderType ?? ''),
-    timeInForce: String(o?.['time-in-force'] ?? o?.timeInForce ?? ''),
-    legs: (o?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') })),
+    timeInForce: tif,
+    legs,
   };
 }
 
 function collectRawOrders(raw: any): any[] {
   const out: any[] = [];
-  const visit = (order: any) => {
+  const visit = (order: any, parentTif?: string) => {
     if (!order || typeof order !== 'object') return;
-    if (Array.isArray(order.legs) && order.legs.length > 0) out.push(order);
-    for (const nested of order.orders ?? []) visit(nested);
+    const tif = String(order?.['time-in-force'] ?? order?.timeInForce ?? parentTif ?? '');
+    // Collect this order if it has direct legs
+    if (Array.isArray(order.legs) && order.legs.length > 0) {
+      out.push({ ...order, _inheritedTif: tif });
+    }
+    // For complex/automation orders: also collect as a combined order with all nested legs merged
+    if (Array.isArray(order.orders) && order.orders.length > 0) {
+      const allLegs: any[] = [];
+      for (const nested of order.orders) allLegs.push(...(nested?.legs ?? []));
+      if (allLegs.length > 0) {
+        out.push({ ...order, legs: allLegs, _inheritedTif: tif, _isCombined: true });
+      }
+      for (const nested of order.orders) visit(nested, tif);
+    }
   };
   for (const item of raw?.data?.items ?? []) visit(item);
   return out;
 }
 
 function findProfitGtcOrder(positionLegs: PositionLeg[], gtcOrders: GtcOrder[]): GtcOrder | null {
-  // Find a GTC limit order (not a stop) that has Buy to Close on the short leg
+  // Find a GTC limit order (not a stop) that has Buy to Close on the short leg.
+  // Also matches automation/complex orders where legs are combined from sub-orders.
   const shortLeg = positionLegs.find(l => l.direction === 'Short');
   if (!shortLeg?.symbol) return null;
   const shortSymbol = normalizeOccSymbol(shortLeg.symbol);
   return gtcOrders.find(order =>
     !isStopOrder(order) &&
-    order.orderType.toLowerCase().includes('limit') &&
+    (order.orderType.toLowerCase().includes('limit') || order.orderType === '') &&
     order.legs.some(leg =>
       normalizeOccSymbol(leg.symbol) === shortSymbol && isBuyToCloseAction(leg.action)
     )
@@ -975,7 +998,7 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
     ]);
     const rawOrders = requests.flatMap(r => r.status === 'fulfilled' ? collectRawOrders(r.value) : []);
     const seen = new Set<string>();
-    return rawOrders.map(mapGtcOrder).filter(order => {
+    return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif)).filter(order => {
       const tif = order.timeInForce.toUpperCase();
       const type = order.orderType.toLowerCase();
       // Accept GTC and PENDING tif (automation orders show as pending before activation)
@@ -1030,6 +1053,8 @@ async function loadPositions(): Promise<Position[]> {
   const currentPrices: Record<string, number> = {};
   const thetaMap: Record<string, number> = {};
   const gammaMap: Record<string, number> = {};
+  const deltaMap: Record<string, number> = {};
+  const vegaMap:  Record<string, number> = {};
   if (allOptionSymbols.length > 0) {
     try {
       for (let i = 0; i < allOptionSymbols.length; i += 50) {
@@ -1046,8 +1071,12 @@ async function loadPositions(): Promise<Position[]> {
           currentPrices[sym] = mid > 0 ? mid : mark > 0 ? mark : 0;
           const theta = parseFloat(item.theta ?? 'NaN');
           const gamma = parseFloat(item.gamma ?? 'NaN');
+          const delta = parseFloat(item.delta ?? 'NaN');
+          const vega  = parseFloat(item.vega  ?? 'NaN');
           if (!isNaN(theta)) thetaMap[sym] = theta;
           if (!isNaN(gamma)) gammaMap[sym] = gamma;
+          if (!isNaN(delta)) deltaMap[sym] = delta;
+          if (!isNaN(vega))  vegaMap[sym]  = vega;
         }
       }
     } catch {}
@@ -1286,13 +1315,27 @@ async function loadPositions(): Promise<Position[]> {
         return any ? parseFloat(net.toFixed(4)) : null;
       })(),
       netDelta: (() => {
-        // deltaMap not yet fetched per-leg — approximate from position Greeks
-        // Short spread delta: short leg delta (negative for puts) + long leg delta
-        // For now derive from buffer and strategy as a sign-only approximation
-        // Will be enriched when per-leg delta is added to market data fetch
-        return null;
+        let net = 0; let any = false;
+        for (const l of legs) {
+          const val = deltaMap[l.symbol?.replace(/\s+/g, '')];
+          if (val == null) continue;
+          const qty = parseInt(l['quantity'] ?? '1', 10);
+          net += l['quantity-direction'] === 'Short' ? -val * qty : val * qty;
+          any = true;
+        }
+        return any ? parseFloat(net.toFixed(4)) : null;
       })(),
-      netVega: (() => { return null; })(),
+      netVega: (() => {
+        let net = 0; let any = false;
+        for (const l of legs) {
+          const val = vegaMap[l.symbol?.replace(/\s+/g, '')];
+          if (val == null) continue;
+          const qty = parseInt(l['quantity'] ?? '1', 10);
+          net += l['quantity-direction'] === 'Short' ? -Math.abs(val) * qty : Math.abs(val) * qty;
+          any = true;
+        }
+        return any ? parseFloat(net.toFixed(4)) : null;
+      })(),
     };
   });
 
@@ -4524,9 +4567,23 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             </div>
 
             <div>
+              <p className={`text-[9px] ${th.textFaint}`}>Delta</p>
+              <p className={`text-xs font-bold ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
+              </p>
+            </div>
+
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
               <p className={`text-xs font-bold ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
+              </p>
+            </div>
+
+            <div>
+              <p className={`text-[9px] ${th.textFaint}`}>Vega</p>
+              <p className={`text-xs font-bold ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
               </p>
             </div>
 
