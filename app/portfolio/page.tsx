@@ -4455,14 +4455,15 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
         {/* Data columns */}
         <div className="overflow-x-auto flex-1">
-          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'center', minWidth: '1040px' }}>
+          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'center', minWidth: '1100px' }}>
 
-            <div>
+            {/* ── POSITION ───────────────────────────── */}
+            <div className="border-t-2 border-slate-600/60 pt-1">
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
               <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
             </div>
 
-            <div>
+            <div className="border-t-2 border-slate-600/60 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Entry / Expiry / DTE</p>
               <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.entryDate && <span className={`block text-[10px] ${th.textFaint}`}>{pos.entryDate}</span>}
@@ -4471,12 +4472,13 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </p>
             </div>
 
-            <div>
+            {/* ── MARKET ─────────────────────────────── */}
+            <div className="border-t-2 border-sky-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Stock</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.stockPrice != null ? `$${pos.stockPrice.toFixed(2)}` : '—'}</p>
             </div>
 
-            <div className="relative group">
+            <div className="relative group border-t-2 border-sky-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>% Buffer</p>
               <p className={`text-xs font-bold ${bufferColor(pos.buffer, pos.dte)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.buffer != null ? `${pos.buffer.toFixed(1)}%` : '—'}
@@ -4519,22 +4521,23 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </div>
             </div>
 
-            <div>
+            <div className="border-t-2 border-sky-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
             </div>
 
-            <div>
+            {/* ── P&L ────────────────────────────────── */}
+            <div className="border-t-2 border-emerald-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Buyback</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}</p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-emerald-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
               <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
             </div>
 
-            <div onClick={e => e.stopPropagation()}>
+            <div onClick={e => e.stopPropagation()} className="border-t-2 border-emerald-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
               {editingTarget ? (
                 <div className="flex items-center gap-1">
@@ -4555,54 +4558,56 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               )}
             </div>
 
-            <div>
+            <div className="border-t-2 border-emerald-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
               <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
               </p>
             </div>
 
-            <div>
+            {/* ── GREEKS ─────────────────────────────── */}
+            <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Theta</p>
               <p className={`text-xs font-bold ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
               </p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Delta</p>
               <p className={`text-xs font-bold ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
               </p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
               <p className={`text-xs font-bold ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
               </p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Vega</p>
               <p className={`text-xs font-bold ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
               </p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-purple-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
               <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.ivr ?? '—'}
               </p>
             </div>
 
-            <div>
+            {/* ── ORDERS ─────────────────────────────── */}
+            <div className="border-t-2 border-amber-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
               <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>{pos.hasGtc ? '✓ Live' : '✕ None'}</p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-amber-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
               {(() => {
                 const cfg =
@@ -4621,8 +4626,8 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               })()}
             </div>
 
-            {/* Recommendation */}
-            <div>
+            {/* ── ACTION ─────────────────────────────── */}
+            <div className="border-t-2 border-slate-500/40 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Suggested</p>
               <span className={`text-[10px] font-bold ${ACTION_META[rec.action].color}`}>{ACTION_META[rec.action].label}</span>
               <p className={`text-[9px] ${th.textFaint} mt-0.5 leading-tight`}>{rec.detail}</p>
