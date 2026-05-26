@@ -80,6 +80,8 @@ interface Position {
   stopLossStatus: StopStatus;
   stopLossPrice: number | null;
   stockPrice: number | null;
+  underlyingType: 'stock' | 'etf' | 'index';
+  roc: number | null;  // Return on Capital = credit / max loss × 100
   buffer: number | null;
   theta: number | null;
   gamma: number | null;
@@ -827,6 +829,40 @@ function instrType(symbol: string): 'Equity Option' | 'Index Option' {
   return ['SPX', 'NDX', 'RUT', 'VIX'].includes(symbol.toUpperCase().trim()) ? 'Index Option' : 'Equity Option';
 }
 
+const INDEX_SYMBOLS = new Set(['SPX', 'NDX', 'RUT', 'VIX', 'SPXW', 'XSP']);
+const ETF_SYMBOLS   = new Set([
+  'SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'XLF', 'XLE',
+  'XLK', 'XLV', 'XLP', 'XLY', 'XLI', 'XLB', 'XLU', 'XLRE', 'SMH', 'SOXX',
+  'ARKK', 'EEM', 'EFA', 'VXX', 'UVXY', 'SOXL', 'TQQQ', 'SQQQ', 'GDX', 'GDXJ',
+]);
+
+function classifyUnderlying(symbol: string): 'stock' | 'etf' | 'index' {
+  const s = symbol.toUpperCase().trim();
+  if (INDEX_SYMBOLS.has(s)) return 'index';
+  if (ETF_SYMBOLS.has(s))   return 'etf';
+  return 'stock';
+}
+
+function getRocThreshold(type: 'stock' | 'etf' | 'index', ivr: number | null): number {
+  const iv = ivr ?? 50;
+  if (type === 'index') return iv >= 60 ? 8  : iv >= 30 ? 10 : 13;
+  if (type === 'etf')   return iv >= 60 ? 12 : iv >= 30 ? 15 : 18;
+  return                       iv >= 60 ? 16 : iv >= 30 ? 20 : 24;
+}
+
+function getCreditRatioThreshold(type: 'stock' | 'etf' | 'index'): number {
+  if (type === 'index') return 0.22;
+  if (type === 'etf')   return 0.28;
+  return 0.33;
+}
+
+function calcRoc(creditReceived: number, spreadWidth: number, qty: number): number | null {
+  if (spreadWidth <= 0 || qty <= 0) return null;
+  const maxLoss = (spreadWidth * qty * 100) - creditReceived;
+  if (maxLoss <= 0) return null;
+  return (creditReceived / maxLoss) * 100;
+}
+
 // ── Order Builders ─────────────────────────────────────────────────────────
 function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' = 'Day'): OrderBody {
   const itype = instrType(pos.symbol);
@@ -1213,6 +1249,15 @@ async function loadPositions(): Promise<Position[]> {
       })(),
       stopLossStatus: stopLoss.status, stopLossPrice: stopLoss.price,
       stockPrice: stockPrices[symbol] ?? null,
+      underlyingType: classifyUnderlying(symbol),
+      roc: (() => {
+        const short = positionLegs.find(l => l.direction === 'Short');
+        const long  = positionLegs.find(l => l.direction === 'Long');
+        if (!short || !long) return null;
+        const width = Math.abs(short.strikePrice - long.strikePrice);
+        const qty = short.quantity;
+        return calcRoc(Math.abs(creditReceived), width, qty);
+      })(),
       buffer: (() => {
         const stock = stockPrices[symbol];
         if (stock == null) return null;
@@ -1288,6 +1333,17 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     ? { action: 'TAKE_PROFIT', detail: `Close order pending — fills at open` }
     : { action: 'WAITING', detail: `GTC working @ $${pos.gtcOrderPrice?.toFixed(2)} — waiting for fill` };
   }  
+  // ROC + credit ratio health check — uses tier-aware thresholds
+  const rocThreshold        = getRocThreshold(pos.underlyingType, pos.ivr);
+  const creditRatioThreshold = getCreditRatioThreshold(pos.underlyingType);
+  const _short = pos.legs.find(l => l.direction === 'Short');
+  const _long  = pos.legs.find(l => l.direction === 'Long');
+  const spreadWidth   = _short && _long ? Math.abs(_short.strikePrice - _long.strikePrice) : 0;
+  const creditRatio   = spreadWidth > 0 ? pos.creditReceived / (spreadWidth * 100) : 0;
+  const rocOk         = pos.roc != null && pos.roc >= rocThreshold;
+  const ratioOk       = creditRatio >= creditRatioThreshold;
+  const poorEntry     = !rocOk && !ratioOk;
+
   if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
   if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + trend confirms — exit` };
   if (pnlPct < -15)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
@@ -1301,8 +1357,8 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     : { action: 'HOLD', detail: `GTC working @ $${pos.gtcOrderPrice?.toFixed(2)} — waiting for fill` };
 }
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
-  if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
-  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
+  if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy}${poorEntry ? ` — ⚠ low ROC entry (${pos.roc?.toFixed(0) ?? '?'}% vs ${rocThreshold}% min)` : ` — ${pnlPct.toFixed(0)}% profit`}` };
+  return { action: 'HOLD', detail: `${poorEntry ? `⚠ low ROC entry (${pos.roc?.toFixed(0) ?? '?'}% vs ${rocThreshold}% min) — ` : ''}${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
 }
 
 // ── AI Analysis ───────────────────────────────────────────────────────────
@@ -4240,8 +4296,13 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   if (!short || !long) return null;
                   const width = Math.abs(short.strikePrice - long.strikePrice);
                   if (width <= 0) return null;
-                  const pct = Math.round((pos.creditReceived / (width * 100)) * 100);
-                  return <span className={`ml-1 text-[9px] font-normal ${pct >= 33 ? 'text-emerald-400' : 'text-yellow-400'}`}>({pct}%)</span>;
+                  const ratio = pos.creditReceived / (width * 100);
+                  const ratioThreshold = getCreditRatioThreshold(pos.underlyingType);
+                  const rocThreshold   = getRocThreshold(pos.underlyingType, pos.ivr);
+                  const rocOk   = pos.roc != null && pos.roc >= rocThreshold;
+                  const ratioOk = ratio >= ratioThreshold;
+                  const color   = (rocOk && ratioOk) ? 'text-emerald-400' : (rocOk || ratioOk) ? 'text-yellow-400' : 'text-red-400';
+                  return <span className={`ml-1 text-[9px] font-normal ${color}`}>({Math.round(ratio * 100)}%{pos.roc != null ? ` · ${pos.roc.toFixed(0)}% ROC` : ''})</span>;
                 })()}
               </p>
             </div>
