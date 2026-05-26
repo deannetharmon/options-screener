@@ -67,6 +67,7 @@ interface Position {
   hitTarget: boolean;
   needsClose: boolean;
   entryDte: number;
+  entryDate: string | null;  // date position was opened (YYYY-MM-DD)
   accountNumber: string;
   // Greeks
   ivr: number | null;
@@ -1188,7 +1189,7 @@ async function loadPositions(): Promise<Position[]> {
         }
         return 0;
       })(),
-      entryDte, needsClose: entryDte > 21 && dte <= 21, accountNumber,
+      entryDte, entryDate: openedAt, needsClose: entryDte > 21 && dte <= 21, accountNumber,
       ivr: ivrMap[symbol] ?? null,
       iv: ivMap[symbol] ?? null,
       hv30: hv30Map[symbol] ?? null,
@@ -1389,8 +1390,7 @@ Flags: ${[
   pos.needsClose ? '⚠ AT 21 DTE — must close or roll' : '',
   pos.hitTarget ? '✓ Profit target hit' : '',
   !pos.hasGtc ? '⚠ No GTC order' : '',
-  pos.buffer != null && pos.buffer < 3 ? `⚠ CRITICAL buffer ${pos.buffer.toFixed(1)}% — near breach` : '',
-  pos.buffer != null && pos.buffer < 7 ? `⚠ Tight buffer ${pos.buffer.toFixed(1)}%` : '',
+  pos.buffer != null && pos.buffer < 2 ? `⚠ CRITICAL buffer ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE — near breach` : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? `⚠ Tight buffer ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? `ℹ Buffer ${pos.buffer.toFixed(1)}% with ${pos.dte} DTE — watch closely` : '',
   pos.earningsDate ? `⚠ Earnings ${pos.earningsDate}` : '',
 ].filter(Boolean).join(', ') || 'None'}
 
@@ -1521,8 +1521,7 @@ Earnings: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None within expi
 Flags: ${[
     pos.needsClose ? 'AT 21 DTE' : '',
     pos.hitTarget ? 'TARGET HIT' : '',
-    pos.buffer != null && pos.buffer < 3 ? `CRITICAL BUFFER ${pos.buffer.toFixed(1)}%` : '',
-    pos.buffer != null && pos.buffer < 7 && pos.buffer >= 3 ? `TIGHT BUFFER ${pos.buffer.toFixed(1)}%` : '',
+    pos.buffer != null && pos.buffer < 2 ? `CRITICAL BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? `TIGHT BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? `WATCH BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : '',
     pos.earningsDate ? `EARNINGS ${pos.earningsDate}` : '',
     (pos.pnl ?? 0) < -pos.creditReceived ? 'LOSS EXCEEDS 1X CREDIT' : '',
   ].filter(Boolean).join(', ') || 'None'}
@@ -3580,8 +3579,7 @@ Stop loss: ${pos.stopLossStatus}${pos.stopLossPrice ? ' @ $' + pos.stopLossPrice
 
 FLAGS: ${[
   pos.needsClose ? 'AT 21 DTE — closing soon anyway' : '',
-  pos.buffer != null && pos.buffer < 3 ? 'CRITICAL buffer ' + pos.buffer.toFixed(1) + '% — near breach' : '',
-  pos.buffer != null && pos.buffer < 7 && pos.buffer >= 3 ? 'TIGHT buffer ' + pos.buffer.toFixed(1) + '%' : '',
+  pos.buffer != null && pos.buffer < 2 ? 'CRITICAL buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE — near breach' : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? 'TIGHT buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE' : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? 'WATCH buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE' : '',
   pos.earningsDate ? 'EARNINGS ' + pos.earningsDate : '',
   (pos.ivr ?? 0) < 30 ? 'IVR BELOW 30 — edge thin' : '',
   (pos.ivr ?? 0) > 70 ? 'IVR ABOVE 70 — elevated volatility' : '',
@@ -4173,6 +4171,64 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
     </div>
   );
 }
+// ── Buffer Color Helpers ──────────────────────────────────────────────────
+function bufferColor(buffer: number | null, dte: number): string {
+  if (buffer == null) return 'text-[#808080]';
+  // < 7 DTE — theta acceleration, very relaxed thresholds
+  if (dte < 7) {
+    if (buffer < 2)  return 'text-yellow-400';
+    return 'text-emerald-400';
+  }
+  // 7-14 DTE
+  if (dte < 14) {
+    if (buffer < 2)  return 'text-yellow-400';
+    if (buffer < 3)  return 'text-yellow-400';
+    if (buffer < 5)  return 'text-emerald-400';
+    return 'text-emerald-400';
+  }
+  // 14-21 DTE
+  if (dte < 21) {
+    if (buffer < 2)  return 'text-orange-400';
+    if (buffer < 3)  return 'text-yellow-400';
+    if (buffer < 5)  return 'text-emerald-400';
+    return 'text-emerald-400';
+  }
+  // 21-30 DTE
+  if (dte < 30) {
+    if (buffer < 2)  return 'text-red-400';
+    if (buffer < 3)  return 'text-orange-400';
+    if (buffer < 5)  return 'text-yellow-400';
+    if (buffer < 8)  return 'text-emerald-400';
+    return 'text-emerald-400';
+  }
+  // > 30 DTE
+  if (buffer < 2)  return 'text-red-400';
+  if (buffer < 3)  return 'text-orange-400';
+  if (buffer < 5)  return 'text-yellow-400';
+  if (buffer < 8)  return 'text-emerald-400';
+  return 'text-emerald-400';
+}
+
+// Highlights the active row in the tooltip table
+function isBufferRow(buffer: number, label: string): boolean {
+  if (label === '> 8%')  return buffer >= 8;
+  if (label === '5-8%')  return buffer >= 5 && buffer < 8;
+  if (label === '3-5%')  return buffer >= 3 && buffer < 5;
+  if (label === '2-3%')  return buffer >= 2 && buffer < 3;
+  if (label === '< 2%')  return buffer < 2;
+  return false;
+}
+
+// Highlights the active DTE column in the tooltip table (col index 0-4)
+function isDteCol(dte: number, col: number): boolean {
+  if (col === 0) return dte > 30;
+  if (col === 1) return dte >= 21 && dte <= 30;
+  if (col === 2) return dte >= 14 && dte < 21;
+  if (col === 3) return dte >= 7 && dte < 14;
+  if (col === 4) return dte < 7;
+  return false;
+}
+
 function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExecute }: {
   pos: Position;
   th: typeof THEMES[Theme];
@@ -4274,9 +4330,10 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             </div>
 
             <div>
-              <p className={`text-[9px] ${th.textFaint}`}>Expiry / DTE</p>
+              <p className={`text-[9px] ${th.textFaint}`}>Entry / Expiry / DTE</p>
               <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
-                <span className={`block ${th.text}`}>{pos.expDate}</span>
+                {pos.entryDate && <span className={`block text-[10px] ${th.textFaint}`}>{pos.entryDate}</span>}
+                <span className={`block font-bold ${th.text}`}>{pos.expDate}</span>
                 <span className={`block ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
               </p>
             </div>
@@ -4286,11 +4343,47 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.stockPrice != null ? `$${pos.stockPrice.toFixed(2)}` : '—'}</p>
             </div>
 
-            <div>
+            <div className="relative group">
               <p className={`text-[9px] ${th.textFaint}`}>% Buffer</p>
-              <p className={`text-xs font-bold ${pos.buffer == null ? th.textFaint : pos.buffer < 3 ? 'text-red-400' : pos.buffer < 7 ? 'text-yellow-400' : 'text-emerald-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold ${bufferColor(pos.buffer, pos.dte)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.buffer != null ? `${pos.buffer.toFixed(1)}%` : '—'}
               </p>
+              {/* Tooltip */}
+              <div className="absolute bottom-full left-0 mb-2 z-50 hidden group-hover:block w-72 pointer-events-none">
+                <div className="bg-[#1a1a1a] border border-[#333] rounded-xl p-3 shadow-2xl text-[10px]">
+                  <p className="text-white font-bold mb-2 tracking-wide">BUFFER RISK GUIDE</p>
+                  <p className="text-[#888] mb-2">Color adjusts based on buffer % <span className="text-white">and</span> DTE remaining. Same buffer is safer with less time left.</p>
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr>
+                        <th className="text-left text-[#666] pb-1 pr-2 font-normal">Buffer</th>
+                        <th className="text-center text-[#666] pb-1 px-1 font-normal">&gt;30d</th>
+                        <th className="text-center text-[#666] pb-1 px-1 font-normal">21-30d</th>
+                        <th className="text-center text-[#666] pb-1 px-1 font-normal">14-21d</th>
+                        <th className="text-center text-[#666] pb-1 px-1 font-normal">7-14d</th>
+                        <th className="text-center text-[#666] pb-1 px-1 font-normal">&lt;7d</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        { label: '> 8%',  cols: ['🟢','🟢','🟢','🟢','🟢'] },
+                        { label: '5-8%',  cols: ['🟢','🟢','🟢','🟡','🟢'] },
+                        { label: '3-5%',  cols: ['🟡','🟡','🟢','🟢','🟢'] },
+                        { label: '2-3%',  cols: ['🟠','🟠','🟡','🟡','🟢'] },
+                        { label: '< 2%',  cols: ['🔴','🔴','🟠','🟡','🟡'] },
+                      ].map(row => (
+                        <tr key={row.label} className={pos.buffer != null && isBufferRow(pos.buffer, row.label) ? 'bg-white/5 rounded' : ''}>
+                          <td className="text-[#aaa] pr-2 py-0.5 font-mono">{row.label}</td>
+                          {row.cols.map((c, i) => (
+                            <td key={i} className={`text-center px-1 py-0.5 ${pos.dte != null && isDteCol(pos.dte, i) ? 'bg-white/10 rounded' : ''}`}>{c}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="text-[#555] mt-2 leading-tight">Your position: <span className="text-white">{pos.buffer?.toFixed(1) ?? '—'}% buffer</span> at <span className="text-white">{pos.dte}d DTE</span></p>
+                </div>
+              </div>
             </div>
 
             <div>
