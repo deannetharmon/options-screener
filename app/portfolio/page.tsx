@@ -157,6 +157,8 @@ interface AuditEntry {
   status: 'submitted' | 'error' | 'dry-run';
   error?: string;
   estPnl?: number;
+  closeProfitPct?: number;  // % profit captured on TAKE_PROFIT closes (e.g. 65 for 65%)
+  creditAtClose?: number;   // credit per contract at time of close — used to back-calc pct
 }
 
 interface OrderLeg {
@@ -277,11 +279,11 @@ function writeAuditEntry(entry: AuditEntry) {
 function exportAuditCsv() {
   const log = readAuditLog();
   if (log.length === 0) return;
-  const headers = ['Timestamp', 'Symbol', 'Strategy', 'Action', 'Order Type', 'Limit Price', 'Quantity', 'Order ID', 'Status', 'Est P&L', 'Error'];
+  const headers = ['Timestamp', 'Symbol', 'Strategy', 'Action', 'Order Type', 'Limit Price', 'Quantity', 'Order ID', 'Status', 'Est P&L', 'Close Profit %', 'Error'];
   const rows = log.map(e => [
     e.timestamp, e.symbol, e.strategy, e.action, e.orderType,
     e.limitPrice.toFixed(2), e.quantity, e.orderId, e.status,
-    e.estPnl?.toFixed(2) ?? '', e.error ?? ''
+    e.estPnl?.toFixed(2) ?? '', e.closeProfitPct?.toFixed(0) ?? '', e.error ?? ''
   ]);
   const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });
@@ -289,6 +291,29 @@ function exportAuditCsv() {
   const a = document.createElement('a');
   a.href = url; a.download = `prosper-audit-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click(); URL.revokeObjectURL(url);
+}
+
+// ── Smart GTC Default ─────────────────────────────────────────────────────
+// Look up last 2-3 profitable TAKE_PROFIT closes for a symbol and average
+// the closeProfitPct to suggest an informed default GTC percentage.
+function getSmartGtcDefault(symbol: string): number {
+  try {
+    const log = readAuditLog();
+    const relevant = log.filter(e =>
+      e.symbol === symbol &&
+      e.action === 'TAKE_PROFIT' &&
+      e.status !== 'error' &&
+      e.closeProfitPct != null &&
+      e.closeProfitPct > 0
+    );
+    if (relevant.length === 0) return 0.50; // no history — default 50%
+    const recent = relevant.slice(0, 3); // most recent 2-3
+    const avg = recent.reduce((sum, e) => sum + (e.closeProfitPct ?? 50), 0) / recent.length;
+    // Round to nearest 5% and clamp between 40-85%
+    return Math.min(0.85, Math.max(0.40, Math.round(avg / 5) * 5)) / 100;
+  } catch {
+    return 0.50;
+  }
 }
 
 // ── Trading Memory ─────────────────────────────────────────────────────────
@@ -1777,7 +1802,11 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           const effectivePerContract = freshPerContract ?? (pos.currentValue != null ? pos.currentValue / (qty * 100) : null);
 
           if (action === 'TAKE_PROFIT' || action === 'PLACE_GTC') {
-            const targetPrice = parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
+            // For PLACE_GTC: use smart default from trade history, fall back to pos.profitTarget
+            const effectiveProfitTarget = action === 'PLACE_GTC'
+              ? getSmartGtcDefault(pos.symbol)
+              : pos.profitTarget;
+            const targetPrice = parseFloat((creditPerContract * (1 - effectiveProfitTarget)).toFixed(2));
             if (effectivePerContract != null && targetPrice >= effectivePerContract) {
               // Target already hit or exceeded — use live mid so order fills immediately
               limitPrice = parseFloat(Math.max(effectivePerContract - 0.01, 0.01).toFixed(2));
@@ -2048,13 +2077,20 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           }
 
           // Audit log
+          const _auditQty = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
+          const _creditPc = item.pos.creditReceived / (_auditQty * 100);
+          const _closeProfitPct = (item.action === 'TAKE_PROFIT' && _creditPc > 0 && item.estPnl != null)
+            ? Math.round(((item.pos.creditReceived - (item.limitPrice * _auditQty * 100)) / item.pos.creditReceived) * 100)
+            : undefined;
           writeAuditEntry({
             id: crypto.randomUUID(), timestamp: new Date().toISOString(),
             symbol: item.pos.symbol, strategy: item.pos.strategy, action: item.action,
             orderType: item.orderBody['order-type'], limitPrice: item.limitPrice,
-            quantity: item.pos.legs[0]?.quantity ?? 1, orderId,
+            quantity: _auditQty, orderId,
             status: dryRun ? 'dry-run' : 'submitted',
             estPnl: item.estPnl ?? undefined,
+            closeProfitPct: _closeProfitPct,
+            creditAtClose: _creditPc,
           });
 
           // Record in trading memory for future verdict learning
@@ -2302,26 +2338,35 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                             const creditPc = item.pos.creditReceived / (_qty2 * 100);
                             const currentLimit = parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2));
                             const pct = creditPc > 0 ? Math.round((1 - currentLimit / creditPc) * 100) : 0;
+                            const _smartDefault = item.action === 'PLACE_GTC' ? getSmartGtcDefault(item.pos.symbol) : null;
+                            const _hasHistory = _smartDefault != null && _smartDefault !== 0.50;
                             return (
-                              <div className="flex items-center justify-end gap-1">
-                                <span className={`text-[9px] ${th.textFaint}`}>Close at</span>
-                                <input
-                                  type="number"
-                                  step="5"
-                                  min="5"
-                                  max="95"
-                                  value={pct}
-                                  onChange={e => {
-                                    const p = parseInt(e.target.value);
-                                    if (!isNaN(p) && p >= 5 && p <= 95 && creditPc > 0) {
-                                      const newLimit = parseFloat((creditPc * (1 - p / 100)).toFixed(2));
-                                      setLimitOverrides(prev => ({ ...prev, [item.pos.key]: newLimit.toFixed(2) }));
-                                    }
-                                  }}
-                                  className={`w-12 text-[10px] font-bold text-right px-1.5 py-0.5 rounded border border-emerald-600/40 text-emerald-400 bg-transparent outline-none focus:border-emerald-400`}
-                                  style={{ fontFamily: "'DM Mono', monospace" }}
-                                />
-                                <span className={`text-[9px] ${th.textFaint}`}>%</span>
+                              <div className="flex flex-col items-end gap-0.5">
+                                <div className="flex items-center justify-end gap-1">
+                                  <span className={`text-[9px] ${th.textFaint}`}>Close at</span>
+                                  <input
+                                    type="number"
+                                    step="5"
+                                    min="5"
+                                    max="95"
+                                    value={pct}
+                                    onChange={e => {
+                                      const p = parseInt(e.target.value);
+                                      if (!isNaN(p) && p >= 5 && p <= 95 && creditPc > 0) {
+                                        const newLimit = parseFloat((creditPc * (1 - p / 100)).toFixed(2));
+                                        setLimitOverrides(prev => ({ ...prev, [item.pos.key]: newLimit.toFixed(2) }));
+                                      }
+                                    }}
+                                    className={`w-12 text-[10px] font-bold text-right px-1.5 py-0.5 rounded border border-emerald-600/40 text-emerald-400 bg-transparent outline-none focus:border-emerald-400`}
+                                    style={{ fontFamily: "'DM Mono', monospace" }}
+                                  />
+                                  <span className={`text-[9px] ${th.textFaint}`}>%</span>
+                                </div>
+                                {_hasHistory && (
+                                  <span className="text-[8px] text-purple-400" title={`Based on your last 2-3 profitable ${item.pos.symbol} closes`}>
+                                    ⚡ from history
+                                  </span>
+                                )}
                               </div>
                             );
                           })()}
