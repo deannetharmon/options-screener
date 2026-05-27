@@ -3486,7 +3486,7 @@ function assessExtendConditions(pos: Position): ExtendConditionResult {
 function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<'success' | 'error' | null>(null);
+  const [result, setResult] = useState<string | null>(null);
   const [resultMsg, setResultMsg] = useState('');
   const [verdict, setVerdict] = useState<ActionVerdict | null>(null);
   const [verdictLoading, setVerdictLoading] = useState(false);
@@ -3908,7 +3908,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   const [open, setOpen]       = useState(false);
   const [loading, setLoading] = useState(false);
   const [phase, setPhase]     = useState('');
-  const [result, setResult]   = useState<'success' | 'error' | null>(null);
+  const [result, setResult]   = useState<string | null>(null);
   const [resultMsg, setResultMsg] = useState('');
   const [stopPrice, setStopPrice] = useState('');
   const [gtcPrice,  setGtcPrice]  = useState('');
