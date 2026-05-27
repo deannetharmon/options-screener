@@ -5055,30 +5055,189 @@ function MonthlyChart({ byMonth, months, th }: {
 }
 
 // ── Performance Panel ──────────────────────────────────────────────────────
+interface ClosedTrade {
+  id: string;
+  symbol: string;
+  strategy: string;
+  openDate: string;
+  closeDate: string;
+  credit: number;   // per contract
+  debit: number;    // per contract
+  qty: number;
+  pnl: number;      // total dollars
+  orderId: string;
+}
+
+async function fetchClosedTrades(token: string): Promise<ClosedTrade[]> {
+  const accountsData = await ttFetch('/customers/me/accounts', token);
+  const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+  if (!accountNumber) throw new Error('No account found');
+
+  // Fetch full transaction history (paginate if needed)
+  const allItems: any[] = [];
+  let pageOffset = 0;
+  const perPage = 250;
+  while (true) {
+    const data = await ttFetch(
+      `/accounts/${accountNumber}/transactions?transaction-type=Trade&per-page=${perPage}&page-offset=${pageOffset}`,
+      token
+    );
+    const items = data?.data?.items ?? [];
+    allItems.push(...items);
+    const pagination = data?.data?.pagination;
+    if (!pagination || items.length < perPage) break;
+    pageOffset += perPage;
+    if (pageOffset > 1000) break; // safety
+  }
+
+  // Separate opens (STO) and closes (BTC)
+  const opens: any[] = [];
+  const closes: any[] = [];
+
+  for (const item of allItems) {
+    const action = item.action ?? '';
+    const type = item['transaction-type'] ?? item.transaction_type ?? '';
+    if (type !== 'Trade' && type !== 'trade') continue;
+    const instType = item['instrument-type'] ?? '';
+    if (!instType.toLowerCase().includes('option')) continue;
+    if (action === 'Sell to Open') opens.push(item);
+    else if (action === 'Buy to Close') closes.push(item);
+  }
+
+  // Parse OCC symbol to get underlying, expiry, strike, type
+  function parseOCC(sym: string) {
+    // Format: AAPL  260618C00150000 or SPXW  260618P07405000
+    const m = sym.trim().match(/^([A-Z]+)\s*(\d{6})([CP])(\d{8})$/);
+    if (!m) return null;
+    const underlying = m[1];
+    const exp = `20${m[2].slice(0,2)}-${m[2].slice(2,4)}-${m[2].slice(4,6)}`;
+    const optType = m[3];
+    const strike = parseInt(m[4]) / 1000;
+    return { underlying, exp, optType, strike };
+  }
+
+  // Build open map: key = underlying::exp::strikes_sorted
+  // For spreads, group by order-id first
+  const opensByOrder: Record<string, any[]> = {};
+  for (const o of opens) {
+    const oid = String(o['order-id'] ?? o['id'] ?? '');
+    if (!opensByOrder[oid]) opensByOrder[oid] = [];
+    opensByOrder[oid].push(o);
+  }
+
+  const closesByOrder: Record<string, any[]> = {};
+  for (const c of closes) {
+    const oid = String(c['order-id'] ?? c['id'] ?? '');
+    if (!closesByOrder[oid]) closesByOrder[oid] = [];
+    closesByOrder[oid].push(c);
+  }
+
+  // Build open spread index: key = underlying::exp::strike1-strike2_sorted
+  const openSpreads: Record<string, { credit: number; qty: number; date: string; orderId: string; symbol: string }> = {};
+  for (const [oid, legs] of Object.entries(opensByOrder)) {
+    const parsed = legs.map(l => parseOCC(l.symbol ?? l['underlying-symbol'] ?? '')).filter(Boolean);
+    if (parsed.length === 0) continue;
+    const underlying = parsed[0]!.underlying;
+    const exp = parsed[0]!.exp;
+    const strikes = parsed.map(p => p!.strike).sort((a,b) => a-b);
+    const key = `${underlying}::${exp}::${strikes.join('-')}`;
+    // Net credit = sum of (price * qty) for short legs minus long legs
+    let credit = 0;
+    for (const leg of legs) {
+      const price = parseFloat(leg.price ?? '0');
+      const qty = Math.abs(parseInt(leg.quantity ?? '1', 10));
+      credit += price * qty; // STO legs are always positive credit contributions
+    }
+    const qty = Math.abs(parseInt(legs[0]?.quantity ?? '1', 10));
+    const date = (legs[0]?.['transaction-date'] ?? legs[0]?.['executed-at'] ?? '').slice(0, 10);
+    openSpreads[key] = { credit: credit / Math.max(qty, 1), qty, date, orderId: oid, symbol: underlying };
+  }
+
+  // Match close orders to opens
+  const trades: ClosedTrade[] = [];
+  for (const [oid, legs] of Object.entries(closesByOrder)) {
+    const parsed = legs.map(l => parseOCC(l.symbol ?? '')).filter(Boolean);
+    if (parsed.length === 0) continue;
+    const underlying = parsed[0]!.underlying;
+    const exp = parsed[0]!.exp;
+    const strikes = parsed.map(p => p!.strike).sort((a,b) => a-b);
+    const key = `${underlying}::${exp}::${strikes.join('-')}`;
+    const open = openSpreads[key];
+    if (!open) continue; // no matching open found
+
+    let debit = 0;
+    for (const leg of legs) {
+      const price = parseFloat(leg.price ?? '0');
+      const qty = Math.abs(parseInt(leg.quantity ?? '1', 10));
+      debit += price * qty;
+    }
+    const qty = Math.abs(parseInt(legs[0]?.quantity ?? '1', 10));
+    debit = debit / Math.max(qty, 1);
+    const closeDate = (legs[0]?.['transaction-date'] ?? legs[0]?.['executed-at'] ?? '').slice(0, 10);
+    const pnl = (open.credit - debit) * qty * 100;
+
+    // Determine strategy from strikes
+    const optTypes = parsed.map(p => p!.optType);
+    const strategy = optTypes.every(t => t === 'P') ? 'BPS'
+      : optTypes.every(t => t === 'C') ? 'BCS'
+      : optTypes.includes('P') && optTypes.includes('C') ? 'IC'
+      : 'BPS';
+
+    trades.push({
+      id: `${oid}-${key}`,
+      symbol: underlying,
+      strategy,
+      openDate: open.date,
+      closeDate,
+      credit: open.credit,
+      debit,
+      qty,
+      pnl: Math.round(pnl * 100) / 100,
+      orderId: oid,
+    });
+  }
+
+  // Sort by close date descending
+  return trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
+}
+
 function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
-  const auditLog: AuditEntry[] = (() => {
-    try { return JSON.parse(localStorage.getItem('prosper-audit-log') ?? '[]'); } catch { return []; }
-  })();
+  const [trades, setTrades] = useState<ClosedTrade[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const closed = auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
-    (e.action === 'TAKE_PROFIT' || e.action === 'CUT_LOSSES' || e.action === 'CLOSE_ROLL'));
+  useEffect(() => {
+    (async () => {
+      setLoading(true); setError('');
+      try {
+        const token = await getAccessToken();
+        const result = await fetchClosedTrades(token);
+        setTrades(result);
+      } catch (e: any) {
+        setError(e.message ?? 'Failed to load trade history');
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
-  const winners = closed.filter(e => (e.estPnl ?? 0) > 0);
-  const losers  = closed.filter(e => (e.estPnl ?? 0) <= 0);
-  const winRate    = closed.length > 0 ? (winners.length / closed.length * 100) : 0;
-  const avgWin     = winners.length > 0 ? winners.reduce((s, e) => s + (e.estPnl ?? 0), 0) / winners.length : 0;
-  const avgLoss    = losers.length  > 0 ? Math.abs(losers.reduce((s, e) => s + (e.estPnl ?? 0), 0) / losers.length) : 0;
+  // Derived stats
+  const winners = trades.filter(t => t.pnl > 0);
+  const losers  = trades.filter(t => t.pnl <= 0);
+  const winRate    = trades.length > 0 ? (winners.length / trades.length * 100) : 0;
+  const avgWin     = winners.length > 0 ? winners.reduce((s, t) => s + t.pnl, 0) / winners.length : 0;
+  const avgLoss    = losers.length  > 0 ? Math.abs(losers.reduce((s, t) => s + t.pnl, 0) / losers.length) : 0;
   const expectancy = (winRate / 100) * avgWin - (1 - winRate / 100) * avgLoss;
-  const totalPnl   = closed.reduce((s, e) => s + (e.estPnl ?? 0), 0);
+  const totalPnl   = trades.reduce((s, t) => s + t.pnl, 0);
 
   // Monthly bucketing
   const byMonth: Record<string, { pnl: number; trades: number; wins: number }> = {};
-  for (const e of closed) {
-    const month = e.timestamp.slice(0, 7);
+  for (const t of trades) {
+    const month = t.closeDate.slice(0, 7);
     if (!byMonth[month]) byMonth[month] = { pnl: 0, trades: 0, wins: 0 };
-    byMonth[month].pnl    += e.estPnl ?? 0;
+    byMonth[month].pnl    += t.pnl;
     byMonth[month].trades += 1;
-    if ((e.estPnl ?? 0) > 0) byMonth[month].wins += 1;
+    if (t.pnl > 0) byMonth[month].wins += 1;
   }
   const months       = Object.keys(byMonth).sort();
   const last3Months  = months.slice(-3);
@@ -5089,21 +5248,20 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
 
   // By symbol
   const bySymbol: Record<string, { pnl: number; trades: number; wins: number }> = {};
-  for (const e of closed) {
-    if (!bySymbol[e.symbol]) bySymbol[e.symbol] = { pnl: 0, trades: 0, wins: 0 };
-    bySymbol[e.symbol].pnl    += e.estPnl ?? 0;
-    bySymbol[e.symbol].trades += 1;
-    if ((e.estPnl ?? 0) > 0) bySymbol[e.symbol].wins += 1;
+  for (const t of trades) {
+    if (!bySymbol[t.symbol]) bySymbol[t.symbol] = { pnl: 0, trades: 0, wins: 0 };
+    bySymbol[t.symbol].pnl    += t.pnl;
+    bySymbol[t.symbol].trades += 1;
+    if (t.pnl > 0) bySymbol[t.symbol].wins += 1;
   }
-  const symbolRows  = Object.entries(bySymbol).sort((a, b) => b[1].pnl - a[1].pnl);
+  const symbolRows   = Object.entries(bySymbol).sort((a, b) => b[1].pnl - a[1].pnl);
   const maxSymbolPnl = Math.max(...symbolRows.map(r => Math.abs(r[1].pnl)), 1);
-  const maxBarPnl    = Math.max(...months.map(m => Math.abs(byMonth[m].pnl)), 1);
 
   const kpis = [
-    { label: 'Win Rate',    value: `${winRate.toFixed(0)}%`,                              sub: `${winners.length}W / ${losers.length}L`,     color: winRate >= 70 ? 'text-emerald-400' : winRate >= 50 ? 'text-yellow-400' : 'text-red-400' },
-    { label: 'Expectancy', value: `${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(0)}`, sub: 'per trade avg',                             color: expectancy >= 0 ? 'text-emerald-400' : 'text-red-400' },
-    { label: 'Total P&L',  value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,    sub: 'all closed trades',                         color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-    { label: 'Avg Win',    value: `+$${avgWin.toFixed(0)}`,                                sub: `avg loss: -$${avgLoss.toFixed(0)}`,          color: 'text-emerald-400' },
+    { label: 'Win Rate',   value: `${winRate.toFixed(0)}%`,                                sub: `${winners.length}W / ${losers.length}L`,  color: winRate >= 70 ? 'text-emerald-400' : winRate >= 50 ? 'text-yellow-400' : 'text-red-400' },
+    { label: 'Expectancy', value: `${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(0)}`, sub: 'per trade avg',                           color: expectancy >= 0 ? 'text-emerald-400' : 'text-red-400' },
+    { label: 'Total P&L',  value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,    sub: 'all closed trades',                       color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
+    { label: 'Avg Win',    value: `+$${avgWin.toFixed(0)}`,                                sub: `avg loss: -$${avgLoss.toFixed(0)}`,        color: 'text-emerald-400' },
   ];
 
   const periods = [
@@ -5120,19 +5278,37 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
         <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
           <div>
             <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>PERFORMANCE</h2>
-            <p className={`text-[10px] ${th.textFaint}`}>{closed.length} closed trades · estimated P&L from audit log</p>
+            <p className={`text-[10px] ${th.textFaint}`}>
+              {loading ? 'Fetching trade history from TastyTrade...' : error ? 'Error loading data' : `${trades.length} closed trades · live from TastyTrade`}
+            </p>
           </div>
           <button onClick={onClose} className={`${th.textFaint} hover:text-white text-lg leading-none`}>✕</button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {closed.length === 0 ? (
+          {loading && (
+            <div className={`text-center py-16 ${th.textFaint}`}>
+              <p className="text-3xl mb-3 animate-pulse">📊</p>
+              <p className="text-sm tracking-widest">LOADING TRADE HISTORY...</p>
+              <p className="text-[11px] mt-1 opacity-60">Fetching from TastyTrade</p>
+            </div>
+          )}
+
+          {!loading && error && (
+            <div className="p-4 bg-red-500/10 border border-red-500/40 rounded-xl">
+              <p className="text-sm text-red-400">{error}</p>
+            </div>
+          )}
+
+          {!loading && !error && trades.length === 0 && (
             <div className={`text-center py-16 ${th.textFaint}`}>
               <p className="text-3xl mb-3">📊</p>
-              <p className="text-sm">No closed trades in audit log yet.</p>
-              <p className="text-[11px] mt-1 opacity-60">Trades appear here after you submit Take Profit, Cut Losses, or Close/Roll orders.</p>
+              <p className="text-sm">No closed option spread trades found.</p>
+              <p className="text-[11px] mt-1 opacity-60">Closed BPS, BCS, and IC spreads will appear here automatically.</p>
             </div>
-          ) : (
+          )}
+
+          {!loading && !error && trades.length > 0 && (
             <>
               {/* KPI strip */}
               <div className="grid grid-cols-4 gap-3">
@@ -5158,7 +5334,7 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
                 ))}
               </div>
 
-              {/* Monthly P&L chart — bars + cumulative line */}
+              {/* Monthly chart */}
               {months.length > 0 && <MonthlyChart byMonth={byMonth} months={months} th={th} />}
 
               {/* By Symbol */}
@@ -5191,141 +5367,30 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
               {/* Trade log */}
               <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
                 <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>Trade History</p>
-                <div className="space-y-0 max-h-64 overflow-y-auto">
-                  {[...closed].reverse().map(e => (
-                    <div key={e.id} className={`flex items-center gap-3 py-2 border-b ${th.borderLight} last:border-0`}>
-                      <span className={`text-[9px] ${th.textFaint} w-20 shrink-0`}>{e.timestamp.slice(0, 10)}</span>
-                      <span className={`text-[10px] font-bold ${th.text} w-14 shrink-0`}>{e.symbol}</span>
-                      <span className={`text-[9px] ${th.textFaint} w-10 shrink-0`}>{e.strategy}</span>
-                      <span className={`text-[9px] w-24 shrink-0 ${
-                        e.action === 'TAKE_PROFIT' ? 'text-emerald-400' :
-                        e.action === 'CUT_LOSSES'  ? 'text-red-400'     : 'text-blue-400'
-                      }`}>{e.action.replace(/_/g, ' ')}</span>
-                      <span className={`text-[10px] font-bold ml-auto ${(e.estPnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                        {(e.estPnl ?? 0) >= 0 ? '+' : ''}${(e.estPnl ?? 0).toFixed(0)}
+                <div className="space-y-1.5">
+                  {trades.map(t => (
+                    <div key={t.id} className={`flex items-center justify-between py-1.5 border-b ${th.borderLight} last:border-0`}>
+                      <span className={`text-[10px] ${th.textFaint} w-24 shrink-0`}>{t.closeDate}</span>
+                      <span className={`text-[10px] font-bold ${th.text} w-16 shrink-0`}>{t.symbol}</span>
+                      <span className={`text-[9px] ${th.textFaint} w-10 shrink-0`}>{t.strategy}</span>
+                      <span className={`text-[9px] w-20 shrink-0 ${t.pnl > 0 ? 'text-emerald-400' : 'text-red-400'} font-bold`}>
+                        {t.pnl > 0 ? 'TAKE PROFIT' : 'CUT LOSSES'}
+                      </span>
+                      <span className={`text-[9px] ${th.textFaint} flex-1 text-center`}>
+                        ${t.credit.toFixed(2)} cr → ${t.debit.toFixed(2)} db × {t.qty}
+                      </span>
+                      <span className={`text-[10px] font-bold w-16 text-right shrink-0 ${t.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                        {t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(0)}
                       </span>
                     </div>
                   ))}
                 </div>
+                <p className={`text-[9px] ${th.textFaint} mt-3 text-center`}>
+                  Live from TastyTrade · P&L calculated from actual fill prices
+                </p>
               </div>
-
-              <p className={`text-[9px] ${th.textFaint} text-center pb-2`}>
-                ⚠ P&L figures are estimates from order submission. Actual fills may differ. Reconcile with TastyTrade for accurate accounting.
-              </p>
             </>
           )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
-  return (
-    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
-          <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>DASHBOARD LEGEND</h2>
-          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 text-[11px]">
-
-          {/* Action Buttons */}
-          <div>
-            <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>Action Buttons</p>
-            <div className="space-y-2">
-              {[
-                { label: '✕ Cut Losses', color: 'border-red-600 text-red-400', desc: 'Close position at a loss. Use when thesis is broken or breach is imminent.' },
-                { label: '↻ Close/Roll', color: 'border-purple-600 text-purple-400', desc: 'Close current position and re-enter next expiry. Use at 21 DTE or when rolling a winner.' },
-                { label: '✓ Take Profit', color: 'border-emerald-600 text-emerald-400', desc: 'Close for profit now. Appears when position hits your profit target.' },
-                { label: '⏱ Place GTC', color: 'border-blue-600 text-blue-400', desc: 'Set a GTC limit order at your profit target. Always do this at entry.' },
-                { label: '↑ Extend Profit', color: 'border-slate-600 text-slate-400', desc: 'Move GTC target higher to capture more premium. Color indicates conditions: green=favorable, yellow=marginal, red=unfavorable.' },
-                { label: '✎ Stop / ⚠ Update Stop', color: 'border-orange-600 text-orange-400', desc: 'Set or update stop loss. Creates an OCO order paired with your GTC profit target.' },
-              ].map(b => (
-                <div key={b.label} className="flex items-start gap-3">
-                  <span className={`text-[9px] px-2 py-0.5 border rounded font-bold shrink-0 ${b.color}`}>{b.label}</span>
-                  <p className={`${th.textFaint} leading-relaxed`}>{b.desc}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* GTC & Stop Status */}
-          <div>
-            <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>GTC & Stop Loss Status</p>
-            <div className="space-y-1.5">
-              {[
-                { label: '✓ Live', color: 'text-emerald-400', desc: 'Active GTC or stop order working in TastyTrade.' },
-                { label: '⚠ Loose', color: 'text-yellow-400', desc: 'Stop exists but is set above 2× credit — too loose to provide real protection.' },
-                { label: '✕ None', color: 'text-red-400', desc: 'No GTC or stop order. Position is unprotected.' },
-              ].map(s => (
-                <div key={s.label} className="flex items-center gap-3">
-                  <span className={`text-[10px] font-bold w-16 shrink-0 ${s.color}`}>{s.label}</span>
-                  <p className={`${th.textFaint}`}>{s.desc}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Greeks */}
-          <div>
-            <p className={`text-[9px] text-purple-400 uppercase tracking-widest mb-3 font-bold`}>Greeks — Color Tints</p>
-            <p className={`${th.textFaint} mb-2`}>Background tint shows how favorable each Greek is for a short premium position.</p>
-            <div className="space-y-1.5">
-              {[
-                { greek: 'Theta', green: 'High positive — strong daily decay collecting', red: 'Negative — time working against you' },
-                { greek: 'Delta', green: 'Near zero — position is directionally neutral', red: 'High absolute value — large directional exposure' },
-                { greek: 'Gamma', green: 'Near zero — low gamma risk', red: 'High magnitude — gamma risk building (especially near expiry)' },
-                { greek: 'Vega', green: 'Negative — short vega working for you (IV decay)', red: 'Positive or near zero — IV exposure is a risk' },
-              ].map(g => (
-                <div key={g.greek} className="flex items-start gap-3">
-                  <span className={`text-[10px] font-bold w-12 shrink-0 text-purple-400`}>{g.greek}</span>
-                  <div>
-                    <span className="text-emerald-400">🟢 {g.green}</span>
-                    <span className={`ml-3 text-red-400`}>🔴 {g.red}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Buffer */}
-          <div>
-            <p className={`text-[9px] text-sky-400 uppercase tracking-widest mb-3 font-bold`}>% Buffer — DTE Aware Coloring</p>
-            <p className={`${th.textFaint} mb-2`}>Same buffer % is safer with less time remaining. Hover the buffer value on any card to see the full reference table.</p>
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                { color: 'text-emerald-400', label: 'Green', desc: 'Healthy buffer for current DTE' },
-                { color: 'text-yellow-400', label: 'Yellow', desc: 'Watch — tightening for this DTE' },
-                { color: 'text-orange-400', label: 'Orange', desc: 'Marginal — active monitoring needed' },
-                { color: 'text-red-400', label: 'Red', desc: 'Critical — near breach risk' },
-              ].map(b => (
-                <div key={b.label} className="flex items-center gap-2">
-                  <span className={`font-bold ${b.color}`}>{b.label}</span>
-                  <span className={th.textFaint}>{b.desc}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Extend Profit button colors */}
-          <div>
-            <p className={`text-[9px] text-blue-400 uppercase tracking-widest mb-3 font-bold`}>↑ Extend Profit Button Colors</p>
-            <div className="space-y-1.5">
-              {[
-                { color: 'text-emerald-400', label: 'Green border', desc: 'Conditions favor extension — good profit, healthy DTE, strong IVR' },
-                { color: 'text-slate-400', label: 'Grey border', desc: 'Neutral — proceed carefully, no strong signal either way' },
-                { color: 'text-yellow-400', label: 'Yellow border', desc: 'Marginal — one or more conditions are weak' },
-                { color: 'text-red-400', label: 'Red border', desc: 'Unfavorable — position at loss, thin DTE, or low IVR' },
-              ].map(b => (
-                <div key={b.label} className="flex items-start gap-2">
-                  <span className={`font-bold shrink-0 ${b.color}`}>{b.label}</span>
-                  <span className={th.textFaint}>{b.desc}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
         </div>
       </div>
     </div>
