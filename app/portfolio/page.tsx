@@ -5397,6 +5397,70 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
   );
 }
 
+function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
+  return (
+    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
+          <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>DASHBOARD LEGEND</h2>
+          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 text-[11px]">
+          <div>
+            <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>Action Buttons</p>
+            <div className="space-y-2">
+              {[
+                { label: '✕ Cut Losses', color: 'border-red-600 text-red-400', desc: 'Close position at a loss. Use when thesis is broken or breach is imminent.' },
+                { label: '↻ Close/Roll', color: 'border-purple-600 text-purple-400', desc: 'Close current position and re-enter next expiry. Use at 21 DTE or when rolling a winner.' },
+                { label: '✓ Take Profit', color: 'border-emerald-600 text-emerald-400', desc: 'Close for profit now. Appears when position hits your profit target.' },
+                { label: '⏱ Place GTC', color: 'border-blue-600 text-blue-400', desc: 'Set a GTC limit order at your profit target. Always do this at entry.' },
+                { label: '↑ Extend Profit', color: 'border-slate-600 text-slate-400', desc: 'Move GTC target higher to capture more premium.' },
+                { label: '✎ Stop / ⚠ Update Stop', color: 'border-orange-600 text-orange-400', desc: 'Set or update stop loss. Creates an OCO order paired with your GTC profit target.' },
+              ].map(b => (
+                <div key={b.label} className="flex items-start gap-3">
+                  <span className={`text-[9px] px-2 py-0.5 border rounded font-bold shrink-0 ${b.color}`}>{b.label}</span>
+                  <p className={`${th.textFaint} leading-relaxed`}>{b.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>GTC & Stop Loss Status</p>
+            <div className="space-y-1.5">
+              {[
+                { label: '✓ Live', color: 'text-emerald-400', desc: 'Active GTC or stop order working in TastyTrade.' },
+                { label: '⚠ Loose', color: 'text-yellow-400', desc: 'Stop exists but is set above 2× credit — too loose.' },
+                { label: '✕ None', color: 'text-red-400', desc: 'No GTC or stop order. Position is unprotected.' },
+              ].map(s => (
+                <div key={s.label} className="flex items-center gap-3">
+                  <span className={`text-[10px] font-bold w-16 shrink-0 ${s.color}`}>{s.label}</span>
+                  <p className={`${th.textFaint}`}>{s.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className={`text-[9px] text-sky-400 uppercase tracking-widest mb-3 font-bold`}>% Buffer — DTE Aware Coloring</p>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { color: 'text-emerald-400', label: 'Green', desc: 'Healthy buffer for current DTE' },
+                { color: 'text-yellow-400', label: 'Yellow', desc: 'Watch — tightening for this DTE' },
+                { color: 'text-orange-400', label: 'Orange', desc: 'Marginal — active monitoring needed' },
+                { color: 'text-red-400', label: 'Red', desc: 'Critical — near breach risk' },
+              ].map(b => (
+                <div key={b.label} className="flex items-center gap-2">
+                  <span className={`font-bold ${b.color}`}>{b.label}</span>
+                  <span className={th.textFaint}>{b.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PortfolioPage() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
