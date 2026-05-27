@@ -2221,9 +2221,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
 
   const filledCount  = orderResults.filter(r => r.status === 'filled' || r.status === 'working' || r.status === 'submitted').length;
   const rejectedCount = orderResults.filter(r => r.status === 'error' || r.status === 'rejected').length;
-  
-  }  
-  
+
   return (
     <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
@@ -2782,7 +2780,6 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
   );
 }
 
-// ── Audit Log Panel ────────────────────────────────────────────────────────
 // ── Audit Log Panel ────────────────────────────────────────────────────────
 function AuditLogPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
   const log = readAuditLog();
