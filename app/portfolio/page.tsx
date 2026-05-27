@@ -2622,6 +2622,511 @@ function BatchConfirmModal({
   );
 }
 
+// ── Audit Log Panel ────────────────────────────────────────────────────────
+function AuditLogPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
+  const [log, setLog] = useState<AuditEntry[]>([]);
+
+  useEffect(() => {
+    setLog(readAuditLog());
+  }, []);
+
+  const clearAuditLog = () => {
+    if (!confirm('Clear the audit log? This cannot be undone.')) return;
+    try {
+      localStorage.removeItem(LS_AUDIT_LOG);
+      setLog([]);
+    } catch {}
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className={`${th.card} border ${th.border} rounded-2xl w-full max-w-5xl max-h-[85vh] overflow-hidden shadow-2xl`}>
+        <div className={`px-6 py-4 border-b ${th.border} flex items-center justify-between`}>
+          <div>
+            <h2 className={`text-lg font-bold ${th.text}`}>Audit Log</h2>
+            <p className={`text-xs ${th.textFaint}`}>{log.length} recorded action{log.length === 1 ? '' : 's'}</p>
+          </div>
+          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>×</button>
+        </div>
+
+        <div className="p-6 overflow-y-auto max-h-[65vh]">
+          {log.length === 0 ? (
+            <div className={`p-8 rounded-xl border ${th.border} text-center ${th.textMuted}`}>
+              No audit entries yet.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {log.map((entry) => (
+                <div key={entry.id} className={`p-4 rounded-xl border ${th.border} ${th.input}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className={`font-bold ${th.text}`}>{entry.symbol}</span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded ${th.tag} ${th.textMuted}`}>{entry.strategy}</span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded ${entry.status === 'error' ? 'bg-red-500/15 text-red-300' : entry.status === 'dry-run' ? 'bg-yellow-500/15 text-yellow-300' : 'bg-emerald-500/15 text-emerald-300'}`}>
+                          {entry.status}
+                        </span>
+                      </div>
+                      <p className={`text-xs ${th.textFaint} mt-1`}>
+                        {new Date(entry.timestamp).toLocaleString()} · {entry.action} · {entry.orderType}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-sm font-mono ${th.text}`}>${entry.limitPrice.toFixed(2)}</p>
+                      <p className={`text-xs ${th.textFaint}`}>Qty {entry.quantity}</p>
+                    </div>
+                  </div>
+                  {entry.error && <p className="mt-2 text-xs text-red-300">{entry.error}</p>}
+                  {entry.estPnl != null && <p className={`mt-2 text-xs ${entry.estPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>Est. P/L: ${entry.estPnl.toFixed(2)}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className={`px-6 py-4 border-t ${th.border} flex gap-3 justify-end`}>
+          <button onClick={exportAuditCsv} disabled={log.length === 0} className={`px-4 py-2 rounded-xl border ${th.border} ${th.textMuted} disabled:opacity-40 text-xs font-bold tracking-widest`}>
+            Export CSV
+          </button>
+          <button onClick={clearAuditLog} disabled={log.length === 0} className="px-4 py-2 rounded-xl border border-red-500/40 text-red-300 disabled:opacity-40 text-xs font-bold tracking-widest">
+            Clear
+          </button>
+          <button onClick={onClose} className="px-4 py-2 rounded-xl bg-white text-black text-xs font-bold tracking-widest">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Memory Panel ───────────────────────────────────────────────────────────
+function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
+  const [mem, setMem] = useState<TradingMemory>(readMemory);
+  const [summarizing, setSummarizing] = useState(false);
+
+  const handleSummarizeAll = async () => {
+    setSummarizing(true);
+    try {
+      const m = readMemory();
+      // Summarize all symbols with enough data
+      for (const sym of Object.keys(m.symbolProfiles)) {
+        if (m.symbolProfiles[sym].recentTrades.length > MEMORY_RAW_TRADES_PER_SYMBOL) {
+          await summarizeSymbolHistory(sym);
+        }
+      }
+      // Force behavior summarization regardless of time interval
+      const m2 = readMemory();
+      m2.lastSummarized = null; // reset so summarize runs
+      writeMemory(m2);
+      await summarizeBehaviorProfile();
+      setMem(readMemory());
+    } finally { setSummarizing(false); }
+  };
+
+  const symbols = Object.values(mem.symbolProfiles).sort((a, b) => b.tradeCount - a.tradeCount);
+  const bp = mem.behaviorProfile;
+
+  return (
+    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-purple-400 text-sm">◆</span>
+              <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>TRADING MEMORY</h2>
+            </div>
+            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>
+              {bp.totalTrades} trades recorded · {symbols.length} symbols tracked
+              {mem.lastSummarized ? ` · Last summarized ${Math.round((Date.now() - new Date(mem.lastSummarized).getTime()) / 86400000)}d ago` : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={handleSummarizeAll} disabled={summarizing}
+              className={`text-[10px] px-3 py-1.5 border border-purple-700 text-purple-400 rounded hover:border-purple-500 hover:bg-purple-500/10 transition-colors disabled:opacity-50`}>
+              {summarizing ? '◈ Summarizing...' : '◈ Summarize Now'}
+            </button>
+            <button onClick={() => { clearMemory(); setMem(emptyMemory()); }}
+              className={`text-[10px] px-3 py-1.5 border ${th.border} ${th.textFaint} rounded hover:border-red-500 hover:text-red-400 transition-colors`}>
+              Clear
+            </button>
+            <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {bp.totalTrades === 0 && (
+            <div className="flex flex-col items-center justify-center h-40 gap-2">
+              <p className={`text-sm ${th.textFaint}`}>No trades recorded yet</p>
+              <p className={`text-[10px] ${th.textFaint} text-center max-w-xs`}>
+                Memory builds automatically as you execute trades through Prosper. Each trade teaches the verdict engine your patterns.
+              </p>
+            </div>
+          )}
+
+          {/* Behavioral profile */}
+          {bp.totalTrades > 0 && (
+            <div className={`p-4 rounded-xl border border-purple-700/40 bg-purple-500/5`}>
+              <p className="text-[9px] text-purple-400 uppercase tracking-widest mb-3 font-bold">Your Trading Profile</p>
+              <div className="grid grid-cols-3 gap-4 mb-3">
+                <div>
+                  <p className={`text-[9px] ${th.textFaint}`}>Total trades</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{bp.totalTrades}</p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint}`}>AI overrides</p>
+                  <p className={`text-sm font-bold ${bp.overrideCount > 0 ? 'text-yellow-400' : th.textFaint}`}>
+                    {bp.overrideCount}
+                    {bp.overrideCount > 0 && <span className={`text-[10px] ml-1 ${th.textFaint}`}>({Math.round((bp.overrideWins / bp.overrideCount) * 100)}% right)</span>}
+                  </p>
+                </div>
+                <div>
+                  <p className={`text-[9px] ${th.textFaint}`}>Symbols tracked</p>
+                  <p className={`text-sm font-bold ${th.text}`}>{symbols.length}</p>
+                </div>
+              </div>
+              {bp.summary && <p className={`text-[11px] ${th.textFaint} leading-relaxed mb-2`}>{bp.summary}</p>}
+              <div className="grid grid-cols-2 gap-3">
+                {bp.strengths.length > 0 && (
+                  <div>
+                    <p className="text-[9px] text-emerald-400 font-bold mb-1">Strengths</p>
+                    {bp.strengths.map((s, i) => <p key={i} className="text-[10px] text-emerald-300">▸ {s}</p>)}
+                  </div>
+                )}
+                {bp.weaknesses.length > 0 && (
+                  <div>
+                    <p className="text-[9px] text-red-400 font-bold mb-1">Watch out for</p>
+                    {bp.weaknesses.map((w, i) => <p key={i} className="text-[10px] text-red-300">▸ {w}</p>)}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Symbol profiles */}
+          {symbols.length > 0 && (
+            <div>
+              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3 font-bold`}>Symbol History</p>
+              <div className="space-y-3">
+                {symbols.map(profile => (
+                  <div key={profile.symbol} className={`p-4 rounded-lg border ${th.border}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{profile.symbol}</span>
+                        <span className={`text-[10px] ${th.textFaint}`}>{profile.tradeCount} trades</span>
+                        <span className={`text-[10px] font-bold ${profile.winRate >= 0.6 ? 'text-emerald-400' : profile.winRate >= 0.4 ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {Math.round(profile.winRate * 100)}% win rate
+                        </span>
+                        <span className={`text-[10px] font-bold ${profile.avgPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          avg {profile.avgPnlPct.toFixed(1)}% P&L
+                        </span>
+                      </div>
+                    </div>
+                    {profile.historySummary && (
+                      <p className={`text-[10px] ${th.textFaint} leading-relaxed mb-2`}>{profile.historySummary}</p>
+                    )}
+                    {profile.recentTrades.slice(0, 3).map((t, i) => {
+                      const ago = Math.round((Date.now() - new Date(t.timestamp).getTime()) / 86400000);
+                      return (
+                        <div key={i} className={`flex items-center gap-3 text-[9px] py-1 border-t ${th.borderLight} first:border-t-0`}>
+                          <span className={`${th.textFaint} w-12 shrink-0`}>{ago}d ago</span>
+                          <span className={`${th.text} w-16 shrink-0`} style={{ fontFamily: "'DM Mono', monospace" }}>{t.strategy}</span>
+                          <span className={`${th.textFaint} flex-1`}>{t.action} @ {t.dte}d DTE</span>
+                          <span className={`font-bold ${t.outcome === 'WIN' ? 'text-emerald-400' : t.outcome === 'LOSS' ? 'text-red-400' : 'text-slate-400'}`}>
+                            {t.pnlPct >= 0 ? '+' : ''}{t.pnlPct.toFixed(1)}%
+                          </span>
+                          {t.aiVerdict && (
+                            <span className={`${t.aiVerdict === 'STOP' ? 'text-red-400' : t.aiVerdict === 'CAUTION' ? 'text-yellow-400' : 'text-emerald-400'}`}>
+                              AI:{t.aiVerdict}{t.aiOverridden ? '⚡' : ''}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
+  const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
+  const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
+  const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
+  const totalAtRisk = positions.reduce((s, p) => {
+    const shorts = p.legs.filter(l => l.direction === 'Short');
+    const longs  = p.legs.filter(l => l.direction === 'Long' && l.optionType === shorts[0]?.optionType);
+    if (shorts[0] && longs[0]) {
+      const width = Math.abs(shorts[0].strikePrice - longs[0].strikePrice);
+      return s + Math.max(0, (width * 100 * shorts[0].quantity) - p.creditReceived);
+    }
+    return s;
+  }, 0);
+  const totalTheta = positions.reduce((s, p) => {
+    if (p.currentValue != null && p.dte > 0) return s + p.currentValue / p.dte;
+    if (p.dte > 0) return s + p.creditReceived / p.dte;
+    return s;
+  }, 0);
+
+  return (
+    <div className={`grid grid-cols-5 border-b ${th.border}`}>
+      {[
+        { label: 'Open Positions', value: String(positions.length), sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`, color: th.text },
+        { label: 'Captured', value: `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, sub: `of $${totalCredit.toFixed(0)} · ${capturedPct.toFixed(0)}%`, color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
+        { label: '50% Target', value: `$${Math.round(totalCredit * 0.5)}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / (totalCredit * 0.5)) * 100) : 0}% of target`, color: 'text-yellow-400' },
+        { label: 'At Risk', value: `$${totalAtRisk.toFixed(0)}`, sub: 'max loss if expired', color: th.textMuted },
+        { label: 'Est. Theta/Day', value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—', sub: 'daily decay', color: 'text-blue-400' },
+      ].map((item, i, arr) => (
+        <div key={item.label} className={`p-5 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>{item.label}</p>
+          <p className={`text-3xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
+          <p className={`text-[10px] ${th.textFaint} mt-1`}>{item.sub}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Analysis Panel ─────────────────────────────────────────────────────────
+const CONFIDENCE_COLOR: Record<string, string> = {
+  HIGH: 'text-emerald-400', MEDIUM: 'text-yellow-400', LOW: 'text-orange-400',
+};
+const REC_COLOR: Record<string, string> = {
+  HOLD: 'text-slate-400', WATCH: 'text-yellow-400', MANAGE: 'text-orange-400',
+  TAKE_PROFIT: 'text-emerald-400', CUT_LOSSES: 'text-red-400',
+  CLOSE: 'text-red-400', ROLL: 'text-purple-400',
+};
+
+// ── Chat Thread ────────────────────────────────────────────────────────────
+// Reusable multi-turn chat component. Receives initial context as the first
+// assistant message so the AI already "knows" the position or portfolio.
+
+function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
+  initialContext: string;   // the analysis text shown as the first assistant message
+  systemPrompt?: string;    // optional override — defaults to TRADING_SYSTEM_PROMPT
+  placeholder?: string;
+  th: typeof THEMES[Theme];
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: 'assistant', content: initialContext },
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput('');
+    setError(null);
+    const next: ChatMessage[] = [...messages, { role: 'user', content: text }];
+    setMessages(next);
+    setLoading(true);
+    try {
+      const reply = await callAIWithHistory(next, systemPrompt);
+      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed');
+    } finally {
+      setLoading(false);
+      // Re-focus input after reply
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  };
+
+  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+
+  // Suggested follow-up prompts shown below the initial analysis
+  const suggestions = [
+    'What would make this go wrong fast?',
+    'If I roll, what strikes should I target?',
+    'Should I close early given current conditions?',
+    'What\'s my max pain scenario here?',
+  ];
+
+  return (
+    <div className={`border-t ${th.border} flex flex-col`} style={{ background: 'rgba(99,102,241,0.03)' }}>
+      {/* Message history — skip the first assistant message, it's already shown above */}
+      {messages.length > 1 && (
+        <div className="px-4 py-3 space-y-3 max-h-80 overflow-y-auto">
+          {messages.slice(1).map((m, i) => (
+            <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              {m.role === 'assistant' && (
+                <span className="text-indigo-400 text-[10px] mt-1 shrink-0 font-bold">◈</span>
+              )}
+              <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[11px] leading-relaxed ${
+                m.role === 'user'
+                  ? 'bg-blue-600/20 border border-blue-600/30 text-blue-100 ml-auto'
+                  : `${th.card} border ${th.border} ${th.textMuted}`
+              }`}>
+                {m.content}
+              </div>
+            </div>
+          ))}
+          {loading && (
+            <div className="flex gap-3 justify-start">
+              <span className="text-indigo-400 text-[10px] mt-1 shrink-0 font-bold">◈</span>
+              <div className={`${th.card} border ${th.border} rounded-xl px-3 py-2`}>
+                <div className="flex gap-1 items-center h-4">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                </div>
+              </div>
+            </div>
+          )}
+          {error && (
+            <p className="text-[10px] text-red-400 px-1">Error: {error} —
+              <button onClick={() => { setError(null); send(); }} className="underline ml-1">retry</button>
+            </p>
+          )}
+          <div ref={bottomRef} />
+        </div>
+      )}
+
+      {/* Suggestions — only shown before any user message */}
+      {messages.length === 1 && (
+        <div className="px-4 pt-3 pb-1 flex flex-wrap gap-1.5">
+          {suggestions.map((s, i) => (
+            <button key={i} onClick={() => { setInput(s); setTimeout(() => inputRef.current?.focus(), 50); }}
+              className={`text-[10px] px-2.5 py-1 rounded-full border ${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400 transition-colors`}>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Input */}
+      <div className={`flex items-end gap-2 px-4 py-3`}>
+        <textarea
+          ref={inputRef}
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={handleKey}
+          placeholder={placeholder ?? 'Ask a follow-up question... (Enter to send, Shift+Enter for newline)'}
+          rows={1}
+          disabled={loading}
+          className={`flex-1 resize-none text-[11px] px-3 py-2 rounded-xl border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-indigo-500 transition-colors placeholder:${th.textFaint} disabled:opacity-50`}
+          style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minHeight: '36px', maxHeight: '120px' }}
+          onInput={e => {
+            const el = e.currentTarget;
+            el.style.height = 'auto';
+            el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+          }}
+        />
+        <button onClick={send} disabled={loading || !input.trim()}
+          className="shrink-0 w-8 h-8 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-colors text-sm">
+          ↑
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AnalysisPanel({ analysis, pos, th }: { analysis: PositionAnalysis; pos: Position; th: typeof THEMES[Theme] }) {
+  // Build a rich initial context string for the chat thread
+  const chatContext = [
+    `I've analyzed your ${analysis.symbol} ${pos.strategy} position (${pos.expDate}, ${pos.dte} DTE).`,
+    ``,
+    `**Recommendation: ${analysis.recommendation.replace('_', ' ')}** (${analysis.confidence} confidence)`,
+    ``,
+    analysis.summary,
+    ``,
+    analysis.reasoning,
+    analysis.deviatesFromRules && analysis.deviationNote ? `\n**Note:** ${analysis.deviationNote}` : '',
+    analysis.risks.length > 0 ? `\n**Key risks:** ${analysis.risks.join(' · ')}` : '',
+    analysis.catalysts.length > 0 ? `\n**In your favor:** ${analysis.catalysts.join(' · ')}` : '',
+  ].filter(Boolean).join('\n');
+
+  return (
+    <div className={`border-t ${th.border}`} style={{ background: 'rgba(99,102,241,0.04)' }}>
+      <div className="px-4 py-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-[9px] text-indigo-400 tracking-widest font-bold uppercase">AI Analysis</span>
+            <span className={`text-[10px] font-bold ${REC_COLOR[analysis.recommendation] ?? 'text-white'}`}>
+              → {analysis.recommendation.replace('_', ' ')}
+            </span>
+            <span className={`text-[9px] font-bold ${CONFIDENCE_COLOR[analysis.confidence] ?? 'text-slate-400'}`}>
+              {analysis.confidence} confidence
+            </span>
+            {analysis.deviatesFromRules && (
+              <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/50 text-yellow-400 font-bold">
+                ⚡ Outside rules
+              </span>
+            )}
+          </div>
+          <span className={`text-[9px] ${th.textFaint}`}>{new Date(analysis.generatedAt).toLocaleTimeString()}</span>
+        </div>
+
+        <p className={`text-xs ${th.textMuted} leading-relaxed`}>{analysis.summary}</p>
+        <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>{analysis.reasoning}</p>
+
+        {analysis.deviatesFromRules && analysis.deviationNote && (
+          <div className="flex items-start gap-2 p-2 rounded border border-yellow-600/30 bg-yellow-500/5">
+            <span className="text-yellow-400 shrink-0 text-[10px] mt-0.5">⚡</span>
+            <p className="text-[10px] text-yellow-300 leading-relaxed">{analysis.deviationNote}</p>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          {analysis.risks.length > 0 && (
+            <div>
+              <p className="text-[9px] text-red-400 uppercase tracking-widest mb-1.5 font-bold">Risks</p>
+              <div className="space-y-1">
+                {analysis.risks.map((r, i) => (
+                  <div key={i} className="flex items-start gap-1.5">
+                    <span className="text-red-400 text-[9px] mt-0.5 shrink-0">▸</span>
+                    <p className="text-[10px] text-red-300 leading-snug">{r}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {analysis.catalysts.length > 0 && (
+            <div>
+              <p className="text-[9px] text-emerald-400 uppercase tracking-widest mb-1.5 font-bold">In your favor</p>
+              <div className="space-y-1">
+                {analysis.catalysts.map((c, i) => (
+                  <div key={i} className="flex items-start gap-1.5">
+                    <span className="text-emerald-400 text-[9px] mt-0.5 shrink-0">▸</span>
+                    <p className="text-[10px] text-emerald-300 leading-snug">{c}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className={`flex items-center gap-2 pt-1`}>
+          <span className="text-[9px] text-indigo-400 font-bold tracking-widest uppercase">◈ Ask a follow-up</span>
+          <div className={`flex-1 h-px ${th.borderLight} border-t`} />
+        </div>
+      </div>
+
+      <ChatThread
+        initialContext={chatContext}
+        systemPrompt={TRADING_CHAT_PROMPT}
+        placeholder={`Ask about ${analysis.symbol}... e.g. "Should I roll to next month?"`}
+        th={th}
+      />
+    </div>
+  );
+}
+
 function PortfolioAnalysisPanel({ analysis, positions, onClose, th }: {
   analysis: PortfolioAnalysis; positions: Position[]; onClose: () => void; th: typeof THEMES[Theme];
 }) {
@@ -2733,13 +3238,12 @@ function PortfolioAnalysisPanel({ analysis, positions, onClose, th }: {
             </div>
           </div>
 
-          {/* 
           <ChatThread
             initialContext={chatContext}
             systemPrompt={TRADING_CHAT_PROMPT}
             placeholder='Ask anything — e.g. "Which position should I close first if I need cash?" or "Am I too long tech?"'
+            th={th}
           />
-          */}
         </div>
 
         <div className={`px-6 py-4 border-t ${th.border} shrink-0`}>
@@ -4258,7 +4762,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
           {analysis && !analysisLoading && (
             <div className="relative">
               <button onClick={() => setShowAnalysis(false)} className={`absolute top-3 right-3 text-[10px] ${th.textFaint} hover:${th.text} z-10`}>✕</button>
-              {/* <AnalysisPanel analysis={analysis} pos={pos} th={th} /> */}
+              <AnalysisPanel analysis={analysis} pos={pos} th={th} />
               <div className={`p-4 border border-indigo-500/30 rounded-lg bg-indigo-500/5 text-xs ${th.text}`}>
                 AI Position Analysis would appear here<br />
                 (component temporarily commented out to make build pass)
@@ -4775,18 +5279,13 @@ export default function PortfolioPage() {
         />
       )}
 
-      {/* {showAuditLog && <AuditLogPanel onClose={() => setShowAuditLog(false)} th={th} />} */}
+      {showAuditLog && <AuditLogPanel onClose={() => setShowAuditLog(false)} th={th} />}
       {showPerformance && <PerformancePanel onClose={() => setShowPerformance(false)} th={th} />}
       {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} th={th} />}
 
       {portfolioAnalysis && !portfolioAnalysis.error && (
-        /* <PortfolioAnalysisPanel analysis={portfolioAnalysis} positions={positions} onClose={() => setPortfolioAnalysis(null)} th={th} /> */
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-indigo-900/80 border border-indigo-500 rounded-lg px-4 py-3 text-xs text-indigo-300 flex items-center gap-3">
-          Portfolio analysis panel would appear here (temporarily commented)
-          <button onClick={() => setPortfolioAnalysis(null)} className="text-indigo-400 hover:text-indigo-200">✕</button>
-        </div>
-      )}
-      {portfolioAnalysis?.error && (
+        <PortfolioAnalysisPanel analysis={portfolioAnalysis} positions={positions} onClose={() => setPortfolioAnalysis(null)} th={th} />
+      )}      {portfolioAnalysis?.error && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-red-900/80 border border-red-500 rounded-lg px-4 py-3 text-xs text-red-300 flex items-center gap-3">
           Portfolio analysis failed: {portfolioAnalysis.error}
           <button onClick={() => setPortfolioAnalysis(null)} className="text-red-400 hover:text-red-200">✕</button>
