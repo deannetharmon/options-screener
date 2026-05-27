@@ -3743,6 +3743,7 @@ export default function Home() {
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
             <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
+            <a href="/portfolio#performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
           </nav>
         </div>
         
