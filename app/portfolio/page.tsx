@@ -1,4 +1,4 @@
-// app/portfolio/page.tsx
+// File location: app/portfolio/page.tsx
 
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
