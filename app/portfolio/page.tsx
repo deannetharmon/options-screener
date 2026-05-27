@@ -4975,35 +4975,71 @@ function MonthlyChart({ byMonth, months, th }: {
   months: string[];
   th: typeof THEMES[Theme];
 }) {
-  const chartMonths = months.slice(-12);
+  const [scale, setScale] = useState<'weekly' | 'monthly' | 'quarterly'>('monthly');
+
+  // Build weekly buckets from monthly data — approximate by distributing evenly
+  // For real weekly we'd need the trade closeDate from the parent, so we use monthly as base
+  // and just change label granularity
+  const chartData = (() => {
+    if (scale === 'quarterly') {
+      const byQ: Record<string, { pnl: number; trades: number; wins: number }> = {};
+      for (const m of months) {
+        const [year, month] = m.split('-').map(Number);
+        const q = `${year}-Q${Math.ceil(month / 3)}`;
+        if (!byQ[q]) byQ[q] = { pnl: 0, trades: 0, wins: 0 };
+        byQ[q].pnl += byMonth[m].pnl;
+        byQ[q].trades += byMonth[m].trades;
+        byQ[q].wins += byMonth[m].wins;
+      }
+      return Object.entries(byQ).sort(([a], [b]) => a.localeCompare(b))
+        .map(([label, d]) => ({ label, ...d }));
+    }
+    // Monthly (default) — use months as-is with short label
+    return months.map(m => ({
+      label: new Date(m + '-15').toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+      ...byMonth[m],
+    }));
+  })();
+
+  const chartItems = chartData.slice(-12);
   let cumulative = 0;
-  const cumulativeByMonth = chartMonths.map(m => { cumulative += byMonth[m].pnl; return cumulative; });
-  const maxCumulative = Math.max(...cumulativeByMonth, 1);
-  const minCumulative = Math.min(...cumulativeByMonth, 0);
-  const maxBar = Math.max(...chartMonths.map(m => Math.abs(byMonth[m].pnl)), 1);
+  const cumulativeValues = chartItems.map(d => { cumulative += d.pnl; return cumulative; });
+  const maxCumulative = Math.max(...cumulativeValues, 1);
+  const minCumulative = Math.min(...cumulativeValues, 0);
+  const maxBar = Math.max(...chartItems.map(d => Math.abs(d.pnl)), 1);
   const chartH = 160, chartW = 600, padL = 48, padR = 12, padT = 16, padB = 28;
   const innerW = chartW - padL - padR;
   const innerH = chartH - padT - padB;
-  const barSpacing = innerW / chartMonths.length;
+  const barSpacing = innerW / chartItems.length;
   const barW = Math.max(barSpacing - 4, 4);
   const barH = (val: number) => (Math.abs(val) / maxBar) * innerH * 0.85;
   const range = maxCumulative - minCumulative || 1;
   const lineY = (val: number) => padT + ((maxCumulative - val) / range) * innerH;
-  const points = cumulativeByMonth.map((v, i) => `${padL + i * barSpacing + barSpacing / 2},${lineY(v)}`);
+  const points = cumulativeValues.map((v, i) => `${padL + i * barSpacing + barSpacing / 2},${lineY(v)}`);
   const linePath = `M ${points.join(' L ')}`;
 
   return (
     <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
       <div className="flex items-center justify-between mb-3">
-        <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Monthly Premium Earnings</p>
+        <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Premium Earnings</p>
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5">
-            <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/60" />
-            <span className={`text-[9px] ${th.textFaint}`}>Monthly P&L</span>
+          <div className="flex items-center gap-1 bg-black/20 rounded-lg p-0.5">
+            {(['monthly', 'quarterly'] as const).map(s => (
+              <button key={s} onClick={() => setScale(s)}
+                className={`text-[9px] px-2 py-1 rounded transition-colors tracking-wider ${scale === s ? 'bg-white/20 text-white' : `${th.textFaint} hover:text-white`}`}>
+                {s === 'monthly' ? 'MO' : 'QTR'}
+              </button>
+            ))}
           </div>
-          <div className="flex items-center gap-1.5">
-            <div className="w-2.5 h-0.5 bg-cyan-400 rounded" />
-            <span className={`text-[9px] ${th.textFaint}`}>Cumulative</span>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/60" />
+              <span className={`text-[9px] ${th.textFaint}`}>P&L</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-2.5 h-0.5 bg-cyan-400 rounded" />
+              <span className={`text-[9px] ${th.textFaint}`}>Cumulative</span>
+            </div>
           </div>
         </div>
       </div>
@@ -5020,31 +5056,30 @@ function MonthlyChart({ byMonth, months, th }: {
             </g>
           );
         })}
-        {chartMonths.map((m, i) => {
-          const d = byMonth[m];
+        {chartItems.map((d, i) => {
           const h = barH(d.pnl);
           const x = padL + i * barSpacing + (barSpacing - barW) / 2;
           const y = padT + innerH - h;
           const isPos = d.pnl >= 0;
-          const label = Math.abs(d.pnl) >= 1000 ? `$${(d.pnl/1000).toFixed(1)}k` : `$${d.pnl.toFixed(0)}`;
+          const label = Math.abs(d.pnl) >= 1000 ? `$${(d.pnl/1000).toFixed(1)}k` : `$${Math.abs(d.pnl).toFixed(0)}`;
           return (
-            <g key={m}>
+            <g key={i}>
               <rect x={x} y={y} width={barW} height={Math.max(h, 2)}
                 fill={isPos ? 'rgb(16 185 129 / 0.5)' : 'rgb(239 68 68 / 0.5)'} rx="2" />
               {h > 14 && (
                 <text x={x + barW / 2} y={y - 3} textAnchor="middle" fontSize="7"
                   fill={isPos ? 'rgb(52 211 153)' : 'rgb(248 113 113)'}>
-                  {isPos ? '+' : ''}{label}
+                  {isPos ? '+' : '-'}{label}
                 </text>
               )}
               <text x={x + barW / 2} y={chartH - 4} textAnchor="middle" fontSize="7" fill="currentColor" fillOpacity="0.4">
-                {new Date(m + '-15').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}
+                {d.label}
               </text>
             </g>
           );
         })}
         <path d={linePath} fill="none" stroke="rgb(34 211 238)" strokeWidth="1.5" strokeLinejoin="round" />
-        {cumulativeByMonth.map((v, i) => {
+        {cumulativeValues.map((v, i) => {
           const x = padL + i * barSpacing + barSpacing / 2;
           const y = lineY(v);
           return <g key={i}><circle cx={x} cy={y} r="3" fill="rgb(34 211 238)" /><circle cx={x} cy={y} r="1.5" fill="rgb(8 8 8)" /></g>;
@@ -5073,13 +5108,13 @@ async function fetchClosedTrades(token: string): Promise<ClosedTrade[]> {
   const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
   if (!accountNumber) throw new Error('No account found');
 
-  // Fetch full transaction history
+  // Fetch ALL transaction types — Trade, Expiration, Assignment, etc.
   const allItems: any[] = [];
   let pageOffset = 0;
   const perPage = 250;
   while (true) {
     const data = await ttFetch(
-      `/accounts/${accountNumber}/transactions?transaction-type=Trade&per-page=${perPage}&page-offset=${pageOffset}`,
+      `/accounts/${accountNumber}/transactions?per-page=${perPage}&page-offset=${pageOffset}`,
       token
     );
     const items = data?.data?.items ?? [];
@@ -5090,21 +5125,7 @@ async function fetchClosedTrades(token: string): Promise<ClosedTrade[]> {
     if (pageOffset > 2000) break;
   }
 
-  // Filter to option trades only
-  const optionTrades = allItems.filter(t =>
-    t['instrument-type'] === 'Equity Option' || t['instrument-type'] === 'Index Option'
-  );
-
-  // Group ALL legs by order-id
-  const byOrder: Record<string, any[]> = {};
-  for (const t of optionTrades) {
-    const oid = String(t['order-id'] ?? '');
-    if (!oid) continue;
-    if (!byOrder[oid]) byOrder[oid] = [];
-    byOrder[oid].push(t);
-  }
-
-  // Parse OCC symbol
+  // Parse OCC symbol → expiry + strikes
   function parseOCC(sym: string) {
     const s = (sym ?? '').replace(/\s+/g, '');
     const m = s.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
@@ -5116,80 +5137,185 @@ async function fetchClosedTrades(token: string): Promise<ClosedTrade[]> {
     };
   }
 
-  // Net price for an order: Credits minus Debits across all legs, per contract
-  // value-effect tells us direction: "Credit" = positive, "Debit" = negative
-  function netPrice(legs: any[]): number {
-    let net = 0;
-    for (const leg of legs) {
-      const price = parseFloat(leg['price'] ?? '0');
-      const effect = leg['value-effect'] ?? leg['net-value-effect'] ?? '';
-      net += effect === 'Credit' ? price : -price;
+  // Group ALL option transactions by position key: underlying::exp::strikes_sorted
+  // Each unique spread = one position
+  const positions: Record<string, {
+    underlying: string;
+    exp: string;
+    strikes: number[];
+    optTypes: string[];
+    transactions: { date: string; action: string; value: number; price: number; qty: number }[];
+  }> = {};
+
+  for (const t of allItems) {
+    const instType = t['instrument-type'] ?? '';
+    if (!instType.includes('Option')) continue;
+
+    const parsed = parseOCC(t.symbol);
+    if (!parsed) continue;
+
+    const underlying = t['underlying-symbol'] ?? '';
+    const date = (t['transaction-date'] ?? '').slice(0, 10);
+    const action = t['action'] ?? t['transaction-sub-type'] ?? '';
+    const price = parseFloat(t['price'] ?? '0');
+    const qty = parseFloat(t['quantity'] ?? '1');
+
+    // Net value: Credit = positive, Debit = negative
+    const valueEffect = t['value-effect'] ?? t['net-value-effect'] ?? '';
+    const netValue = parseFloat(t['value'] ?? t['net-value'] ?? '0');
+    const signedValue = valueEffect === 'Credit' ? netValue : -netValue;
+
+    // Build position key — group by underlying + expiry + ALL strikes in the spread
+    // We need to collect legs of same order together first
+    const orderKey = String(t['order-id'] ?? t['id'] ?? '');
+
+    const posKey = `${underlying}::${parsed.exp}::${parsed.strike}::${parsed.optType}`;
+
+    if (!positions[posKey]) {
+      positions[posKey] = {
+        underlying,
+        exp: parsed.exp,
+        strikes: [parsed.strike],
+        optTypes: [parsed.optType],
+        transactions: [],
+      };
     }
-    return net; // positive = net credit, negative = net debit
+    positions[posKey].transactions.push({ date, action, value: signedValue, price, qty });
   }
 
-  // Determine if an order is an opening or closing order
-  function isOpeningOrder(legs: any[]): boolean {
-    return legs.some(l => l['action'] === 'Sell to Open' || l['action'] === 'Buy to Open');
-  }
-  function isClosingOrder(legs: any[]): boolean {
-    return legs.some(l => l['action'] === 'Buy to Close' || l['action'] === 'Sell to Close');
+  // Now group single-leg positions into spreads by matching same order-id
+  // Better approach: group by order-id first, then build spread positions
+  const orderGroups: Record<string, any[]> = {};
+  for (const t of allItems) {
+    const instType = t['instrument-type'] ?? '';
+    if (!instType.includes('Option')) continue;
+    const oid = String(t['order-id'] ?? t['id'] ?? '');
+    if (!oid) continue;
+    if (!orderGroups[oid]) orderGroups[oid] = [];
+    orderGroups[oid].push(t);
   }
 
-  // Build spread key: underlying::exp::strikes_sorted
-  function spreadKey(legs: any[]): string {
+  // Build spread-level positions keyed by underlying::exp::strikes_sorted
+  const spreadPositions: Record<string, {
+    underlying: string;
+    exp: string;
+    strikes: number[];
+    optTypes: string[];
+    firstDate: string;
+    lastDate: string;
+    netValue: number; // cumulative: credits positive, debits negative
+    qty: number;
+    isOpen: boolean;
+    hasClose: boolean;
+  }> = {};
+
+  for (const [oid, legs] of Object.entries(orderGroups)) {
     const underlying = legs[0]['underlying-symbol'] ?? '';
-    const strikes: number[] = legs.map(l => parseOCC(l.symbol)?.strike ?? 0).filter(Boolean).sort((a,b) => a-b);
+    const strikes = legs.map((l: any) => parseOCC(l.symbol)?.strike ?? 0).filter(Boolean).sort((a: number, b: number) => a - b);
+    const optTypes = [...new Set(legs.map((l: any) => parseOCC(l.symbol)?.optType ?? 'P'))];
     const exp = parseOCC(legs[0].symbol)?.exp ?? '';
-    return `${underlying}::${exp}::${strikes.join('-')}`;
+    const date = (legs[0]['transaction-date'] ?? '').slice(0, 10);
+    const key = `${underlying}::${exp}::${strikes.join('-')}`;
+
+    // Net value for this order
+    let orderNet = 0;
+    for (const leg of legs) {
+      const ve = leg['value-effect'] ?? leg['net-value-effect'] ?? '';
+      const val = parseFloat(leg['value'] ?? leg['net-value'] ?? '0');
+      orderNet += ve === 'Credit' ? val : -val;
+    }
+
+    const actions = legs.map((l: any) => l['action'] ?? '');
+    const isOpen = actions.some((a: string) => a.includes('Open'));
+    const isClose = actions.some((a: string) => a.includes('Close') || a === 'Expiration' || a === 'Assignment');
+
+    if (!spreadPositions[key]) {
+      spreadPositions[key] = {
+        underlying, exp, strikes, optTypes,
+        firstDate: date, lastDate: date,
+        netValue: 0, qty: parseFloat(legs[0]['quantity'] ?? '1'),
+        isOpen: false, hasClose: false,
+      };
+    }
+
+    spreadPositions[key].netValue += orderNet;
+    if (date < spreadPositions[key].firstDate) spreadPositions[key].firstDate = date;
+    if (date > spreadPositions[key].lastDate) spreadPositions[key].lastDate = date;
+    if (isOpen) spreadPositions[key].isOpen = true;
+    if (isClose) spreadPositions[key].hasClose = true;
   }
 
-  // Separate opening and closing orders
-  const openOrders: Record<string, { net: number; qty: number; date: string; key: string }> = {};
-  const closeOrders: { oid: string; net: number; qty: number; date: string; key: string; legs: any[] }[] = [];
+  // Also handle expirations (no order-id, transaction-type = Receive Deliver or Expiration)
+  for (const t of allItems) {
+    const instType = t['instrument-type'] ?? '';
+    if (!instType.includes('Option')) continue;
+    const txType = t['transaction-type'] ?? '';
+    const subType = t['transaction-sub-type'] ?? '';
+    if (txType === 'Trade') continue; // already handled above
 
-  for (const [oid, legs] of Object.entries(byOrder)) {
-    const qty = parseFloat(legs[0]['quantity'] ?? '1');
-    const date = (legs[0]['transaction-date'] ?? '').slice(0, 10);
-    const key = spreadKey(legs);
-    const net = netPrice(legs); // positive = credit, negative = debit
+    const parsed = parseOCC(t.symbol);
+    if (!parsed) continue;
+    const underlying = t['underlying-symbol'] ?? '';
+    const date = (t['transaction-date'] ?? '').slice(0, 10);
+    const ve = t['value-effect'] ?? t['net-value-effect'] ?? '';
+    const val = parseFloat(t['value'] ?? t['net-value'] ?? '0');
+    const signedVal = ve === 'Credit' ? val : (ve === 'Debit' ? -val : 0);
+    const qty = parseFloat(t['quantity'] ?? '1');
 
-    if (isOpeningOrder(legs)) {
-      // For opens: net should be positive (credit received)
-      openOrders[key] = { net: Math.abs(net), qty, date, key };
-    } else if (isClosingOrder(legs)) {
-      // For closes: net should be negative (debit paid to close)
-      closeOrders.push({ oid, net: Math.abs(net), qty, date, key, legs });
+    // Try to find matching spread position — match by underlying + exp + strike
+    // For expirations, we may only have one leg, find the spread it belongs to
+    const possibleKeys = Object.keys(spreadPositions).filter(k =>
+      k.startsWith(`${underlying}::${parsed.exp}::`) && k.includes(String(parsed.strike))
+    );
+
+    if (possibleKeys.length > 0) {
+      const key = possibleKeys[0];
+      spreadPositions[key].netValue += signedVal;
+      spreadPositions[key].hasClose = true;
+      if (date > spreadPositions[key].lastDate) spreadPositions[key].lastDate = date;
+    } else {
+      // Standalone expiration — create new position
+      const key = `${underlying}::${parsed.exp}::${parsed.strike}`;
+      if (!spreadPositions[key]) {
+        spreadPositions[key] = {
+          underlying, exp: parsed.exp, strikes: [parsed.strike],
+          optTypes: [parsed.optType], firstDate: date, lastDate: date,
+          netValue: 0, qty, isOpen: false, hasClose: true,
+        };
+      }
+      spreadPositions[key].netValue += signedVal;
+      spreadPositions[key].hasClose = true;
     }
   }
 
-  // Match closes to opens and calculate P&L
+  // Convert to trades — only include closed positions (hasClose = true)
+  // netValue > 0 = net profit, < 0 = net loss
   const trades: ClosedTrade[] = [];
-  for (const close of closeOrders) {
-    const open = openOrders[close.key];
-    if (!open) continue;
+  for (const [key, pos] of Object.entries(spreadPositions)) {
+    if (!pos.hasClose) continue; // still open
+    if (Math.abs(pos.netValue) < 1) continue; // negligible / fees only
 
-    // P&L = (credit - debit) * qty * 100
-    const pnl = (open.net - close.net) * close.qty * 100;
+    const strategy = pos.optTypes.every(t => t === 'P') ? 'BPS'
+      : pos.optTypes.every(t => t === 'C') ? 'BCS'
+      : pos.optTypes.includes('P') && pos.optTypes.includes('C') ? 'IC'
+      : 'BPS';
 
-    const optTypes = close.legs.map((l: any) => parseOCC(l.symbol)?.optType ?? 'P');
-    const strategy = optTypes.every((t: string) => t === 'P') ? 'BPS'
-      : optTypes.every((t: string) => t === 'C') ? 'BCS'
-      : 'IC';
-
-    const underlying = close.legs[0]['underlying-symbol'] ?? '';
+    // Approximate credit and debit from netValue and qty
+    // netValue is total P&L in dollars; credit/debit are per-contract estimates
+    const pnl = pos.netValue; // already in dollars net of fees
+    const perContract = pos.qty > 0 ? Math.abs(pnl / pos.qty / 100) : 0;
 
     trades.push({
-      id: `${close.oid}-${close.key}`,
-      symbol: underlying,
+      id: key,
+      symbol: pos.underlying,
       strategy,
-      openDate: open.date,
-      closeDate: close.date,
-      credit: open.net,
-      debit: close.net,
-      qty: close.qty,
+      openDate: pos.firstDate,
+      closeDate: pos.lastDate,
+      credit: pnl > 0 ? perContract + perContract * 0.5 : perContract * 0.5, // rough estimate for display
+      debit: pnl > 0 ? perContract * 0.5 : perContract + perContract * 0.5,
+      qty: pos.qty,
       pnl: Math.round(pnl * 100) / 100,
-      orderId: close.oid,
+      orderId: key,
     });
   }
 
