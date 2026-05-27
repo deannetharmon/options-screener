@@ -1,5 +1,4 @@
 // app/portfolio/page.tsx
-
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
@@ -2289,6 +2288,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
               ) : null}
             </div>
           </div>
+          </div>
           {status !== 'submitting' && <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>}
         </div>
 
@@ -2718,7 +2718,6 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                               return null;
                             })()}
                           </div>
-                          </div>{/* end roll inputs wrapper */}
                         </div>
                       )}
                     </div>
@@ -2841,6 +2840,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           )}
         </div>
       </div>
+    </div>
     </div>
   );
 }
