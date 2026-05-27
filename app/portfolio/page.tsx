@@ -4969,6 +4969,91 @@ function BulkActionBar({ selectedKeys, positions, onExecute, onClear, th }: {
 
 // ── Main Page ──────────────────────────────────────────────────────────────
 
+// ── Monthly Chart Component ────────────────────────────────────────────────
+function MonthlyChart({ byMonth, months, th }: {
+  byMonth: Record<string, { pnl: number; trades: number; wins: number }>;
+  months: string[];
+  th: typeof THEMES[Theme];
+}) {
+  const chartMonths = months.slice(-12);
+  let cumulative = 0;
+  const cumulativeByMonth = chartMonths.map(m => { cumulative += byMonth[m].pnl; return cumulative; });
+  const maxCumulative = Math.max(...cumulativeByMonth, 1);
+  const minCumulative = Math.min(...cumulativeByMonth, 0);
+  const maxBar = Math.max(...chartMonths.map(m => Math.abs(byMonth[m].pnl)), 1);
+  const chartH = 160, chartW = 600, padL = 48, padR = 12, padT = 16, padB = 28;
+  const innerW = chartW - padL - padR;
+  const innerH = chartH - padT - padB;
+  const barSpacing = innerW / chartMonths.length;
+  const barW = Math.max(barSpacing - 4, 4);
+  const barH = (val: number) => (Math.abs(val) / maxBar) * innerH * 0.85;
+  const range = maxCumulative - minCumulative || 1;
+  const lineY = (val: number) => padT + ((maxCumulative - val) / range) * innerH;
+  const points = cumulativeByMonth.map((v, i) => `${padL + i * barSpacing + barSpacing / 2},${lineY(v)}`);
+  const linePath = `M ${points.join(' L ')}`;
+
+  return (
+    <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
+      <div className="flex items-center justify-between mb-3">
+        <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Monthly Premium Earnings</p>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/60" />
+            <span className={`text-[9px] ${th.textFaint}`}>Monthly P&L</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-2.5 h-0.5 bg-cyan-400 rounded" />
+            <span className={`text-[9px] ${th.textFaint}`}>Cumulative</span>
+          </div>
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" style={{ height: '160px' }}>
+        {[0, 0.25, 0.5, 0.75, 1].map(pct => {
+          const y = padT + pct * innerH;
+          const val = maxCumulative - pct * range;
+          return (
+            <g key={pct}>
+              <line x1={padL} y1={y} x2={chartW - padR} y2={y} stroke="currentColor" strokeOpacity="0.08" strokeWidth="1" />
+              <text x={padL - 4} y={y + 3} textAnchor="end" fontSize="7" fill="currentColor" fillOpacity="0.4">
+                {val >= 1000 ? `$${(val/1000).toFixed(1)}k` : val >= 0 ? `$${val.toFixed(0)}` : `-$${Math.abs(val).toFixed(0)}`}
+              </text>
+            </g>
+          );
+        })}
+        {chartMonths.map((m, i) => {
+          const d = byMonth[m];
+          const h = barH(d.pnl);
+          const x = padL + i * barSpacing + (barSpacing - barW) / 2;
+          const y = padT + innerH - h;
+          const isPos = d.pnl >= 0;
+          const label = Math.abs(d.pnl) >= 1000 ? `$${(d.pnl/1000).toFixed(1)}k` : `$${d.pnl.toFixed(0)}`;
+          return (
+            <g key={m}>
+              <rect x={x} y={y} width={barW} height={Math.max(h, 2)}
+                fill={isPos ? 'rgb(16 185 129 / 0.5)' : 'rgb(239 68 68 / 0.5)'} rx="2" />
+              {h > 14 && (
+                <text x={x + barW / 2} y={y - 3} textAnchor="middle" fontSize="7"
+                  fill={isPos ? 'rgb(52 211 153)' : 'rgb(248 113 113)'}>
+                  {isPos ? '+' : ''}{label}
+                </text>
+              )}
+              <text x={x + barW / 2} y={chartH - 4} textAnchor="middle" fontSize="7" fill="currentColor" fillOpacity="0.4">
+                {new Date(m + '-15').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}
+              </text>
+            </g>
+          );
+        })}
+        <path d={linePath} fill="none" stroke="rgb(34 211 238)" strokeWidth="1.5" strokeLinejoin="round" />
+        {cumulativeByMonth.map((v, i) => {
+          const x = padL + i * barSpacing + barSpacing / 2;
+          const y = lineY(v);
+          return <g key={i}><circle cx={x} cy={y} r="3" fill="rgb(34 211 238)" /><circle cx={x} cy={y} r="1.5" fill="rgb(8 8 8)" /></g>;
+        })}
+      </svg>
+    </div>
+  );
+}
+
 // ── Performance Panel ──────────────────────────────────────────────────────
 function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
   const auditLog: AuditEntry[] = (() => {
@@ -5074,116 +5159,7 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
               </div>
 
               {/* Monthly P&L chart — bars + cumulative line */}
-              {months.length > 0 && (() => {
-                const chartMonths = months.slice(-12);
-                // Build cumulative totals
-                let cumulative = 0;
-                const cumulativeByMonth = chartMonths.map(m => {
-                  cumulative += byMonth[m].pnl;
-                  return cumulative;
-                });
-                const maxCumulative = Math.max(...cumulativeByMonth, 1);
-                const minCumulative = Math.min(...cumulativeByMonth, 0);
-                const maxBar = Math.max(...chartMonths.map(m => Math.abs(byMonth[m].pnl)), 1);
-                const chartH = 160;
-                const chartW = 600;
-                const padL = 48, padR = 12, padT = 16, padB = 28;
-                const innerW = chartW - padL - padR;
-                const innerH = chartH - padT - padB;
-                const barW = Math.max((innerW / chartMonths.length) - 4, 4);
-                const barSpacing = innerW / chartMonths.length;
-
-                // Y scale for bars (0 to maxBar, bottom-up)
-                const barY = (val: number) => innerH - (Math.abs(val) / maxBar) * innerH * 0.85;
-                const barH = (val: number) => (Math.abs(val) / maxBar) * innerH * 0.85;
-
-                // Y scale for cumulative line (fit to innerH)
-                const range = maxCumulative - minCumulative || 1;
-                const lineY = (val: number) => padT + ((maxCumulative - val) / range) * innerH;
-
-                // Line path
-                const points = cumulativeByMonth.map((v, i) => {
-                  const x = padL + i * barSpacing + barSpacing / 2;
-                  const y = lineY(v);
-                  return `${x},${y}`;
-                });
-                const linePath = `M ${points.join(' L ')}`;
-
-                return (
-                  <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
-                    <div className="flex items-center justify-between mb-3">
-                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Monthly Premium Earnings</p>
-                      <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/60" />
-                          <span className={`text-[9px] ${th.textFaint}`}>Monthly P&L</span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-2.5 h-0.5 bg-cyan-400 rounded" />
-                          <span className={`text-[9px] ${th.textFaint}`}>Cumulative Total</span>
-                        </div>
-                      </div>
-                    </div>
-                    <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" style={{ height: '160px' }}>
-                      {/* Grid lines */}
-                      {[0, 0.25, 0.5, 0.75, 1].map(pct => {
-                        const y = padT + pct * innerH;
-                        const val = maxCumulative - pct * range;
-                        return (
-                          <g key={pct}>
-                            <line x1={padL} y1={y} x2={chartW - padR} y2={y} stroke="currentColor" strokeOpacity="0.08" strokeWidth="1" />
-                            <text x={padL - 4} y={y + 3} textAnchor="end" fontSize="7" fill="currentColor" fillOpacity="0.4">
-                              ${val >= 1000 ? `${(val/1000).toFixed(1)}k` : val.toFixed(0)}
-                            </text>
-                          </g>
-                        );
-                      })}
-
-                      {/* Bars */}
-                      {chartMonths.map((m, i) => {
-                        const d = byMonth[m];
-                        const x = padL + i * barSpacing + (barSpacing - barW) / 2;
-                        const h = barH(d.pnl);
-                        const y = padT + innerH - h;
-                        const isPos = d.pnl >= 0;
-                        return (
-                          <g key={m}>
-                            <rect
-                              x={x} y={y} width={barW} height={Math.max(h, 2)}
-                              fill={isPos ? 'rgb(16 185 129 / 0.5)' : 'rgb(239 68 68 / 0.5)'}
-                              rx="2"
-                            />
-                            {h > 14 && (
-                              <text x={x + barW / 2} y={y - 3} textAnchor="middle" fontSize="7" fill={isPos ? 'rgb(52 211 153)' : 'rgb(248 113 113)'}>
-                                {isPos ? '+' : ''}{d.pnl >= 1000 || d.pnl <= -1000 ? `$${(d.pnl/1000).toFixed(1)}k` : `$${d.pnl.toFixed(0)}`}
-                              </text>
-                            )}
-                            {/* X label */}
-                            <text x={x + barW / 2} y={chartH - 4} textAnchor="middle" fontSize="7" fill="currentColor" fillOpacity="0.4">
-                              {new Date(m + '-01').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}
-                            </text>
-                          </g>
-                        );
-                      })}
-
-                      {/* Cumulative line */}
-                      <path d={linePath} fill="none" stroke="rgb(34 211 238)" strokeWidth="1.5" strokeLinejoin="round" />
-
-                      {/* Cumulative dots */}
-                      {cumulativeByMonth.map((v, i) => {
-                        const x = padL + i * barSpacing + barSpacing / 2;
-                        const y = lineY(v);
-                        return (
-                          <g key={i}>
-                            <circle cx={x} cy={y} r="3" fill="rgb(34 211 238)" />
-                            <circle cx={x} cy={y} r="1.5" fill="rgb(8 8 8)" />
-                          </g>
-                        );
-                      })}
-                    </svg>
-                  </div>
-                );
-              })()}
+              {months.length > 0 && <MonthlyChart byMonth={byMonth} months={months} th={th} />}
 
               {/* By Symbol */}
               {symbolRows.length > 0 && (
