@@ -1820,7 +1820,14 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 // ── Batch Confirmation Modal ───────────────────────────────────────────────
 type BatchStatus = 'preview' | 'enriching' | 'ready' | 'submitting' | 'done' | 'error';
 
-function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th }: {
+// ── Batch Confirm Modal ─────────────────────────────────────────────────────
+function BatchConfirmModal({
+  items: initialItems,
+  onClose,
+  onSuccess,
+  dryRun,
+  th,
+}: {
   items: { pos: Position; action: ActionType }[];
   onClose: () => void;
   onSuccess: () => void;
@@ -1840,7 +1847,6 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
-  // User-editable limit price overrides per position key
   const [limitOverrides, setLimitOverrides] = useState<Record<string, string>>({});
 
   const marketStatus = getMarketStatus();
@@ -1861,32 +1867,16 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
         const enriched: BatchOrderItem[] = [];
 
         for (const { pos, action } of initialItems) {
-          // ── Step 1: Fetch live price ──────────────────────────────────────
           const freshPrice = await fetchFreshPositionPrice(pos, token);
-          // freshPrice = total value across all contracts × 100
           const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
           const freshPerContract = freshPrice != null ? freshPrice / (qty * 100) : null;
           const creditPerContract = pos.creditReceived / (qty * 100);
-
-          console.log(`ENRICH ${pos.symbol} ${action}: freshPrice=${freshPrice}, freshPerContract=${freshPerContract?.toFixed(4)}, creditPerContract=${creditPerContract.toFixed(4)}`);
 
           const stalePriceWarning = freshPrice != null && pos.currentValue != null
             ? Math.abs(freshPrice - pos.currentValue) / pos.currentValue > STALE_PRICE_THRESHOLD
             : false;
 
           const duplicateGtcWarning = pos.hasGtc && (action === 'TAKE_PROFIT' || action === 'CUT_LOSSES' || action === 'CLOSE_ROLL');
-
-          // ── Step 2: Compute limit price anchored to live spread value ─────
-          // For TAKE_PROFIT and PLACE_GTC:
-          //   Limit = target % of credit. But it MUST be below live spread value,
-          //   otherwise TastyTrade rejects ("would execute immediately" for GTC,
-          //   or order won't fill for Day orders priced above market).
-          //   If target price > live value, use live mid - $0.01 (fills immediately at market).
-          //
-          // For CUT_LOSSES and CLOSE_ROLL:
-          //   Limit = live spread mid. Use fresh price if available, else cached.
-          //
-          // All limits are per-contract then converted: TastyTrade limit = per-contract value.
 
           let limitPrice: number;
           let priceError: string | null = null;
@@ -1895,48 +1885,35 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           const effectivePerContract = freshPerContract ?? (pos.currentValue != null ? pos.currentValue / (qty * 100) : null);
 
           if (action === 'TAKE_PROFIT' || action === 'PLACE_GTC') {
-            // For PLACE_GTC: use smart default from trade history, fall back to pos.profitTarget
             const effectiveProfitTarget = action === 'PLACE_GTC'
               ? getSmartGtcDefault(pos.symbol)
               : pos.profitTarget;
             const targetPrice = parseFloat((creditPerContract * (1 - effectiveProfitTarget)).toFixed(2));
             if (effectivePerContract != null && targetPrice >= effectivePerContract) {
-              // Target already hit or exceeded — use live mid so order fills immediately
               limitPrice = parseFloat(Math.max(effectivePerContract - 0.01, 0.01).toFixed(2));
-              console.log(`${pos.symbol} TAKE_PROFIT: target $${targetPrice} >= live $${effectivePerContract.toFixed(4)} — using live mid $${limitPrice}`);
             } else {
               limitPrice = targetPrice;
             }
-            // Sanity: limit must be > 0
             if (limitPrice <= 0) {
-              priceError = `Calculated limit price $${limitPrice.toFixed(2)} is invalid — position may already be worthless`;
+              priceError = `Calculated limit price $${limitPrice.toFixed(2)} is invalid`;
               limitPrice = 0.01;
             }
           } else if (action === 'CUT_LOSSES' || action === 'CLOSE_ROLL') {
             if (effectivePerContract != null) {
-              // Use live mid price — this is what you'll pay to close
-              limitPrice = parseFloat(effectivePerContract.toFixed(2));
-              // Add small buffer above mid to improve fill probability
-              limitPrice = parseFloat((limitPrice * 1.02).toFixed(2));
+              limitPrice = parseFloat((effectivePerContract * 1.02).toFixed(2));
             } else {
               limitPrice = parseFloat((creditPerContract * 0.5).toFixed(2));
-              priceError = `No live price available — using estimated limit $${limitPrice.toFixed(2)}. Verify before submitting.`;
+              priceError = `No live price available — using estimated limit`;
             }
           } else {
-            // PLACE_GTC fallback
             const targetPrice = parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
             limitPrice = effectivePerContract != null
               ? Math.min(targetPrice, parseFloat((effectivePerContract - 0.01).toFixed(2)))
               : targetPrice;
           }
 
-          // ── Step 3: Final bound check ─────────────────────────────────────
-          // For Day orders (TAKE_PROFIT, CUT_LOSSES, CLOSE_ROLL):
-          //   Limit should be close to market — flag if > 20% away from live mid
-          // For GTC orders (PLACE_GTC):
-          //   Limit must be strictly below live mid
           if (action === 'PLACE_GTC' && effectivePerContract != null && limitPrice >= effectivePerContract) {
-            priceError = `GTC limit $${limitPrice.toFixed(2)} ≥ live spread $${effectivePerContract.toFixed(2)} — would execute immediately. Use Take Profit instead.`;
+            priceError = `GTC limit $${limitPrice.toFixed(2)} ≥ live spread`;
           }
 
           const tif = action === 'PLACE_GTC' ? 'GTC' : 'Day';
@@ -1948,7 +1925,6 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
             stalePriceWarning, freshPrice, freshPerContract, duplicateGtcWarning, priceError,
           };
 
-          // ── Step 4: Roll suggestion ───────────────────────────────────────
           if (action === 'CLOSE_ROLL') {
             const suggestion = await fetchRollSuggestion(pos, token).catch(() => null);
             if (!cancelled) setRollSuggestions(prev => ({ ...prev, [pos.key]: suggestion }));
@@ -1968,7 +1944,6 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           enriched.push(item);
           if (!cancelled) setBatchItems([...enriched]);
 
-          // ── Step 5: AI verdict (non-blocking) ─────────────────────────────
           const evalAction = action === 'CLOSE_ROLL' ? 'CLOSE_ROLL'
             : action === 'TAKE_PROFIT' ? 'TAKE_PROFIT'
             : action === 'CUT_LOSSES' ? 'CUT_LOSSES'
@@ -1988,7 +1963,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
     }
     enrich();
     return () => { cancelled = true; };
-  }, []);
+  }, [initialItems]);
 
   const activeItems = batchItems
     .filter(i => !excluded.has(i.pos.key))
@@ -2003,17 +1978,17 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
       }
       return i;
     });
+
   const totalDebit = activeItems.reduce((s, i) => s + i.limitPrice, 0);
   const totalEstPnl = activeItems.reduce((s, i) => s + (i.estPnl ?? 0), 0);
   const warningCount = activeItems.filter(i => i.stalePriceWarning || i.duplicateGtcWarning).length;
   const priceErrorCount = activeItems.filter(i => i.priceError != null).length;
-
+  
   const submitAll = async () => {
     setStatus('submitting');
     setSubmitProgress(0);
     const results: OrderResult[] = [];
     try {
-      // In dry run mode we skip auth and ttPost entirely
       const token = dryRun ? 'DRY-RUN' : await getAccessToken();
       let completed = 0;
       for (const item of activeItems) {
@@ -2212,6 +2187,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
         completed++;
         setSubmitProgress(Math.round((completed / activeItems.length) * 100));
       }
+      }
       setOrderResults(results);
       setStatus('done');
     } catch (e: any) {
@@ -2246,9 +2222,6 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
             </h2>
             <div className="flex items-center gap-3 mt-1">
               <span className={`text-[10px] font-bold ${marketStatus.open ? 'text-emerald-400' : 'text-yellow-400'}`}>{marketStatus.label}</span>
-              {!marketStatus.open && status === 'preview' || status === 'ready' ? (
-                <span className="text-[10px] text-yellow-400">Day orders auto-upgraded to GTC</span>
-              ) : null}
             </div>
           </div>
           {status !== 'submitting' && <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>}
