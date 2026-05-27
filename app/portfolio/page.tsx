@@ -1282,7 +1282,16 @@ async function loadPositions(): Promise<Position[]> {
       hv30: hv30Map[symbol] ?? null,
       beta: betaMap[symbol] ?? null,
       earningsDate: earningsMap[symbol] ?? null,
-      hasGtc: gtcSymbols.has(symbol),
+      hasGtc: (() => {
+        // Check both the position symbol and its weekly option variant
+        // SPX positions may have SPXW option legs; SPXW positions may have SPXW legs
+        if (gtcSymbols.has(symbol)) return true;
+        // Map underlying to possible OCC prefix variants
+        const variants: Record<string, string> = { 'SPX': 'SPXW', 'NDX': 'NDXP', 'RUT': 'RUTW', 'VIX': 'VIXW' };
+        const reverseVariants: Record<string, string> = { 'SPXW': 'SPX', 'NDXP': 'NDX', 'RUTW': 'RUT', 'VIXW': 'VIX' };
+        const variant = variants[symbol] ?? reverseVariants[symbol];
+        return variant ? gtcSymbols.has(variant) : false;
+      })(),
       gtcOrderId: (() => {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
         return match?.id ?? null;
