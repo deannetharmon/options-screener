@@ -3421,11 +3421,8 @@ function ActionVerdictBadge({ verdict, compact = false, th }: {
 // ── Extend Profit Button ───────────────────────────────────────────────────
 // ── Extend Profit State Assessment ───────────────────────────────────────
 // Evaluates whether conditions favor or warn against extending profit target
-function assessExtendConditions(pos: Position): {
-  signal: 'favorable' | 'neutral' | 'warning' | 'bad';
-  reasons: string[];
-  warnings: string[];
-} {
+type ExtendConditionResult = { signal: string; reasons: string[]; warnings: string[] };
+function assessExtendConditions(pos: Position): ExtendConditionResult {
   const reasons: string[] = [];
   const warnings: string[] = [];
   let score = 0;
