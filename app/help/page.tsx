@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 
 type Theme = 'dark' | 'medium' | 'light';
-const LS_THEME = 'prosper-theme';
+const LS_THEME = 'hunter-theme';
 
 const THEMES = {
   dark: {
