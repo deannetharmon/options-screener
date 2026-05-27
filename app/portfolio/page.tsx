@@ -22,6 +22,7 @@ const LS_AUDIT_LOG = 'prosper-audit-log';
 const LS_THEME = 'prosper-theme';
 const LS_MEMORY = 'prosper-trading-memory';
 const LS_DRY_RUN = 'prosper-dry-run';
+const LS_POSITION_SNAPSHOT = 'prosper-position-snapshot';
 const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
 const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
 const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
@@ -5072,30 +5073,117 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
                 ))}
               </div>
 
-              {/* Monthly bar chart */}
-              {months.length > 0 && (
-                <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
-                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-4`}>Monthly P&L</p>
-                  <div className="flex items-end gap-2" style={{ height: '120px' }}>
-                    {months.slice(-12).map(m => {
-                      const d = byMonth[m];
-                      const pct = Math.abs(d.pnl) / maxBarPnl;
-                      const h = Math.max(pct * 90, 4);
-                      return (
-                        <div key={m} className="flex-1 flex flex-col items-center justify-end gap-1" style={{ height: '120px' }}>
-                          <p className={`text-[8px] ${th.textFaint} text-center`}>{d.pnl >= 0 ? '+' : ''}${d.pnl.toFixed(0)}</p>
-                          <div
-                            className={`w-full rounded-t transition-all ${d.pnl >= 0 ? 'bg-emerald-500/60 hover:bg-emerald-500/80' : 'bg-red-500/60 hover:bg-red-500/80'}`}
-                            style={{ height: `${h}px` }}
-                            title={`${m}: ${d.trades} trades, ${d.wins} wins`}
-                          />
-                          <p className={`text-[8px] ${th.textFaint} text-center`}>{m.slice(5)}</p>
+              {/* Monthly P&L chart — bars + cumulative line */}
+              {months.length > 0 && (() => {
+                const chartMonths = months.slice(-12);
+                // Build cumulative totals
+                let cumulative = 0;
+                const cumulativeByMonth = chartMonths.map(m => {
+                  cumulative += byMonth[m].pnl;
+                  return cumulative;
+                });
+                const maxCumulative = Math.max(...cumulativeByMonth, 1);
+                const minCumulative = Math.min(...cumulativeByMonth, 0);
+                const maxBar = Math.max(...chartMonths.map(m => Math.abs(byMonth[m].pnl)), 1);
+                const chartH = 160;
+                const chartW = 600;
+                const padL = 48, padR = 12, padT = 16, padB = 28;
+                const innerW = chartW - padL - padR;
+                const innerH = chartH - padT - padB;
+                const barW = Math.max((innerW / chartMonths.length) - 4, 4);
+                const barSpacing = innerW / chartMonths.length;
+
+                // Y scale for bars (0 to maxBar, bottom-up)
+                const barY = (val: number) => innerH - (Math.abs(val) / maxBar) * innerH * 0.85;
+                const barH = (val: number) => (Math.abs(val) / maxBar) * innerH * 0.85;
+
+                // Y scale for cumulative line (fit to innerH)
+                const range = maxCumulative - minCumulative || 1;
+                const lineY = (val: number) => padT + ((maxCumulative - val) / range) * innerH;
+
+                // Line path
+                const points = cumulativeByMonth.map((v, i) => {
+                  const x = padL + i * barSpacing + barSpacing / 2;
+                  const y = lineY(v);
+                  return `${x},${y}`;
+                });
+                const linePath = `M ${points.join(' L ')}`;
+
+                return (
+                  <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Monthly Premium Earnings</p>
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/60" />
+                          <span className={`text-[9px] ${th.textFaint}`}>Monthly P&L</span>
                         </div>
-                      );
-                    })}
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-2.5 h-0.5 bg-cyan-400 rounded" />
+                          <span className={`text-[9px] ${th.textFaint}`}>Cumulative Total</span>
+                        </div>
+                      </div>
+                    </div>
+                    <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" style={{ height: '160px' }}>
+                      {/* Grid lines */}
+                      {[0, 0.25, 0.5, 0.75, 1].map(pct => {
+                        const y = padT + pct * innerH;
+                        const val = maxCumulative - pct * range;
+                        return (
+                          <g key={pct}>
+                            <line x1={padL} y1={y} x2={chartW - padR} y2={y} stroke="currentColor" strokeOpacity="0.08" strokeWidth="1" />
+                            <text x={padL - 4} y={y + 3} textAnchor="end" fontSize="7" fill="currentColor" fillOpacity="0.4">
+                              ${val >= 1000 ? `${(val/1000).toFixed(1)}k` : val.toFixed(0)}
+                            </text>
+                          </g>
+                        );
+                      })}
+
+                      {/* Bars */}
+                      {chartMonths.map((m, i) => {
+                        const d = byMonth[m];
+                        const x = padL + i * barSpacing + (barSpacing - barW) / 2;
+                        const h = barH(d.pnl);
+                        const y = padT + innerH - h;
+                        const isPos = d.pnl >= 0;
+                        return (
+                          <g key={m}>
+                            <rect
+                              x={x} y={y} width={barW} height={Math.max(h, 2)}
+                              fill={isPos ? 'rgb(16 185 129 / 0.5)' : 'rgb(239 68 68 / 0.5)'}
+                              rx="2"
+                            />
+                            {h > 14 && (
+                              <text x={x + barW / 2} y={y - 3} textAnchor="middle" fontSize="7" fill={isPos ? 'rgb(52 211 153)' : 'rgb(248 113 113)'}>
+                                {isPos ? '+' : ''}{d.pnl >= 1000 || d.pnl <= -1000 ? `$${(d.pnl/1000).toFixed(1)}k` : `$${d.pnl.toFixed(0)}`}
+                              </text>
+                            )}
+                            {/* X label */}
+                            <text x={x + barW / 2} y={chartH - 4} textAnchor="middle" fontSize="7" fill="currentColor" fillOpacity="0.4">
+                              {new Date(m + '-01').toLocaleDateString('en-US', { month: 'short', year: '2-digit' })}
+                            </text>
+                          </g>
+                        );
+                      })}
+
+                      {/* Cumulative line */}
+                      <path d={linePath} fill="none" stroke="rgb(34 211 238)" strokeWidth="1.5" strokeLinejoin="round" />
+
+                      {/* Cumulative dots */}
+                      {cumulativeByMonth.map((v, i) => {
+                        const x = padL + i * barSpacing + barSpacing / 2;
+                        const y = lineY(v);
+                        return (
+                          <g key={i}>
+                            <circle cx={x} cy={y} r="3" fill="rgb(34 211 238)" />
+                            <circle cx={x} cy={y} r="1.5" fill="rgb(8 8 8)" />
+                          </g>
+                        );
+                      })}
+                    </svg>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* By Symbol */}
               {symbolRows.length > 0 && (
@@ -5316,6 +5404,59 @@ export default function PortfolioPage() {
     setLoading(true); setError(''); setChecked(new Set());
     try {
       const data = await loadPositions();
+
+      // ── Detect GTC auto-fills: positions in snapshot that are no longer live ──
+      try {
+        const raw = localStorage.getItem(LS_POSITION_SNAPSHOT);
+        if (raw) {
+          const snapshot: Position[] = JSON.parse(raw);
+          const liveKeys = new Set(data.map((p: Position) => p.key));
+          const closed = snapshot.filter(p => !liveKeys.has(p.key));
+          for (const p of closed) {
+            // Skip if already in audit log (same symbol + expDate)
+            const existing = readAuditLog();
+            const alreadyLogged = existing.some(e =>
+              e.symbol === p.symbol &&
+              e.timestamp.slice(0, 10) >= (p.entryDate ?? '2000-01-01')
+            );
+            if (alreadyLogged) continue;
+            // Determine P&L: if position had a GTC and hit target, assume profit target was captured
+            // Use currentValue if known, otherwise estimate at profitTarget
+            const qty = p.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
+            const creditTotal = p.creditReceived * qty;
+            // Best estimate: if it hit target use targetPrice, else use last known currentValue
+            const closeValue = p.hitTarget
+              ? p.targetPrice * qty * 100
+              : p.currentValue != null
+              ? p.currentValue * qty * 100
+              : null;
+            const estPnl = closeValue != null ? creditTotal - closeValue : null;
+            const action: ActionType = p.hitTarget ? 'TAKE_PROFIT'
+              : p.needsClose ? 'CLOSE_ROLL'
+              : 'TAKE_PROFIT';
+            writeAuditEntry({
+              id: crypto.randomUUID(),
+              timestamp: new Date().toISOString(),
+              symbol: p.symbol,
+              strategy: p.strategy,
+              action,
+              orderType: 'GTC Auto-Fill',
+              limitPrice: p.targetPrice,
+              quantity: qty,
+              orderId: p.gtcOrderId ?? 'auto',
+              status: 'submitted',
+              estPnl: estPnl ?? undefined,
+              closeProfitPct: estPnl != null && creditTotal > 0
+                ? Math.round((estPnl / creditTotal) * 100)
+                : undefined,
+            });
+          }
+        }
+      } catch { /* snapshot comparison is best-effort */ }
+
+      // Save new snapshot
+      try { localStorage.setItem(LS_POSITION_SNAPSHOT, JSON.stringify(data)); } catch {}
+
       setPositions(data);
       setLastRefresh(new Date());
     } catch (e: any) {
