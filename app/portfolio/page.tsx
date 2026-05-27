@@ -1821,6 +1821,7 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
 type BatchStatus = 'preview' | 'enriching' | 'ready' | 'submitting' | 'done' | 'error';
 
 // ── Batch Confirm Modal ─────────────────────────────────────────────────────
+// ── Batch Confirm Modal ─────────────────────────────────────────────────────
 function BatchConfirmModal({
   items: initialItems,
   onClose,
@@ -1847,6 +1848,7 @@ function BatchConfirmModal({
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
+  // User-editable limit price overrides per position key
   const [limitOverrides, setLimitOverrides] = useState<Record<string, string>>({});
 
   const marketStatus = getMarketStatus();
@@ -1867,6 +1869,7 @@ function BatchConfirmModal({
         const enriched: BatchOrderItem[] = [];
 
         for (const { pos, action } of initialItems) {
+          // ── Step 1: Fetch live price ──────────────────────────────────────
           const freshPrice = await fetchFreshPositionPrice(pos, token);
           const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
           const freshPerContract = freshPrice != null ? freshPrice / (qty * 100) : null;
@@ -1895,7 +1898,7 @@ function BatchConfirmModal({
               limitPrice = targetPrice;
             }
             if (limitPrice <= 0) {
-              priceError = `Calculated limit price $${limitPrice.toFixed(2)} is invalid`;
+              priceError = `Calculated limit price $${limitPrice.toFixed(2)} is invalid — position may already be worthless`;
               limitPrice = 0.01;
             }
           } else if (action === 'CUT_LOSSES' || action === 'CLOSE_ROLL') {
@@ -1903,7 +1906,7 @@ function BatchConfirmModal({
               limitPrice = parseFloat((effectivePerContract * 1.02).toFixed(2));
             } else {
               limitPrice = parseFloat((creditPerContract * 0.5).toFixed(2));
-              priceError = `No live price available — using estimated limit`;
+              priceError = `No live price available — using estimated limit $${limitPrice.toFixed(2)}. Verify before submitting.`;
             }
           } else {
             const targetPrice = parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
@@ -1913,7 +1916,7 @@ function BatchConfirmModal({
           }
 
           if (action === 'PLACE_GTC' && effectivePerContract != null && limitPrice >= effectivePerContract) {
-            priceError = `GTC limit $${limitPrice.toFixed(2)} ≥ live spread`;
+            priceError = `GTC limit $${limitPrice.toFixed(2)} ≥ live spread $${effectivePerContract.toFixed(2)} — would execute immediately. Use Take Profit instead.`;
           }
 
           const tif = action === 'PLACE_GTC' ? 'GTC' : 'Day';
@@ -1978,12 +1981,11 @@ function BatchConfirmModal({
       }
       return i;
     });
-
   const totalDebit = activeItems.reduce((s, i) => s + i.limitPrice, 0);
   const totalEstPnl = activeItems.reduce((s, i) => s + (i.estPnl ?? 0), 0);
   const warningCount = activeItems.filter(i => i.stalePriceWarning || i.duplicateGtcWarning).length;
   const priceErrorCount = activeItems.filter(i => i.priceError != null).length;
-  
+
   const submitAll = async () => {
     setStatus('submitting');
     setSubmitProgress(0);
@@ -1995,8 +1997,6 @@ function BatchConfirmModal({
         try {
           let orderId: string;
 
-          // Pre-submit live price check — re-fetch right before placing order
-          // to catch any price movement since enrichment
           if (!dryRun) {
             try {
               const liveToken = token;
@@ -2004,7 +2004,6 @@ function BatchConfirmModal({
               const qty = item.pos.legs.find((l: PositionLeg) => l.direction === 'Short')?.quantity ?? 1;
               const livePerContract = liveTotal != null ? liveTotal / (qty * 100) : null;
               const creditPerContract = item.pos.creditReceived / (qty * 100);
-              console.log(`PRE-SUBMIT ${item.pos.symbol} ${item.action}: live=$${livePerContract?.toFixed(4)}, limit=$${item.limitPrice.toFixed(4)}`);
 
               if (livePerContract != null) {
                 if (item.action === 'PLACE_GTC' && item.limitPrice >= livePerContract) {
@@ -2015,8 +2014,6 @@ function BatchConfirmModal({
                 if ((item.action === 'TAKE_PROFIT' || item.action === 'CUT_LOSSES' || item.action === 'CLOSE_ROLL')) {
                   const pctFromLive = Math.abs(item.limitPrice - livePerContract) / livePerContract;
                   if (pctFromLive > 0.30) {
-                    // Limit is >30% away from live — rebuild with fresh price
-                    console.warn(`${item.pos.symbol}: limit $${item.limitPrice.toFixed(2)} is ${(pctFromLive*100).toFixed(0)}% from live $${livePerContract.toFixed(2)} — rebuilding order with fresh price`);
                     const freshLimit = item.action === 'TAKE_PROFIT'
                       ? parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2))
                       : parseFloat((livePerContract * 1.02).toFixed(2));
@@ -2026,31 +2023,25 @@ function BatchConfirmModal({
                 }
               }
             } catch (priceCheckErr: any) {
-              // If this is a blocking error (GTC would execute immediately), re-throw
               if (String(priceCheckErr.message).includes('already hit') || String(priceCheckErr.message).includes('≥ live')) {
                 throw priceCheckErr;
               }
-              // Otherwise log and continue — don't block on price check failures
               console.warn(`Pre-submit price check failed for ${item.pos.symbol}:`, priceCheckErr.message);
             }
           }
 
           if (dryRun) {
-            // Use TastyTrade's native dry-run endpoint — validates the order without placing it
             const token2 = await getAccessToken();
             const validation = await ttValidateOrder(`/accounts/${item.pos.accountNumber}/orders`, token2, item.orderBody);
-            console.log(`DRY RUN validation for ${item.pos.symbol}:`, validation);
             if (!validation.valid) {
               throw new Error(`Validation failed: ${validation.errors.join('; ')}`);
             }
             orderId = `DRY-${Date.now().toString(36).toUpperCase()}${validation.warnings.length > 0 ? ' ⚠' : ' ✓'}`;
           } else {
-            // Submit close order
             const res = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, item.orderBody);
             orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
           }
 
-          // Only submit open leg when user chose Close + Roll
           if (item.action === 'CLOSE_ROLL' && rollMode[item.pos.key] === 'roll') {
             const ri = rollInputs[item.pos.key];
             if (ri?.expiry && ri.shortStrike && ri.longStrike && ri.credit) {
@@ -2061,7 +2052,6 @@ function BatchConfirmModal({
               const suggestion = rollSuggestions[item.pos.key];
               const qty = item.pos.legs[0]?.quantity ?? 1;
 
-              // Validate credit ratio before submitting open leg
               const inputCredit = parseFloat(ri.credit);
               const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
               if (inputWidth > 0 && inputCredit < inputWidth / 3) {
@@ -2071,8 +2061,6 @@ function BatchConfirmModal({
                 );
               }
 
-              // Pre-submit live credit re-fetch if suggestion available
-              // Re-fetch the chain to get current mid price and verify it still makes sense
               let finalCredit = inputCredit;
               if (!dryRun && suggestion) {
                 try {
@@ -2092,13 +2080,9 @@ function BatchConfirmModal({
                     const longMid  = (parseFloat(longLive.bid  ?? '0') + parseFloat(longLive.ask  ?? '0')) / 2;
                     const liveCreditMid = shortMid - longMid;
                     const liveCredit85  = parseFloat((liveCreditMid * 0.85).toFixed(2));
-                    console.log(`ROLL LIVE CREDIT REFETCH ${item.pos.symbol}: input=$${inputCredit} liveMid=$${liveCreditMid.toFixed(2)} live85%=$${liveCredit85}`);
-                    // If live credit is significantly different (>20%), use live price
                     if (liveCreditMid > 0 && Math.abs(liveCreditMid - inputCredit) / inputCredit > 0.20) {
-                      console.warn(`Roll credit moved >20% — updating from $${inputCredit} to $${liveCredit85}`);
                       finalCredit = liveCredit85;
                     }
-                    // Block if live credit no longer meets minimum rule
                     if (inputWidth > 0 && liveCreditMid < inputWidth / 3) {
                       throw new Error(
                         `Roll credit dropped to $${liveCreditMid.toFixed(2)} — no longer meets 1/3 rule ($${(inputWidth/3).toFixed(2)} min). ` +
@@ -2108,13 +2092,12 @@ function BatchConfirmModal({
                   }
                 } catch (creditCheckErr: any) {
                   if (String(creditCheckErr.message).includes('1/3 rule') || String(creditCheckErr.message).includes('credit rule')) {
-                    throw creditCheckErr; // blocking error — re-throw
+                    throw creditCheckErr;
                   }
                   console.warn(`Roll credit re-fetch failed for ${item.pos.symbol}:`, creditCheckErr.message);
                 }
               }
 
-              // Use native OCC symbols from suggestion if available, else build
               const openBody = buildOpenSpreadOrder(
                 item.pos.symbol, ri.expiry, optType,
                 parseFloat(ri.shortStrike), parseFloat(ri.longStrike),
@@ -2147,7 +2130,6 @@ function BatchConfirmModal({
             results.push({ symbol: item.pos.symbol, action: item.action, orderId, status: 'working', limitPrice: item.limitPrice, estPnl: item.estPnl });
           }
 
-          // Audit log
           const _auditQty = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
           const _creditPc = item.pos.creditReceived / (_auditQty * 100);
           const _closeProfitPct = (item.action === 'TAKE_PROFIT' && _creditPc > 0 && item.estPnl != null)
@@ -2164,12 +2146,10 @@ function BatchConfirmModal({
             creditAtClose: _creditPc,
           });
 
-          // Record in trading memory for future verdict learning
           const verdict = verdicts[item.pos.key] ?? null;
           const overridden = overrides.has(item.pos.key);
           const updatedMem = recordTradeInMemory(item.pos, item.action, item.limitPrice, verdict, overridden);
 
-          // Trigger summarization if symbol has too many raw trades (non-blocking)
           const profile = updatedMem.symbolProfiles[item.pos.symbol];
           if (profile && profile.recentTrades.length > MEMORY_RAW_TRADES_PER_SYMBOL) {
             summarizeSymbolHistory(item.pos.symbol).catch(() => {});
@@ -2186,7 +2166,6 @@ function BatchConfirmModal({
         }
         completed++;
         setSubmitProgress(Math.round((completed / activeItems.length) * 100));
-      }
       }
       setOrderResults(results);
       setStatus('done');
@@ -2229,8 +2208,6 @@ function BatchConfirmModal({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto">
-
-          {/* Enriching spinner */}
           {status === 'enriching' && (
             <div className="flex flex-col items-center justify-center py-12 gap-3">
               <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -2239,7 +2216,6 @@ function BatchConfirmModal({
             </div>
           )}
 
-          {/* Submitting progress */}
           {status === 'submitting' && (
             <div className="flex flex-col items-center justify-center py-12 gap-4">
               <div className="w-full max-w-xs">
@@ -2251,7 +2227,6 @@ function BatchConfirmModal({
             </div>
           )}
 
-          {/* Order results */}
           {status === 'done' && (
             <div className="p-6 space-y-4">
               <div className="flex gap-4">
@@ -2275,16 +2250,6 @@ function BatchConfirmModal({
                     {r.error && (
                       <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
                         <p className="text-[10px] text-red-300 leading-relaxed">{r.error}</p>
-                        {r.error.toLowerCase().includes('preflight') && (
-                          <div className="mt-1.5 space-y-1">
-                            <p className="text-[9px] text-yellow-400">Preflight failures are usually caused by:</p>
-                            <p className="text-[9px] text-yellow-300/80">An existing GTC/OCO order — cancel it in TastyTrade first</p>
-                            <p className="text-[9px] text-yellow-300/80">Submitting outside market hours with a Day order</p>
-                            <p className="text-[9px] text-yellow-300/80">Insufficient buying power or margin</p>
-                            <p className="text-[9px] text-yellow-300/80">Invalid strike or expiry date</p>
-                            <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer" className="inline-block mt-1 text-[9px] text-blue-400 underline">Open TastyTrade to check orders</a>
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -2298,7 +2263,6 @@ function BatchConfirmModal({
             </div>
           )}
 
-          {/* Error state */}
           {status === 'error' && (
             <div className="p-6 flex flex-col items-center gap-3">
               <span className="text-2xl">✕</span>
@@ -2309,7 +2273,6 @@ function BatchConfirmModal({
             </div>
           )}
 
-          {/* Ready state — order table */}
           {(status === 'ready') && (
             <div className="p-4 space-y-3">
               {priceErrorCount > 0 && (
@@ -2342,7 +2305,6 @@ function BatchConfirmModal({
                       item.stalePriceWarning || item.duplicateGtcWarning ? 'border-yellow-500/50' :
                       th.border
                     }`}>
-                      {/* Row header */}
                       <div className="flex items-center gap-3 px-4 py-3">
                         <input type="checkbox" checked={!isExcluded}
                           onChange={() => setExcluded(prev => { const n = new Set(prev); isExcluded ? n.delete(item.pos.key) : n.add(item.pos.key); return n; })}
@@ -2352,7 +2314,6 @@ function BatchConfirmModal({
                             <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.pos.symbol}</span>
                             <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(item.pos.strategy)}`}>{item.pos.strategy}</span>
                             <span className={`text-[10px] font-bold ${ACTION_META[item.action].color}`}>{ACTION_META[item.action].label}</span>
-                            {/* Compact verdict badge */}
                             {verdict && <ActionVerdictBadge verdict={verdict} compact th={th} />}
                             {!verdict && !isExcluded && (
                               <span className="text-[9px] text-indigo-500 animate-pulse">◈ evaluating...</span>
@@ -2380,7 +2341,6 @@ function BatchConfirmModal({
                               <p className="text-[9px] text-red-400 leading-relaxed">{item.priceError}</p>
                             </div>
                           )}
-                          {/* Full verdict reasoning for STOP/CAUTION */}
                           {verdict && (verdict.verdict === 'STOP' || verdict.verdict === 'CAUTION') && !isExcluded && (
                             <div className="mt-2">
                               <p className={`text-[10px] leading-relaxed ${verdict.verdict === 'STOP' ? 'text-red-300' : 'text-yellow-300'}`}>
@@ -2400,7 +2360,6 @@ function BatchConfirmModal({
                           )}
                         </div>
                         <div className="text-right shrink-0 space-y-1 min-w-[140px]">
-                          {/* Editable limit price */}
                           <div className="flex items-center justify-end gap-1">
                             <span className={`text-[9px] ${th.textFaint}`}>Limit $</span>
                             <input
@@ -2418,7 +2377,6 @@ function BatchConfirmModal({
                               style={{ fontFamily: "'DM Mono', monospace" }}
                             />
                           </div>
-                          {/* Profit % helper for TAKE_PROFIT / PLACE_GTC */}
                           {(item.action === 'TAKE_PROFIT' || item.action === 'PLACE_GTC') && (() => {
                             const _qty2 = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
                             const creditPc = item.pos.creditReceived / (_qty2 * 100);
@@ -2456,7 +2414,6 @@ function BatchConfirmModal({
                               </div>
                             );
                           })()}
-                          {/* Stop limit % helper for CUT_LOSSES */}
                           {item.action === 'CUT_LOSSES' && (() => {
                             const _qty3 = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
                             const creditPc = item.pos.creditReceived / (_qty3 * 100);
@@ -2494,7 +2451,6 @@ function BatchConfirmModal({
                         </div>
                       </div>
 
-                      {/* Roll inputs */}
                       {item.action === 'CLOSE_ROLL' && !isExcluded && (
                         <div className={`px-4 pb-3 border-t ${th.borderLight}`}>
                           <div className="flex items-center gap-2 pt-2 pb-2">
@@ -2504,15 +2460,12 @@ function BatchConfirmModal({
                             <span className={`text-[9px] ${th.textFaint}`}>{rollMode[item.pos.key] === 'roll' ? 'Closes and opens new spread.' : 'Closes position only.'}</span>
                           </div>
                           <div className="pt-2 space-y-3" style={{display: rollMode[item.pos.key] === 'roll' ? undefined : 'none'}}>
-
-                            {/* Suggested roll with full rule check */}
                             {suggestion && (
                               <div className={`rounded-lg border p-3 space-y-2 ${
                                 rollIsBlocking(suggestion) ? 'border-red-500/50 bg-red-500/5' :
                                 suggestion.ruleViolations.length > 0 ? 'border-yellow-500/40 bg-yellow-500/5' :
                                 'border-blue-500/30 bg-blue-500/5'
                               }`}>
-                                {/* Header row */}
                                 <div className="flex items-center justify-between flex-wrap gap-2">
                                   <div className="flex items-center gap-2 flex-wrap">
                                     <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">Suggested Roll</span>
@@ -2527,8 +2480,6 @@ function BatchConfirmModal({
                                     Use this
                                   </button>
                                 </div>
-
-                                {/* Credit & rule metrics */}
                                 <div className="grid grid-cols-4 gap-2">
                                   <div>
                                     <p className={`text-[9px] ${th.textFaint}`}>Credit (mid)</p>
@@ -2559,8 +2510,6 @@ function BatchConfirmModal({
                                     <p className={`text-[9px] ${th.textFaint}`}>need ≤$0.10</p>
                                   </div>
                                 </div>
-
-                                {/* Rule violations */}
                                 {suggestion.ruleViolations.length > 0 && (
                                   <div className="space-y-1">
                                     {suggestion.ruleViolations.map((v, i) => (
@@ -2582,7 +2531,6 @@ function BatchConfirmModal({
                               </div>
                             )}
 
-                            {/* Manual inputs */}
                             <div className="grid grid-cols-4 gap-2">
                               {[
                                 { label: 'New Expiry', key: 'expiry', placeholder: (() => { const d = new Date(); d.setDate(d.getDate() + 45); return d.toISOString().slice(0, 10); })() },
@@ -2603,7 +2551,6 @@ function BatchConfirmModal({
                               ))}
                             </div>
 
-                            {/* Live credit validation against inputs */}
                             {ri?.credit && ri?.shortStrike && ri?.longStrike && (() => {
                               const inputCredit = parseFloat(ri.credit);
                               const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
@@ -2626,7 +2573,6 @@ function BatchConfirmModal({
                               return null;
                             })()}
                           </div>
-                          </div>
                         </div>
                       )}
                     </div>
@@ -2641,7 +2587,6 @@ function BatchConfirmModal({
         <div className={`px-6 py-4 border-t ${th.border} shrink-0`}>
           {status === 'ready' && (
             <div className="space-y-3">
-              {/* Totals */}
               <div className={`flex items-center justify-between p-3 rounded-lg ${th.card}`}>
                 <div className="flex gap-6">
                   <div>
