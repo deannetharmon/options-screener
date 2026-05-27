@@ -7,9 +7,9 @@ import { createPortal } from 'react-dom';
 
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
-  if (!document.getElementById('prosper-font')) {
+  if (!document.getElementById('hunter-font')) {
     const link = document.createElement('link');
-    link.id = 'prosper-font';
+    link.id = 'hunter-font';
     link.rel = 'stylesheet';
     link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=DM+Mono:wght@400;500&display=swap';
     document.head.appendChild(link);
@@ -18,7 +18,7 @@ if (typeof document !== 'undefined') {
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
-const LS_THEME = 'prosper-theme';
+const LS_THEME = 'hunter-theme';
 
 const THEMES: Record<Theme, {
   bg: string; sidebar: string; card: string; cardQualified: string;
@@ -455,12 +455,12 @@ const RULE_LABELS: Record<string, string> = {
   POP_MIN: 'Min POP % (Probability of Profit)',
 };
 
-const LS_RULES = 'prosper-rules';
-const LS_RULES_ETF = 'prosper-rules-etf';
-const LS_RULES_PRESET = 'prosper-rules-preset';
-const LS_ACTIVE_PRESET = 'prosper-active-preset';
-const LS_ACTIVE_PRESET_ETF = 'prosper-active-preset-etf';
-const LS_RULES_VERSION = 'prosper-rules-v3'; // bump this when defaults change
+const LS_RULES = 'hunter-rules';
+const LS_RULES_ETF = 'hunter-rules-etf';
+const LS_RULES_PRESET = 'hunter-rules-preset';
+const LS_ACTIVE_PRESET = 'hunter-active-preset';
+const LS_ACTIVE_PRESET_ETF = 'hunter-active-preset-etf';
+const LS_RULES_VERSION = 'hunter-rules-v3'; // bump this when defaults change
 
 const DEFAULT_ETF_RULES: RulesType = {
   IVR_MIN: 15, IVR_IC_MAX: 70, OI_MIN: 100, BID_ASK_MAX: 0.25,
@@ -496,19 +496,19 @@ function saveEtfRulesToStorage(rules: RulesType) {
   try { localStorage.setItem(LS_RULES_ETF, JSON.stringify(rules)); } catch {}
 }
 const TREND_DETECTION_CONCURRENCY = 8;
-const LS_BPS = 'prosper-tickers-bps';
-const LS_BCS = 'prosper-tickers-bcs';
-const LS_IC = 'prosper-tickers-ic';
-const LS_BROKEN = 'prosper-tickers-broken';
-const LS_CAL = 'prosper-cal-scheduled';
-const LS_CAL_ENTRY = 'prosper-cal-entry';
+const LS_BPS = 'hunter-tickers-bps';
+const LS_BCS = 'hunter-tickers-bcs';
+const LS_IC = 'hunter-tickers-ic';
+const LS_BROKEN = 'hunter-tickers-broken';
+const LS_CAL = 'hunter-cal-scheduled';
+const LS_CAL_ENTRY = 'hunter-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
 const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
-const LS_SAVED_FILTERS = 'prosper-saved-filters';
-const LS_GLOBAL_SESSIONS = 'prosper-global-sessions';
-const LS_SCREEN_MODE = 'prosper-screen-mode';
-const LS_RANK_CONFIG = 'prosper-rank-config';
-const LS_SESSION_LOADED_AT = 'prosper-session-loaded-at';
+const LS_SAVED_FILTERS = 'hunter-saved-filters';
+const LS_GLOBAL_SESSIONS = 'hunter-global-sessions';
+const LS_SCREEN_MODE = 'hunter-screen-mode';
+const LS_RANK_CONFIG = 'hunter-rank-config';
+const LS_SESSION_LOADED_AT = 'hunter-session-loaded-at';
 
 // ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
@@ -3544,7 +3544,7 @@ export default function Home() {
     const headers = ['Symbol','Strategy','Trend','Trend Subtype','Trend Confidence','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Earnings Date','Fail Reasons'];
     const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.trendResult?.subtype||'',r.trendResult?.confidence!=null?r.trendResult.confidence.toFixed(0)+'%':'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
     const blob = new Blob([[headers.join(','),...rows].join('\n')], { type: 'text/csv' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `hunter-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
   };
 
   const runTrendDetectionWrapper = () => {
