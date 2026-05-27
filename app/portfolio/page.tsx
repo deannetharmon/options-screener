@@ -251,11 +251,7 @@ function isMarketOpen(): boolean {
   const now = new Date();
   const day = now.getDay();
   if (day === 0 || day === 6) return false;
-  const year = now.getUTCFullYear();
-  const dstStart = new Date(Date.UTC(year, 2, 8 - new Date(Date.UTC(year, 2, 1)).getUTCDay(), 7));
-  const dstEnd   = new Date(Date.UTC(year, 10, 1 + (7 - new Date(Date.UTC(year, 10, 1)).getUTCDay()) % 7, 6));
-  const isDST    = now >= dstStart && now < dstEnd;
-  const etOffset = isDST ? -4 * 60 : -5 * 60;
+  const etOffset = -5 * 60; // EST (ignores DST — good enough for a guard)
   const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
   const etMin = utcMin + etOffset;
   const openMin = MARKET_OPEN_HOUR * 60 + MARKET_OPEN_MIN;
@@ -849,7 +845,7 @@ function rollIsBlocking(suggestion: RollSuggestion): boolean {
 }
 
 // ── OCC Symbol Builder ─────────────────────────────────────────────────────
-function buildOccSymbol(underlying: string, expiry: string, optType: 'P' | 'C', strike: number): string {
+function buildOccSymbol(underlying: string, expiry: string, optType: string, strike: number): string {
   const exp = expiry.replace(/-/g, '').slice(2); // YYMMDD
   const under = underlying.padEnd(6, ' ');
   const strikeStr = String(Math.round(strike * 1000)).padStart(8, '0');
@@ -861,7 +857,7 @@ function instrType(symbol: string): 'Equity Option' | 'Index Option' {
 }
 
 // ── Order Builders ─────────────────────────────────────────────────────────
-function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' = 'Day'): OrderBody {
+function buildCloseOrder(pos: Position, limitPrice: number, tif: string = 'Day'): OrderBody {
   const itype = instrType(pos.symbol);
   const effectiveTif = (!isMarketOpen() && tif === 'Day') ? 'GTC' : tif;
   // TastyTrade REST API price convention:
@@ -884,7 +880,7 @@ function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' =
 }
 
 function buildOpenSpreadOrder(
-  underlying: string, expiry: string, optType: 'P' | 'C',
+  underlying: string, expiry: string, optType: string,
   shortStrike: number, longStrike: number, quantity: number, credit: number,
   shortSymbolOverride?: string, longSymbolOverride?: string
 ): OrderBody {
@@ -910,7 +906,7 @@ function buildOpenSpreadOrder(
 function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
   const match = sym.trim().replace(/\s+/g, '').match(/^([A-Z/]+)(\d{6})([CP])(\d{8})$/);
   if (!match) return { optionType: 'C', strikePrice: 0 };
-  return { optionType: match[3] as 'P' | 'C', strikePrice: parseInt(match[4], 10) / 1000 };
+  return { optionType: match[3] as ('P' | 'C'), strikePrice: parseInt(match[4], 10) / 1000 };
 }
 
 function normalizeOccSymbol(symbol: string): string { return String(symbol ?? '').replace(/\s+/g, '').trim(); }
@@ -1258,7 +1254,7 @@ async function loadPositions(): Promise<Position[]> {
       const parsed = parseOptionSymbol(l.symbol);
       return {
         symbol: l.symbol, optionType: parsed.optionType, strikePrice: parsed.strikePrice,
-        direction: l['quantity-direction'] as 'Short' | 'Long',
+        direction: l['quantity-direction'] as ('Short' | 'Long'),
         quantity: parseInt(l['quantity'] ?? '1', 10),
         avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
         currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
@@ -1866,7 +1862,6 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
 
   // Roll state per position
   const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
-  const [rollMode, setRollMode] = useState<Record<string, string>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
@@ -2027,8 +2022,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
       if (ovr !== undefined && ovr !== '') {
         const parsed = parseFloat(ovr);
         if (!isNaN(parsed) && parsed > 0) {
-          const tif = i.orderBody['time-in-force'] as ('GTC' | 'Day');
-          const updatedBody = buildCloseOrder(i.pos, parsed, tif);
+          const updatedBody = buildCloseOrder(i.pos, parsed, i.orderBody['time-in-force'] as ('GTC' | 'Day'));
           return { ...i, limitPrice: parsed, orderBody: updatedBody };
         }
       }
@@ -2076,7 +2070,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                     const freshLimit = item.action === 'TAKE_PROFIT'
                       ? parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2))
                       : parseFloat((livePerContract * 1.02).toFixed(2));
-                    item.orderBody = buildCloseOrder(item.pos, freshLimit, item.orderBody['time-in-force'] as 'GTC' | 'Day');
+                    item.orderBody = buildCloseOrder(item.pos, freshLimit, item.orderBody['time-in-force'] as ('GTC' | 'Day'));
                     (item as any).limitPrice = freshLimit;
                   }
                 }
@@ -2106,15 +2100,11 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
             orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
           }
 
-          // Only submit roll open leg when user chose Close + Roll
-          if (item.action === 'CLOSE_ROLL' && rollMode[item.pos.key] === 'roll') {
+          // If roll, also submit open order
+          if (item.action === 'CLOSE_ROLL') {
             const ri = rollInputs[item.pos.key];
             if (ri?.expiry && ri.shortStrike && ri.longStrike && ri.credit) {
-              const _expDate = new Date(ri.expiry);
-              const _tod = new Date(); _tod.setHours(0,0,0,0);
-              if (isNaN(_expDate.getTime())) throw new Error('Roll expiry is not a valid date.');
-              if (_expDate <= _tod) throw new Error('Roll expiry is in the past. Enter a future date.');
-              const optType: ('P' | 'C') = item.pos.strategy === 'BCS' ? 'C' : 'P';
+              const optType: 'P' | 'C' = item.pos.strategy === 'BCS' ? 'C' : 'P';
               const suggestion = rollSuggestions[item.pos.key];
               const qty = item.pos.legs[0]?.quantity ?? 1;
 
@@ -2319,33 +2309,16 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
               </div>
               <div className="space-y-2">
                 {orderResults.map((r, i) => (
-                  <div key={i} className={`p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
-                        <span className={`text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
-                        {(r.status === 'error' || r.status === 'rejected') && <span className="text-[9px] text-red-400 font-bold">&#x2715; REJECTED</span>}
-                      </div>
-                      <div className="text-right">
-                        <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
-                        {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
-                      </div>
+                  <div key={i} className={`flex items-center justify-between p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
+                    <div>
+                      <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
+                      <span className={`ml-2 text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
+                      {r.error && <p className="text-[10px] text-red-400 mt-0.5">{r.error}</p>}
                     </div>
-                    {r.error && (
-                      <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
-                        <p className="text-[10px] text-red-300 leading-relaxed">{r.error}</p>
-                        {r.error.toLowerCase().includes('preflight') && (
-                          <div className="mt-1.5 space-y-1">
-                            <p className="text-[9px] text-yellow-400">Preflight failures are usually caused by:</p>
-                            <p className="text-[9px] text-yellow-300/80">An existing GTC/OCO order — cancel it in TastyTrade first</p>
-                            <p className="text-[9px] text-yellow-300/80">Submitting outside market hours with a Day order</p>
-                            <p className="text-[9px] text-yellow-300/80">Insufficient buying power or margin</p>
-                            <p className="text-[9px] text-yellow-300/80">Invalid strike or expiry date</p>
-                            <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer" className="inline-block mt-1 text-[9px] text-blue-400 underline">Open TastyTrade to check orders</a>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <div className="text-right">
+                      <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
+                      {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2556,13 +2529,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                       {/* Roll inputs */}
                       {item.action === 'CLOSE_ROLL' && !isExcluded && (
                         <div className={`px-4 pb-3 border-t ${th.borderLight}`}>
-                          <div className="flex items-center gap-2 pt-2 pb-1">
-                            <span className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Action:</span>
-                            <button onClick={() => setRollMode(p => ({...p, [item.pos.key]: 'close'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${(rollMode[item.pos.key] ?? 'close') === 'close' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : th.border + ' ' + th.textFaint}`}>&#10003; Close Only</button>
-                            <button onClick={() => setRollMode(p => ({...p, [item.pos.key]: 'roll'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${rollMode[item.pos.key] === 'roll' ? 'border-purple-500 text-purple-400 bg-purple-500/10' : th.border + ' ' + th.textFaint}`}>&#8635; Close + Roll</button>
-                            <span className={`text-[9px] ${rollMode[item.pos.key] === 'roll' ? 'text-purple-400/70' : 'text-emerald-400/70'}`}>{rollMode[item.pos.key] === 'roll' ? 'Closes and opens new spread.' : 'Closes position only.'}</span>
-                          </div>
-                          <div className="pt-2 space-y-3" style={{display: rollMode[item.pos.key] === 'roll' ? undefined : 'none'}}>
+                          <div className="pt-3 space-y-3">
 
                             {/* Suggested roll with full rule check */}
                             {suggestion && (
@@ -2644,7 +2611,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                             {/* Manual inputs */}
                             <div className="grid grid-cols-4 gap-2">
                               {[
-                                { label: 'New Expiry', key: 'expiry', placeholder: (() => { const d = new Date(); d.setDate(d.getDate() + 45); return d.toISOString().slice(0, 10); })() },
+                                { label: 'New Expiry', key: 'expiry', placeholder: '2025-08-15' },
                                 { label: 'Short Strike', key: 'shortStrike', placeholder: '490' },
                                 { label: 'Long Strike', key: 'longStrike', placeholder: '485' },
                                 { label: 'Credit ($)', key: 'credit', placeholder: '1.50' },
@@ -4153,7 +4120,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       const legs = pos.legs.map(leg => ({
         symbol: leg.symbol,
         quantity: leg.quantity,
-        action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as 'Buy to Close' | 'Sell to Close',
+        action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as ('Buy to Close' | 'Sell to Close'),
         'instrument-type': itype,
       }));
 
