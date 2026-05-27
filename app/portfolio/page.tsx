@@ -917,36 +917,59 @@ function pickOrderField(o: any, keys: string[]): string | null {
   return null;
 }
 
-function mapGtcOrder(o: any): GtcOrder {
+function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
+  // Collect legs from direct legs array OR from nested orders' legs (automation/complex orders)
+  let legs = (o?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') }));
+  if (legs.length === 0) {
+    for (const nested of o?.orders ?? []) {
+      const nestedLegs = (nested?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') }));
+      legs = legs.concat(nestedLegs);
+    }
+  }
+  // TIF may be on parent complex order but missing on sub-orders — inherit from parent
+  const tif = String(o?.['time-in-force'] ?? o?.timeInForce ?? parentTif ?? '');
   return {
     id: String(o?.id ?? ''),
     price: String(o?.price ?? o?.['limit-price'] ?? ''),
     stopPrice: pickOrderField(o, ['stop-trigger', 'stop-price', 'stopPrice', 'stop', 'trigger-price']),
     orderType: String(o?.['order-type'] ?? o?.orderType ?? ''),
-    timeInForce: String(o?.['time-in-force'] ?? o?.timeInForce ?? ''),
-    legs: (o?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') })),
+    timeInForce: tif,
+    legs,
   };
 }
 
 function collectRawOrders(raw: any): any[] {
   const out: any[] = [];
-  const visit = (order: any) => {
+  const visit = (order: any, parentTif?: string) => {
     if (!order || typeof order !== 'object') return;
-    if (Array.isArray(order.legs) && order.legs.length > 0) out.push(order);
-    for (const nested of order.orders ?? []) visit(nested);
+    const tif = String(order?.['time-in-force'] ?? order?.timeInForce ?? parentTif ?? '');
+    // Collect this order if it has direct legs
+    if (Array.isArray(order.legs) && order.legs.length > 0) {
+      out.push({ ...order, _inheritedTif: tif });
+    }
+    // For complex/automation orders: also collect as a combined order with all nested legs merged
+    if (Array.isArray(order.orders) && order.orders.length > 0) {
+      const allLegs: any[] = [];
+      for (const nested of order.orders) allLegs.push(...(nested?.legs ?? []));
+      if (allLegs.length > 0) {
+        out.push({ ...order, legs: allLegs, _inheritedTif: tif, _isCombined: true });
+      }
+      for (const nested of order.orders) visit(nested, tif);
+    }
   };
   for (const item of raw?.data?.items ?? []) visit(item);
   return out;
 }
 
 function findProfitGtcOrder(positionLegs: PositionLeg[], gtcOrders: GtcOrder[]): GtcOrder | null {
-  // Find a GTC limit order (not a stop) that has Buy to Close on the short leg
+  // Find a GTC limit order (not a stop) that has Buy to Close on the short leg.
+  // Also matches automation/complex orders where legs are combined from sub-orders.
   const shortLeg = positionLegs.find(l => l.direction === 'Short');
   if (!shortLeg?.symbol) return null;
   const shortSymbol = normalizeOccSymbol(shortLeg.symbol);
   return gtcOrders.find(order =>
     !isStopOrder(order) &&
-    order.orderType.toLowerCase().includes('limit') &&
+    (order.orderType.toLowerCase().includes('limit') || order.orderType === '') &&
     order.legs.some(leg =>
       normalizeOccSymbol(leg.symbol) === shortSymbol && isBuyToCloseAction(leg.action)
     )
@@ -975,14 +998,15 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
     ]);
     const rawOrders = requests.flatMap(r => r.status === 'fulfilled' ? collectRawOrders(r.value) : []);
     const seen = new Set<string>();
-    return rawOrders.map(mapGtcOrder).filter(order => {
+    return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif)).filter(order => {
       const tif = order.timeInForce.toUpperCase();
       const type = order.orderType.toLowerCase();
-      // Accept GTC and PENDING tif (automation orders show as pending before activation)
-      // Accept empty orderType for combined complex/automation order envelopes
+      // Parent OCO envelope has no tif/type — check nested sub-orders
+      // Accept if any nested order has GTC tif, or if tif is empty (parent envelope)
       const isGtcTif = tif === 'GTC' || tif === '' || tif === 'PENDING';
       const isLimitOrStop = type.includes('limit') || type.includes('stop') || type === '';
-      if (!isGtcTif || !isLimitOrStop || order.legs.length === 0) return false;
+      if ((!isGtcTif || !isLimitOrStop) && order.legs.length === 0) return false;
+      if (order.legs.length === 0) return false;
       const key = `${order.id}|${order.orderType}|${order.price}|${order.stopPrice ?? ''}|${order.legs.map(l => `${l.symbol}:${l.action}`).join(',')}`;
       if (seen.has(key)) return false;
       seen.add(key); return true;
@@ -1030,6 +1054,8 @@ async function loadPositions(): Promise<Position[]> {
   const currentPrices: Record<string, number> = {};
   const thetaMap: Record<string, number> = {};
   const gammaMap: Record<string, number> = {};
+  const deltaMap: Record<string, number> = {};
+  const vegaMap:  Record<string, number> = {};
   if (allOptionSymbols.length > 0) {
     try {
       for (let i = 0; i < allOptionSymbols.length; i += 50) {
@@ -1046,8 +1072,12 @@ async function loadPositions(): Promise<Position[]> {
           currentPrices[sym] = mid > 0 ? mid : mark > 0 ? mark : 0;
           const theta = parseFloat(item.theta ?? 'NaN');
           const gamma = parseFloat(item.gamma ?? 'NaN');
+          const delta = parseFloat(item.delta ?? 'NaN');
+          const vega  = parseFloat(item.vega  ?? 'NaN');
           if (!isNaN(theta)) thetaMap[sym] = theta;
           if (!isNaN(gamma)) gammaMap[sym] = gamma;
+          if (!isNaN(delta)) deltaMap[sym] = delta;
+          if (!isNaN(vega))  vegaMap[sym]  = vega;
         }
       }
     } catch {}
@@ -1138,17 +1168,26 @@ async function loadPositions(): Promise<Position[]> {
   try {
     const complexData = await ttFetch(`/accounts/${accountNumber}/complex-orders`, token);
     for (const order of complexData?.data?.items ?? []) {
-      const status = (order['status'] ?? '').toLowerCase();
-      console.log(`COMPLEX ORDER: id=${order.id} status=${status} tif=${order['time-in-force']} type=${order['order-type']} orders=${order.orders?.length ?? 0}`);
-      if (['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(status)) {
-        for (const nestedOrder of order.orders ?? []) for (const leg of nestedOrder.legs ?? []) {
-          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
-          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
-        }
-        // Also add legs directly on the parent complex order envelope
-        for (const leg of order.legs ?? []) {
-          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
-          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+      // Parent OCO envelope has no status/tif/type — check nested sub-orders instead
+      const nestedOrders: any[] = order.orders ?? [];
+      const hasActiveNested = nestedOrders.some(no => {
+        const s = (no['status'] ?? '').toLowerCase();
+        return ['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(s);
+      });
+      // Also accept if parent has no terminal-at (still open) and has nested orders
+      const parentActive = !order['terminal-at'] && nestedOrders.length > 0;
+      console.log(`COMPLEX ORDER: id=${order.id} hasActiveNested=${hasActiveNested} parentActive=${parentActive} nestedStatuses=${nestedOrders.map((o:any) => o['status']).join(',')}`);
+      if (hasActiveNested || parentActive) {
+        for (const nestedOrder of nestedOrders) for (const leg of nestedOrder.legs ?? []) {
+          // Prefer underlying-symbol; fall back to parsing the OCC option symbol
+          const underlying = leg['underlying-symbol'];
+          if (underlying) {
+            gtcSymbols.add(underlying.split(' ')[0].trim());
+          } else if (leg.symbol) {
+            // OCC format: SPX   260726P07290000 — split on first digit sequence
+            const fromOcc = leg.symbol.split(/\d{6}/)[0].trim();
+            if (fromOcc) gtcSymbols.add(fromOcc);
+          }
         }
       }
     }
@@ -1286,13 +1325,27 @@ async function loadPositions(): Promise<Position[]> {
         return any ? parseFloat(net.toFixed(4)) : null;
       })(),
       netDelta: (() => {
-        // deltaMap not yet fetched per-leg — approximate from position Greeks
-        // Short spread delta: short leg delta (negative for puts) + long leg delta
-        // For now derive from buffer and strategy as a sign-only approximation
-        // Will be enriched when per-leg delta is added to market data fetch
-        return null;
+        let net = 0; let any = false;
+        for (const l of legs) {
+          const val = deltaMap[l.symbol?.replace(/\s+/g, '')];
+          if (val == null) continue;
+          const qty = parseInt(l['quantity'] ?? '1', 10);
+          net += l['quantity-direction'] === 'Short' ? -val * qty : val * qty;
+          any = true;
+        }
+        return any ? parseFloat(net.toFixed(4)) : null;
       })(),
-      netVega: (() => { return null; })(),
+      netVega: (() => {
+        let net = 0; let any = false;
+        for (const l of legs) {
+          const val = vegaMap[l.symbol?.replace(/\s+/g, '')];
+          if (val == null) continue;
+          const qty = parseInt(l['quantity'] ?? '1', 10);
+          net += l['quantity-direction'] === 'Short' ? -Math.abs(val) * qty : Math.abs(val) * qty;
+          any = true;
+        }
+        return any ? parseFloat(net.toFixed(4)) : null;
+      })(),
     };
   });
 
@@ -4258,6 +4311,49 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
     </div>
   );
 }
+// ── Greek Value Tint Helpers ──────────────────────────────────────────────
+// Returns a faint background class based on how favorable the Greek is
+// for a short premium (credit spread) position.
+
+function thetaTint(theta: number | null): string {
+  if (theta == null) return '';
+  if (theta >= 0.10) return 'bg-emerald-500/10 rounded px-1';
+  if (theta >= 0.05) return 'bg-emerald-500/8 rounded px-1';
+  if (theta >= 0.01) return 'bg-emerald-500/5 rounded px-1';
+  if (theta < 0)     return 'bg-red-500/10 rounded px-1';
+  return '';
+}
+
+function deltaTint(delta: number | null): string {
+  if (delta == null) return '';
+  const abs = Math.abs(delta);
+  if (abs <= 0.05)  return 'bg-emerald-500/10 rounded px-1';
+  if (abs <= 0.10)  return 'bg-emerald-500/8 rounded px-1';
+  if (abs <= 0.15)  return 'bg-yellow-500/8 rounded px-1';
+  if (abs <= 0.25)  return 'bg-orange-500/10 rounded px-1';
+  return 'bg-red-500/10 rounded px-1';
+}
+
+function gammaTint(gamma: number | null): string {
+  if (gamma == null) return '';
+  const abs = Math.abs(gamma);
+  if (abs <= 0.001)  return 'bg-emerald-500/10 rounded px-1';
+  if (abs <= 0.003)  return 'bg-emerald-500/8 rounded px-1';
+  if (abs <= 0.006)  return 'bg-yellow-500/8 rounded px-1';
+  if (abs <= 0.010)  return 'bg-orange-500/10 rounded px-1';
+  return 'bg-red-500/10 rounded px-1';
+}
+
+function vegaTint(vega: number | null): string {
+  if (vega == null) return '';
+  // Short vega (negative) is favorable for premium sellers
+  if (vega <= -0.10) return 'bg-emerald-500/10 rounded px-1';
+  if (vega <= -0.05) return 'bg-emerald-500/8 rounded px-1';
+  if (vega <= -0.01) return 'bg-emerald-500/5 rounded px-1';
+  if (vega >= 0)     return 'bg-red-500/10 rounded px-1';
+  return '';
+}
+
 // ── Buffer Color Helpers ──────────────────────────────────────────────────
 function bufferColor(buffer: number | null, dte: number): string {
   if (buffer == null) return 'text-[#808080]';
@@ -4409,14 +4505,15 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
         {/* Data columns */}
         <div className="overflow-x-auto flex-1">
-          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'center', minWidth: '1040px' }}>
+          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1100px' }}>
 
-            <div>
+            {/* ── POSITION ───────────────────────────── */}
+            <div className="border-t-2 border-slate-600/60 pt-1">
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
               <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
             </div>
 
-            <div>
+            <div className="border-t-2 border-slate-600/60 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Entry / Expiry / DTE</p>
               <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.entryDate && <span className={`block text-[10px] ${th.textFaint}`}>{pos.entryDate}</span>}
@@ -4425,12 +4522,13 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </p>
             </div>
 
-            <div>
+            {/* ── MARKET ─────────────────────────────── */}
+            <div className="border-t-2 border-sky-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Stock</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.stockPrice != null ? `$${pos.stockPrice.toFixed(2)}` : '—'}</p>
             </div>
 
-            <div className="relative group">
+            <div className="relative group border-t-2 border-sky-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>% Buffer</p>
               <p className={`text-xs font-bold ${bufferColor(pos.buffer, pos.dte)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.buffer != null ? `${pos.buffer.toFixed(1)}%` : '—'}
@@ -4473,22 +4571,23 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </div>
             </div>
 
-            <div>
+            <div className="border-t-2 border-sky-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
             </div>
 
-            <div>
+            {/* ── P&L ────────────────────────────────── */}
+            <div className="border-t-2 border-emerald-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Buyback</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}</p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-emerald-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
               <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
             </div>
 
-            <div onClick={e => e.stopPropagation()}>
+            <div onClick={e => e.stopPropagation()} className="border-t-2 border-emerald-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
               {editingTarget ? (
                 <div className="flex items-center gap-1">
@@ -4509,40 +4608,56 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               )}
             </div>
 
-            <div>
+            <div className="border-t-2 border-emerald-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
               <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
               </p>
             </div>
 
-            <div>
+            {/* ── GREEKS ─────────────────────────────── */}
+            <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Theta</p>
-              <p className={`text-xs font-bold ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold inline-block ${thetaTint(pos.theta)} ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
               </p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-purple-600/50 pt-1">
+              <p className={`text-[9px] ${th.textFaint}`}>Delta</p>
+              <p className={`text-xs font-bold inline-block ${deltaTint(pos.netDelta)} ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
+              </p>
+            </div>
+
+            <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
-              <p className={`text-xs font-bold ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
               </p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-purple-600/50 pt-1">
+              <p className={`text-[9px] ${th.textFaint}`}>Vega</p>
+              <p className={`text-xs font-bold inline-block ${vegaTint(pos.netVega)} ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
+              </p>
+            </div>
+
+            <div className="border-t-2 border-purple-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
               <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.ivr ?? '—'}
               </p>
             </div>
 
-            <div>
+            {/* ── ORDERS ─────────────────────────────── */}
+            <div className="border-t-2 border-amber-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
               <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>{pos.hasGtc ? '✓ Live' : '✕ None'}</p>
             </div>
 
-            <div>
+            <div className="border-t-2 border-amber-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
               {(() => {
                 const cfg =
@@ -4561,9 +4676,9 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               })()}
             </div>
 
-            {/* Recommendation */}
-            <div>
-              <p className={`text-[9px] ${th.textFaint}`}>Suggested Action</p>
+            {/* ── ACTION ─────────────────────────────── */}
+            <div className="border-t-2 border-slate-500/40 pt-1">
+              <p className={`text-[9px] ${th.textFaint}`}>Suggested</p>
               <span className={`text-[10px] font-bold ${ACTION_META[rec.action].color}`}>{ACTION_META[rec.action].label}</span>
               <p className={`text-[9px] ${th.textFaint} mt-0.5 leading-tight`}>{rec.detail}</p>
             </div>
