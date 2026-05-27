@@ -1709,14 +1709,12 @@ function TradeModal({ result, th, onClose }: {
   const [orderId, setOrderId] = useState<string>('');
 
   // GTC profit target (default 50%)
-  const defaultGtcPct = 50;
-  const [gtcPct, setGtcPct] = useState(defaultGtcPct);
+  const [gtcPct, setGtcPct] = useState(50);
   const creditPerContract = c.totalCredit ?? c.credit;
   const gtcBuyback = parseFloat((creditPerContract * (1 - gtcPct / 100)).toFixed(2));
 
   // Stop loss (default 200% of credit = 2× credit debit to close)
-  const defaultStopPct = 200;
-  const [stopPct, setStopPct] = useState(defaultStopPct);
+  const [stopPct, setStopPct] = useState(200);
   const stopPrice = parseFloat((creditPerContract * (stopPct / 100)).toFixed(2));
 
   // Entry limit price (default = credit, can tweak)
@@ -1728,6 +1726,41 @@ function TradeModal({ result, th, onClose }: {
   const credit = entryLimit * quantity;
   const maxLoss = (c.spreadWidth - (c.totalCredit ?? c.credit)) * quantity * 100;
 
+  const buildOtocoPayload = (qty: number) => {
+    const legs = buildOrderLegs(result, c);
+    const closingLegs = legs.map((l: any) => ({
+      ...l,
+      quantity: qty,
+      action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
+    }));
+    return {
+      type: 'OTOCO',
+      'trigger-order': {
+        'time-in-force': 'GTC',
+        'order-type': 'Limit',
+        price: entryLimit.toFixed(2),
+        'price-effect': 'Credit',
+        legs: legs.map((l: any) => ({ ...l, quantity: qty })),
+      },
+      orders: [
+        {
+          'time-in-force': 'GTC',
+          'order-type': 'Limit',
+          price: gtcBuyback.toFixed(2),
+          'price-effect': 'Debit',
+          legs: closingLegs,
+        },
+        {
+          'time-in-force': 'GTC',
+          'order-type': 'Stop',
+          'stop-trigger': stopPrice.toFixed(2),
+          'price-effect': 'Debit',
+          legs: closingLegs,
+        },
+      ],
+    };
+  };
+
   const runDryRun = async () => {
     setPhase('dryrun'); setError('');
     try {
@@ -1736,6 +1769,7 @@ function TradeModal({ result, th, onClose }: {
       const legs = buildOrderLegs(result, c);
       const payload = buildOrderPayload(c, quantity, legs);
       payload.price = entryLimit.toFixed(2);
+      // Dry run on the entry leg only (TT doesn't support complex order dry-run)
       const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders/dry-run`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1755,64 +1789,16 @@ function TradeModal({ result, th, onClose }: {
     try {
       const token = await getAccessToken();
       const accountNumber = await getAccountNumber();
-      const legs = buildOrderLegs(result, c);
-      const payload = buildOrderPayload(c, quantity, legs);
-      payload.price = entryLimit.toFixed(2);
-
-      // 1. Place entry order
-      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
+      // Single OTOCO complex order: entry → OCO (GTC profit target + stop loss)
+      const payload = buildOtocoPayload(quantity);
+      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/complex-orders`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Order failed (${res.status})`);
-      const entryOrderId = data?.data?.order?.id ?? 'submitted';
-
-      // 2. Place GTC profit target (Buy to Close the spread at gtcBuyback)
-      try {
-        const gtcLegs = legs.map((l: any) => ({
-          ...l,
-          quantity,
-          action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
-        }));
-        const gtcPayload = {
-          'time-in-force': 'GTC',
-          'order-type': 'Limit',
-          price: gtcBuyback.toFixed(2),
-          'price-effect': 'Debit',
-          legs: gtcLegs,
-        };
-        await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(gtcPayload),
-        });
-      } catch { /* GTC placement failure is non-fatal — entry already in */ }
-
-      // 3. Place stop-limit order (Buy to Close at stopPrice)
-      try {
-        const stopLegs = legs.map((l: any) => ({
-          ...l,
-          quantity,
-          action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
-        }));
-        const stopPayload = {
-          'time-in-force': 'GTC',
-          'order-type': 'Stop',
-          'stop-trigger': stopPrice.toFixed(2),
-          price: parseFloat((stopPrice * 1.05).toFixed(2)).toString(), // 5% slippage buffer
-          'price-effect': 'Debit',
-          legs: stopLegs,
-        };
-        await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(stopPayload),
-        });
-      } catch { /* stop placement failure is non-fatal */ }
-
-      setOrderId(entryOrderId);
+      setOrderId(data?.data?.['complex-order']?.id ?? data?.data?.order?.id ?? 'submitted');
       setPhase('done');
     } catch (e: any) {
       setError(e.message); setPhase('error');
@@ -1925,9 +1911,9 @@ function TradeModal({ result, th, onClose }: {
 
         {phase === 'done' && (
           <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4 space-y-1">
-            <p className="text-xs text-emerald-400 font-bold">✓ Entry order submitted — ID {orderId}</p>
-            <p className="text-[10px] text-emerald-400/70">GTC profit target ({gtcPct}%) and stop loss ({stopPct}%) orders placed automatically.</p>
-            <p className="text-[10px] text-emerald-400/70">Verify all 3 working orders in TastyTrade.</p>
+            <p className="text-xs text-emerald-400 font-bold">✓ OTOCO order submitted — ID {orderId}</p>
+            <p className="text-[10px] text-emerald-400/70">Entry + GTC profit target ({gtcPct}%) + stop loss ({stopPct}%) submitted as a single bracket order. Once entry fills, the OCO activates automatically.</p>
+            <p className="text-[10px] text-emerald-400/70">Verify the complex order in TastyTrade.</p>
           </div>
         )}
 
@@ -3315,7 +3301,7 @@ function getRuleDiffs(base: RulesType, relaxed: Partial<RulesType>): string[] {
 }
 
 function BestOpportunityFinder({
-  symbol, onClose, th, rules, preferredStrategy, cachedEntry,
+  symbol, onClose, th, rules, preferredStrategy,
 }: {
   symbol: string; onClose: () => void; th: typeof THEMES[Theme];
   rules: RulesType; preferredStrategy?: 'BPS' | 'BCS' | 'IC';
