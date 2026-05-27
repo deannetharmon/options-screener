@@ -5073,7 +5073,7 @@ async function fetchClosedTrades(token: string): Promise<ClosedTrade[]> {
   const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
   if (!accountNumber) throw new Error('No account found');
 
-  // Fetch full transaction history (paginate if needed)
+  // Fetch full transaction history
   const allItems: any[] = [];
   let pageOffset = 0;
   const perPage = 250;
@@ -5084,120 +5084,140 @@ async function fetchClosedTrades(token: string): Promise<ClosedTrade[]> {
     );
     const items = data?.data?.items ?? [];
     allItems.push(...items);
-    const pagination = data?.data?.pagination;
-    if (!pagination || items.length < perPage) break;
+    const total = data?.data?.pagination?.['total-items'] ?? items.length;
+    if (allItems.length >= total || items.length < perPage) break;
     pageOffset += perPage;
-    if (pageOffset > 1000) break; // safety
+    if (pageOffset > 2000) break;
   }
 
   // Separate opens (STO) and closes (BTC)
+  // price field is per-share (divide by 100 for per-contract dollar value)
   const opens: any[] = [];
   const closes: any[] = [];
 
   for (const item of allItems) {
-    const action = item.action ?? '';
-    const type = item['transaction-type'] ?? item.transaction_type ?? '';
-    if (type !== 'Trade' && type !== 'trade') continue;
+    const action = item['action'] ?? '';
     const instType = item['instrument-type'] ?? '';
-    if (!instType.toLowerCase().includes('option')) continue;
+    if (!instType.includes('Option')) continue;
     if (action === 'Sell to Open') opens.push(item);
     else if (action === 'Buy to Close') closes.push(item);
   }
 
-  // Parse OCC symbol to get underlying, expiry, strike, type
+  // Parse OCC symbol: e.g. "SPXW  260710P07290000" or "AAPL  260618C00150000"
   function parseOCC(sym: string) {
-    // Format: AAPL  260618C00150000 or SPXW  260618P07405000
-    const m = sym.trim().match(/^([A-Z]+)\s*(\d{6})([CP])(\d{8})$/);
+    const s = sym.replace(/\s+/g, '');
+    const m = s.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
     if (!m) return null;
-    const underlying = m[1];
-    const exp = `20${m[2].slice(0,2)}-${m[2].slice(2,4)}-${m[2].slice(4,6)}`;
-    const optType = m[3];
-    const strike = parseInt(m[4]) / 1000;
-    return { underlying, exp, optType, strike };
+    return {
+      underlying: m[1].replace(/W$/, ''),
+      exp: `20${m[2].slice(0,2)}-${m[2].slice(2,4)}-${m[2].slice(4,6)}`,
+      optType: m[3],
+      strike: parseInt(m[4]) / 1000,
+    };
   }
 
-  // Build open map: key = underlying::exp::strikes_sorted
-  // For spreads, group by order-id first
+  // Group by order-id — each spread is one order with multiple leg transactions
   const opensByOrder: Record<string, any[]> = {};
   for (const o of opens) {
-    const oid = String(o['order-id'] ?? o['id'] ?? '');
+    const oid = String(o['order-id'] ?? '');
+    if (!oid) continue;
     if (!opensByOrder[oid]) opensByOrder[oid] = [];
     opensByOrder[oid].push(o);
   }
 
   const closesByOrder: Record<string, any[]> = {};
   for (const c of closes) {
-    const oid = String(c['order-id'] ?? c['id'] ?? '');
+    const oid = String(c['order-id'] ?? '');
+    if (!oid) continue;
     if (!closesByOrder[oid]) closesByOrder[oid] = [];
     closesByOrder[oid].push(c);
   }
 
-  // Build open spread index: key = underlying::exp::strike1-strike2_sorted
-  const openSpreads: Record<string, { credit: number; qty: number; date: string; orderId: string; symbol: string }> = {};
+  // Build open spread index keyed by underlying::exp::strikes
+  const openSpreads: Record<string, { credit: number; qty: number; date: string; orderId: string }> = {};
+
   for (const [oid, legs] of Object.entries(opensByOrder)) {
-    const parsed = legs.map(l => parseOCC(l.symbol ?? l['underlying-symbol'] ?? '')).filter(Boolean);
-    if (parsed.length === 0) continue;
-    const underlying = parsed[0]!.underlying;
-    const exp = parsed[0]!.exp;
-    const strikes = parsed.map(p => p!.strike).sort((a,b) => a-b);
-    const key = `${underlying}::${exp}::${strikes.join('-')}`;
-    // Net credit = sum of (price * qty) for short legs minus long legs
-    let credit = 0;
+    if (legs.length === 0) continue;
+    const underlying = legs[0]['underlying-symbol'] ?? '';
+    const date = (legs[0]['transaction-date'] ?? '').slice(0, 10);
+    const strikes: number[] = [];
     for (const leg of legs) {
-      const price = parseFloat(leg.price ?? '0');
-      const qty = Math.abs(parseInt(leg.quantity ?? '1', 10));
-      credit += price * qty; // STO legs are always positive credit contributions
+      const parsed = parseOCC(leg.symbol ?? '');
+      if (parsed) strikes.push(parsed.strike);
     }
-    const qty = Math.abs(parseInt(legs[0]?.quantity ?? '1', 10));
-    const date = (legs[0]?.['transaction-date'] ?? legs[0]?.['executed-at'] ?? '').slice(0, 10);
-    openSpreads[key] = { credit: credit / Math.max(qty, 1), qty, date, orderId: oid, symbol: underlying };
+    strikes.sort((a, b) => a - b);
+    const exp = (() => {
+      const parsed = parseOCC(legs[0].symbol ?? '');
+      return parsed?.exp ?? '';
+    })();
+    const key = `${underlying}::${exp}::${strikes.join('-')}`;
+
+    // Net credit per contract: STO legs contribute positive credit
+    // price is per-share, multiply by 100 for per-contract
+    let totalCredit = 0;
+    const qty = parseFloat(legs[0]['quantity'] ?? '1');
+    for (const leg of legs) {
+      const price = parseFloat(leg['price'] ?? '0');
+      totalCredit += price; // sum of all leg prices = spread credit per share
+    }
+    const creditPerContract = totalCredit; // price is already per-share, *100 = per-contract but we compare consistently
+
+    openSpreads[key] = { credit: creditPerContract, qty, date, orderId: oid };
   }
 
-  // Match close orders to opens
+  // Match closes to opens
   const trades: ClosedTrade[] = [];
+  const seenKeys = new Set<string>();
+
   for (const [oid, legs] of Object.entries(closesByOrder)) {
-    const parsed = legs.map(l => parseOCC(l.symbol ?? '')).filter(Boolean);
-    if (parsed.length === 0) continue;
-    const underlying = parsed[0]!.underlying;
-    const exp = parsed[0]!.exp;
-    const strikes = parsed.map(p => p!.strike).sort((a,b) => a-b);
-    const key = `${underlying}::${exp}::${strikes.join('-')}`;
-    const open = openSpreads[key];
-    if (!open) continue; // no matching open found
-
-    let debit = 0;
+    if (legs.length === 0) continue;
+    const underlying = legs[0]['underlying-symbol'] ?? '';
+    const date = (legs[0]['transaction-date'] ?? '').slice(0, 10);
+    const strikes: number[] = [];
     for (const leg of legs) {
-      const price = parseFloat(leg.price ?? '0');
-      const qty = Math.abs(parseInt(leg.quantity ?? '1', 10));
-      debit += price * qty;
+      const parsed = parseOCC(leg.symbol ?? '');
+      if (parsed) strikes.push(parsed.strike);
     }
-    const qty = Math.abs(parseInt(legs[0]?.quantity ?? '1', 10));
-    debit = debit / Math.max(qty, 1);
-    const closeDate = (legs[0]?.['transaction-date'] ?? legs[0]?.['executed-at'] ?? '').slice(0, 10);
-    const pnl = (open.credit - debit) * qty * 100;
+    strikes.sort((a, b) => a - b);
+    const exp = (() => {
+      const parsed = parseOCC(legs[0].symbol ?? '');
+      return parsed?.exp ?? '';
+    })();
+    const key = `${underlying}::${exp}::${strikes.join('-')}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
 
-    // Determine strategy from strikes
-    const optTypes = parsed.map(p => p!.optType);
-    const strategy = optTypes.every(t => t === 'P') ? 'BPS'
-      : optTypes.every(t => t === 'C') ? 'BCS'
-      : optTypes.includes('P') && optTypes.includes('C') ? 'IC'
-      : 'BPS';
+    const open = openSpreads[key];
+    if (!open) continue;
+
+    let totalDebit = 0;
+    const qty = parseFloat(legs[0]['quantity'] ?? '1');
+    for (const leg of legs) {
+      totalDebit += parseFloat(leg['price'] ?? '0');
+    }
+
+    // P&L = (credit - debit) per share * 100 shares * qty contracts
+    const pnl = (open.credit - totalDebit) * 100 * qty;
+
+    const optTypes = legs.map((l: any) => parseOCC(l.symbol ?? '')?.optType ?? 'P');
+    const strategy = optTypes.every((t: string) => t === 'P') ? 'BPS'
+      : optTypes.every((t: string) => t === 'C') ? 'BCS'
+      : 'IC';
 
     trades.push({
       id: `${oid}-${key}`,
       symbol: underlying,
       strategy,
       openDate: open.date,
-      closeDate,
+      closeDate: date,
       credit: open.credit,
-      debit,
+      debit: totalDebit,
       qty,
       pnl: Math.round(pnl * 100) / 100,
       orderId: oid,
     });
   }
 
-  // Sort by close date descending
   return trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
 }
 
