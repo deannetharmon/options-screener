@@ -3584,7 +3584,8 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
       </button>
 
       {open && (
-        <div className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-80`}
+        <div className={`fixed z-[200] ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-80`}
+          style={{ bottom: '80px', left: '50%', transform: 'translateX(-50%)' }}
           onClick={e => e.stopPropagation()}>
           <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>
             Extend target — current: {currentTargetPct}%
@@ -3628,46 +3629,36 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
             </div>
           )}
 
-          {/* Target options */}
-          <div className="space-y-1">
-            {options.map(pct => {
-              const newPrice = ((pos.creditReceived / 100) * (1 - pct / 100)).toFixed(2);
-              const isSelected = selectedPct === pct;
-              const isStop = verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH';
-              return (
-                <div key={pct} className="space-y-1">
-                  <button
-                    disabled={loading}
-                    onClick={() => handleSelectPct(pct)}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors text-[10px] font-bold ${
-                      isSelected ? 'border-blue-500 bg-blue-500/15' : `${th.border} hover:border-blue-500 hover:bg-blue-500/10`
-                    } disabled:opacity-50`}>
-                    <span className="text-blue-400">{pct}% profit target</span>
-                    <span className={`${th.textFaint} font-normal`}>BTC @ ${newPrice}</span>
-                  </button>
-                  {/* Confirm button shown when selected */}
-                  {isSelected && (
-                    <div className="space-y-1 pl-2">
-                      {isStop && (
-                        <p className={`text-[9px] text-red-400 px-1`}>
-                          AI says STOP — click confirm to override
-                        </p>
-                      )}
-                      <button
-                        disabled={loading}
-                        onClick={() => extend(pct)}
-                        className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${
-                          isStop
-                            ? 'bg-red-600/20 border border-red-600 text-red-400 hover:bg-red-600/40'
-                            : 'bg-blue-600 hover:bg-blue-500 text-white'
-                        } disabled:opacity-50`}>
-                        {loading ? 'Updating...' : isStop ? `Override & Extend to ${pct}%` : `Confirm — Extend to ${pct}%`}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+          {/* Target dropdown + confirm */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedPct ?? ''}
+                onChange={e => { const v = parseInt(e.target.value); if (!isNaN(v)) handleSelectPct(v); }}
+                className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} text-blue-400 outline-none focus:border-blue-500 cursor-pointer`}
+                style={{ fontFamily: "'DM Mono', monospace" }}>
+                <option value="">Select target %...</option>
+                {options.map(pct => {
+                  const newPrice = ((pos.creditReceived / 100) * (1 - pct / 100)).toFixed(2);
+                  return <option key={pct} value={pct}>{pct}% profit — BTC @ ${newPrice}</option>;
+                })}
+              </select>
+            </div>
+            {selectedPct != null && (
+              <button
+                disabled={loading}
+                onClick={() => extend(selectedPct)}
+                className={`w-full py-2 rounded-lg text-[10px] font-bold transition-colors disabled:opacity-50 ${
+                  verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH'
+                    ? 'bg-red-600/20 border border-red-600 text-red-400 hover:bg-red-600/40'
+                    : 'bg-blue-600 hover:bg-blue-500 text-white'
+                }`}>
+                {loading ? 'Updating...' :
+                 verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH'
+                   ? `Override & Extend to ${selectedPct}%`
+                   : `Confirm — Extend to ${selectedPct}%`}
+              </button>
+            )}
           </div>
 
           {result === 'error' && <p className="text-[9px] text-red-400 mt-2">{resultMsg}</p>}
@@ -4440,40 +4431,40 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
 
 function thetaTint(theta: number | null): string {
   if (theta == null) return '';
-  if (theta >= 0.10) return 'bg-emerald-500/10 rounded px-1';
-  if (theta >= 0.05) return 'bg-emerald-500/8 rounded px-1';
-  if (theta >= 0.01) return 'bg-emerald-500/5 rounded px-1';
-  if (theta < 0)     return 'bg-red-500/10 rounded px-1';
+  if (theta >= 0.10) return 'bg-emerald-500/30 rounded px-1';
+  if (theta >= 0.05) return 'bg-emerald-500/20 rounded px-1';
+  if (theta >= 0.01) return 'bg-emerald-500/12 rounded px-1';
+  if (theta < 0)     return 'bg-red-500/25 rounded px-1';
   return '';
 }
 
 function deltaTint(delta: number | null): string {
   if (delta == null) return '';
   const abs = Math.abs(delta);
-  if (abs <= 0.05)  return 'bg-emerald-500/10 rounded px-1';
-  if (abs <= 0.10)  return 'bg-emerald-500/8 rounded px-1';
-  if (abs <= 0.15)  return 'bg-yellow-500/8 rounded px-1';
-  if (abs <= 0.25)  return 'bg-orange-500/10 rounded px-1';
-  return 'bg-red-500/10 rounded px-1';
+  if (abs <= 0.05)  return 'bg-emerald-500/30 rounded px-1';
+  if (abs <= 0.10)  return 'bg-emerald-500/20 rounded px-1';
+  if (abs <= 0.15)  return 'bg-yellow-500/25 rounded px-1';
+  if (abs <= 0.25)  return 'bg-orange-500/25 rounded px-1';
+  return 'bg-red-500/25 rounded px-1';
 }
 
 function gammaTint(gamma: number | null): string {
   if (gamma == null) return '';
   const abs = Math.abs(gamma);
-  if (abs <= 0.001)  return 'bg-emerald-500/10 rounded px-1';
-  if (abs <= 0.003)  return 'bg-emerald-500/8 rounded px-1';
-  if (abs <= 0.006)  return 'bg-yellow-500/8 rounded px-1';
-  if (abs <= 0.010)  return 'bg-orange-500/10 rounded px-1';
-  return 'bg-red-500/10 rounded px-1';
+  if (abs <= 0.001)  return 'bg-emerald-500/30 rounded px-1';
+  if (abs <= 0.003)  return 'bg-emerald-500/20 rounded px-1';
+  if (abs <= 0.006)  return 'bg-yellow-500/25 rounded px-1';
+  if (abs <= 0.010)  return 'bg-orange-500/25 rounded px-1';
+  return 'bg-red-500/25 rounded px-1';
 }
 
 function vegaTint(vega: number | null): string {
   if (vega == null) return '';
   // Short vega (negative) is favorable for premium sellers
-  if (vega <= -0.10) return 'bg-emerald-500/10 rounded px-1';
-  if (vega <= -0.05) return 'bg-emerald-500/8 rounded px-1';
-  if (vega <= -0.01) return 'bg-emerald-500/5 rounded px-1';
-  if (vega >= 0)     return 'bg-red-500/10 rounded px-1';
+  if (vega <= -0.10) return 'bg-emerald-500/30 rounded px-1';
+  if (vega <= -0.05) return 'bg-emerald-500/20 rounded px-1';
+  if (vega <= -0.01) return 'bg-emerald-500/12 rounded px-1';
+  if (vega >= 0)     return 'bg-red-500/25 rounded px-1';
   return '';
 }
 
@@ -5163,6 +5154,118 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
   );
 }
 
+function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
+  return (
+    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
+          <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>DASHBOARD LEGEND</h2>
+          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 text-[11px]">
+
+          {/* Action Buttons */}
+          <div>
+            <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>Action Buttons</p>
+            <div className="space-y-2">
+              {[
+                { label: '✕ Cut Losses', color: 'border-red-600 text-red-400', desc: 'Close position at a loss. Use when thesis is broken or breach is imminent.' },
+                { label: '↻ Close/Roll', color: 'border-purple-600 text-purple-400', desc: 'Close current position and re-enter next expiry. Use at 21 DTE or when rolling a winner.' },
+                { label: '✓ Take Profit', color: 'border-emerald-600 text-emerald-400', desc: 'Close for profit now. Appears when position hits your profit target.' },
+                { label: '⏱ Place GTC', color: 'border-blue-600 text-blue-400', desc: 'Set a GTC limit order at your profit target. Always do this at entry.' },
+                { label: '↑ Extend Profit', color: 'border-slate-600 text-slate-400', desc: 'Move GTC target higher to capture more premium. Color indicates conditions: green=favorable, yellow=marginal, red=unfavorable.' },
+                { label: '✎ Stop / ⚠ Update Stop', color: 'border-orange-600 text-orange-400', desc: 'Set or update stop loss. Creates an OCO order paired with your GTC profit target.' },
+              ].map(b => (
+                <div key={b.label} className="flex items-start gap-3">
+                  <span className={`text-[9px] px-2 py-0.5 border rounded font-bold shrink-0 ${b.color}`}>{b.label}</span>
+                  <p className={`${th.textFaint} leading-relaxed`}>{b.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* GTC & Stop Status */}
+          <div>
+            <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>GTC & Stop Loss Status</p>
+            <div className="space-y-1.5">
+              {[
+                { label: '✓ Live', color: 'text-emerald-400', desc: 'Active GTC or stop order working in TastyTrade.' },
+                { label: '⚠ Loose', color: 'text-yellow-400', desc: 'Stop exists but is set above 2× credit — too loose to provide real protection.' },
+                { label: '✕ None', color: 'text-red-400', desc: 'No GTC or stop order. Position is unprotected.' },
+              ].map(s => (
+                <div key={s.label} className="flex items-center gap-3">
+                  <span className={`text-[10px] font-bold w-16 shrink-0 ${s.color}`}>{s.label}</span>
+                  <p className={`${th.textFaint}`}>{s.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Greeks */}
+          <div>
+            <p className={`text-[9px] text-purple-400 uppercase tracking-widest mb-3 font-bold`}>Greeks — Color Tints</p>
+            <p className={`${th.textFaint} mb-2`}>Background tint shows how favorable each Greek is for a short premium position.</p>
+            <div className="space-y-1.5">
+              {[
+                { greek: 'Theta', green: 'High positive — strong daily decay collecting', red: 'Negative — time working against you' },
+                { greek: 'Delta', green: 'Near zero — position is directionally neutral', red: 'High absolute value — large directional exposure' },
+                { greek: 'Gamma', green: 'Near zero — low gamma risk', red: 'High magnitude — gamma risk building (especially near expiry)' },
+                { greek: 'Vega', green: 'Negative — short vega working for you (IV decay)', red: 'Positive or near zero — IV exposure is a risk' },
+              ].map(g => (
+                <div key={g.greek} className="flex items-start gap-3">
+                  <span className={`text-[10px] font-bold w-12 shrink-0 text-purple-400`}>{g.greek}</span>
+                  <div>
+                    <span className="text-emerald-400">🟢 {g.green}</span>
+                    <span className={`ml-3 text-red-400`}>🔴 {g.red}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Buffer */}
+          <div>
+            <p className={`text-[9px] text-sky-400 uppercase tracking-widest mb-3 font-bold`}>% Buffer — DTE Aware Coloring</p>
+            <p className={`${th.textFaint} mb-2`}>Same buffer % is safer with less time remaining. Hover the buffer value on any card to see the full reference table.</p>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { color: 'text-emerald-400', label: 'Green', desc: 'Healthy buffer for current DTE' },
+                { color: 'text-yellow-400', label: 'Yellow', desc: 'Watch — tightening for this DTE' },
+                { color: 'text-orange-400', label: 'Orange', desc: 'Marginal — active monitoring needed' },
+                { color: 'text-red-400', label: 'Red', desc: 'Critical — near breach risk' },
+              ].map(b => (
+                <div key={b.label} className="flex items-center gap-2">
+                  <span className={`font-bold ${b.color}`}>{b.label}</span>
+                  <span className={th.textFaint}>{b.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Extend Profit button colors */}
+          <div>
+            <p className={`text-[9px] text-blue-400 uppercase tracking-widest mb-3 font-bold`}>↑ Extend Profit Button Colors</p>
+            <div className="space-y-1.5">
+              {[
+                { color: 'text-emerald-400', label: 'Green border', desc: 'Conditions favor extension — good profit, healthy DTE, strong IVR' },
+                { color: 'text-slate-400', label: 'Grey border', desc: 'Neutral — proceed carefully, no strong signal either way' },
+                { color: 'text-yellow-400', label: 'Yellow border', desc: 'Marginal — one or more conditions are weak' },
+                { color: 'text-red-400', label: 'Red border', desc: 'Unfavorable — position at loss, thin DTE, or low IVR' },
+              ].map(b => (
+                <div key={b.label} className="flex items-start gap-2">
+                  <span className={`font-bold shrink-0 ${b.color}`}>{b.label}</span>
+                  <span className={th.textFaint}>{b.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PortfolioPage() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
@@ -5179,6 +5282,7 @@ export default function PortfolioPage() {
   const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
   const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   // Trigger weekly behavior summarization silently on load
   useEffect(() => { summarizeBehaviorProfile().catch(() => {}); }, []);
@@ -5291,6 +5395,11 @@ export default function PortfolioPage() {
             className="text-[10px] px-3 py-1.5 border border-white/10 text-white/30 rounded hover:border-white/30 hover:text-white/60 transition-colors tracking-wider">
             SIGN OUT
           </button>
+          <button onClick={() => setShowHelp(true)}
+            className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider font-bold"
+            title="Dashboard legend & color guide">
+            ? Help
+          </button>
           <ThemeToggle theme={theme} setTheme={setTheme} />
         </div>
       </div>
@@ -5400,6 +5509,8 @@ export default function PortfolioPage() {
       {showAuditLog && <AuditLogPanel onClose={() => setShowAuditLog(false)} th={th} />}
       {showPerformance && <PerformancePanel onClose={() => setShowPerformance(false)} th={th} />}
       {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} th={th} />}
+
+      {showHelp && <HelpLegendModal onClose={() => setShowHelp(false)} th={th} />}
 
       {portfolioAnalysis && !portfolioAnalysis.error && (
         <PortfolioAnalysisPanel analysis={portfolioAnalysis} positions={positions} onClose={() => setPortfolioAnalysis(null)} th={th} />
