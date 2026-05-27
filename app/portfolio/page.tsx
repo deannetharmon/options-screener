@@ -5212,7 +5212,7 @@ async function fetchClosedTrades(token: string): Promise<ClosedTrade[]> {
   for (const [oid, legs] of Object.entries(orderGroups)) {
     const underlying = legs[0]['underlying-symbol'] ?? '';
     const strikes = legs.map((l: any) => parseOCC(l.symbol)?.strike ?? 0).filter(Boolean).sort((a: number, b: number) => a - b);
-    const optTypes = [...new Set(legs.map((l: any) => parseOCC(l.symbol)?.optType ?? 'P'))];
+    const optTypes = Array.from(new Set(legs.map((l: any) => parseOCC(l.symbol)?.optType ?? 'P')));
     const exp = parseOCC(legs[0].symbol)?.exp ?? '';
     const date = (legs[0]['transaction-date'] ?? '').slice(0, 10);
     const key = `${underlying}::${exp}::${strikes.join('-')}`;
