@@ -1855,18 +1855,18 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
 }) {
   const [status, setStatus] = useState<BatchStatus>('enriching');
   const [batchItems, setBatchItems] = useState<BatchOrderItem[]>([]);
-  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [excluded, setExcluded] = useState(new Set() as Set<string>);
   const [orderResults, setOrderResults] = useState<OrderResult[]>([]);
   const [submitProgress, setSubmitProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
 
   // Roll state per position
-  const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
-  const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
-  const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
-  const [overrides, setOverrides] = useState<Set<string>>(new Set());
+  const [rollInputs, setRollInputs] = useState({} as Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>);
+  const [rollSuggestions, setRollSuggestions] = useState({} as Record<string, RollSuggestion | null>);
+  const [verdicts, setVerdicts] = useState({} as Record<string, ActionVerdict>);
+  const [overrides, setOverrides] = useState(new Set() as Set<string>);
   // User-editable limit price overrides per position key
-  const [limitOverrides, setLimitOverrides] = useState<Record<string, string>>({});
+  const [limitOverrides, setLimitOverrides] = useState({} as Record<string, string>);
 
   const marketStatus = getMarketStatus();
 
@@ -5174,7 +5174,7 @@ export default function PortfolioPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [checked, setChecked] = useState(new Set() as Set<string>);
   const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
