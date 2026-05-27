@@ -1,6 +1,7 @@
 'use client';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { createPortal } from 'react-dom';
 
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
@@ -13,598 +14,677 @@ if (typeof document !== 'undefined') {
   }
 }
 
-const BASE = 'https://api.tastytrade.com';
-const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-const LS_PROFIT_TARGETS = 'prosper-profit-targets';
-const LS_AUDIT_LOG = 'prosper-audit-log';
+// ── Theme ──────────────────────────────────────────────────────────────────
+type Theme = 'dark' | 'medium' | 'light';
 const LS_THEME = 'prosper-theme';
-const LS_MEMORY = 'prosper-trading-memory';
-const LS_DRY_RUN = 'prosper-dry-run';
-const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
-const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
-const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
-const STALE_PRICE_THRESHOLD = 0.15; // 15% move triggers warning
-const MARKET_OPEN_HOUR = 9;
-const MARKET_OPEN_MIN = 30;
-const MARKET_CLOSE_HOUR = 16;
 
-function isDryRun(): boolean {
-  try { return localStorage.getItem(LS_DRY_RUN) === 'true'; } catch { return false; }
-}
-function setDryRun(val: boolean) {
-  try { val ? localStorage.setItem(LS_DRY_RUN, 'true') : localStorage.removeItem(LS_DRY_RUN); } catch {}
-}
+const THEMES: Record<Theme, {
+  bg: string; sidebar: string; card: string; cardQualified: string;
+  border: string; borderLight: string; header: string;
+  text: string; textMuted: string; textFaint: string;
+  input: string; inputBorder: string; tag: string;
+  label: string;
+}> = {
+  dark: { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#0f0f0f]', card: 'bg-[#171717]', cardQualified: 'bg-[#1c1c1c]', border: 'border-[#2c2c2c]', borderLight: 'border-[#202020]', header: 'bg-[#0f0f0f]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#808080]', input: 'bg-[#141414]', inputBorder: 'border-[#353535]', tag: 'bg-[#222222]', label: 'text-[#aaaaaa]' },
+  medium: { bg: 'bg-[#141414]', sidebar: 'bg-[#1a1a1a]', card: 'bg-[#202020]', cardQualified: 'bg-[#252525]', border: 'border-[#333333]', borderLight: 'border-[#282828]', header: 'bg-[#1a1a1a]', text: 'text-white', textMuted: 'text-[#d8d8d8]', textFaint: 'text-[#777777]', input: 'bg-[#1e1e1e]', inputBorder: 'border-[#3a3a3a]', tag: 'bg-[#2a2a2a]', label: 'text-[#999999]' },
+  light: { bg: 'bg-[#f5f5f5]', sidebar: 'bg-white', card: 'bg-white', cardQualified: 'bg-white', border: 'border-[#e0e0e0]', borderLight: 'border-[#ebebeb]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#1a1a1a]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#cccccc]', tag: 'bg-[#f0f0f0]', label: 'text-[#444444]' },
+};
 
 // ── Types ──────────────────────────────────────────────────────────────────
-type Theme = 'dark' | 'medium' | 'light';
-type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
-
-interface PositionLeg {
-  symbol: string;
-  optionType: 'P' | 'C';
-  strikePrice: number;
-  direction: 'Short' | 'Long';
-  quantity: number;
-  avgOpenPrice: number;
-  currentPrice: number | null;
+interface CheckResult { status: 'pass' | 'fail' | 'warn' | 'pending'; value: string; reason: string; }
+interface SpreadCandidate {
+  strategy: string; expiration: string; dte: number;
+  shortStrike: number; longStrike: number; shortDelta: number;
+  credit: number; spreadWidth: number; creditRatio: number;
+  roc: number; pop: number | null; shortOI: number; longOI: number;
+  shortCallStrike?: number; longCallStrike?: number;
+  callCredit?: number; callWidth?: number; totalCredit?: number; optimized?: boolean;
+  shortOccSymbol?: string; longOccSymbol?: string;
+  shortCallOccSymbol?: string; longCallOccSymbol?: string;
 }
-
-interface Position {
-  key: string;
-  symbol: string;
-  expDate: string;
-  dte: number;
-  strategy: string;
-  legs: PositionLeg[];
-  creditReceived: number;
-  currentValue: number | null;
-  pnl: number | null;
-  pnlPct: number | null;
-  plOpen: number | null;
-  targetPrice: number;
-  profitTarget: number;
-  maxRisk: number;
-  hitTarget: boolean;
-  needsClose: boolean;
-  entryDte: number;
-  entryDate: string | null;  // date position was opened (YYYY-MM-DD)
-  accountNumber: string;
-  // Greeks
-  ivr: number | null;
-  iv: number | null;          // current implied volatility %
-  hv30: number | null;        // 30-day historical volatility %
-  beta: number | null;        // beta to SPY
-  netDelta: number | null;    // net position delta
-  netVega: number | null;     // net position vega
-  hasGtc: boolean;
-  gtcOrderId: string | null;       // ID of the working profit-target GTC order
-  gtcOrderPrice: number | null;    // current limit price on that GTC order
-  stopLossStatus: StopStatus;
-  stopLossPrice: number | null;
-  stockPrice: number | null;
-  buffer: number | null;
-  theta: number | null;
-  gamma: number | null;
-  earningsDate: string | null; // next earnings within 60 days
-}
-
-interface PositionAnalysis {
-  positionKey: string;
-  symbol: string;
-  loading: boolean;
-  error: string | null;
-  recommendation: 'HOLD' | 'CLOSE' | 'ROLL' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'WATCH' | 'MANAGE';
-  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
-  summary: string;       // 1-2 sentence TL;DR
-  reasoning: string;     // full reasoning paragraph
-  risks: string[];       // 2-4 bullet risks
-  catalysts: string[];   // 1-3 positive factors
-  deviatesFromRules: boolean;
-  deviationNote: string | null; // when AI recommends outside standard rules, explain why
-  generatedAt: string;
-}
-
-interface PortfolioAnalysis {
-  loading: boolean;
-  error: string | null;
-  netDelta: number | null;
-  dominantRisk: string;
-  sectorConcentration: string[];
-  thetaYield: string;
-  topRisks: string[];
-  priorityActions: string[];
-  marketContext: string;
-  summary: string;
-  generatedAt: string;
-}
-
-interface ActionVerdict {
-  verdict: 'GO' | 'CAUTION' | 'STOP';
-  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
-  headline: string;     // single punchy sentence — the gut-punch
-  reasoning: string;    // 2-3 sentences of specific reasoning with numbers
-  override?: boolean;   // trader consciously overriding a STOP
-}
-
-type EvaluatedAction = 'EXTEND_PROFIT' | 'CLOSE_ROLL' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'PLACE_GTC';
-
-type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
-
-interface GtcOrderLeg { symbol: string; action: string; }
-interface GtcOrder {
-  id: string; price: string; stopPrice: string | null;
-  orderType: string; timeInForce: string; legs: GtcOrderLeg[];
-}
-interface StopLossInfo { status: StopStatus; price: number | null; }
-
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
   strategy: 'BPS' | 'BCS' | 'IC' | 'NO_TRADE';
-  confidence: number;
+  subtype: 'CONTINUATION' | 'REVERSAL' | 'RANGE' | 'CHOP' | 'UNKNOWN';
+  confidence: number; // 0-100
+  ma20: number;
+  ma50: number;
+  ma200?: number;
   reason: string;
+  scores?: {
+    momentum: number;
+    maAlignment: number;
+    slope: number;
+    structure: number;
+    chop: number;
+    volatility: number;
+    total: number;
+  };
+  metrics?: {
+    price: number;
+    ma20: number;
+    ma50: number;
+    ma200: number;
+    momentum20: number;
+    momentum60: number;
+    momentum90: number;
+    ma20Slope: number;
+    ma50Slope: number;
+    range60: number;
+    chopRatio: number;
+    distFromMa50: number;
+    higherHighs: boolean;
+    higherLows: boolean;
+    lowerHighs: boolean;
+    lowerLows: boolean;
+  };
 }
-
-interface AuditEntry {
-  id: string;
-  timestamp: string;
+interface AutoTrendEntry {
   symbol: string;
-  strategy: string;
-  action: ActionType;
-  orderType: string;
-  limitPrice: number;
-  quantity: number;
-  orderId: string;
-  status: 'submitted' | 'error' | 'dry-run';
-  error?: string;
-  estPnl?: number;
-  closeProfitPct?: number;  // % profit captured on TAKE_PROFIT closes (e.g. 65 for 65%)
-  creditAtClose?: number;   // credit per contract at time of close — used to back-calc pct
+  result: TrendResult;
 }
 
-interface OrderLeg {
-  symbol: string;
-  quantity: number;
-  action: 'Buy to Close' | 'Sell to Open' | 'Buy to Open' | 'Sell to Close';
-  'instrument-type': 'Equity Option' | 'Index Option';
+interface ScreenResult {
+  symbol: string; strategy: string; price: number | null; ivr: number | null;
+  qualified: boolean; bestCandidate: SpreadCandidate | null;
+  failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
+  isEtf?: boolean;
+  ruleSetApplied?: string;
+  checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; };
 }
-interface OrderBody {
-  'order-type': 'Limit' | 'Market' | 'Stop' | 'Stop Limit';
-  'time-in-force': 'GTC' | 'Day';
-  price?: string;
-  'price-effect'?: 'Debit' | 'Credit';
-  legs: OrderLeg[];
+interface FilterSuggestion {
+  priority: number; rule: keyof RulesType; currentValue: number; suggestedValue: number;
+  label: string; rationale: string; tradeoff: string; wouldQualify: number;
 }
-
-interface BatchOrderItem {
-  pos: Position;
-  action: ActionType;
-  orderBody: OrderBody;
-  limitPrice: number;
-  estPnl: number | null;
-  stalePriceWarning: boolean;
-  freshPrice: number | null;        // total value across all contracts × 100
-  freshPerContract: number | null;  // per-contract spread value
-  duplicateGtcWarning: boolean;
-  priceError: string | null;        // null = ok, string = blocking error message
-  // roll-specific
-  rollExpiry?: string;
-  rollShortStrike?: number;
-  rollLongStrike?: number;
-  rollCredit?: number;
-  openOrderBody?: OrderBody;
+type SavedFilters = Record<string, string[]>;
+type GlobalFilters = Record<string, { bps: string[]; bcs: string[]; ic: string[] }>;
+interface LoadPromptState {
+  show: boolean; name: string; type: 'strategy' | 'global'; onLoad?: (merge: boolean) => void;
 }
 
-interface OrderResult {
-  symbol: string;
-  action: ActionType;
-  orderId: string;
-  status: 'filled' | 'working' | 'rejected' | 'submitted' | 'error';
-  error?: string;
-  limitPrice: number;
-  estPnl: number | null;
+// ── Helper Functions ───────────────────────────────────────────────────────
+function daysUntil(dateStr: string): number {
+  const target = new Date(dateStr);
+  const now = new Date();
+  return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-interface RollSuggestion {
-  expiry: string;
-  dte: number;
-  shortStrike: number;
-  longStrike: number;
-  spreadWidth: number;
-  credit: number;           // conservative estimate (mid * 0.7)
-  creditMid: number;        // true mid (bid+ask)/2
-  creditRatio: number;      // credit / spreadWidth — must be >= 1/3
-  delta: number;
-  shortSymbol: string;      // native OCC symbol from TastyTrade chain
-  longSymbol: string;       // native OCC symbol from TastyTrade chain
-  shortOi: number | null;
-  longOi: number | null;
-  shortBidAsk: number | null;   // ask - bid on short leg
-  longBidAsk: number | null;    // ask - bid on long leg
-  // Prosper rule checks
-  ruleViolations: string[];     // empty = all clear, strings = specific violations
-  meetsMinCredit: boolean;      // credit >= 1/3 spread width
-  meetsDte: boolean;            // 30-45 DTE
-  meetsDelta: boolean;          // delta within strategy range
-  meetsOi: boolean;             // OI >= 500 on both legs
-  meetsBidAsk: boolean;         // bid-ask <= $0.10 on each leg
-}
-
-// ── Theme ──────────────────────────────────────────────────────────────────
-const THEMES: Record<Theme, {
-  bg: string; sidebar: string; card: string; border: string; borderLight: string;
-  header: string; text: string; textMuted: string; textFaint: string;
-  input: string; inputBorder: string; tag: string; label: string;
-}> = {
-  dark:   { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#0f0f0f]', card: 'bg-[#171717]', border: 'border-[#2c2c2c]', borderLight: 'border-[#202020]', header: 'bg-[#0f0f0f]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#808080]', input: 'bg-[#141414]', inputBorder: 'border-[#353535]', tag: 'bg-[#222222]', label: 'text-[#aaaaaa]' },
-  medium: { bg: 'bg-[#141414]', sidebar: 'bg-[#1a1a1a]', card: 'bg-[#202020]', border: 'border-[#333333]', borderLight: 'border-[#282828]', header: 'bg-[#1a1a1a]', text: 'text-white', textMuted: 'text-[#d8d8d8]', textFaint: 'text-[#777777]', input: 'bg-[#1e1e1e]', inputBorder: 'border-[#3a3a3a]', tag: 'bg-[#2a2a2a]', label: 'text-[#999999]' },
-  light:  { bg: 'bg-[#f5f5f5]', sidebar: 'bg-white', card: 'bg-white', border: 'border-[#e0e0e0]', borderLight: 'border-[#ebebeb]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#1a1a1a]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#cccccc]', tag: 'bg-[#f0f0f0]', label: 'text-[#444444]' },
-};
 
 function getSavedTheme(): Theme {
-  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
+  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; }
+  catch { return 'dark'; }
 }
 
-// ── Market Hours ───────────────────────────────────────────────────────────
-function isMarketOpen(): boolean {
-  const now = new Date();
-  const day = now.getDay();
-  if (day === 0 || day === 6) return false;
-  const etOffset = -5 * 60; // EST (ignores DST — good enough for a guard)
-  const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
-  const etMin = utcMin + etOffset;
-  const openMin = MARKET_OPEN_HOUR * 60 + MARKET_OPEN_MIN;
-  const closeMin = MARKET_CLOSE_HOUR * 60;
-  return etMin >= openMin && etMin < closeMin;
+function getWidthSteps(maxWidth: number, price: number | null): number[] {
+  // Always start at $5 so high-priced ETFs/indexes can find narrow spreads with viable credit ratios.
+  // Step size scales with price to keep iteration count reasonable.
+  // e.g. SPY $739: steps $5, $10, $15... up to maxWidth
+  //      SPX $7412: steps $25, $50... up to maxWidth (price>=2000 uses $25 steps)
+  const stepSize = price == null ? 5 : price >= 2000 ? 25 : price >= 500 ? 5 : price >= 200 ? 5 : 5;
+  const steps: number[] = [];
+  for (let w = stepSize; w <= maxWidth; w += stepSize) steps.push(w);
+  return steps;
 }
 
-function getMarketStatus(): { open: boolean; label: string } {
-  const open = isMarketOpen();
-  return { open, label: open ? '● Market Open' : '○ Market Closed' };
+function getBidAskMax(price: number | null): number {
+  if (price == null) return 1.50;
+  if (price >= 500) return 3.00;
+  if (price >= 200) return 1.50;
+  if (price >= 100) return 0.50;
+  return 0.10;
 }
 
-// ── Audit Log ──────────────────────────────────────────────────────────────
-function readAuditLog(): AuditEntry[] {
-  try { return JSON.parse(localStorage.getItem(LS_AUDIT_LOG) ?? '[]'); } catch { return []; }
-}
-
-function writeAuditEntry(entry: AuditEntry) {
-  try {
-    const log = readAuditLog();
-    log.unshift(entry);
-    if (log.length > 500) log.length = 500; // cap at 500 entries
-    localStorage.setItem(LS_AUDIT_LOG, JSON.stringify(log));
-  } catch {}
-}
-
-function exportAuditCsv() {
-  const log = readAuditLog();
-  if (log.length === 0) return;
-  const headers = ['Timestamp', 'Symbol', 'Strategy', 'Action', 'Order Type', 'Limit Price', 'Quantity', 'Order ID', 'Status', 'Est P&L', 'Close Profit %', 'Error'];
-  const rows = log.map(e => [
-    e.timestamp, e.symbol, e.strategy, e.action, e.orderType,
-    e.limitPrice.toFixed(2), e.quantity, e.orderId, e.status,
-    e.estPnl?.toFixed(2) ?? '', e.closeProfitPct?.toFixed(0) ?? '', e.error ?? ''
-  ]);
-  const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `prosper-audit-${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click(); URL.revokeObjectURL(url);
-}
-
-// ── Smart GTC Default ─────────────────────────────────────────────────────
-// Look up last 2-3 profitable TAKE_PROFIT closes for a symbol and average
-// the closeProfitPct to suggest an informed default GTC percentage.
-function getSmartGtcDefault(symbol: string): number {
-  try {
-    const log = readAuditLog();
-    const relevant = log.filter(e =>
-      e.symbol === symbol &&
-      e.action === 'TAKE_PROFIT' &&
-      e.status !== 'error' &&
-      e.closeProfitPct != null &&
-      e.closeProfitPct > 0
-    );
-    if (relevant.length === 0) return 0.50; // no history — default 50%
-    const recent = relevant.slice(0, 3); // most recent 2-3
-    const avg = recent.reduce((sum, e) => sum + (e.closeProfitPct ?? 50), 0) / recent.length;
-    // Round to nearest 5% and clamp between 40-85%
-    return Math.min(0.85, Math.max(0.40, Math.round(avg / 5) * 5)) / 100;
-  } catch {
-    return 0.50;
+function addBusinessDays(dateStr: string, days: number): Date {
+  const date = new Date(dateStr);
+  let added = 0;
+  while (added < days) {
+    date.setDate(date.getDate() + 1);
+    const dow = date.getDay();
+    if (dow !== 0 && dow !== 6) added++;
   }
+  return date;
 }
 
-// ── Trading Memory ─────────────────────────────────────────────────────────
-
-interface TradeRecord {
-  id: string;
-  timestamp: string;        // ISO
-  symbol: string;
-  strategy: string;
-  action: string;
-  entryCredit: number;      // per-contract $ at entry (creditReceived / 100)
-  exitPrice: number;        // limit price at close
-  pnlPct: number;           // % of credit captured (positive = profit)
-  dte: number;              // DTE when action taken
-  ivr: number | null;
-  buffer: number | null;
-  aiVerdict: 'GO' | 'CAUTION' | 'STOP' | null;
-  aiOverridden: boolean;    // trader overrode a STOP verdict
-  outcome: 'WIN' | 'LOSS' | 'NEUTRAL'; // pnlPct >= 40 = WIN, <= -50 = LOSS
+function formatCalDate(date: Date): string {
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
 }
 
-interface SymbolProfile {
-  symbol: string;
-  tradeCount: number;
-  winRate: number;           // 0-1
-  avgPnlPct: number;
-  bestStrategy: string | null;
-  ivrWinRange: [number, number] | null; // IVR range on winning trades
-  earningsNote: string | null;          // free text from summarization
-  recentTrades: TradeRecord[];          // last N raw trades
-  historySummary: string | null;        // AI summary of older trades
-  lastUpdated: string;
+function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
+  const followUp = addBusinessDays(earningsDate, 2);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
+  const title = encodeURIComponent(`Re-screen ${symbol}`);
+  const details = encodeURIComponent(`Re-screen after earnings`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 
-interface BehaviorProfile {
-  totalTrades: number;
-  overrideCount: number;
-  overrideWins: number;       // overrides that turned out profitable
-  ruleDeviationPatterns: string[];   // e.g. "holds past 21 DTE on IC"
-  strengths: string[];
-  weaknesses: string[];
-  summary: string | null;    // AI-generated behavioral summary
-  lastSummarized: string | null;
+function buildEntryCalUrl(result: ScreenResult, businessDays: number, directDate?: Date): string {
+  const followUp = directDate ?? addBusinessDays(new Date().toISOString().split('T')[0], businessDays);
+  const end = new Date(followUp); end.setDate(end.getDate() + 1);
+  const title = encodeURIComponent(`Enter ${result.symbol}`);
+  const details = encodeURIComponent(`Re-screen & enter ${result.symbol} — ${result.strategy} ${result.bestCandidate?.shortStrike}/${result.bestCandidate?.longStrike}`);
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 
-interface TradingMemory {
-  symbolProfiles: Record<string, SymbolProfile>;
-  behaviorProfile: BehaviorProfile;
-  recentActions: TradeRecord[];   // ring buffer, last MEMORY_RAW_ACTIONS
-  lastSummarized: string | null;
-  version: number;
+// OCR + merge helpers
+const OCR_TICKER_BLACKLIST = new Set([
+  // Common Finviz / UI / financial-label fragments that OCR mistakes for tickers
+  'USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ',
+  'BPS','BCS','IC','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO',
+  'AI','AN','IS','IT','AT','OR','AS','BY','IN','ON','TO','OF','NO','ANY','ALL',
+  'EPS','TTM','EV','LT','TA','SMA','RSI','PEG','PE','PB','PS',
+  'BETA','AVG','PRICE','VOLUME','FLOAT','GAP','NEWS','BASIC','CUSTOM','FILTER','SIGNAL','TICKERS',
+  // Single characters — never a valid US ticker
+  'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
+  // Common 2-char OCR noise from vertical ticker list misreads
+  'EL','ME','AL','LE','RE','DE','VE','TE','SE','CE','FE','HE','BE','KE','NE','PE','WE',
+  'LI','TI','VI','GI','DI','RI','FI','MI','NI','PI','SI','HI','BI','KI',
+  'LO','DO','GO','HO','KO','MO','PO','SO','TO','VO','WO','YO',
+  'IL','IM','IP','IR','IX',
+  // Other common noise tokens
+  'EW','RN','TT','LL','MM','NN','RR','SS','TH','WH','CH','SH','PH',
+]);
+
+function normalizeTickerToken(raw: string): string | null {
+  const token = raw.trim().toUpperCase().replace(/[–—]/g, '-').replace(/\.$/, '');
+  if (!token) return null;
+
+  // Yahoo Finance uses hyphen for Berkshire class B.
+  const normalized = token.replace('.', '-');
+  if (normalized === 'BRK-B' || normalized === 'BRK/B') return 'BRK-B';
+
+  // Basic US ticker shape: 2–5 letters, optional class suffix e.g. BRK-B, BF-B.
+  // Minimum 2 characters — single letters are never valid tickers in this context.
+  if (!/^[A-Z]{2,5}(-[A-Z])?$/.test(normalized)) return null;
+  if (OCR_TICKER_BLACKLIST.has(normalized)) return null;
+  return normalized;
 }
 
-function emptyMemory(): TradingMemory {
-  return {
-    symbolProfiles: {},
-    behaviorProfile: {
-      totalTrades: 0, overrideCount: 0, overrideWins: 0,
-      ruleDeviationPatterns: [], strengths: [], weaknesses: [],
-      summary: null, lastSummarized: null,
-    },
-    recentActions: [],
-    lastSummarized: null,
-    version: 1,
-  };
+function normalizeTickerInput(input: string): string[] {
+  const cleaned = input
+    .toUpperCase()
+    .replace(/[–—]/g, '-')
+    .replace(/\bBRK\s*[-.]?\s*B\b/g, 'BRK-B')
+    .replace(/\bBF\s*[-.]?\s*B\b/g, 'BF-B');
+
+  return Array.from(new Set(
+    cleaned
+      .split(/[,\s]+/)
+      .map(normalizeTickerToken)
+      .filter((t): t is string => Boolean(t))
+  ));
 }
 
-function readMemory(): TradingMemory {
-  try {
-    const raw = localStorage.getItem(LS_MEMORY);
-    if (!raw) return emptyMemory();
-    return { ...emptyMemory(), ...JSON.parse(raw) };
-  } catch { return emptyMemory(); }
-}
-
-function writeMemory(mem: TradingMemory) {
-  try { localStorage.setItem(LS_MEMORY, JSON.stringify(mem)); } catch {}
-}
-
-function recordTradeInMemory(
-  pos: Position,
-  action: string,
-  limitPrice: number,
-  verdict: ActionVerdict | null,
-  overridden: boolean
-) {
-  const mem = readMemory();
-  const pnlPct = pos.pnl != null && pos.creditReceived > 0
-    ? (pos.pnl / pos.creditReceived) * 100 : 0;
-  const outcome: TradeRecord['outcome'] = pnlPct >= 40 ? 'WIN' : pnlPct <= -50 ? 'LOSS' : 'NEUTRAL';
-
-  const record: TradeRecord = {
-    id: crypto.randomUUID(),
-    timestamp: new Date().toISOString(),
-    symbol: pos.symbol,
-    strategy: pos.strategy,
-    action,
-    entryCredit: pos.creditReceived / 100,
-    exitPrice: limitPrice,
-    pnlPct,
-    dte: pos.dte,
-    ivr: pos.ivr,
-    buffer: pos.buffer,
-    aiVerdict: verdict?.verdict ?? null,
-    aiOverridden: overridden,
-    outcome,
-  };
-
-  // Update symbol profile
-  if (!mem.symbolProfiles[pos.symbol]) {
-    mem.symbolProfiles[pos.symbol] = {
-      symbol: pos.symbol, tradeCount: 0, winRate: 0, avgPnlPct: 0,
-      bestStrategy: null, ivrWinRange: null, earningsNote: null,
-      recentTrades: [], historySummary: null, lastUpdated: new Date().toISOString(),
+async function extractTickersFromImage(file: File): Promise<string[]> {
+  // Convert file to base64
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.split(',')[1]);
     };
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
+  });
+
+  const mediaType = file.type || 'image/png';
+
+  const response = await fetch('/api/ocr', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base64, mediaType }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error ?? `OCR request failed: ${response.status}`);
   }
-  const profile = mem.symbolProfiles[pos.symbol];
-  profile.recentTrades = [record, ...profile.recentTrades].slice(0, MEMORY_RAW_TRADES_PER_SYMBOL * 2);
-  profile.tradeCount++;
-  const allTrades = profile.recentTrades;
-  const wins = allTrades.filter(t => t.outcome === 'WIN').length;
-  profile.winRate = allTrades.length > 0 ? wins / allTrades.length : 0;
-  profile.avgPnlPct = allTrades.length > 0
-    ? allTrades.reduce((s, t) => s + t.pnlPct, 0) / allTrades.length : 0;
-  profile.lastUpdated = new Date().toISOString();
 
-  // Update behavior profile
-  mem.behaviorProfile.totalTrades++;
-  if (overridden) {
-    mem.behaviorProfile.overrideCount++;
-    if (outcome === 'WIN') mem.behaviorProfile.overrideWins++;
+  const data = await response.json();
+  const rawText: string = data?.text ?? '';
+
+  const tickers: string[] = [];
+  for (const line of rawText.split('\n')) {
+    // Split each line into tokens to handle grid/badge layouts (multiple tickers per line)
+    for (const token of line.split(/[\s,|•·]+/)) {
+      const ticker = normalizeTickerToken(token.trim());
+      if (ticker) tickers.push(ticker);
+    }
   }
 
-  // Ring buffer for recent actions
-  mem.recentActions = [record, ...mem.recentActions].slice(0, MEMORY_RAW_ACTIONS);
-
-  writeMemory(mem);
-  return mem;
+  return Array.from(new Set(tickers));
 }
 
-function buildMemoryContext(symbol: string, action: string): string {
-  const mem = readMemory();
-  const lines: string[] = [];
+function mergeTickers(existing: string, newTickers: string[]): string {
+  const existingList = normalizeTickerInput(existing);
+  const normalizedNew = newTickers.map(normalizeTickerToken).filter((t): t is string => Boolean(t));
+  const existingSet = new Set(existingList);
+  const toAdd = normalizedNew.filter(t => !existingSet.has(t));
+  return [...existingList, ...toAdd].join(', ');
+}
 
-  // Symbol-specific history
-  const profile = mem.symbolProfiles[symbol];
-  if (profile && profile.tradeCount > 0) {
-    lines.push(`SYMBOL HISTORY — ${symbol}:`);
-    lines.push(`  ${profile.tradeCount} trades | Win rate: ${Math.round(profile.winRate * 100)}% | Avg P&L: ${profile.avgPnlPct.toFixed(1)}%`);
-    if (profile.bestStrategy) lines.push(`  Best strategy: ${profile.bestStrategy}`);
-    if (profile.earningsNote) lines.push(`  Earnings pattern: ${profile.earningsNote}`);
-    if (profile.historySummary) lines.push(`  History: ${profile.historySummary}`);
-    if (profile.recentTrades.length > 0) {
-      lines.push(`  Recent trades (newest first):`);
-      profile.recentTrades.slice(0, MEMORY_RAW_TRADES_PER_SYMBOL).forEach(t => {
-        const ago = Math.round((Date.now() - new Date(t.timestamp).getTime()) / 86400000);
-        lines.push(`    ${ago}d ago: ${t.strategy} ${t.action} — ${t.pnlPct.toFixed(1)}% P&L at ${t.dte} DTE, IVR ${t.ivr ?? '?'}, buffer ${t.buffer?.toFixed(1) ?? '?'}% → ${t.outcome}${t.aiVerdict ? ` (AI said ${t.aiVerdict}${t.aiOverridden ? ', overridden' : ''})` : ''}`);
-      });
-    }
-  }
+function tickersToString(tickers: string[]): string { return tickers.join(', '); }
 
-  // Behavioral profile
-  const bp = mem.behaviorProfile;
-  if (bp.totalTrades > 0) {
-    lines.push(`\nTRADER BEHAVIORAL PROFILE (${bp.totalTrades} total trades):`);
-    if (bp.overrideCount > 0) {
-      const overrideWinRate = bp.overrideCount > 0
-        ? Math.round((bp.overrideWins / bp.overrideCount) * 100) : 0;
-      lines.push(`  Overrode AI STOP verdicts ${bp.overrideCount} times — was right ${overrideWinRate}% of the time`);
-    }
-    if (bp.strengths.length > 0) lines.push(`  Strengths: ${bp.strengths.join(', ')}`);
-    if (bp.weaknesses.length > 0) lines.push(`  Weaknesses: ${bp.weaknesses.join(', ')}`);
-    if (bp.summary) lines.push(`  Pattern summary: ${bp.summary}`);
-  }
+function generateSuggestions(results: ScreenResult[], rules: RulesType): FilterSuggestion[] {
+  const suggestions: FilterSuggestion[] = [];
+  const disqualified = results.filter(r => !r.qualified);
+  if (disqualified.length === 0) return [];
 
-  // Recent portfolio-wide actions for context
-  const recentOther = mem.recentActions
-    .filter(r => r.symbol !== symbol)
-    .slice(0, 5);
-  if (recentOther.length > 0) {
-    lines.push(`\nRECENT OTHER TRADES (for portfolio context):`);
-    recentOther.forEach(t => {
-      const ago = Math.round((Date.now() - new Date(t.timestamp).getTime()) / 86400000);
-      lines.push(`  ${ago}d ago: ${t.symbol} ${t.strategy} ${t.action} → ${t.outcome} (${t.pnlPct.toFixed(1)}%)`);
+  // Count how many fail each specific rule (excluding earnings which is a hard gate)
+  const failedCredit = disqualified.filter(r => r.failReasons.some(f => f.includes('Credit') || f.includes('credit'))).length;
+  const failedOI = disqualified.filter(r => r.failReasons.some(f => f.includes('OI') || f.includes('qualifying strikes'))).length;
+  const failedROC = disqualified.filter(r => r.failReasons.some(f => f.includes('ROC') || f.includes('roc'))).length;
+  const failedIVR = disqualified.filter(r => r.failReasons.some(f => f.includes('IVR'))).length;
+
+  // Credit ratio suggestion
+  if (failedCredit > 0 && rules.CREDIT_RATIO_MIN > 0.20) {
+    const relaxed = rules.CREDIT_RATIO_MIN === 0.33 ? 0.25 : 0.20;
+    suggestions.push({
+      priority: 1,
+      rule: 'CREDIT_RATIO_MIN',
+      currentValue: rules.CREDIT_RATIO_MIN,
+      suggestedValue: relaxed,
+      label: `Relax credit ratio to ${(relaxed * 100).toFixed(0)}% of width`,
+      rationale: `${failedCredit} stock${failedCredit !== 1 ? 's' : ''} failed credit minimum. Current premium environment is thin — ${(relaxed * 100).toFixed(0)}% is the ${relaxed === 0.25 ? 'professional floor' : 'absolute minimum'}.`,
+      tradeoff: relaxed === 0.25 ? 'Slightly less cushion but mathematically sound. Still profitable if POP holds.' : 'Risk/reward becomes marginal. Only use in high IVR environments.',
+      wouldQualify: failedCredit,
     });
   }
 
-  return lines.length > 0 ? lines.join('\n') : '';
+  // OI suggestion
+  if (failedOI > 0 && rules.OI_MIN > 200) {
+    const relaxed = rules.OI_MIN === 500 ? 300 : 200;
+    suggestions.push({
+      priority: 2,
+      rule: 'OI_MIN',
+      currentValue: rules.OI_MIN,
+      suggestedValue: relaxed,
+      label: `Relax OI minimum to ${relaxed}`,
+      rationale: `${failedOI} stock${failedOI !== 1 ? 's' : ''} failed OI check. Lower OI means wider bid-ask fills — acceptable for smaller position sizes.`,
+      tradeoff: 'Wider bid-ask spreads on entry/exit. Keep position size to 1 contract until liquidity improves.',
+      wouldQualify: failedOI,
+    });
+  }
+
+  // ROC suggestion
+  if (failedROC > 0 && rules.ROC_MIN_SPREAD > 15) {
+    const relaxed = Math.max(15, rules.ROC_MIN_SPREAD - 5);
+    suggestions.push({
+      priority: 3,
+      rule: 'ROC_MIN_SPREAD',
+      currentValue: rules.ROC_MIN_SPREAD,
+      suggestedValue: relaxed,
+      label: `Relax min ROC to ${relaxed}%`,
+      rationale: `${failedROC} stock${failedROC !== 1 ? 's' : ''} failed ROC minimum. Current market conditions compress returns.`,
+      tradeoff: 'Lower return per dollar at risk. Only worthwhile if POP is high (70%+).',
+      wouldQualify: failedROC,
+    });
+  }
+
+  // IVR suggestion
+  if (failedIVR > 0 && rules.IVR_MIN > 20) {
+    const relaxed = Math.max(20, rules.IVR_MIN - 5);
+    suggestions.push({
+      priority: 4,
+      rule: 'IVR_MIN',
+      currentValue: rules.IVR_MIN,
+      suggestedValue: relaxed,
+      label: `Relax IVR floor to ${relaxed}%`,
+      rationale: `${failedIVR} stock${failedIVR !== 1 ? 's' : ''} failed IVR minimum. Low IV environment — less premium available across the board.`,
+      tradeoff: 'Selling premium when IV is low means less cushion and smaller credits. Use smaller position sizes.',
+      wouldQualify: failedIVR,
+    });
+  }
+
+  return suggestions.sort((a, b) => a.priority - b.priority);
 }
 
-async function summarizeSymbolHistory(symbol: string): Promise<void> {
-  const mem = readMemory();
-  const profile = mem.symbolProfiles[symbol];
-  if (!profile || profile.recentTrades.length <= MEMORY_RAW_TRADES_PER_SYMBOL) return;
-
-  const toSummarize = profile.recentTrades.slice(MEMORY_RAW_TRADES_PER_SYMBOL);
-  const prompt = `Summarize these trading history records for ${symbol} into 2-3 sentences. 
-Focus on: patterns (what worked, what didn't), typical P&L range, IVR conditions, DTE behavior, any notable mistakes.
-Be specific with numbers. Write in second person ("You typically...").
-
-Records:
-${toSummarize.map(t => `${t.strategy} ${t.action}: P&L ${t.pnlPct.toFixed(1)}%, DTE ${t.dte}, IVR ${t.ivr ?? '?'}, buffer ${t.buffer?.toFixed(1) ?? '?'}%, outcome ${t.outcome}`).join('\n')}
-
-Existing summary to merge with (if any): ${profile.historySummary ?? 'none'}
-
-Reply with ONLY the summary text, no JSON, no labels.`;
-
+// ── Persistent Saved Filters (LocalStorage + API fallback) ─────────────────
+async function loadFilters(strategy: string): Promise<SavedFilters | GlobalFilters> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
   try {
-    const res = await fetch('/api/analyze', {
+    const saved = localStorage.getItem(lsKey);
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  try {
+    const res = await fetch(`/api/filters?strategy=${strategy}`);
+    const data = await res.json();
+    const filters = data.filters ?? {};
+    localStorage.setItem(lsKey, JSON.stringify(filters));
+    return filters;
+  } catch {
+    return {};
+  }
+}
+
+async function saveFilter(
+  strategy: string,
+  name: string,
+  payload: { tickers?: string[]; bps?: string[]; bcs?: string[]; ic?: string[] },
+  replace = false
+): Promise<{ success?: boolean; conflict?: boolean; message?: string }> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
+  try {
+    const res = await fetch('/api/filters', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 200,
-        system: 'You are a concise trading journal summarizer. Respond with plain text only.',
-        messages: [{ role: 'user', content: prompt }],
-      }),
+      body: JSON.stringify({ strategy, name, replace, ...payload })
     });
-    if (!res.ok) return;
-    const data = await res.json();
-    const summary = data?.content?.find((b: any) => b.type === 'text')?.text?.trim() ?? null;
-    if (summary) {
-      profile.historySummary = summary;
-      profile.recentTrades = profile.recentTrades.slice(0, MEMORY_RAW_TRADES_PER_SYMBOL);
-      writeMemory(mem);
+    const result = await res.json();
+    if (result.success) {
+      const current = await loadFilters(strategy) as any;
+      if (strategy === 'global') {
+        current[name] = { bps: payload.bps || [], bcs: payload.bcs || [], ic: payload.ic || [] };
+      } else {
+        current[name] = payload.tickers || [];
+      }
+      localStorage.setItem(lsKey, JSON.stringify(current));
     }
+    return result;
+  } catch {
+    try {
+      const current = await loadFilters(strategy) as any;
+      if (strategy === 'global') {
+        current[name] = { bps: payload.bps || [], bcs: payload.bcs || [], ic: payload.ic || [] };
+      } else {
+        current[name] = payload.tickers || [];
+      }
+      localStorage.setItem(lsKey, JSON.stringify(current));
+      return { success: true };
+    } catch (e) {
+      return { success: false, message: 'Failed to save' };
+    }
+  }
+}
+
+async function deleteFilter(strategy: string, name: string): Promise<void> {
+  const lsKey = strategy === 'global' ? LS_GLOBAL_SESSIONS : LS_SAVED_FILTERS;
+  try {
+    await fetch('/api/filters', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy, name })
+    });
+  } catch {}
+  try {
+    const current = await loadFilters(strategy);
+    delete current[name];
+    localStorage.setItem(lsKey, JSON.stringify(current));
   } catch {}
 }
 
-async function summarizeBehaviorProfile(): Promise<void> {
-  const mem = readMemory();
-  const bp = mem.behaviorProfile;
-  if (mem.recentActions.length < 5) return;
+// ── Index / ETF overrides ──────────────────────────────────────────────────
+const INDEX_TICKERS = new Set(['SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY', 'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX']);
+const INDEX_IVR_MIN = 15;
 
-  const daysSince = mem.lastSummarized
-    ? (Date.now() - new Date(mem.lastSummarized).getTime()) / 86400000
-    : Infinity;
-  if (daysSince < MEMORY_SUMMARIZE_INTERVAL_DAYS) return;
+// ── Rules ──────────────────────────────────────────────────────────────────
+// CHANGE 1: Added EARNINGS_BUFFER_DAYS and CREDIT_MIN_ABS
+const DEFAULT_RULES = {
+  IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 500, BID_ASK_MAX: 0.10,
+  CREDIT_RATIO_MIN: 0.33, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
+  IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.20, DTE_MIN: 30, DTE_MAX: 45,
+  MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30, POP_MIN: 65,
+};
+type RulesType = typeof DEFAULT_RULES;
 
-  const prompt = `Analyze these trading actions and behavioral data to identify patterns for this options trader.
+const RULE_PRESETS = [
+  { key: 'course',    label: 'Course',     desc: 'Exact course rules',             color: 'border-blue-600 text-blue-400 bg-blue-600/10',        rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 } },
+  { key: 'relaxed',   label: 'Relaxed',    desc: 'Wider net, still disciplined',   color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
+  { key: 'lowvol',    label: 'Low Vol',    desc: 'Crushed IV environments',        color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
+  { key: 'strict',    label: 'Strict',     desc: 'A+ setups only',                 color: 'border-red-600 text-red-400 bg-red-600/10',            rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
+  { key: 'shortterm',    label: 'Short Term',    desc: '7-14 DTE · very active management',  color: 'border-orange-500 text-orange-400 bg-orange-500/10',  rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 7,  DTE_MAX: 14 } },
+  { key: 'intermediate', label: 'Intermediate',  desc: '15-29 DTE · active management',      color: 'border-amber-500 text-amber-400 bg-amber-500/10',     rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 15, DTE_MAX: 29 } },
+] as const;
 
-STATS:
-Total trades: ${bp.totalTrades}
-AI override rate: ${bp.overrideCount} overrides out of ${bp.totalTrades} STOP verdicts
-Override success rate: ${bp.overrideCount > 0 ? Math.round((bp.overrideWins / bp.overrideCount) * 100) : 0}%
+const RULE_LABELS: Record<string, string> = {
+  IVR_MIN: 'IVR Min % (floor)',
+  IVR_IC_MAX: 'IVR Max % (IC only)',
+  OI_MIN: 'Open Interest Min (per leg)',
+  BID_ASK_MAX: 'Bid-Ask Max $ (per leg)',
+  CREDIT_RATIO_MIN: 'Min Credit — % of Width  (0.33 = course · 0.25 = floor · 0.20 = danger)',
+  SPREAD_DELTA_MIN: 'Spread Delta Min',
+  SPREAD_DELTA_MAX: 'Spread Delta Max',
+  IC_DELTA_MIN: 'IC Delta Min',
+  IC_DELTA_MAX: 'IC Delta Max',
+  DTE_MIN: 'DTE Min (days)',
+  DTE_MAX: 'DTE Max (days)',
+  MAX_SPREAD_WIDTH: 'Max Spread Width $ (optimizer cap)',
+  ROC_MIN_SPREAD: 'Min ROC % (Spread)',
+  ROC_MIN_IC: 'Min ROC % (IC)',
+  POP_MIN: 'Min POP % (Probability of Profit)',
+};
 
-RECENT ACTIONS (${mem.recentActions.length} records):
-${mem.recentActions.map(t => `${t.symbol} ${t.strategy} ${t.action}: P&L ${t.pnlPct.toFixed(1)}%, DTE ${t.dte}, outcome ${t.outcome}${t.aiOverridden ? ' [overrode AI]' : ''}`).join('\n')}
+const LS_RULES = 'prosper-rules';
+const LS_RULES_ETF = 'prosper-rules-etf';
+const LS_RULES_PRESET = 'prosper-rules-preset';
+const LS_ACTIVE_PRESET = 'prosper-active-preset';
+const LS_ACTIVE_PRESET_ETF = 'prosper-active-preset-etf';
+const LS_RULES_VERSION = 'prosper-rules-v3'; // bump this when defaults change
 
-Existing summary: ${bp.summary ?? 'none'}
+const DEFAULT_ETF_RULES: RulesType = {
+  IVR_MIN: 15, IVR_IC_MAX: 70, OI_MIN: 100, BID_ASK_MAX: 0.25,
+  CREDIT_RATIO_MIN: 0.20, SPREAD_DELTA_MIN: 0.15, SPREAD_DELTA_MAX: 0.35,
+  IC_DELTA_MIN: 0.15, IC_DELTA_MAX: 0.25, DTE_MIN: 30, DTE_MAX: 45,
+  MAX_SPREAD_WIDTH: 500, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 20, POP_MIN: 65,
+};
 
-Identify:
-1. 1-2 clear strengths (what they do well consistently)
-2. 1-2 clear weaknesses or recurring mistakes
-3. One 3-sentence overall behavioral summary in second person
-
-Reply as JSON: {"strengths": [...], "weaknesses": [...], "summary": "..."}`;
-
+function getSavedRules(): RulesType {
   try {
-    const res = await fetch('/api/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 300,
-        system: 'You are a trading coach analyzing a trader\'s patterns. Return JSON only.',
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
-    if (!res.ok) return;
-    const data = await res.json();
-    const text = (data?.content?.find((b: any) => b.type === 'text')?.text ?? '')
-      .replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const parsed = JSON.parse(text);
-    bp.strengths = parsed.strengths ?? bp.strengths;
-    bp.weaknesses = parsed.weaknesses ?? bp.weaknesses;
-    bp.summary = parsed.summary ?? bp.summary;
-    bp.lastSummarized = new Date().toISOString();
-    mem.lastSummarized = new Date().toISOString();
-    writeMemory(mem);
-  } catch {}
+    if (!localStorage.getItem(LS_RULES_VERSION)) {
+      localStorage.removeItem(LS_RULES);
+      localStorage.removeItem(LS_RULES_ETF);
+      localStorage.setItem(LS_RULES_VERSION, '1');
+    }
+    const saved = localStorage.getItem(LS_RULES);
+    return saved ? { ...DEFAULT_RULES, ...JSON.parse(saved) } : { ...DEFAULT_RULES };
+  } catch { return { ...DEFAULT_RULES }; }
 }
 
-function clearMemory() {
-  try { localStorage.removeItem(LS_MEMORY); } catch {}
+function getSavedEtfRules(): RulesType {
+  try {
+    const saved = localStorage.getItem(LS_RULES_ETF);
+    return saved ? { ...DEFAULT_ETF_RULES, ...JSON.parse(saved) } : { ...DEFAULT_ETF_RULES };
+  } catch { return { ...DEFAULT_ETF_RULES }; }
 }
 
-// ── Auth & API ─────────────────────────────────────────────────────────────
+function saveRulesToStorage(rules: RulesType) {
+  try { localStorage.setItem(LS_RULES, JSON.stringify(rules)); } catch {}
+}
+
+function saveEtfRulesToStorage(rules: RulesType) {
+  try { localStorage.setItem(LS_RULES_ETF, JSON.stringify(rules)); } catch {}
+}
+const TREND_DETECTION_CONCURRENCY = 8;
+const LS_BPS = 'prosper-tickers-bps';
+const LS_BCS = 'prosper-tickers-bcs';
+const LS_IC = 'prosper-tickers-ic';
+const LS_BROKEN = 'prosper-tickers-broken';
+const LS_CAL = 'prosper-cal-scheduled';
+const LS_CAL_ENTRY = 'prosper-cal-entry';
+const DTE_ALERT_THRESHOLD = 25;
+const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
+const LS_SAVED_FILTERS = 'prosper-saved-filters';
+const LS_GLOBAL_SESSIONS = 'prosper-global-sessions';
+const LS_SCREEN_MODE = 'prosper-screen-mode';
+const LS_RANK_CONFIG = 'prosper-rank-config';
+const LS_SESSION_LOADED_AT = 'prosper-session-loaded-at';
+
+// ── Ranking / Scoring ──────────────────────────────────────────────────────
+interface RankConfig {
+  weightMomentum: number;  // 0–30
+  weightIvr: number;       // 0–25
+  weightRange: number;     // 0–20
+  weightTechnical: number; // 0–15
+  weightLiquidity: number; // 0–10
+  dteSweetSpot: number;
+  dteRange: number;
+  thresholdGreen: number;
+  thresholdYellow: number;
+  thresholdOrange: number;
+  weightCredit: number; weightRoc: number; weightPop: number; weightDte: number;
+}
+
+const DEFAULT_RANK_CONFIG: RankConfig = {
+  weightMomentum: 30, weightIvr: 25, weightRange: 20, weightTechnical: 15, weightLiquidity: 10,
+  dteSweetSpot: 38, dteRange: 7,
+  thresholdGreen: 75, thresholdYellow: 55, thresholdOrange: 35,
+  weightCredit: 25, weightRoc: 20, weightPop: 15, weightDte: 15,
+};
+
+function getSavedRankConfig(): RankConfig {
+  try { const s = localStorage.getItem(LS_RANK_CONFIG); return s ? { ...DEFAULT_RANK_CONFIG, ...JSON.parse(s) } : { ...DEFAULT_RANK_CONFIG }; }
+  catch { return { ...DEFAULT_RANK_CONFIG }; }
+}
+
+interface DimensionScore {
+  momentum: number; ivr: number; range: number; technical: number; liquidity: number; total: number;
+}
+
+function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
+  const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+  const t = result.trendResult;
+  const c = result.bestCandidate;
+
+  // ── Momentum (30pts) ──────────────────────────────────────────────────────
+  // trend engine momentum is signed (-48..+48); normalize by direction alignment
+  // When total directional score is very strong (>100), boost momentum slightly
+  let momentumRaw = 0;
+  if (t?.scores?.momentum != null) {
+    const raw = t.scores.momentum;
+    const totalScore = Math.abs(t.scores.total ?? raw);
+    // normalize: 45 = typical max momentum; total score >100 = very strong signal
+    const absNorm = clamp(Math.abs(raw) / 45);
+    const totalBoost = clamp(totalScore / 120); // strong total score adds up to 15% boost
+    const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
+    const aligned = expectedSign === 0 ? 0.7 : (Math.sign(raw) === expectedSign ? 1.0 : 0.3);
+    // IVR boost: when momentum is very strong, reduce IVR penalty weight
+    // (WFC fix: strong -135 BCS signal should rank high even with 39% IVR)
+    momentumRaw = clamp(absNorm * 0.75 + totalBoost * 0.25) * aligned;
+  } else if (t?.confidence != null) {
+    momentumRaw = clamp(t.confidence / 80);
+    if (t.trend === 'sideways' || t.trend === 'unknown') momentumRaw *= 0.5;
+  } else if (c) {
+    const pop = c.pop ?? 70;
+    momentumRaw = clamp((pop - 60) / 25);
+  }
+  const momentumScore = clamp(momentumRaw) * cfg.weightMomentum;
+
+  // ── IV Quality (25pts) ────────────────────────────────────────────────────
+  // When momentum is very strong, reduce effective IVR weight so it doesn't
+  // dominate over a clear directional signal (WFC: 39% IVR but -135 momentum)
+  const ivr = result.ivr ?? 0;
+  const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
+  const momentumStrength = t?.scores?.total != null ? clamp(Math.abs(t.scores.total) / 150) : 0;
+  const effectiveIvrWeight = cfg.weightIvr * (1 - momentumStrength * 0.35);
+  const ivrScore = clamp(ivrRaw) * effectiveIvrWeight;
+
+  // ── 52W Range Position (20pts) ────────────────────────────────────────────
+  // BPS near 52W highs (r60 > 0.85) gets penalized — stock is stretched
+  // BCS near 52W lows (r60 < 0.15) gets penalized — stock is stretched
+  // (CAT/GOOGL fix: at 93-97% of range, BPS is a risky setup)
+  let rangeRaw = 0.5;
+  if (t?.metrics?.range60 != null) {
+    const r60 = clamp(t.metrics.range60);
+    if (t.strategy === 'BPS') {
+      // near lows = good, but also penalize if stock is at extreme highs (exhaustion risk)
+      rangeRaw = r60 > 0.85 ? (1 - r60) * 2 : 1 - r60;
+    } else if (t.strategy === 'BCS') {
+      // near highs = good, but penalize extreme lows
+      rangeRaw = r60 < 0.15 ? r60 * 2 : r60;
+    } else {
+      rangeRaw = 1 - Math.abs(r60 - 0.5) * 2;
+    }
+  } else if (t?.metrics?.distFromMa50 != null) {
+    const dist = t.metrics.distFromMa50;
+    if (t.strategy === 'BPS') rangeRaw = clamp(1 - (dist + 0.15) / 0.30);
+    else if (t.strategy === 'BCS') rangeRaw = clamp((dist + 0.15) / 0.30);
+    else rangeRaw = clamp(1 - Math.abs(dist) / 0.20);
+  } else if (c) {
+    rangeRaw = clamp(c.roc / 40);
+  }
+  const rangeScore = clamp(rangeRaw) * cfg.weightRange;
+
+  // ── Technical (15pts) ─────────────────────────────────────────────────────
+  // MA alignment signed (-34..+34), slope signed (-22..+22)
+  let technicalRaw = 0;
+  if (t?.scores != null) {
+    const maRaw = t.scores.maAlignment ?? 0;
+    const slopeRaw = t.scores.slope ?? 0;
+    const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
+    const maNorm = expectedSign === 0
+      ? clamp(Math.abs(maRaw) / 34)
+      : clamp((maRaw * expectedSign + 34) / 68);
+    const slopeNorm = expectedSign === 0
+      ? clamp(Math.abs(slopeRaw) / 22)
+      : clamp((slopeRaw * expectedSign + 22) / 44);
+    technicalRaw = maNorm * 0.6 + slopeNorm * 0.4;
+  } else if (t?.confidence != null) {
+    technicalRaw = clamp(t.confidence / 100) * 0.6;
+  } else if (c) {
+    const delta = c.shortDelta;
+    technicalRaw = delta >= 0.20 && delta <= 0.30 ? 1.0 : clamp(1 - Math.abs(delta - 0.25) / 0.15);
+  }
+  const technicalScore = clamp(technicalRaw) * cfg.weightTechnical;
+
+  // ── Liquidity (10pts) ─────────────────────────────────────────────────────
+  // OI is weighted heavily here — low OI means the spread is physically untradeable
+  // regardless of how good the other metrics look. OI < 100 is near-zero; OI >= 500 is full score.
+  let liquidityRaw = 0.4;
+  if (c) {
+    const minOI = Math.min(c.shortOI, c.longOI);
+    // Steep curve: OI=0→0, OI=100→0.18, OI=300→0.54, OI=500→1.0, OI>500→1.0
+    const oiScore = minOI <= 0 ? 0 : clamp(Math.pow(minOI / 500, 0.7));
+    const creditRatioScore = clamp((c.creditRatio - 0.15) / 0.35);
+    const rocScore = clamp(c.roc / 35);
+    // OI now carries 60% of liquidity score (was 40%) — low OI is a much bigger drag
+    liquidityRaw = oiScore * 0.6 + creditRatioScore * 0.2 + rocScore * 0.2;
+  }
+  const liquidityScore = clamp(liquidityRaw) * cfg.weightLiquidity;
+
+  const total = Math.round(momentumScore + ivrScore + rangeScore + technicalScore + liquidityScore);
+  return {
+    score: Math.min(100, total),
+    dims: {
+      momentum: Math.round(momentumScore),
+      ivr: Math.round(ivrScore),
+      range: Math.round(rangeScore),
+      technical: Math.round(technicalScore),
+      liquidity: Math.round(liquidityScore),
+      total: Math.min(100, total),
+    },
+  };
+}
+
+function trafficLight(score: number, cfg: RankConfig): { emoji: string; label: string; color: string; border: string; bg: string } {
+  if (score >= cfg.thresholdGreen)  return { emoji: '🟢', label: 'Strong',     color: 'text-emerald-400', border: 'border-emerald-600', bg: 'bg-emerald-500/10' };
+  if (score >= cfg.thresholdYellow) return { emoji: '🟡', label: 'Acceptable', color: 'text-yellow-400',  border: 'border-yellow-600',  bg: 'bg-yellow-500/10'  };
+  if (score >= cfg.thresholdOrange) return { emoji: '🟠', label: 'Marginal',   color: 'text-orange-400',  border: 'border-orange-600',  bg: 'bg-orange-500/10'  };
+  return                                    { emoji: '🔴', label: 'Avoid',      color: 'text-red-400',     border: 'border-red-700',     bg: 'bg-red-500/5'      };
+}
+
+// ── TastyTrade API ─────────────────────────────────────────────────────────
+const BASE = 'https://api.tastytrade.com';
+const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
+
+const LS_ACCESS_TOKEN = 'tt_access_token_cache';
+const LS_ACCESS_TOKEN_EXPIRY = 'tt_access_token_expiry';
+
 async function getAccessToken(): Promise<string> {
-  const cached = sessionStorage.getItem('tt_access_token');
-  if (cached) return cached;
+  // 1. Check sessionStorage first (fastest, in-memory)
+  const sessionCached = sessionStorage.getItem('tt_access_token');
+  if (sessionCached) return sessionCached;
+
+  // 2. Check localStorage cache — survives rebuilds/page reloads
+  // Access tokens are valid for ~24h; we cache for 23h to be safe
+  try {
+    const lsCached = localStorage.getItem(LS_ACCESS_TOKEN);
+    const expiry = localStorage.getItem(LS_ACCESS_TOKEN_EXPIRY);
+    if (lsCached && expiry && Date.now() < parseInt(expiry)) {
+      sessionStorage.setItem('tt_access_token', lsCached);
+      return lsCached;
+    }
+  } catch {}
+
+  // 3. Use refresh token to get a new access token
   const refreshToken = localStorage.getItem('tt_refresh_token');
   const clientSecret = localStorage.getItem('tt_client_secret') ?? '';
   if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
@@ -615,6 +695,7 @@ async function getAccessToken(): Promise<string> {
   });
   if (!res.ok) {
     sessionStorage.removeItem('tt_access_token');
+    try { localStorage.removeItem(LS_ACCESS_TOKEN); localStorage.removeItem(LS_ACCESS_TOKEN_EXPIRY); } catch {}
     localStorage.removeItem('tt_refresh_token');
     window.location.href = '/login';
     throw new Error('Session expired');
@@ -622,4905 +703,3380 @@ async function getAccessToken(): Promise<string> {
   const data = await res.json();
   const token = data.access_token;
   if (!token) { window.location.href = '/login'; throw new Error('No token'); }
+
+  // Store in both sessionStorage and localStorage
   sessionStorage.setItem('tt_access_token', token);
-  if (data.refresh_token && data.refresh_token !== refreshToken) localStorage.setItem('tt_refresh_token', data.refresh_token);
+  try {
+    localStorage.setItem(LS_ACCESS_TOKEN, token);
+    localStorage.setItem(LS_ACCESS_TOKEN_EXPIRY, String(Date.now() + 23 * 60 * 60 * 1000));
+  } catch {}
+
+  // Save rotated refresh token if TastyTrade issued a new one
+  if (data.refresh_token && data.refresh_token !== refreshToken) {
+    localStorage.setItem('tt_refresh_token', data.refresh_token);
+  }
   return token;
 }
 
-async function ttFetch(path: string, token: string) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    cache: 'no-store',
-  });
-  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
-  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 120)}`); }
+async function ttFetch(path: string, token: string): Promise<any> {
+  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 401) {
+    // Token expired mid-session — clear both caches, get a fresh one, retry once
+    sessionStorage.removeItem('tt_access_token');
+    try { localStorage.removeItem(LS_ACCESS_TOKEN); localStorage.removeItem(LS_ACCESS_TOKEN_EXPIRY); } catch {}
+    const freshToken = await getAccessToken();
+    const retry = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${freshToken}` } });
+    if (!retry.ok) { const text = await retry.text(); throw new Error(`${path} failed (${retry.status}): ${text.slice(0, 200)}`); }
+    return retry.json();
+  }
+  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 200)}`); }
   return res.json();
 }
+async function loadPortfolioTickers(): Promise<{ current: string[]; historical: string[] }> {
+  const token = await getAccessToken();
 
-async function ttPost(path: string, token: string, body: unknown) {
-  console.log('TT ORDER BODY:', JSON.stringify(body, null, 2));
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
-  const data = await res.json();
-  console.log('TT ORDER RESPONSE:', JSON.stringify(data, null, 2));
-  if (!res.ok) {
-    // TastyTrade returns errors in several shapes — extract all detail possible
-    const errMsg =
-      data?.error?.message ??
-      data?.['error-message'] ??
-      (Array.isArray(data?.error?.errors)
-        ? data.error.errors.map((e: any) => `${e.domain ?? ''} ${e.reason ?? e.message ?? e}`).join('; ')
-        : null) ??
-      JSON.stringify(data?.error ?? data).slice(0, 300);
-    throw new Error(`Order rejected: ${errMsg}`);
-  }
-  return data;
-}
-
-// TastyTrade supports a native dry-run: POST to same endpoint with ?dry-run=true
-// Returns buying power effects and any errors without placing the order.
-async function ttValidateOrder(path: string, token: string, body: unknown): Promise<{ valid: boolean; warnings: string[]; errors: string[] }> {
+  // ── Current positions ─────────────────────────────────────────────────
+  const current: string[] = [];
   try {
-    const res = await fetch(`${BASE}${path}?dry-run=true`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    console.log('TT VALIDATE RESPONSE:', JSON.stringify(data, null, 2));
-    const warnings = (data?.warnings ?? []).map((w: any) => w.message ?? String(w));
-    const errors = (data?.errors ?? []).map((e: any) => e.message ?? String(e));
-    if (!res.ok) {
-      const errMsg =
-        data?.error?.message ??
-        data?.['error-message'] ??
-        (Array.isArray(data?.error?.errors)
-          ? data.error.errors.map((e: any) => `${e.domain ?? ''} ${e.reason ?? e.message ?? e}`).join('; ')
-          : null) ??
-        JSON.stringify(data?.error ?? data).slice(0, 200);
-      return { valid: false, warnings, errors: [errMsg] };
-    }
-    return { valid: errors.length === 0, warnings, errors };
-  } catch {
-    return { valid: true, warnings: [], errors: [] };
-  }
-}
-
-// ── Fresh Price Fetch ──────────────────────────────────────────────────────
-async function fetchFreshPositionPrice(pos: Position, token: string): Promise<number | null> {
-  try {
-    const symbols = pos.legs.map(l => l.symbol);
-    const qs = symbols.map(s => `equity-option=${encodeURIComponent(s)}`).join('&');
-    const data = await ttFetch(`/market-data/by-type?${qs}`, token);
-    const items: any[] = data?.data?.items ?? [];
-    let total = 0;
-    for (const leg of pos.legs) {
-      const item = items.find((i: any) => i.symbol?.replace(/\s+/g, '') === leg.symbol?.replace(/\s+/g, ''));
-      if (!item) return null;
-      const bid = parseFloat(item.bid ?? '0');
-      const ask = parseFloat(item.ask ?? '0');
-      const mid = (bid + ask) / 2;
-      total += leg.direction === 'Short' ? mid * leg.quantity : -(mid * leg.quantity);
-    }
-    return Math.abs(total * 100);
-  } catch { return null; }
-}
-
-// ── Roll Chain Suggestion ──────────────────────────────────────────────────
-async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSuggestion | null> {
-  try {
-    const optType = pos.strategy === 'BCS' ? 'C' : 'P';
-    // Delta targets per Prosper rules: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
-    const targetDelta = pos.strategy === 'BCS' ? 0.25 : -0.25;
-    const deltaMin = pos.strategy === 'BCS' ?  0.20 : -0.30;
-    const deltaMax = pos.strategy === 'BCS' ?  0.30 : -0.20;
-
-    // Step 1: get expirations, find one in 30-45 DTE window
-    const chainData = await ttFetch(`/option-chains/${encodeURIComponent(pos.symbol)}/expirations`, token);
-    const expirations: any[] = chainData?.data?.items ?? [];
-
-    const today = new Date();
-    // Sort by DTE ascending, find first in 30-45 window (prefer closest to 38 DTE)
-    const candidates = expirations
-      .map((e: any) => ({
-        expiry: e['expiration-date'],
-        dte: Math.round((new Date(e['expiration-date']).getTime() - today.getTime()) / 86400000),
-      }))
-      .filter(e => e.dte >= 28 && e.dte <= 50)
-      .sort((a, b) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38)); // prefer 38 DTE
-
-    if (candidates.length === 0) return null;
-    const { expiry, dte } = candidates[0];
-
-    // Step 2: fetch full chain for that expiry — use nested format which includes greeks + OI
-    const strikeData = await ttFetch(
-      `/option-chains/${encodeURIComponent(pos.symbol)}/nested?expiration-date=${expiry}`,
-      token
-    );
-    const strikes: any[] = strikeData?.data?.items?.[0]?.strikes ?? [];
-
-    // Step 3: find best short strike — closest to target delta, within range
-    const origShort = pos.legs.find(l => l.direction === 'Short');
-    const origLong  = pos.legs.find(l => l.direction === 'Long');
-    if (!origShort || !origLong) return null;
-    const width = Math.abs(origShort.strikePrice - origLong.strikePrice);
-
-    let best: any = null;
-    let bestDiff = Infinity;
-    for (const s of strikes) {
-      const leg = s[optType === 'P' ? 'put' : 'call'];
-      if (!leg) continue;
-      const delta = parseFloat(leg?.delta ?? '0');
-      const diff = Math.abs(delta - targetDelta);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = {
-          strike: s['strike-price'],
-          delta,
-          bid:  parseFloat(leg?.bid  ?? '0'),
-          ask:  parseFloat(leg?.ask  ?? '0'),
-          oi:   parseInt(leg?.['open-interest'] ?? leg?.['oi'] ?? '0', 10),
-          symbol: leg?.symbol ?? null,   // native OCC symbol from TastyTrade
-        };
+    const accountsData = await ttFetch('/customers/me/accounts', token);
+    const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+    if (accountNumber) {
+      const posData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
+      for (const p of posData?.data?.items ?? []) {
+        const sym = p['underlying-symbol'];
+        if (sym && !current.includes(sym)) current.push(sym);
       }
     }
-    if (!best) return null;
+  } catch { /* current positions optional */ }
 
-    const shortStrike = best.strike;
-    const longStrike = pos.strategy === 'BCS' ? shortStrike + width : shortStrike - width;
-
-    // Step 4: find long leg data from chain for OI + bid-ask + native symbol
-    let longLegData: any = null;
-    for (const s of strikes) {
-      if (s['strike-price'] === longStrike) {
-        const leg = s[optType === 'P' ? 'put' : 'call'];
-        if (leg) {
-          longLegData = {
-            bid:  parseFloat(leg?.bid  ?? '0'),
-            ask:  parseFloat(leg?.ask  ?? '0'),
-            oi:   parseInt(leg?.['open-interest'] ?? leg?.['oi'] ?? '0', 10),
-            symbol: leg?.symbol ?? null,
-          };
+  // ── Historical positions (transactions) ───────────────────────────────
+  const historical: string[] = [];
+  try {
+    const accountsData = await ttFetch('/customers/me/accounts', token);
+    const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+    if (accountNumber) {
+      // Fetch last 2 years of transactions
+      const startDate = new Date();
+      startDate.setFullYear(startDate.getFullYear() - 2);
+      const startStr = startDate.toISOString().split('T')[0];
+      const txData = await ttFetch(`/accounts/${accountNumber}/transactions?start-date=${startStr}&per-page=500`, token);
+      for (const tx of txData?.data?.items ?? []) {
+        const sym = tx['underlying-symbol'] ?? tx['symbol'];
+        if (sym && !historical.includes(sym) && !current.includes(sym)) {
+          historical.push(sym);
         }
-        break;
       }
     }
+  } catch { /* historical optional */ }
 
-    // Step 5: compute credit values
-    const shortMid = (best.bid + best.ask) / 2;
-    const longMid  = longLegData ? (longLegData.bid + longLegData.ask) / 2 : 0;
-    const creditMid = parseFloat((shortMid - longMid).toFixed(2));
-    const credit    = parseFloat((creditMid * 0.85).toFixed(2)); // 85% of mid — realistic limit
-    const creditRatio = width > 0 ? creditMid / width : 0;
-
-    // Step 6: build native OCC symbols — prefer chain symbols, fall back to builder
-    const shortSymbol = best.symbol ?? buildOccSymbol(pos.symbol, expiry, optType, shortStrike);
-    const longSymbol  = longLegData?.symbol ?? buildOccSymbol(pos.symbol, expiry, optType, longStrike);
-
-    // Step 7: bid-ask spreads per leg
-    const shortBidAsk = parseFloat((best.ask - best.bid).toFixed(2));
-    const longBidAsk  = longLegData ? parseFloat((longLegData.ask - longLegData.bid).toFixed(2)) : null;
-
-    // Step 8: Prosper rule validation
-    const ruleViolations: string[] = [];
-    const meetsMinCredit = creditRatio >= (1/3);
-    const meetsDte       = dte >= 30 && dte <= 45;
-    const meetsDelta     = best.delta >= Math.min(deltaMin, deltaMax) && best.delta <= Math.max(deltaMin, deltaMax);
-    const meetsOi        = (best.oi >= 500) && (longLegData == null || longLegData.oi >= 500);
-    const meetsBidAsk    = shortBidAsk <= 0.10 && (longBidAsk == null || longBidAsk <= 0.10);
-
-    if (!meetsMinCredit) ruleViolations.push(`Credit $${creditMid.toFixed(2)} < 1/3 of $${width} spread ($${(width/3).toFixed(2)} min) — not worth rolling`);
-    if (!meetsDte)       ruleViolations.push(`DTE ${dte} outside 30-45 window`);
-    if (!meetsDelta)     ruleViolations.push(`Delta ${best.delta.toFixed(2)} outside ${pos.strategy === 'BCS' ? '0.20-0.30' : '-0.20 to -0.30'} range`);
-    if (!meetsOi)        ruleViolations.push(`OI too low — short: ${best.oi}, long: ${longLegData?.oi ?? '?'} (need ≥500)`);
-    if (!meetsBidAsk)    ruleViolations.push(`Bid-ask too wide — short: $${shortBidAsk.toFixed(2)}, long: $${longBidAsk?.toFixed(2) ?? '?'} (need ≤$0.10)`);
-
-    console.log(`ROLL SUGGESTION ${pos.symbol}: expiry=${expiry} DTE=${dte} short=${shortStrike} long=${longStrike} credit=$${credit} creditMid=$${creditMid} ratio=${creditRatio.toFixed(2)} violations=${ruleViolations.length}`);
-
-    return {
-      expiry, dte, shortStrike, longStrike, spreadWidth: width,
-      credit, creditMid, creditRatio, delta: best.delta,
-      shortSymbol, longSymbol,
-      shortOi: best.oi || null,
-      longOi: longLegData?.oi || null,
-      shortBidAsk, longBidAsk,
-      ruleViolations, meetsMinCredit, meetsDte, meetsDelta, meetsOi, meetsBidAsk,
-    };
-  } catch (e) {
-    console.error('fetchRollSuggestion failed:', e);
-    return null;
-  }
+  return { current, historical };
 }
 
-// ── Roll validation helper ─────────────────────────────────────────────────
-function rollIsBlocking(suggestion: RollSuggestion): boolean {
-  // Only block on hard rule violations — soft warnings can be overridden
-  return !suggestion.meetsMinCredit || !suggestion.meetsDte;
+async function getMarketMetrics(symbols: string[], token: string) {
+  const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
+  return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
 }
+// ── Stop Loss / GTC Order Check ────────────────────────────────────────────
+type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
 
-// ── OCC Symbol Builder ─────────────────────────────────────────────────────
-function buildOccSymbol(underlying: string, expiry: string, optType: 'P' | 'C', strike: number): string {
-  const exp = expiry.replace(/-/g, '').slice(2); // YYMMDD
-  const under = underlying.padEnd(6, ' ');
-  const strikeStr = String(Math.round(strike * 1000)).padStart(8, '0');
-  return `${under}${exp}${optType}${strikeStr}`;
+interface GtcOrderLeg {
+  symbol: string;
+  action: string;
 }
-
-function instrType(symbol: string): 'Equity Option' | 'Index Option' {
-  return ['SPX', 'NDX', 'RUT', 'VIX'].includes(symbol.toUpperCase().trim()) ? 'Index Option' : 'Equity Option';
-}
-
-// ── Order Builders ─────────────────────────────────────────────────────────
-function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' = 'Day'): OrderBody {
-  const itype = instrType(pos.symbol);
-  const effectiveTif = (!isMarketOpen() && tif === 'Day') ? 'GTC' : tif;
-  // TastyTrade REST API price convention:
-  // Negative = debit (you pay to close), Positive = credit (you receive to open)
-  // A closing spread order is a debit — we pay to buy back what we sold.
-  // Use price-effect: Debit with a POSITIVE price value (the absolute amount).
-  // Both formats have been seen in the wild; using positive + price-effect is safest.
-  return {
-    'order-type': 'Limit',
-    'time-in-force': effectiveTif,
-    price: limitPrice.toFixed(2),
-    'price-effect': 'Debit',
-    legs: pos.legs.map(leg => ({
-      symbol: leg.symbol, // keep OCC space-padded format exactly as returned by positions API
-      quantity: leg.quantity,
-      action: leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close',
-      'instrument-type': itype,
-    })),
-  };
-}
-
-function buildOpenSpreadOrder(
-  underlying: string, expiry: string, optType: 'P' | 'C',
-  shortStrike: number, longStrike: number, quantity: number, credit: number,
-  shortSymbolOverride?: string, longSymbolOverride?: string
-): OrderBody {
-  const itype = instrType(underlying);
-  // Prefer native OCC symbols from TastyTrade chain (guaranteed correct format)
-  // Fall back to builder only if chain symbols aren't available
-  const shortSym = shortSymbolOverride ?? buildOccSymbol(underlying, expiry, optType, shortStrike);
-  const longSym  = longSymbolOverride  ?? buildOccSymbol(underlying, expiry, optType, longStrike);
-  console.log(`BUILD OPEN SPREAD: short=${shortSym} long=${longSym} credit=$${credit} qty=${quantity}`);
-  return {
-    'order-type': 'Limit',
-    'time-in-force': 'GTC',
-    price: Math.abs(credit).toFixed(2),
-    'price-effect': 'Credit',
-    legs: [
-      { symbol: shortSym, quantity, action: 'Sell to Open', 'instrument-type': itype },
-      { symbol: longSym,  quantity, action: 'Buy to Open',  'instrument-type': itype },
-    ],
-  };
-}
-
-// ── Position Loading ───────────────────────────────────────────────────────
-function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
-  const match = sym.trim().replace(/\s+/g, '').match(/^([A-Z/]+)(\d{6})([CP])(\d{8})$/);
-  if (!match) return { optionType: 'C', strikePrice: 0 };
-  return { optionType: match[3] as 'P' | 'C', strikePrice: parseInt(match[4], 10) / 1000 };
-}
-
-function normalizeOccSymbol(symbol: string): string { return String(symbol ?? '').replace(/\s+/g, '').trim(); }
-function normalizeOrderAction(action: string): string { return String(action ?? '').replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase(); }
-function isBuyToCloseAction(action: string): boolean { const n = normalizeOrderAction(action); return n === 'buy to close' || n === 'btc'; }
-function isStopOrder(order: GtcOrder): boolean { return Boolean(order.stopPrice) || order.orderType.toLowerCase().includes('stop'); }
-
-function pickOrderField(o: any, keys: string[]): string | null {
-  for (const key of keys) { const v = o?.[key]; if (v !== undefined && v !== null && String(v).trim() !== '') return String(v); }
-  return null;
-}
-
-function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
-  // Collect legs from direct legs array OR from nested orders' legs (automation/complex orders)
-  let legs = (o?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') }));
-  if (legs.length === 0) {
-    for (const nested of o?.orders ?? []) {
-      const nestedLegs = (nested?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') }));
-      legs = legs.concat(nestedLegs);
-    }
-  }
-  // TIF may be on parent complex order but missing on sub-orders — inherit from parent
-  const tif = String(o?.['time-in-force'] ?? o?.timeInForce ?? parentTif ?? '');
-  return {
-    id: String(o?.id ?? ''),
-    price: String(o?.price ?? o?.['limit-price'] ?? ''),
-    stopPrice: pickOrderField(o, ['stop-trigger', 'stop-price', 'stopPrice', 'stop', 'trigger-price']),
-    orderType: String(o?.['order-type'] ?? o?.orderType ?? ''),
-    timeInForce: tif,
-    legs,
-  };
-}
-
-function collectRawOrders(raw: any): any[] {
-  const out: any[] = [];
-  const visit = (order: any, parentTif?: string) => {
-    if (!order || typeof order !== 'object') return;
-    const tif = String(order?.['time-in-force'] ?? order?.timeInForce ?? parentTif ?? '');
-    // Collect this order if it has direct legs
-    if (Array.isArray(order.legs) && order.legs.length > 0) {
-      out.push({ ...order, _inheritedTif: tif });
-    }
-    // For complex/automation orders: also collect as a combined order with all nested legs merged
-    if (Array.isArray(order.orders) && order.orders.length > 0) {
-      const allLegs: any[] = [];
-      for (const nested of order.orders) allLegs.push(...(nested?.legs ?? []));
-      if (allLegs.length > 0) {
-        out.push({ ...order, legs: allLegs, _inheritedTif: tif, _isCombined: true });
-      }
-      for (const nested of order.orders) visit(nested, tif);
-    }
-  };
-  for (const item of raw?.data?.items ?? []) visit(item);
-  return out;
-}
-
-function findProfitGtcOrder(positionLegs: PositionLeg[], gtcOrders: GtcOrder[]): GtcOrder | null {
-  // Find a GTC limit order (not a stop) that has Buy to Close on the short leg.
-  // Also matches automation/complex orders where legs are combined from sub-orders.
-  const shortLeg = positionLegs.find(l => l.direction === 'Short');
-  if (!shortLeg?.symbol) return null;
-  const shortSymbol = normalizeOccSymbol(shortLeg.symbol);
-  return gtcOrders.find(order =>
-    !isStopOrder(order) &&
-    (order.orderType.toLowerCase().includes('limit') || order.orderType === '') &&
-    order.legs.some(leg =>
-      normalizeOccSymbol(leg.symbol) === shortSymbol && isBuyToCloseAction(leg.action)
-    )
-  ) ?? null;
-}
-
-async function ttPatch(path: string, token: string, body: unknown) {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'PATCH',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message ?? data?.['error-message'] ?? `PATCH ${path} failed (${res.status})`);
-  return data;
+interface GtcOrder {
+  id: string;
+  price: string;
+  legs: GtcOrderLeg[];
 }
 
 async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
   try {
-    // Use /orders/live only — it returns working + recent 24h orders.
-    // ?status=Open and ?per-page=250 are invalid params that return 400.
-    const requests = await Promise.allSettled([
-      ttFetch(`/accounts/${accountNumber}/orders/live`, token),
-      ttFetch(`/accounts/${accountNumber}/complex-orders`, token),
-    ]);
-    const rawOrders = requests.flatMap(r => r.status === 'fulfilled' ? collectRawOrders(r.value) : []);
-    const seen = new Set<string>();
-    return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif)).filter(order => {
-      const tif = order.timeInForce.toUpperCase();
-      const type = order.orderType.toLowerCase();
-      // Parent OCO envelope has no tif/type — check nested sub-orders
-      // Accept if any nested order has GTC tif, or if tif is empty (parent envelope)
-      const isGtcTif = tif === 'GTC' || tif === '' || tif === 'PENDING';
-      const isLimitOrStop = type.includes('limit') || type.includes('stop') || type === '';
-      if ((!isGtcTif || !isLimitOrStop) && order.legs.length === 0) return false;
-      if (order.legs.length === 0) return false;
-      const key = `${order.id}|${order.orderType}|${order.price}|${order.stopPrice ?? ''}|${order.legs.map(l => `${l.symbol}:${l.action}`).join(',')}`;
-      if (seen.has(key)) return false;
-      seen.add(key); return true;
-    });
-  } catch { return []; }
+    const data = await ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=200`, token);
+    return (data?.data?.items ?? [])
+      .filter((o: any) => o['time-in-force'] === 'GTC' && o['order-type'] === 'Limit')
+      .map((o: any) => ({
+        id: o.id,
+        price: o.price,
+        legs: (o.legs ?? []).map((l: any) => ({ symbol: l.symbol, action: l.action })),
+      }));
+  } catch {
+    return [];
+  }
 }
 
-function classifyPositionStopLoss(position: Pick<Position, 'legs' | 'creditReceived'>, gtcOrders: GtcOrder[]): StopLossInfo {
-  const shortLeg = position.legs.find(l => l.direction === 'Short');
-  if (!shortLeg?.symbol) return { status: 'unknown', price: null };
-  const creditPerContract = shortLeg.quantity > 0 ? position.creditReceived / (shortLeg.quantity * 100) : position.creditReceived / 100;
-  const stopThreshold = parseFloat((creditPerContract * 2).toFixed(2));
-  const shortSymbol = normalizeOccSymbol(shortLeg.symbol);
+function classifyStopLoss(
+  candidate: SpreadCandidate,
+  gtcOrders: GtcOrder[]
+): { status: StopStatus; price: number | null } {
+  if (!candidate.shortOccSymbol) return { status: 'unknown', price: null };
+  const credit = candidate.totalCredit ?? candidate.credit;
+  const stopThreshold = parseFloat((credit * 2).toFixed(2));
   const match = gtcOrders.find(order =>
-    isStopOrder(order) && order.legs.some(leg => normalizeOccSymbol(leg.symbol) === shortSymbol && isBuyToCloseAction(leg.action))
+    order.legs.some(
+      leg => leg.symbol === candidate.shortOccSymbol && leg.action === 'Buy to Close'
+    )
   );
   if (!match) return { status: 'none', price: null };
-  const orderPrice = parseFloat(match.stopPrice ?? match.price);
+  const orderPrice = parseFloat(match.price);
   if (isNaN(orderPrice)) return { status: 'unknown', price: null };
-  return orderPrice <= stopThreshold + 0.02 ? { status: 'live', price: orderPrice } : { status: 'loose', price: orderPrice };
+  if (orderPrice <= stopThreshold + 0.01) return { status: 'live', price: orderPrice };
+  return { status: 'loose', price: orderPrice };
 }
-
-async function loadPositions(): Promise<Position[]> {
-  const token = await getAccessToken();
-  const accountsData = await ttFetch('/customers/me/accounts', token);
-  const accounts = accountsData?.data?.items ?? [];
-  if (accounts.length === 0) throw new Error('No accounts found');
-  const accountNumber = accounts[0]?.account?.['account-number'];
-  if (!accountNumber) throw new Error('Could not read account number');
-
-  const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
-  const rawPositions = positionsData?.data?.items ?? [];
-  const optionPositions = rawPositions.filter((p: any) =>
-    p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
-  );
-
-  const groups: Record<string, any[]> = {};
-  for (const pos of optionPositions) {
-    const key = `${pos['underlying-symbol']}::${pos['expires-at']?.slice(0, 10) ?? 'unknown'}`;
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(pos);
-  }
-
-  const allOptionSymbols = optionPositions.map((p: any) => p.symbol).filter(Boolean);
-  const currentPrices: Record<string, number> = {};
-  const thetaMap: Record<string, number> = {};
-  const gammaMap: Record<string, number> = {};
-  const deltaMap: Record<string, number> = {};
-  const vegaMap:  Record<string, number> = {};
-  if (allOptionSymbols.length > 0) {
-    try {
-      for (let i = 0; i < allOptionSymbols.length; i += 50) {
-        const chunk = allOptionSymbols.slice(i, i + 50);
-        const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
-        const priceData = await ttFetch(`/market-data/by-type?${qs}`, token);
-        for (const item of priceData?.data?.items ?? []) {
-          const sym = item.symbol?.replace(/\s+/g, '');
-          if (!sym) continue;
-          const bid = parseFloat(item.bid ?? '0');
-          const ask = parseFloat(item.ask ?? '0');
-          const mark = parseFloat(item.mark ?? item['mark-price'] ?? '0');
-          const mid = (bid + ask) / 2;
-          currentPrices[sym] = mid > 0 ? mid : mark > 0 ? mark : 0;
-          const theta = parseFloat(item.theta ?? 'NaN');
-          const gamma = parseFloat(item.gamma ?? 'NaN');
-          const delta = parseFloat(item.delta ?? 'NaN');
-          const vega  = parseFloat(item.vega  ?? 'NaN');
-          if (!isNaN(theta)) thetaMap[sym] = theta;
-          if (!isNaN(gamma)) gammaMap[sym] = gamma;
-          if (!isNaN(delta)) deltaMap[sym] = delta;
-          if (!isNaN(vega))  vegaMap[sym]  = vega;
-        }
-      }
-    } catch {}
-  }
-
-  const ivrMap: Record<string, number | null> = {};
-  const ivMap:  Record<string, number | null> = {};
-  const hv30Map: Record<string, number | null> = {};
-  const betaMap: Record<string, number | null> = {};
-  const earningsMap: Record<string, string | null> = {};
+async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
-    const underlyingSymbols: string[] = (optionPositions as any[]).map((p: any) => String(p['underlying-symbol'])).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
-    const metricsData = await ttFetch(`/market-metrics?symbols=${encodeURIComponent(underlyingSymbols.join(','))}`, token);
-    for (const item of metricsData?.data?.items ?? []) {
-      const sym = item['symbol'];
-      // IVR
-      const rawIvr = item['implied-volatility-index-rank'] ?? item['iv-rank'] ?? null;
-      const parsedIvr = rawIvr != null ? parseFloat(String(rawIvr)) : NaN;
-      if (!isNaN(parsedIvr)) ivrMap[sym] = parsedIvr < 1 ? Math.round(parsedIvr * 100) : Math.round(parsedIvr);
-      // IV (current implied volatility as %)
-      const rawIv = item['implied-volatility'] ?? item['iv'] ?? item['implied-volatility-30-day'] ?? item['iv-30-day'] ?? null;
-      const parsedIv = rawIv != null ? parseFloat(String(rawIv)) : NaN;
-      if (!isNaN(parsedIv)) ivMap[sym] = parsedIv < 1 ? Math.round(parsedIv * 100) : Math.round(parsedIv);
-      // HV30
-      const rawHv = item['hv-30'] ?? item['historical-volatility-30'] ?? item['hv30'] ?? item['historical-volatility'] ?? null;
-      const parsedHv = rawHv != null ? parseFloat(String(rawHv)) : NaN;
-      if (!isNaN(parsedHv)) hv30Map[sym] = parsedHv < 1 ? Math.round(parsedHv * 100) : Math.round(parsedHv);
-      // Debug: log raw metrics for indexes so we can see what fields come back
-      if (['SPX','NDX','RUT','VIX'].includes(sym)) {
-        console.log(`METRICS ${sym}:`, JSON.stringify(item).slice(0, 500));
-      }
-      // Beta
-      const rawBeta = item['beta'] ?? item['beta-60-day'] ?? null;
-      const parsedBeta = rawBeta != null ? parseFloat(String(rawBeta)) : NaN;
-      if (!isNaN(parsedBeta)) betaMap[sym] = parsedBeta;
-      // Earnings — next earnings date within 60 days
-      const earningsRaw = item['earnings'] ?? item['next-earnings-date'] ?? null;
-      if (earningsRaw) {
-        const eDate = String(earningsRaw?.['expected-report-date'] ?? earningsRaw ?? '');
-        if (eDate && eDate.match(/\d{4}-\d{2}-\d{2}/)) earningsMap[sym] = eDate;
-      }
+    const data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
+    const item = data.data?.items?.[0]; if (!item) return null;
+    const last = item.last != null ? parseFloat(item.last) : null;
+    const bid = item.bid != null ? parseFloat(item.bid) : null;
+    const ask = item.ask != null ? parseFloat(item.ask) : null;
+    return last ?? (bid && ask ? (bid + ask) / 2 : null);
+  } catch { return null; }
+}
+async function getChain(symbol: string, token: string, RULES: RulesType): Promise<{ expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean }> {
+  const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
+  // Detect ETF/Index from TastyTrade instrument-type — no hardcoded list needed
+  const instrumentType: string = nested?.data?.items?.[0]?.['instrument-type'] ?? '';
+  const isEtfOrIndex = ['ETF', 'Index', 'Future'].some(t => instrumentType.toLowerCase().includes(t.toLowerCase()))
+    || INDEX_TICKERS.has(symbol.toUpperCase()); // fallback for known tickers
+  const expirations: string[] = [], chains: Record<string, any[]> = {}, allOCCSymbols: string[] = [];
+  const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
+  for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
+    const expDate: string = expGroup['expiration-date']; if (!expDate) continue;
+    const dte = daysUntil(expDate); if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
+    for (const strike of expGroup.strikes ?? []) {
+      const strikePrice = parseFloat(strike['strike-price'] ?? '0');
+      const callSym: string = strike['call'], putSym: string = strike['put'];
+      if (callSym) { allOCCSymbols.push(callSym); symbolMeta[callSym] = { expDate, strike: strikePrice, optionType: 'C' }; }
+      if (putSym) { allOCCSymbols.push(putSym); symbolMeta[putSym] = { expDate, strike: strikePrice, optionType: 'P' }; }
     }
-  } catch {}
-
-  const stockPrices: Record<string, number | null> = {};
-  try {
-    const underlyingSymbols: string[] = (optionPositions as any[]).map((p: any) => String(p['underlying-symbol'])).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
-    const indexSymbols = underlyingSymbols.filter(s => ['SPX','NDX','RUT','VIX','DJX'].includes(s.toUpperCase()));
-    const equitySymbols = underlyingSymbols.filter(s => !['SPX','NDX','RUT','VIX','DJX'].includes(s.toUpperCase()));
-    const qsParts: string[] = [
-      ...equitySymbols.map(s => `equity=${encodeURIComponent(s)}`),
-      ...indexSymbols.map(s => `index=${encodeURIComponent(s)}`),
-    ];
-    if (qsParts.length > 0) {
-      const stockData = await ttFetch(`/market-data/by-type?${qsParts.join('&')}`, token);
-      for (const item of stockData?.data?.items ?? []) {
-        const bid = parseFloat(item.bid ?? '0'); const ask = parseFloat(item.ask ?? '0');
-        const mark = parseFloat(item.mark ?? item['mark-price'] ?? '0');
-        const mid = (bid + ask) / 2;
-        stockPrices[item.symbol] = mid > 0 ? mid : mark > 0 ? mark : 0;
-      }
+  }
+  if (allOCCSymbols.length === 0) return { expirations, chains, isEtfOrIndex };
+  for (let i = 0; i < allOCCSymbols.length; i += 100) {
+    const chunk = allOCCSymbols.slice(i, i + 100);
+    const qs = chunk.map(s => `equity-option=${encodeURIComponent(s)}`).join('&');
+    let greeksData: any;
+    try { greeksData = await ttFetch(`/market-data/by-type?${qs}`, token); } catch { continue; }
+    for (const item of greeksData?.data?.items ?? []) {
+      const meta = symbolMeta[item.symbol]; if (!meta) continue;
+      const bid = parseFloat(item.bid ?? '0'), ask = parseFloat(item.ask ?? '0');
+      const delta = item.delta != null ? parseFloat(item.delta) : null;
+      const oi = parseInt(item['open-interest'] ?? '0', 10);
+      if (!expirations.includes(meta.expDate)) expirations.push(meta.expDate);
+      if (!chains[meta.expDate]) chains[meta.expDate] = [];
+      chains[meta.expDate].push({ strikePrice: meta.strike, expirationDate: meta.expDate, optionType: meta.optionType, delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2, occSymbol: item.symbol });
     }
-  } catch {}
+  }
+  expirations.sort(); return { expirations, chains, isEtfOrIndex };
+}
 
-  const gtcOrders = await fetchGtcOrders(accountNumber, token);
-  const gtcSymbols = new Set<string>();
-  for (const order of gtcOrders) for (const leg of order.legs) {
-    const parsed = parseOptionSymbol(leg.symbol);
-    if (parsed.strikePrice > 0) gtcSymbols.add(leg.symbol.split(/\d{6}/)[0].trim());
+// ── HUNTER Logic ─────────────────────────────────────────────────────────
+function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string, width: number, price: number | null, RULES: RulesType): SpreadCandidate | null {
+  const bidAskMax = getBidAskMax(price);
+  const candidates: SpreadCandidate[] = [];
+  for (const shortLeg of legs) {
+    const delta = shortLeg.delta; if (delta == null) continue;
+    const absDelta = Math.abs(delta);
+    if (absDelta < RULES.SPREAD_DELTA_MIN || absDelta > RULES.SPREAD_DELTA_MAX) continue;
+    if (shortLeg.openInterest < RULES.OI_MIN || shortLeg.ask - shortLeg.bid > bidAskMax) continue;
+    const longStrike = strategy === 'BPS' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
+    const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
+    if (!longLeg || longLeg.openInterest < RULES.OI_MIN || longLeg.ask - longLeg.bid > bidAskMax) continue;
+    const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
+    const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
+    const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_SPREAD) continue;
+    const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
+    candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop, optimized: true, shortOccSymbol: shortLeg.occSymbol, longOccSymbol: longLeg.occSymbol });
+  }
+  if (candidates.length === 0) return null;
+  // Pick best POP; use ROC as tiebreaker when POP difference is < 5%
+  return candidates.sort((a, b) => {
+    const popDiff = (b.pop ?? 0) - (a.pop ?? 0);
+    if (Math.abs(popDiff) >= 5) return popDiff;
+    return b.roc - a.roc;
+  })[0];
+}
+function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
+  const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === (strategy === 'BPS' ? 'P' : 'C'));
+  const allCandidates: SpreadCandidate[] = [];
+  for (const width of getWidthSteps(RULES.MAX_SPREAD_WIDTH, price)) {
+    const c = trySpreadAtWidth(legs, strategy, expDate, width, price, RULES);
+    if (c) allCandidates.push(c);
+  }
+  if (allCandidates.length === 0) return null;
+  // Pick best POP across all widths; ROC tiebreaker when POP difference is < 5%
+  return allCandidates.sort((a, b) => {
+    const popDiff = (b.pop ?? 0) - (a.pop ?? 0);
+    if (Math.abs(popDiff) >= 5) return popDiff;
+    return b.roc - a.roc;
+  })[0];
+}
+function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, price: number | null, RULES: RulesType, minCallStrike?: number): { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number; pop: number; shortOccSymbol?: string; longOccSymbol?: string } | null {
+  const bidAskMax = getBidAskMax(price);
+  const candidates: { shortStrike: number; longStrike: number; shortDelta: number; credit: number; creditRatio: number; roc: number; shortOI: number; longOI: number; pop: number; shortOccSymbol?: string; longOccSymbol?: string }[] = [];
+  for (const shortLeg of legs) {
+    if (side === 'call' && minCallStrike != null && shortLeg.strikePrice <= minCallStrike) continue;
+    const delta = shortLeg.delta; if (delta == null) continue;
+    const absDelta = Math.abs(delta);
+    if (absDelta < RULES.IC_DELTA_MIN || absDelta > RULES.IC_DELTA_MAX) continue;
+    if (shortLeg.openInterest < RULES.OI_MIN || shortLeg.ask - shortLeg.bid > bidAskMax) continue;
+    const longStrike = side === 'put' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
+    const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
+    if (!longLeg || longLeg.openInterest < RULES.OI_MIN || longLeg.ask - longLeg.bid > bidAskMax) continue;
+    const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
+    const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
+    const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
+    const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
+    candidates.push({ shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, credit, creditRatio, roc, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, pop, shortOccSymbol: shortLeg.occSymbol, longOccSymbol: longLeg.occSymbol });
+  }
+  if (candidates.length === 0) return null;
+  // Pick best POP; ROC tiebreaker within 5%
+  return candidates.sort((a, b) => {
+    const popDiff = b.pop - a.pop;
+    if (Math.abs(popDiff) >= 5) return popDiff;
+    return b.roc - a.roc;
+  })[0];
+}
+function findBestIC(chain: any[], expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
+  const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P');
+  const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C');
+  const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
+  let bestPut: (ReturnType<typeof tryICSideAtWidth> & { width: number }) | null = null;
+  for (const width of widthSteps) { const c = tryICSideAtWidth(puts, 'put', width, price, RULES); if (c && (bestPut === null || c.roc > bestPut.roc)) bestPut = { ...c, width }; }
+  if (!bestPut) return null;
+  let bestCall: (ReturnType<typeof tryICSideAtWidth> & { width: number }) | null = null;
+  for (const width of widthSteps) { const c = tryICSideAtWidth(calls, 'call', width, price, RULES, bestPut.shortStrike); if (c && (bestCall === null || c.roc > bestCall.roc)) bestCall = { ...c, width }; }
+  if (!bestCall) return null;
+  const totalCredit = parseFloat((bestPut.credit + bestCall.credit).toFixed(2));
+  const maxLoss = Math.max(bestPut.width - bestPut.credit, bestCall.width - bestCall.credit);
+  const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_IC) return null;
+  return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, optimized: true, shortOccSymbol: bestPut.shortOccSymbol, longOccSymbol: bestPut.longOccSymbol, shortCallOccSymbol: bestCall.shortOccSymbol, longCallOccSymbol: bestCall.longOccSymbol };
+}
+
+
+// ── Rank Mode — Unfiltered Spread Finder ──────────────────────────────────
+// In rank mode we always want to show the best available spread regardless
+// of rules. Only gates: delta must exist, long leg must exist, credit > 0.
+function findBestSpreadUnfiltered(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null): SpreadCandidate | null {
+  const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === (strategy === 'BPS' ? 'P' : 'C'));
+  const candidates: SpreadCandidate[] = [];
+  const stepSize = price == null ? 5 : price >= 2000 ? 25 : 5;
+  const maxWidth = price == null ? 100 : Math.min(price * 0.15, 500);
+  for (let width = stepSize; width <= maxWidth; width += stepSize) {
+    for (const shortLeg of legs) {
+      const delta = shortLeg.delta; if (delta == null) continue;
+      const absDelta = Math.abs(delta); if (absDelta < 0.05 || absDelta > 0.60) continue;
+      const longStrike = strategy === 'BPS' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
+      const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
+      if (!longLeg) continue;
+      const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
+      const creditRatio = credit / width;
+      const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
+      const pop = (1 - absDelta) * 100;
+      candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest ?? 0, longOI: longLeg.openInterest ?? 0, credit, spreadWidth: width, creditRatio, roc, pop, optimized: false });
+    }
+  }
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => {
+    const popDiff = (b.pop ?? 0) - (a.pop ?? 0);
+    if (Math.abs(popDiff) >= 5) return popDiff;
+    return b.roc - a.roc;
+  })[0];
+}
+
+function findBestICUnfiltered(chain: any[], expDate: string, price: number | null): SpreadCandidate | null {
+  const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P');
+  const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C');
+  const putSpread = findBestSpreadUnfiltered([...puts.map((o: any) => ({ ...o, optionType: 'P' })), ...puts.map((o: any) => ({ ...o, optionType: 'P' }))], 'BPS', expDate, price);
+  const callSpread = findBestSpreadUnfiltered([...calls.map((o: any) => ({ ...o, optionType: 'C' })), ...calls.map((o: any) => ({ ...o, optionType: 'C' }))], 'BCS', expDate, price);
+  if (!putSpread || !callSpread) return null;
+  const totalCredit = parseFloat((putSpread.credit + callSpread.credit).toFixed(2));
+  const maxLoss = Math.max(putSpread.spreadWidth - putSpread.credit, callSpread.spreadWidth - callSpread.credit);
+  const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0;
+  return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: putSpread.shortStrike, longStrike: putSpread.longStrike, shortDelta: putSpread.shortDelta, shortOI: putSpread.shortOI, longOI: putSpread.longOI, credit: putSpread.credit, spreadWidth: putSpread.spreadWidth, creditRatio: putSpread.creditRatio, roc, pop: (1 - putSpread.shortDelta - callSpread.shortDelta) * 100, shortCallStrike: callSpread.shortStrike, longCallStrike: callSpread.longStrike, callCredit: callSpread.credit, callWidth: callSpread.spreadWidth, totalCredit, optimized: false };
+}
+
+function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, STOCK_RULES: RulesType, trendResult?: TrendResult, stockPresetLabel?: string, ETF_RULES_PARAM?: RulesType, etfPresetLabel?: string): ScreenResult {
+  const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
+  const isIndex = chainData.isEtfOrIndex ?? INDEX_TICKERS.has(symbol.toUpperCase());
+  // Auto-select the right rule set based on ticker type
+  const RULES = isIndex ? (ETF_RULES_PARAM ?? { ...DEFAULT_ETF_RULES }) : STOCK_RULES;
+  const appliedLabel = isIndex
+    ? (etfPresetLabel ? `ETF — ${etfPresetLabel}` : 'ETF rules')
+    : (stockPresetLabel ?? 'Custom');
+  const effectiveRules: RulesType = RULES;
+  const effectiveIvrMin = isIndex ? INDEX_IVR_MIN : effectiveRules.IVR_MIN;
+  const ivrCheck: CheckResult = ivrValue == null ? { status: 'warn', value: 'N/A', reason: 'Not available' } : ivrValue < effectiveIvrMin ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% < ${effectiveIvrMin}%`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: `Below ${effectiveIvrMin}% minimum${isIndex ? ' (index)' : ''}` }; })() : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: isIndex ? `Above ${effectiveIvrMin}% (index floor)` : 'Above minimum' };
+
+  // Earnings buffer auto-derived: DTE_MAX + 5 days cushion
+  const earningsBuffer = RULES.DTE_MAX + 5;
+  let earningsCheck: CheckResult;
+  if (isIndex) {
+    earningsCheck = { status: 'pass', value: 'N/A (index/ETF)', reason: 'No earnings events' };
+  } else if (!earningsDate) {
+    earningsCheck = { status: 'pass', value: 'None found', reason: 'Safe to trade' };
+  } else {
+    const d = daysUntil(earningsDate);
+    if (d < 0) {
+      earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
+    } else if (d < earningsBuffer) {
+      failReasons.push(`Earnings in ${d}d`);
+      earningsCheck = { status: 'fail', value: `${d}d (${earningsDate})`, reason: `Within ${earningsBuffer}d buffer (DTE Max + 5)` };
+    } else {
+      earningsCheck = { status: 'pass', value: `${d}d (${earningsDate})`, reason: `Outside ${earningsBuffer}d buffer` };
+    }
   }
 
-  try {
-    const liveData = await Promise.allSettled([
-      ttFetch(`/accounts/${accountNumber}/orders/live`, token),
-    ]);
-    const allOrders = (liveData[0].status === 'fulfilled' ? liveData[0].value?.data?.items : null) ?? [];
-    for (const order of allOrders) {
-      const status = (order['status'] ?? '').toLowerCase();
-      if (['working', 'live', 'contingent', 'received', 'pending', 'queued'].includes(status)) {
-        for (const leg of order.legs ?? []) {
-          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
-          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
-        }
-      }
-    }
-  } catch {}
-
-  try {
-    const complexData = await ttFetch(`/accounts/${accountNumber}/complex-orders`, token);
-    for (const order of complexData?.data?.items ?? []) {
-      // Parent OCO envelope has no status/tif/type — check nested sub-orders instead
-      const nestedOrders: any[] = order.orders ?? [];
-      const hasActiveNested = nestedOrders.some(no => {
-        const s = (no['status'] ?? '').toLowerCase();
-        return ['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(s);
-      });
-      // Also accept if parent has no terminal-at (still open) and has nested orders
-      const parentActive = !order['terminal-at'] && nestedOrders.length > 0;
-      console.log(`COMPLEX ORDER: id=${order.id} hasActiveNested=${hasActiveNested} parentActive=${parentActive} nestedStatuses=${nestedOrders.map((o:any) => o['status']).join(',')}`);
-      if (hasActiveNested || parentActive) {
-        for (const nestedOrder of nestedOrders) for (const leg of nestedOrder.legs ?? []) {
-          // Prefer underlying-symbol; fall back to parsing the OCC option symbol
-          const underlying = leg['underlying-symbol'];
-          if (underlying) {
-            gtcSymbols.add(underlying.split(' ')[0].trim());
-          } else if (leg.symbol) {
-            // OCC format: SPX   260726P07290000 — split on first digit sequence
-            const fromOcc = leg.symbol.split(/\d{6}/)[0].trim();
-            if (fromOcc) gtcSymbols.add(fromOcc);
-          }
-        }
-      }
-    }
-  } catch {}
-
-  const plBySymbol: Record<string, number> = {};
-  try {
-    const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
-    for (const item of plData?.data?.items ?? []) {
-      const sym = item['underlying-symbol']; if (!sym) continue;
-      const qty = parseFloat(item['quantity'] ?? '1');
-      const multiplier = parseFloat(item['multiplier'] ?? '100');
-      const avgOpen = parseFloat(item['average-open-price'] ?? '0');
-      const mark = parseFloat(item['mark-price'] ?? '0');
-      const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
-      plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
-    }
-  } catch {}
-
-  let profitTargets: Record<string, number> = {};
-  try { profitTargets = JSON.parse(localStorage.getItem(LS_PROFIT_TARGETS) ?? '{}'); } catch {}
-
-  const today = new Date();
-  const positions: Position[] = Object.entries(groups).map(([key, legs]) => {
-    const [symbol, expDate] = key.split('::');
-    const dte = Math.round((new Date(expDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    const openedAt = legs[0]?.['created-at']?.slice(0, 10) ?? null;
-    const entryDte = openedAt ? Math.round((new Date(expDate).getTime() - new Date(openedAt).getTime()) / (1000 * 60 * 60 * 24)) : dte;
-    const putLegs = legs.filter((l: any) => parseOptionSymbol(l.symbol).optionType === 'P');
-    const callLegs = legs.filter((l: any) => parseOptionSymbol(l.symbol).optionType === 'C');
-    let strategy = 'UNKNOWN';
-    if (putLegs.length >= 2 && callLegs.length === 0) strategy = 'BPS';
-    else if (callLegs.length >= 2 && putLegs.length === 0) strategy = 'BCS';
-    else if (putLegs.length >= 2 && callLegs.length >= 2) strategy = 'IC';
-    else if (putLegs.length === 1) strategy = 'PUT';
-    else if (callLegs.length === 1) strategy = 'CALL';
-
-    let creditReceived = 0;
-    for (const leg of legs) {
-      const qty = parseInt(leg['quantity'] ?? '1', 10);
-      const avgPrice = parseFloat(leg['average-open-price'] ?? '0');
-      creditReceived += leg['quantity-direction'] === 'Short' ? avgPrice * qty : -(avgPrice * qty);
-    }
-    creditReceived = creditReceived * 100;
-
-    let currentValue = 0; let hasCurrentPrices = true;
-    for (const leg of legs) {
-      const qty = parseInt(leg['quantity'] ?? '1', 10);
-      const price = currentPrices[leg.symbol?.replace(/\s+/g, '')];
-      if (price == null) { hasCurrentPrices = false; break; }
-      currentValue += leg['quantity-direction'] === 'Short' ? price * qty : -(price * qty);
-    }
-    currentValue = currentValue * 100;
-
-    const pnl = hasCurrentPrices ? Math.abs(creditReceived) - Math.abs(currentValue) : null;
-    const pnlPct = creditReceived !== 0 && pnl != null ? (pnl / Math.abs(creditReceived)) * 100 : null;
-    const profitTarget = profitTargets[key] ?? 0.5;
-    const targetPrice = Math.abs(creditReceived) * profitTarget;
-    const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * profitTarget;
-
-    const positionLegs: PositionLeg[] = legs.map((l: any) => {
-      const parsed = parseOptionSymbol(l.symbol);
-      return {
-        symbol: l.symbol, optionType: parsed.optionType, strikePrice: parsed.strikePrice,
-        direction: l['quantity-direction'] as 'Short' | 'Long',
-        quantity: parseInt(l['quantity'] ?? '1', 10),
-        avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
-        currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
-      };
-    });
-
-    const stopLoss = classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders);
-
-    return {
-      key, symbol, expDate, dte, strategy, legs: positionLegs,
-      creditReceived: Math.abs(creditReceived),
-      currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
-      pnl, pnlPct, targetPrice, profitTarget, hitTarget,
-      plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
-      maxRisk: (() => {
-        const shorts = legs.filter((l: any) => l['quantity-direction'] === 'Short');
-        const longs  = legs.filter((l: any) => l['quantity-direction'] === 'Long');
-        if (shorts[0] && longs[0]) {
-          const w = Math.abs(parseOptionSymbol(shorts[0].symbol).strikePrice - parseOptionSymbol(longs[0].symbol).strikePrice);
-          return Math.max(0, (w * 100 * parseInt(shorts[0]['quantity'] ?? '1', 10)) - Math.abs(creditReceived));
-        }
-        return 0;
-      })(),
-      entryDte, entryDate: openedAt, needsClose: entryDte > 21 && dte <= 21, accountNumber,
-      ivr: ivrMap[symbol] ?? null,
-      iv: ivMap[symbol] ?? null,
-      hv30: hv30Map[symbol] ?? null,
-      beta: betaMap[symbol] ?? null,
-      earningsDate: earningsMap[symbol] ?? null,
-      hasGtc: (() => {
-        // Check both the position symbol and its weekly option variant
-        // SPX positions may have SPXW option legs; SPXW positions may have SPXW legs
-        if (gtcSymbols.has(symbol)) return true;
-        // Map underlying to possible OCC prefix variants
-        const variants: Record<string, string> = { 'SPX': 'SPXW', 'NDX': 'NDXP', 'RUT': 'RUTW', 'VIX': 'VIXW' };
-        const reverseVariants: Record<string, string> = { 'SPXW': 'SPX', 'NDXP': 'NDX', 'RUTW': 'RUT', 'VIXW': 'VIX' };
-        const variant = variants[symbol] ?? reverseVariants[symbol];
-        return variant ? gtcSymbols.has(variant) : false;
-      })(),
-      gtcOrderId: (() => {
-        const match = findProfitGtcOrder(positionLegs, gtcOrders);
-        return match?.id ?? null;
-      })(),
-      gtcOrderPrice: (() => {
-        const match = findProfitGtcOrder(positionLegs, gtcOrders);
-        return match ? parseFloat(match.price) || null : null;
-      })(),
-      stopLossStatus: stopLoss.status, stopLossPrice: stopLoss.price,
-      stockPrice: stockPrices[symbol] ?? null,
-      buffer: (() => {
-        const stock = stockPrices[symbol];
-        if (stock == null) return null;
-        const shorts = legs.filter((l: any) => l['quantity-direction'] === 'Short');
-        if (!shorts[0]) return null;
-        const shortStrike = parseOptionSymbol(shorts[0].symbol).strikePrice;
-        const optType = parseOptionSymbol(shorts[0].symbol).optionType;
-        return optType === 'P' ? ((stock - shortStrike) / stock) * 100 : ((shortStrike - stock) / stock) * 100;
-      })(),
-      theta: (() => {
-        let net = 0; let any = false;
-        for (const l of legs) {
-          const val = thetaMap[l.symbol?.replace(/\s+/g, '')];
-          if (val == null) continue;
-          const qty = parseInt(l['quantity'] ?? '1', 10);
-          net += l['quantity-direction'] === 'Short' ? Math.abs(val) * qty : -Math.abs(val) * qty;
-          any = true;
-        }
-        return any ? parseFloat(net.toFixed(4)) : null;
-      })(),
-      gamma: (() => {
-        let net = 0; let any = false;
-        for (const l of legs) {
-          const val = gammaMap[l.symbol?.replace(/\s+/g, '')];
-          if (val == null) continue;
-          const qty = parseInt(l['quantity'] ?? '1', 10);
-          net += l['quantity-direction'] === 'Short' ? -Math.abs(val) * qty : Math.abs(val) * qty;
-          any = true;
-        }
-        return any ? parseFloat(net.toFixed(4)) : null;
-      })(),
-      netDelta: (() => {
-        let net = 0; let any = false;
-        for (const l of legs) {
-          const val = deltaMap[l.symbol?.replace(/\s+/g, '')];
-          if (val == null) continue;
-          const qty = parseInt(l['quantity'] ?? '1', 10);
-          net += l['quantity-direction'] === 'Short' ? -val * qty : val * qty;
-          any = true;
-        }
-        return any ? parseFloat(net.toFixed(4)) : null;
-      })(),
-      netVega: (() => {
-        let net = 0; let any = false;
-        for (const l of legs) {
-          const val = vegaMap[l.symbol?.replace(/\s+/g, '')];
-          if (val == null) continue;
-          const qty = parseInt(l['quantity'] ?? '1', 10);
-          net += l['quantity-direction'] === 'Short' ? -Math.abs(val) * qty : Math.abs(val) * qty;
-          any = true;
-        }
-        return any ? parseFloat(net.toFixed(4)) : null;
-      })(),
-    };
-  });
-
-  const actionPriority: Record<string, number> = { CLOSE_ROLL: 0, CUT_LOSSES: 1, TAKE_PROFIT: 2, MANAGE: 3, WATCH: 4, HOLD: 5 };
-  positions.sort((a, b) => {
-    if (a.needsClose && !b.needsClose) return -1;
-    if (!a.needsClose && b.needsClose) return 1;
-    const aRec = getRecommendation(a, null).action;
-    const bRec = getRecommendation(b, null).action;
-    const aPri = actionPriority[aRec] ?? 9;
-    const bPri = actionPriority[bRec] ?? 9;
-    if (aPri !== bPri) return aPri - bPri;
-    return a.dte - b.dte;
-  });
-  return positions;
-}
-
-// ── Recommendation Engine ──────────────────────────────────────────────────
-interface Recommendation { action: ActionType; detail: string; }
-
-function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
-  const pnlPct = pos.pnl != null && pos.creditReceived !== 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
-  const targetPct = pos.profitTarget * 100;
-  const trendAgainst = trend && ((pos.strategy === 'BPS' && trend.trend === 'downtrend') || (pos.strategy === 'BCS' && trend.trend === 'uptrend'));
-  const trendAligns = trend && ((pos.strategy === 'BPS' && trend.trend === 'uptrend') || (pos.strategy === 'BCS' && trend.trend === 'downtrend') || (pos.strategy === 'IC' && trend.trend === 'sideways'));
-  if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
-  if (pos.needsClose && pnlPct < 0)  return { action: 'CUT_LOSSES', detail: `${pos.dte} DTE — close to prevent further loss` };
-  if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
-  if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
-  if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + trend confirms — exit` };
-  if (pnlPct < -15)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
-  if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
-  if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
-  if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
-  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
-}
-
-// Separate function so getRecommendation stays clean — called in PositionCard render
-function getExtendSignal(pos: Position): string | null {
-  if (!pos.hasGtc) return null;
-  const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
-  // Only suggest extension when: profit > 50%, DTE > 25, IVR >= 35, buffer > 5%
-  if (
-    pnlPct >= 50 &&
-    pos.dte >= 25 &&
-    (pos.ivr == null || pos.ivr >= 35) &&
-    (pos.buffer == null || pos.buffer >= 5)
-  ) {
-    return `↑ Consider extending — ${pnlPct.toFixed(0)}% profit with ${pos.dte}d left`;
+  const validExpirations = chainData.expirations.filter(exp => { const dte = daysUntil(exp); if (dte < effectiveRules.DTE_MIN || dte > effectiveRules.DTE_MAX) return false; if (!isIndex && earningsDate) { const ed = daysUntil(earningsDate); if (ed >= 0 && ed <= dte) return false; } return true; });
+  let bestCandidate: SpreadCandidate | null = null;
+  if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, effectiveRules) : findBestSpread(chainItems, strategy, exp, price, effectiveRules); if (bestCandidate) break; } }
+  // Rank mode fallback: if strict rules found nothing, try relaxed rules first, then fully unfiltered
+  if (!bestCandidate && ivrCheck.status !== 'fail' && validExpirations.length > 0) {
+    const relaxedRules: RulesType = { ...effectiveRules, CREDIT_RATIO_MIN: 0.15, ROC_MIN_SPREAD: 8, ROC_MIN_IC: 12, OI_MIN: 50, POP_MIN: 55, SPREAD_DELTA_MIN: 0.10, SPREAD_DELTA_MAX: 0.40, IC_DELTA_MIN: 0.10, IC_DELTA_MAX: 0.35 };
+    for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, relaxedRules) : findBestSpread(chainItems, strategy, exp, price, relaxedRules); if (bestCandidate) break; }
   }
-  return null;
-}
-
-// ── AI Analysis ───────────────────────────────────────────────────────────
-const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
-
-You are in a live conversation about a specific position or portfolio. The trader has already seen a structured analysis. They are now asking follow-up questions to dig deeper.
-
-RESPOND IN PLAIN CONVERSATIONAL PROSE. No JSON. No bullet headers. No structured output format. Talk like a senior trader giving direct advice over the phone — clear, specific, and honest. Use numbers when they matter. Be direct about risk. Don't hedge everything with disclaimers.
-
-You know the methodology deeply:
-- BPS for bullish/neutral, BCS for bearish, IC for range-bound
-- 50% profit target with GTC at entry, hard close at 21 DTE
-- IVR >= 30 for edge, buffer % to short strike is critical, gamma accelerates near expiry
-- When to deviate: high IV exceptions, broken thesis, early close to protect profits
-
-Keep responses focused and concise — 3-6 sentences unless the question genuinely requires more. If the trader asks about rolling, give specific guidance on strikes and expiry. If they ask about risk, quantify it. If they're thinking about something wrong, say so directly.`;
-
-const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
-
-CORE METHODOLOGY (know it deeply, apply it intelligently):
-- Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound
-- Entry rules (as guidelines): IVR ≥ 30, DTE 30-45, credit ≥ 1/3 spread width, OI ≥ 500, bid-ask ≤ $0.10
-- Target exits: 50% profit (place GTC at entry), hard close at 21 DTE regardless of P&L
-- Short strike deltas: BPS -0.20 to -0.30, BCS +0.20 to +0.30, IC ±0.16 to ±0.20
-- IC requires sideways price action 2+ weeks, no higher highs/lower lows
-
-WHEN TO DEVIATE FROM RULES (apply professional judgment):
-- If IV is very high (IVR > 70) and credit is exceptional, a wider spread or slightly aggressive delta can be justified
-- If a position is at 40% profit but 15 DTE with gamma risk rising sharply, closing early beats waiting for 50%
-- If trend has reversed hard against a spread, cutting losses at 1.5x credit is better than waiting for 2x
-- If IVR just dropped below 30 mid-trade but P&L is positive, holding can still make sense if trend confirms
-- If earnings are within the window but the spread is far OTM with minimal risk, evaluate the actual probability rather than auto-skip
-- Sometimes doing nothing is the hardest but best trade
-
-ANALYSIS PRINCIPLES:
-- Always consider the trend direction vs. the strategy type — a BPS in a downtrend is broken thesis
-- Buffer % to short strike is DTE-dependent — below 2% is always critical; below 3% matters at > 21 DTE; below 5% is only worth noting at > 30 DTE. A 3% buffer at 5 DTE is fine — theta is destroying the spread daily.
-- NEVER label a buffer as "critical threshold" or "minimum acceptable" unless it is actually below 2%. A 3% buffer at 44 DTE is a WATCH item, not a crisis. Use language like "worth monitoring" or "on the tighter side" instead.
-- IV edge = IV minus HV30. If either is unknown, say so but don't list it as a risk unless it's genuinely missing AND relevant to the recommendation.
-- High gamma near expiry (DTE < 21) magnifies risk exponentially — treat with respect
-- IV vs HV comparison: if IV >> HV (IV premium), edge exists; if IV ≈ HV, edge is thin
-- Theta decay accelerates in final 3 weeks — this is your friend if positioned correctly
-- Net delta tells you your directional exposure — you're supposed to be mostly neutral
-
-OUTPUT FORMAT (JSON only, no prose outside the JSON):
-For position analysis:
-{
-  "recommendation": "HOLD|CLOSE|ROLL|TAKE_PROFIT|CUT_LOSSES|WATCH|MANAGE",
-  "confidence": "HIGH|MEDIUM|LOW",
-  "summary": "1-2 sentence TL;DR",
-  "reasoning": "2-3 sentence explanation of your reasoning, including what the key factors are",
-  "risks": ["risk 1", "risk 2", "risk 3"],
-  "catalysts": ["positive factor 1", "positive factor 2"],
-  "deviatesFromRules": true|false,
-  "deviationNote": "null or explanation of why professional judgment overrides the standard rule"
-}
-
-For portfolio analysis:
-{
-  "netDeltaBias": "BULLISH|BEARISH|NEUTRAL",
-  "dominantRisk": "single sentence describing the biggest portfolio-level risk",
-  "sectorConcentration": ["sector concern 1", "sector concern 2"],
-  "thetaYield": "qualitative assessment of theta capture rate",
-  "topRisks": ["risk 1", "risk 2", "risk 3"],
-  "priorityActions": ["highest priority action", "second priority", "third priority"],
-  "marketContext": "how current market conditions affect this portfolio",
-  "summary": "2-3 sentence overall portfolio assessment"
-}
-
-Be direct. Be honest. If a position is in trouble, say so. If a rule should be broken, explain why.`;
-
-function buildPositionPrompt(pos: Position, trend: TrendResult | null): string {
-  const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
-  const ivEdge = pos.iv != null && pos.hv30 != null ? (pos.iv - pos.hv30) : null;
-
-  return `Analyze this open options position:
-
-POSITION: ${pos.symbol} ${pos.strategy}
-Expiry: ${pos.expDate} | DTE: ${pos.dte} | Entry DTE: ${pos.entryDte}
-Strikes: ${pos.legs.map(l => `${l.direction} ${l.strikePrice}${l.optionType}`).join(', ')}
-Credit received: $${pos.creditReceived.toFixed(2)} | Current buyback: $${pos.currentValue?.toFixed(2) ?? 'unknown'}
-P&L: ${pos.pnl != null ? `$${pos.pnl.toFixed(2)} (${pnlPct}% of credit)` : 'unknown'}
-Profit target: ${Math.round(pos.profitTarget * 100)}% ($${pos.targetPrice.toFixed(2)})
-Max risk: $${pos.maxRisk.toFixed(2)}
-
-MARKET DATA:
-Stock price: $${pos.stockPrice?.toFixed(2) ?? 'unknown'}
-Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
-IVR: ${pos.ivr ?? 'unknown'}
-Current IV: ${pos.iv ?? 'unknown'}%
-HV30: ${pos.hv30 ?? 'unknown'}%
-IV edge (IV - HV30): ${ivEdge != null ? `${ivEdge.toFixed(1)}%` : 'unknown'}
-Beta: ${pos.beta ?? 'unknown'}
-
-GREEKS (net position):
-Theta: ${pos.theta?.toFixed(4) ?? 'unknown'} (daily decay)
-Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
-
-OPERATIONAL STATUS:
-GTC order: ${pos.hasGtc ? 'Yes — profit target working' : 'No — unprotected'}
-Stop loss: ${pos.stopLossStatus} ${pos.stopLossPrice ? `@ $${pos.stopLossPrice}` : ''}
-Earnings within expiry: ${pos.earningsDate ? `Yes — ${pos.earningsDate}` : 'No'}
-
-TREND ANALYSIS:
-Direction: ${trend?.trend ?? 'unknown'} (confidence: ${trend?.confidence ?? 'unknown'}%)
-Suggested strategy: ${trend?.strategy ?? 'unknown'}
-Reason: ${trend?.reason ?? 'none'}
-
-Flags: ${[
-  pos.needsClose ? '⚠ AT 21 DTE — must close or roll' : '',
-  pos.hitTarget ? '✓ Profit target hit' : '',
-  !pos.hasGtc ? '⚠ No GTC order' : '',
-  pos.buffer != null && pos.buffer < 2 ? `⚠ CRITICAL buffer ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE — near breach` : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? `⚠ Tight buffer ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? `ℹ Buffer ${pos.buffer.toFixed(1)}% with ${pos.dte} DTE — watch closely` : '',
-  pos.earningsDate ? `⚠ Earnings ${pos.earningsDate}` : '',
-].filter(Boolean).join(', ') || 'None'}
-
-Provide your analysis as JSON only.`;
-}
-
-function buildPortfolioPrompt(positions: Position[]): string {
-  const lines = positions.map(p => {
-    const pnlPct = p.pnl != null && p.creditReceived > 0 ? ((p.pnl / p.creditReceived) * 100).toFixed(0) : '?';
-    return `${p.symbol} ${p.strategy}: DTE ${p.dte}, P&L ${pnlPct}%, buffer ${p.buffer?.toFixed(1) ?? '?'}%, IVR ${p.ivr ?? '?'}, ${p.needsClose ? 'NEEDS CLOSE' : p.hitTarget ? 'TARGET HIT' : 'active'}`;
-  });
-
-  const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
-  const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? 0), 0);
-  const totalAtRisk = positions.reduce((s, p) => s + p.maxRisk, 0);
-  const totalTheta = positions.reduce((s, p) => s + (p.theta ?? 0), 0);
-  const urgentCount = positions.filter(p => p.needsClose || p.hitTarget || (p.buffer != null && p.buffer < 5)).length;
-
-  return `Analyze this options portfolio as a whole:
-
-PORTFOLIO SUMMARY:
-${positions.length} open positions | ${urgentCount} requiring immediate attention
-Total credit collected: $${totalCredit.toFixed(2)}
-Current P&L: $${totalPnl.toFixed(2)} (${totalCredit > 0 ? ((totalPnl / totalCredit) * 100).toFixed(1) : 0}% of credit)
-Total at risk: $${totalAtRisk.toFixed(2)}
-Net theta/day: $${totalTheta.toFixed(2)}
-
-POSITIONS:
-${lines.join('\n')}
-
-STRATEGY MIX:
-BPS: ${positions.filter(p => p.strategy === 'BPS').length} | BCS: ${positions.filter(p => p.strategy === 'BCS').length} | IC: ${positions.filter(p => p.strategy === 'IC').length} | Other: ${positions.filter(p => !['BPS','BCS','IC'].includes(p.strategy)).length}
-
-SYMBOLS: ${positions.map(p => p.symbol).filter((v, i, a) => a.indexOf(v) === i).join(', ')}
-
-DTE DISTRIBUTION:
-< 21 DTE: ${positions.filter(p => p.dte < 21).length} positions
-21-30 DTE: ${positions.filter(p => p.dte >= 21 && p.dte <= 30).length} positions
-> 30 DTE: ${positions.filter(p => p.dte > 30).length} positions
-
-Provide portfolio-level analysis as JSON only.`;
-}
-
-const TRADING_VERDICT_PROMPT = `You are the most experienced options trader in the world. You have traded through every market cycle since the 1980s — Black Monday, the dot-com crash, 2008, COVID. You have made and lost fortunes and learned exactly when to hold, when to run, and when greed kills a good trade.
-
-A trader is about to take an action on an open options position. Your job is to evaluate that specific action and deliver a verdict — instantly, honestly, without hedging.
-
-You are NOT a financial advisor covering yourself with disclaimers. You are a mentor who will tell someone directly when they are about to make a stupid mistake, and who will give them confidence when the move is smart.
-
-VERDICT SCALE:
-- GO: This is a smart move. The data supports it. Execute it.
-- CAUTION: This might work but there are real risks. Proceed carefully and know what you're risking.
-- STOP: This is a mistake. The numbers say so. You need a very good reason to override this.
-
-WHAT TO EVALUATE PER ACTION:
-EXTEND_PROFIT (e.g. moving 50% target to 70%):
-- Is the remaining premium worth the risk? Calculate: remaining_credit = credit × (1 - new_target). Is that worth holding?
-- DTE: if < 21, gamma risk makes holding dangerous. If > 30, extension is more reasonable.
-- Trend: if trend is confirmed aligned, extension has merit. If trend is uncertain or against, don't be greedy.
-- Earnings approaching: never extend through an earnings event for extra premium.
-- Buffer: if buffer < 5%, don't extend — protect the capital.
-
-CLOSE_ROLL (closing and re-entering):
-- Are you rolling a winner (good) or a loser (dangerous — you're often just deferring pain)?
-- Can you collect meaningful credit on the new spread? If not, the roll just costs you money.
-- Is the trend still valid for the original strategy? Rolling a BPS in a downtrend is doubling a broken bet.
-- Mechanically: roll at 21 DTE to avoid gamma, not before.
-
-TAKE_PROFIT (closing for profit):
-- Is this at or near the 50% target? Taking 40-50% is almost always correct.
-- Is there a catalyst (earnings, Fed decision) making early exit smart? Good reason to deviate up.
-- Are they leaving too much on the table? If at 20% profit with 35 DTE, hold.
-
-CUT_LOSSES (closing at a loss):
-- Is the thesis genuinely broken (trend reversed, breach imminent) or is this just uncomfortable?
-- What's the actual loss vs max loss? If at 1x credit loss, cutting is reasonable. Beyond 2x, you should have cut already.
-- Buffer: use DTE-aware judgment — < 2% at any DTE is critical; < 3% only concerning if DTE > 21; < 5% only worth noting if DTE > 30. Short-dated positions (< 14 DTE) with thin buffers are often fine — theta is working hard.
-
-PLACE_GTC (placing a profit target order):
-- Almost always a GO — this is standard practice and protects the position.
-- Any profit target between 40-85% is valid and should NOT be flagged. The trader knows their target.
-- Only CAUTION if: target is below 20% (fires almost immediately, not worth the order) or above 90% (basically never fires).
-- Do NOT flag the buffer or any other position metric as a reason to CAUTION a PLACE_GTC. The GTC protects the position — placing it is always better than not placing it.
-- Do NOT comment on whether 50% vs 65% vs 75% is the right target. That is the trader's decision.
-
-OUTPUT FORMAT — JSON only, nothing else:
-{
-  "verdict": "GO|CAUTION|STOP",
-  "confidence": "HIGH|MEDIUM|LOW",
-  "headline": "Single blunt sentence. Max 15 words. Make it land.",
-  "reasoning": "2-3 sentences. Be specific — use the actual numbers from the position. Tell them exactly why."
-}`;
-
-function buildVerdictPrompt(pos: Position, action: EvaluatedAction, detail?: string): string {
-  const pnlPct = pos.pnl != null && pos.creditReceived > 0
-    ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
-  const creditPerContract = (pos.creditReceived / 100).toFixed(2);
-
-  const actionDesc = action === 'EXTEND_PROFIT' && detail
-    ? `EXTEND_PROFIT — moving profit target from current to ${detail}% (new BTC price: $${((pos.creditReceived / 100) * (1 - parseInt(detail) / 100)).toFixed(2)})`
-    : action === 'CLOSE_ROLL'
-    ? `CLOSE_ROLL — close current position and re-enter next expiry`
-    : action === 'TAKE_PROFIT'
-    ? `TAKE_PROFIT — close now for ${pnlPct}% of credit ($${pos.pnl?.toFixed(2) ?? '?'})`
-    : action === 'CUT_LOSSES'
-    ? `CUT_LOSSES — close at a loss of ${pnlPct}% (${pos.pnl?.toFixed(2) ?? '?'})`
-    : `PLACE_GTC — set profit target GTC order`;
-
-  // Pull relevant memory context for this symbol and action
-  const memoryContext = buildMemoryContext(pos.symbol, action);
-
-  return `Evaluate this specific action a trader is about to take:
-
-ACTION: ${actionDesc}
-
-POSITION: ${pos.symbol} ${pos.strategy}
-DTE: ${pos.dte} | Entry DTE: ${pos.entryDte}
-Strikes: ${pos.legs.map(l => `${l.direction} ${l.strikePrice}${l.optionType}`).join(', ')}
-Credit (total): $${pos.creditReceived.toFixed(2)} | Per contract: $${creditPerContract}
-Current buyback cost: $${pos.currentValue?.toFixed(2) ?? 'unknown'}
-P&L: $${pos.pnl?.toFixed(2) ?? 'unknown'} (${pnlPct}% of credit)
-Current profit target: ${Math.round(pos.profitTarget * 100)}%
-
-Stock price: $${pos.stockPrice?.toFixed(2) ?? 'unknown'}
-Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
-IVR: ${pos.ivr ?? 'unknown'} | IV: ${pos.iv ?? 'unknown'}% | HV30: ${pos.hv30 ?? 'unknown'}%
-Theta/day: ${pos.theta?.toFixed(4) ?? 'unknown'} | Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
-GTC working: ${pos.hasGtc ? 'Yes' : 'No'}
-Earnings: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None within expiry'}
-
-Flags: ${[
-    pos.needsClose ? 'AT 21 DTE' : '',
-    pos.hitTarget ? 'TARGET HIT' : '',
-    pos.buffer != null && pos.buffer < 2 ? `CRITICAL BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? `TIGHT BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? `WATCH BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : '',
-    pos.earningsDate ? `EARNINGS ${pos.earningsDate}` : '',
-    (pos.pnl ?? 0) < -pos.creditReceived ? 'LOSS EXCEEDS 1X CREDIT' : '',
-  ].filter(Boolean).join(', ') || 'None'}
-${memoryContext ? `\n${memoryContext}` : ''}
-Give your verdict as JSON only.`;
-}
-
-async function evaluateAction(pos: Position, action: EvaluatedAction, detail?: string): Promise<ActionVerdict> {
-  const prompt = buildVerdictPrompt(pos, action, detail);
-  const res = await fetch('/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 400,
-      system: TRADING_VERDICT_PROMPT,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error ?? `API error: ${res.status}`);
+  // Last resort: fully unfiltered — show best available strike regardless of rules
+  if (!bestCandidate && validExpirations.length > 0) {
+    for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestICUnfiltered(chainItems, exp, price) : findBestSpreadUnfiltered(chainItems, strategy, exp, price); if (bestCandidate) break; }
   }
-  const data = await res.json();
-  const text = (data?.content?.find((b: any) => b.type === 'text')?.text ?? '')
-    .replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  const parsed = JSON.parse(text);
-  return {
-    verdict: parsed.verdict,
-    confidence: parsed.confidence,
-    headline: parsed.headline,
-    reasoning: parsed.reasoning,
-  };
+  if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
+  else if (!bestCandidate && validExpirations.length > 0 && !failReasons.length) failReasons.push('No qualifying strikes found');
+  const oiCheck: CheckResult = !bestCandidate
+    ? { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' }
+    : (() => {
+        const minOI = Math.min(bestCandidate.shortOI, bestCandidate.longOI);
+        const val = `${bestCandidate.shortOI}/${bestCandidate.longOI}`;
+        if (minOI >= effectiveRules.OI_MIN) return { status: 'pass' as const, value: val, reason: `Both legs ≥ ${effectiveRules.OI_MIN}` };
+        if (minOI >= 100) return { status: 'warn' as const, value: val, reason: `Below target (${effectiveRules.OI_MIN}) — fills may be difficult` };
+        return { status: 'warn' as const, value: val, reason: `Very low OI — spread likely untradeable` };
+      })();
+  const deltaCheck: CheckResult = bestCandidate ? { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Within target range' } : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  const rawCredit = bestCandidate ? (bestCandidate.totalCredit ?? bestCandidate.credit) : 0;
+  const creditCheck: CheckResult = bestCandidate
+    ? { status: 'pass', value: `$${rawCredit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  const rocMin = strategy === 'IC' ? effectiveRules.ROC_MIN_IC : effectiveRules.ROC_MIN_SPREAD;
+  const rocCheck: CheckResult = bestCandidate ? { status: bestCandidate.roc >= rocMin ? 'pass' : 'fail', value: `${bestCandidate.roc.toFixed(0)}%`, reason: `Min ${rocMin}%` } : { status: 'pending', value: '—', reason: 'No candidate' };
+  const candidatePop = bestCandidate ? (bestCandidate.pop ?? 0) : 0;
+  const popMin = effectiveRules.POP_MIN;
+  const popCheck: CheckResult = bestCandidate
+    ? { status: candidatePop >= popMin ? 'pass' : 'fail', value: `${candidatePop.toFixed(0)}%`, reason: `Min ${popMin}%` }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+  if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
+  const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
 }
 
-async function callAI(userMessage: string): Promise<string> {
-  // Calls our own Next.js API route which proxies to Anthropic server-side.
-  // Direct browser → api.anthropic.com calls are blocked by CORS.
-  const res = await fetch('/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1000,
-      system: TRADING_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userMessage }],
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error ?? `API error: ${res.status}`);
-  }
-  const data = await res.json();
-  const text = data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
-  return text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-}
+// ── UI Helpers ─────────────────────────────────────────────────────────────
+const statusColor = (s: string) => s === 'pass' ? 'text-emerald-500' : s === 'fail' ? 'text-red-500' : s === 'warn' ? 'text-yellow-500' : 'text-slate-400';
+const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
+const trendColor = (t: string) => t === 'uptrend' ? 'text-emerald-500' : t === 'downtrend' ? 'text-red-500' : t === 'sideways' ? 'text-blue-500' : 'text-slate-400';
+const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '↓' : t === 'sideways' ? '→' : '?';
+const strategyAccent = (s: string) => s === 'BPS' ? 'border-l-4 border-l-emerald-500' : s === 'BCS' ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500';
 
-interface ChatMessage { role: 'user' | 'assistant'; content: string; }
-
-async function callAIWithHistory(messages: ChatMessage[], systemOverride?: string): Promise<string> {
-  const res = await fetch('/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1200,
-      system: systemOverride ?? TRADING_SYSTEM_PROMPT,
-      messages,
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error ?? `API error: ${res.status}`);
-  }
-  const data = await res.json();
-  const text = data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
-  return text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-}
-
-async function analyzePosition(pos: Position, trend: TrendResult | null): Promise<PositionAnalysis> {
-  const prompt = buildPositionPrompt(pos, trend);
-  const raw = await callAI(prompt);
-  const parsed = JSON.parse(raw);
-  return {
-    positionKey: pos.key,
-    symbol: pos.symbol,
-    loading: false,
-    error: null,
-    recommendation: parsed.recommendation,
-    confidence: parsed.confidence,
-    summary: parsed.summary,
-    reasoning: parsed.reasoning,
-    risks: parsed.risks ?? [],
-    catalysts: parsed.catalysts ?? [],
-    deviatesFromRules: parsed.deviatesFromRules ?? false,
-    deviationNote: parsed.deviationNote ?? null,
-    generatedAt: new Date().toISOString(),
-  };
-}
-
-async function analyzePortfolio(positions: Position[]): Promise<PortfolioAnalysis> {
-  const prompt = buildPortfolioPrompt(positions);
-  const raw = await callAI(prompt);
-  const parsed = JSON.parse(raw);
-  return {
-    loading: false,
-    error: null,
-    netDelta: null,
-    dominantRisk: parsed.dominantRisk ?? '',
-    sectorConcentration: parsed.sectorConcentration ?? [],
-    thetaYield: parsed.thetaYield ?? '',
-    topRisks: parsed.topRisks ?? [],
-    priorityActions: parsed.priorityActions ?? [],
-    marketContext: parsed.marketContext ?? '',
-    summary: parsed.summary ?? '',
-    generatedAt: new Date().toISOString(),
-  };
-}
-
-// Map index symbols to their chart-compatible equivalents
-const INDEX_CHART_SYMBOLS: Record<string, string> = {
-  'SPX': 'SPY',   // Use SPY as proxy for SPX trend — highly correlated, better data availability
-  'NDX': 'QQQ',   // Use QQQ as proxy for NDX
-  'RUT': 'IWM',   // Use IWM as proxy for RUT
-  'VIX': 'VIX',
-  'DJX': 'DIA',
-};
-
-async function getTrend(symbol: string): Promise<TrendResult> {
-  const chartSymbol = INDEX_CHART_SYMBOLS[symbol.toUpperCase()] ?? symbol;
-  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(chartSymbol)}`, { cache: 'no-store' });
-  if (!res.ok) return { trend: 'unknown', strategy: 'NO_TRADE', confidence: 0, reason: 'Chart data unavailable' };
-  const data = await res.json();
-  const bars: { c: number }[] = data?.bars ?? [];
-  const closes = bars.map((b: any) => b.c).filter((c: any): c is number => Number.isFinite(c));
-  if (closes.length < 50) return { trend: 'unknown', strategy: 'NO_TRADE', confidence: 0, reason: 'Not enough data' };
-  const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
-  const price = closes[closes.length - 1];
-  const ma20 = avg(closes.slice(-20)); const ma50 = avg(closes.slice(-50));
-  const mom20 = (price - closes[closes.length - 21]) / closes[closes.length - 21];
-  const low20 = Math.min(...closes.slice(-20)); const high20 = Math.max(...closes.slice(-20));
-  const higherLows = low20 > Math.min(...closes.slice(-40, -20)) * 0.985;
-  const lowerHighs = high20 < Math.max(...closes.slice(-40, -20)) * 1.015;
-  let score = 0;
-  if (price > ma20) score += 2; else score -= 2;
-  if (price > ma50) score += 2; else score -= 2;
-  if (ma20 > ma50) score += 2; else score -= 2;
-  if (mom20 > 0.03) score += 2; else if (mom20 < -0.03) score -= 2;
-  if (higherLows) score += 2; else if (lowerHighs) score -= 2;
-  const confidence = Math.min(100, Math.abs(score) * 10);
-  if (score >= 4) return { trend: 'uptrend', strategy: 'BPS', confidence, reason: 'Price above MA20/MA50, positive momentum' };
-  if (score <= -4) return { trend: 'downtrend', strategy: 'BCS', confidence, reason: 'Price below MA20/MA50, negative momentum' };
-  return { trend: 'sideways', strategy: 'IC', confidence, reason: 'Mixed signals, range-bound' };
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-function stratColor(strategy: string) {
-  if (strategy === 'BPS') return 'text-emerald-400 border-emerald-700';
-  if (strategy === 'BCS') return 'text-red-400 border-red-700';
-  if (strategy === 'IC')  return 'text-blue-400 border-blue-700';
-  return 'text-slate-400 border-slate-700';
-}
-function pnlColor(pnl: number | null) { return pnl == null ? 'text-slate-400' : pnl >= 0 ? 'text-emerald-400' : 'text-red-400'; }
-function dteColor(dte: number) { if (dte <= 7) return 'text-red-500 font-bold'; if (dte <= 21) return 'text-yellow-400 font-bold'; return 'text-slate-400'; }
-
-const ACTION_META: Record<ActionType, { label: string; color: string; btnClass: string }> = {
-  HOLD:        { label: '● Hold',         color: 'text-slate-400',   btnClass: 'border-slate-600 text-slate-400' },
-  WATCH:       { label: '⚠ Watch',        color: 'text-yellow-400',  btnClass: 'border-yellow-700 text-yellow-400' },
-  MANAGE:      { label: '⚡ Manage',       color: 'text-orange-400',  btnClass: 'border-orange-600 text-orange-400' },
-  TAKE_PROFIT: { label: '✓ Take Profit',  color: 'text-emerald-400', btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/20' },
-  CUT_LOSSES:  { label: '✕ Cut Losses',   color: 'text-red-400',     btnClass: 'border-red-600 text-red-400 hover:bg-red-600/20' },
-  CLOSE_ROLL:  { label: '↻ Close/Roll',   color: 'text-purple-400',  btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/20' },
-  PLACE_GTC:   { label: '⏱ Place GTC',   color: 'text-blue-400',    btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/20' },
-};
-
+// ── Theme Toggle ───────────────────────────────────────────────────────────
 function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+  const options: { value: Theme; icon: string; label: string }[] = [
+    { value: 'light', icon: '☀', label: 'Light' },
+    { value: 'medium', icon: '◐', label: 'Dim' },
+    { value: 'dark', icon: '☾', label: 'Dark' },
+  ];
   return (
     <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-      {(['light', 'medium', 'dark'] as Theme[]).map((v, i) => (
-        <button key={v} onClick={() => { setTheme(v); try { localStorage.setItem(LS_THEME, v); } catch {} }}
-          className={`text-sm px-2 py-1 rounded transition-all ${theme === v ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
-          {['☀', '◐', '☾'][i]}
+      {options.map(o => (
+        <button key={o.value} onClick={() => { setTheme(o.value); try { localStorage.setItem(LS_THEME, o.value); } catch {} }}
+          title={o.label}
+          className={`text-sm px-2 py-1 rounded transition-all ${theme === o.value ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
+          {o.icon}
         </button>
       ))}
     </div>
   );
 }
 
-// ── Batch Confirmation Modal ───────────────────────────────────────────────
-type BatchStatus = 'preview' | 'enriching' | 'ready' | 'submitting' | 'done' | 'error';
-
-function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th }: {
-  items: { pos: Position; action: ActionType }[];
-  onClose: () => void;
-  onSuccess: () => void;
-  dryRun: boolean;
-  th: typeof THEMES[Theme];
-}) {
-  const [status, setStatus] = useState<BatchStatus>('enriching');
-  const [batchItems, setBatchItems] = useState<BatchOrderItem[]>([]);
-  const [excluded, setExcluded] = useState<Set<string>>(new Set());
-  const [orderResults, setOrderResults] = useState<OrderResult[]>([]);
-  const [submitProgress, setSubmitProgress] = useState(0);
-  const [errorMsg, setErrorMsg] = useState('');
-
-  // Roll state per position
-  const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
-  const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
-  const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
-  const [overrides, setOverrides] = useState<Set<string>>(new Set());
-  // User-editable limit price overrides per position key
-  const [limitOverrides, setLimitOverrides] = useState<Record<string, string>>({});
-
-  const marketStatus = getMarketStatus();
-
-  // Enrich: fetch live prices, validate bounds, check staleness, build order bodies
-  useEffect(() => {
-    let cancelled = false;
-    async function enrich() {
-      setStatus('enriching');
-      try {
-        let token: string;
-        try {
-          token = await getAccessToken();
-        } catch (authErr: any) {
-          if (!cancelled) { setErrorMsg(`Authentication error: ${authErr.message}. Try refreshing the page.`); setStatus('error'); }
-          return;
-        }
-        const enriched: BatchOrderItem[] = [];
-
-        for (const { pos, action } of initialItems) {
-          // ── Step 1: Fetch live price ──────────────────────────────────────
-          const freshPrice = await fetchFreshPositionPrice(pos, token);
-          // freshPrice = total value across all contracts × 100
-          const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
-          const freshPerContract = freshPrice != null ? freshPrice / (qty * 100) : null;
-          const creditPerContract = pos.creditReceived / (qty * 100);
-
-          console.log(`ENRICH ${pos.symbol} ${action}: freshPrice=${freshPrice}, freshPerContract=${freshPerContract?.toFixed(4)}, creditPerContract=${creditPerContract.toFixed(4)}`);
-
-          const stalePriceWarning = freshPrice != null && pos.currentValue != null
-            ? Math.abs(freshPrice - pos.currentValue) / pos.currentValue > STALE_PRICE_THRESHOLD
-            : false;
-
-          const duplicateGtcWarning = pos.hasGtc && (action === 'TAKE_PROFIT' || action === 'CUT_LOSSES' || action === 'CLOSE_ROLL');
-
-          // ── Step 2: Compute limit price anchored to live spread value ─────
-          // For TAKE_PROFIT and PLACE_GTC:
-          //   Limit = target % of credit. But it MUST be below live spread value,
-          //   otherwise TastyTrade rejects ("would execute immediately" for GTC,
-          //   or order won't fill for Day orders priced above market).
-          //   If target price > live value, use live mid - $0.01 (fills immediately at market).
-          //
-          // For CUT_LOSSES and CLOSE_ROLL:
-          //   Limit = live spread mid. Use fresh price if available, else cached.
-          //
-          // All limits are per-contract then converted: TastyTrade limit = per-contract value.
-
-          let limitPrice: number;
-          let priceError: string | null = null;
-
-          const effectiveValue = freshPrice ?? pos.currentValue;
-          const effectivePerContract = freshPerContract ?? (pos.currentValue != null ? pos.currentValue / (qty * 100) : null);
-
-          if (action === 'TAKE_PROFIT' || action === 'PLACE_GTC') {
-            // For PLACE_GTC: use smart default from trade history, fall back to pos.profitTarget
-            const effectiveProfitTarget = action === 'PLACE_GTC'
-              ? getSmartGtcDefault(pos.symbol)
-              : pos.profitTarget;
-            const targetPrice = parseFloat((creditPerContract * (1 - effectiveProfitTarget)).toFixed(2));
-            if (effectivePerContract != null && targetPrice >= effectivePerContract) {
-              // Target already hit or exceeded — use live mid so order fills immediately
-              limitPrice = parseFloat(Math.max(effectivePerContract - 0.01, 0.01).toFixed(2));
-              console.log(`${pos.symbol} TAKE_PROFIT: target $${targetPrice} >= live $${effectivePerContract.toFixed(4)} — using live mid $${limitPrice}`);
-            } else {
-              limitPrice = targetPrice;
-            }
-            // Sanity: limit must be > 0
-            if (limitPrice <= 0) {
-              priceError = `Calculated limit price $${limitPrice.toFixed(2)} is invalid — position may already be worthless`;
-              limitPrice = 0.01;
-            }
-          } else if (action === 'CUT_LOSSES' || action === 'CLOSE_ROLL') {
-            if (effectivePerContract != null) {
-              // Use live mid price — this is what you'll pay to close
-              limitPrice = parseFloat(effectivePerContract.toFixed(2));
-              // Add small buffer above mid to improve fill probability
-              limitPrice = parseFloat((limitPrice * 1.02).toFixed(2));
-            } else {
-              limitPrice = parseFloat((creditPerContract * 0.5).toFixed(2));
-              priceError = `No live price available — using estimated limit $${limitPrice.toFixed(2)}. Verify before submitting.`;
-            }
-          } else {
-            // PLACE_GTC fallback
-            const targetPrice = parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
-            limitPrice = effectivePerContract != null
-              ? Math.min(targetPrice, parseFloat((effectivePerContract - 0.01).toFixed(2)))
-              : targetPrice;
-          }
-
-          // ── Step 3: Final bound check ─────────────────────────────────────
-          // For Day orders (TAKE_PROFIT, CUT_LOSSES, CLOSE_ROLL):
-          //   Limit should be close to market — flag if > 20% away from live mid
-          // For GTC orders (PLACE_GTC):
-          //   Limit must be strictly below live mid
-          if (action === 'PLACE_GTC' && effectivePerContract != null && limitPrice >= effectivePerContract) {
-            priceError = `GTC limit $${limitPrice.toFixed(2)} ≥ live spread $${effectivePerContract.toFixed(2)} — would execute immediately. Use Take Profit instead.`;
-          }
-
-          const tif = action === 'PLACE_GTC' ? 'GTC' : 'Day';
-          const orderBody = buildCloseOrder(pos, limitPrice, tif);
-          const estPnl = effectiveValue != null ? pos.creditReceived - effectiveValue : pos.pnl;
-
-          const item: BatchOrderItem = {
-            pos, action, orderBody, limitPrice, estPnl,
-            stalePriceWarning, freshPrice, freshPerContract, duplicateGtcWarning, priceError,
-          };
-
-          // ── Step 4: Roll suggestion ───────────────────────────────────────
-          if (action === 'CLOSE_ROLL') {
-            const suggestion = await fetchRollSuggestion(pos, token).catch(() => null);
-            if (!cancelled) setRollSuggestions(prev => ({ ...prev, [pos.key]: suggestion }));
-            if (suggestion && !rollInputs[pos.key]) {
-              setRollInputs(prev => ({
-                ...prev,
-                [pos.key]: {
-                  expiry: suggestion.expiry,
-                  shortStrike: String(suggestion.shortStrike),
-                  longStrike: String(suggestion.longStrike),
-                  credit: String(suggestion.credit),
-                },
-              }));
-            }
-          }
-
-          enriched.push(item);
-          if (!cancelled) setBatchItems([...enriched]);
-
-          // ── Step 5: AI verdict (non-blocking) ─────────────────────────────
-          const evalAction = action === 'CLOSE_ROLL' ? 'CLOSE_ROLL'
-            : action === 'TAKE_PROFIT' ? 'TAKE_PROFIT'
-            : action === 'CUT_LOSSES' ? 'CUT_LOSSES'
-            : action === 'PLACE_GTC' ? 'PLACE_GTC'
-            : null;
-          if (evalAction) {
-            evaluateAction(pos, evalAction as EvaluatedAction).then(v => {
-              if (!cancelled) setVerdicts(prev => ({ ...prev, [pos.key]: v }));
-            }).catch(() => {});
-          }
-        }
-
-        if (!cancelled) setStatus('ready');
-      } catch (e: any) {
-        if (!cancelled) { setErrorMsg(e.message); setStatus('error'); }
-      }
-    }
-    enrich();
-    return () => { cancelled = true; };
-  }, []);
-
-  const activeItems = batchItems
-    .filter(i => !excluded.has(i.pos.key))
-    .map(i => {
-      const ovr = limitOverrides[i.pos.key];
-      if (ovr !== undefined && ovr !== '') {
-        const parsed = parseFloat(ovr);
-        if (!isNaN(parsed) && parsed > 0) {
-          const updatedBody = buildCloseOrder(i.pos, parsed, i.orderBody['time-in-force'] as 'GTC' | 'Day');
-          return { ...i, limitPrice: parsed, orderBody: updatedBody };
-        }
-      }
-      return i;
-    });
-  const totalDebit = activeItems.reduce((s, i) => s + i.limitPrice, 0);
-  const totalEstPnl = activeItems.reduce((s, i) => s + (i.estPnl ?? 0), 0);
-  const warningCount = activeItems.filter(i => i.stalePriceWarning || i.duplicateGtcWarning).length;
-  const priceErrorCount = activeItems.filter(i => i.priceError != null).length;
-
-  const submitAll = async () => {
-    setStatus('submitting');
-    setSubmitProgress(0);
-    const results: OrderResult[] = [];
-    try {
-      // In dry run mode we skip auth and ttPost entirely
-      const token = dryRun ? 'DRY-RUN' : await getAccessToken();
-      let completed = 0;
-      for (const item of activeItems) {
-        try {
-          let orderId: string;
-
-          // Pre-submit live price check — re-fetch right before placing order
-          // to catch any price movement since enrichment
-          if (!dryRun) {
-            try {
-              const liveToken = token;
-              const liveTotal = await fetchFreshPositionPrice(item.pos, liveToken);
-              const qty = item.pos.legs.find((l: PositionLeg) => l.direction === 'Short')?.quantity ?? 1;
-              const livePerContract = liveTotal != null ? liveTotal / (qty * 100) : null;
-              const creditPerContract = item.pos.creditReceived / (qty * 100);
-              console.log(`PRE-SUBMIT ${item.pos.symbol} ${item.action}: live=$${livePerContract?.toFixed(4)}, limit=$${item.limitPrice.toFixed(4)}`);
-
-              if (livePerContract != null) {
-                if (item.action === 'PLACE_GTC' && item.limitPrice >= livePerContract) {
-                  throw new Error(
-                    `GTC limit $${item.limitPrice.toFixed(2)} ≥ live spread $${livePerContract.toFixed(2)} — target already hit. Use Take Profit instead.`
-                  );
-                }
-                if ((item.action === 'TAKE_PROFIT' || item.action === 'CUT_LOSSES' || item.action === 'CLOSE_ROLL')) {
-                  const pctFromLive = Math.abs(item.limitPrice - livePerContract) / livePerContract;
-                  if (pctFromLive > 0.30) {
-                    // Limit is >30% away from live — rebuild with fresh price
-                    console.warn(`${item.pos.symbol}: limit $${item.limitPrice.toFixed(2)} is ${(pctFromLive*100).toFixed(0)}% from live $${livePerContract.toFixed(2)} — rebuilding order with fresh price`);
-                    const freshLimit = item.action === 'TAKE_PROFIT'
-                      ? parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2))
-                      : parseFloat((livePerContract * 1.02).toFixed(2));
-                    item.orderBody = buildCloseOrder(item.pos, freshLimit, item.orderBody['time-in-force'] as 'GTC' | 'Day');
-                    (item as any).limitPrice = freshLimit;
-                  }
-                }
-              }
-            } catch (priceCheckErr: any) {
-              // If this is a blocking error (GTC would execute immediately), re-throw
-              if (String(priceCheckErr.message).includes('already hit') || String(priceCheckErr.message).includes('≥ live')) {
-                throw priceCheckErr;
-              }
-              // Otherwise log and continue — don't block on price check failures
-              console.warn(`Pre-submit price check failed for ${item.pos.symbol}:`, priceCheckErr.message);
-            }
-          }
-
-          if (dryRun) {
-            // Use TastyTrade's native dry-run endpoint — validates the order without placing it
-            const token2 = await getAccessToken();
-            const validation = await ttValidateOrder(`/accounts/${item.pos.accountNumber}/orders`, token2, item.orderBody);
-            console.log(`DRY RUN validation for ${item.pos.symbol}:`, validation);
-            if (!validation.valid) {
-              throw new Error(`Validation failed: ${validation.errors.join('; ')}`);
-            }
-            orderId = `DRY-${Date.now().toString(36).toUpperCase()}${validation.warnings.length > 0 ? ' ⚠' : ' ✓'}`;
-          } else {
-            // Submit close order
-            const res = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, item.orderBody);
-            orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
-          }
-
-          // If roll, also submit open order
-          if (item.action === 'CLOSE_ROLL') {
-            const ri = rollInputs[item.pos.key];
-            if (ri?.expiry && ri.shortStrike && ri.longStrike && ri.credit) {
-              const optType: 'P' | 'C' = item.pos.strategy === 'BCS' ? 'C' : 'P';
-              const suggestion = rollSuggestions[item.pos.key];
-              const qty = item.pos.legs[0]?.quantity ?? 1;
-
-              // Validate credit ratio before submitting open leg
-              const inputCredit = parseFloat(ri.credit);
-              const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
-              if (inputWidth > 0 && inputCredit < inputWidth / 3) {
-                throw new Error(
-                  `Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). ` +
-                  `This roll doesn't meet the Prosper credit rule. Adjust the credit or skip the roll.`
-                );
-              }
-
-              // Pre-submit live credit re-fetch if suggestion available
-              // Re-fetch the chain to get current mid price and verify it still makes sense
-              let finalCredit = inputCredit;
-              if (!dryRun && suggestion) {
-                try {
-                  const liveChain = await ttFetch(
-                    `/option-chains/${encodeURIComponent(item.pos.symbol)}/nested?expiration-date=${ri.expiry}`,
-                    token
-                  );
-                  const liveStrikes: any[] = liveChain?.data?.items?.[0]?.strikes ?? [];
-                  let shortLive: any = null;
-                  let longLive: any = null;
-                  for (const s of liveStrikes) {
-                    if (s['strike-price'] === parseFloat(ri.shortStrike)) shortLive = s[optType === 'P' ? 'put' : 'call'];
-                    if (s['strike-price'] === parseFloat(ri.longStrike))  longLive  = s[optType === 'P' ? 'put' : 'call'];
-                  }
-                  if (shortLive && longLive) {
-                    const shortMid = (parseFloat(shortLive.bid ?? '0') + parseFloat(shortLive.ask ?? '0')) / 2;
-                    const longMid  = (parseFloat(longLive.bid  ?? '0') + parseFloat(longLive.ask  ?? '0')) / 2;
-                    const liveCreditMid = shortMid - longMid;
-                    const liveCredit85  = parseFloat((liveCreditMid * 0.85).toFixed(2));
-                    console.log(`ROLL LIVE CREDIT REFETCH ${item.pos.symbol}: input=$${inputCredit} liveMid=$${liveCreditMid.toFixed(2)} live85%=$${liveCredit85}`);
-                    // If live credit is significantly different (>20%), use live price
-                    if (liveCreditMid > 0 && Math.abs(liveCreditMid - inputCredit) / inputCredit > 0.20) {
-                      console.warn(`Roll credit moved >20% — updating from $${inputCredit} to $${liveCredit85}`);
-                      finalCredit = liveCredit85;
-                    }
-                    // Block if live credit no longer meets minimum rule
-                    if (inputWidth > 0 && liveCreditMid < inputWidth / 3) {
-                      throw new Error(
-                        `Roll credit dropped to $${liveCreditMid.toFixed(2)} — no longer meets 1/3 rule ($${(inputWidth/3).toFixed(2)} min). ` +
-                        `Market has moved. Skip the open leg or find better strikes.`
-                      );
-                    }
-                  }
-                } catch (creditCheckErr: any) {
-                  if (String(creditCheckErr.message).includes('1/3 rule') || String(creditCheckErr.message).includes('credit rule')) {
-                    throw creditCheckErr; // blocking error — re-throw
-                  }
-                  console.warn(`Roll credit re-fetch failed for ${item.pos.symbol}:`, creditCheckErr.message);
-                }
-              }
-
-              // Use native OCC symbols from suggestion if available, else build
-              const openBody = buildOpenSpreadOrder(
-                item.pos.symbol, ri.expiry, optType,
-                parseFloat(ri.shortStrike), parseFloat(ri.longStrike),
-                qty, finalCredit,
-                suggestion?.shortSymbol, suggestion?.longSymbol
-              );
-
-              let openId: string;
-              if (dryRun) {
-                await new Promise(r => setTimeout(r, 200));
-                openId = `DRY-${Date.now().toString(36).toUpperCase()}-OPEN`;
-              } else {
-                const openRes = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, openBody);
-                openId = String(openRes?.data?.order?.id ?? openRes?.data?.id ?? 'submitted');
-              }
-
-              writeAuditEntry({
-                id: crypto.randomUUID(), timestamp: new Date().toISOString(),
-                symbol: item.pos.symbol, strategy: item.pos.strategy, action: 'CLOSE_ROLL',
-                orderType: 'Sell to Open (Roll)', limitPrice: finalCredit,
-                quantity: qty, orderId: openId,
-                status: dryRun ? 'dry-run' : 'submitted',
-              });
-
-              results.push({ symbol: item.pos.symbol, action: item.action, orderId: `Close #${orderId} · Open #${openId}`, status: 'working', limitPrice: item.limitPrice, estPnl: item.estPnl });
-            } else {
-              results.push({ symbol: item.pos.symbol, action: item.action, orderId, status: 'working', limitPrice: item.limitPrice, estPnl: item.estPnl });
-            }
-          } else {
-            results.push({ symbol: item.pos.symbol, action: item.action, orderId, status: 'working', limitPrice: item.limitPrice, estPnl: item.estPnl });
-          }
-
-          // Audit log
-          const _auditQty = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
-          const _creditPc = item.pos.creditReceived / (_auditQty * 100);
-          const _closeProfitPct = (item.action === 'TAKE_PROFIT' && _creditPc > 0 && item.estPnl != null)
-            ? Math.round(((item.pos.creditReceived - (item.limitPrice * _auditQty * 100)) / item.pos.creditReceived) * 100)
-            : undefined;
-          writeAuditEntry({
-            id: crypto.randomUUID(), timestamp: new Date().toISOString(),
-            symbol: item.pos.symbol, strategy: item.pos.strategy, action: item.action,
-            orderType: item.orderBody['order-type'], limitPrice: item.limitPrice,
-            quantity: _auditQty, orderId,
-            status: dryRun ? 'dry-run' : 'submitted',
-            estPnl: item.estPnl ?? undefined,
-            closeProfitPct: _closeProfitPct,
-            creditAtClose: _creditPc,
-          });
-
-          // Record in trading memory for future verdict learning
-          const verdict = verdicts[item.pos.key] ?? null;
-          const overridden = overrides.has(item.pos.key);
-          const updatedMem = recordTradeInMemory(item.pos, item.action, item.limitPrice, verdict, overridden);
-
-          // Trigger summarization if symbol has too many raw trades (non-blocking)
-          const profile = updatedMem.symbolProfiles[item.pos.symbol];
-          if (profile && profile.recentTrades.length > MEMORY_RAW_TRADES_PER_SYMBOL) {
-            summarizeSymbolHistory(item.pos.symbol).catch(() => {});
-          }
-
-        } catch (e: any) {
-          results.push({ symbol: item.pos.symbol, action: item.action, orderId: '—', status: 'error', error: e.message, limitPrice: item.limitPrice, estPnl: item.estPnl });
-          writeAuditEntry({
-            id: crypto.randomUUID(), timestamp: new Date().toISOString(),
-            symbol: item.pos.symbol, strategy: item.pos.strategy, action: item.action,
-            orderType: item.orderBody['order-type'], limitPrice: item.limitPrice,
-            quantity: item.pos.legs[0]?.quantity ?? 1, orderId: '—', status: 'error', error: e.message,
-          });
-        }
-        completed++;
-        setSubmitProgress(Math.round((completed / activeItems.length) * 100));
-      }
-      setOrderResults(results);
-      setStatus('done');
-    } catch (e: any) {
-      setErrorMsg(e.message); setStatus('error');
-    }
+// ── Calendar Buttons ───────────────────────────────────────────────────────
+function CalendarButton({ symbol, strategy, earningsDate, ivr, th }: { symbol: string; strategy: string; earningsDate: string; ivr: number | null; th: typeof THEMES[Theme] }) {
+  const key = `${symbol}-${earningsDate}`;
+  const [scheduled, setScheduled] = useState(() => { try { const s = localStorage.getItem(LS_CAL); return s ? JSON.parse(s)[key] === true : false; } catch { return false; } });
+  const handleClick = () => {
+    window.open(buildEarningsCalUrl(symbol, strategy, earningsDate, ivr), '_blank');
+    try { const s = localStorage.getItem(LS_CAL); const all = s ? JSON.parse(s) : {}; all[key] = true; localStorage.setItem(LS_CAL, JSON.stringify(all)); } catch {}
+    setScheduled(true);
   };
-
-  const filledCount  = orderResults.filter(r => r.status === 'filled' || r.status === 'working' || r.status === 'submitted').length;
-  const rejectedCount = orderResults.filter(r => r.status === 'error' || r.status === 'rejected').length;
-
-  return (
-    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
-
-        {/* Dry run banner */}
-        {dryRun && (
-          <div className="bg-amber-500/15 border-b border-amber-500/40 px-6 py-2 flex items-center gap-2 shrink-0">
-            <span className="text-amber-400 font-bold text-sm">⚗</span>
-            <span className="text-amber-300 text-xs font-bold tracking-wider">DRY RUN MODE — No real orders will be placed</span>
-          </div>
-        )}
-
-        {/* Header */}
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
-          <div>
-            <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>
-              {status === 'done'
-                ? dryRun ? 'DRY RUN COMPLETE' : 'ORDER RESULTS'
-                : status === 'submitting'
-                ? dryRun ? 'SIMULATING ORDERS...' : 'SUBMITTING ORDERS...'
-                : `REVIEW ${activeItems.length} ORDER${activeItems.length !== 1 ? 'S' : ''}`}
-            </h2>
-            <div className="flex items-center gap-3 mt-1">
-              <span className={`text-[10px] font-bold ${marketStatus.open ? 'text-emerald-400' : 'text-yellow-400'}`}>{marketStatus.label}</span>
-              {!marketStatus.open && status === 'preview' || status === 'ready' ? (
-                <span className="text-[10px] text-yellow-400">Day orders auto-upgraded to GTC</span>
-              ) : null}
-            </div>
-          </div>
-          {status !== 'submitting' && <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>}
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto">
-
-          {/* Enriching spinner */}
-          {status === 'enriching' && (
-            <div className="flex flex-col items-center justify-center py-12 gap-3">
-              <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              <p className={`text-xs ${th.textFaint} tracking-widest`}>FETCHING LIVE PRICES & CHAIN DATA...</p>
-              {batchItems.length > 0 && <p className={`text-[10px] ${th.textFaint}`}>{batchItems.length} / {initialItems.length} enriched</p>}
-            </div>
-          )}
-
-          {/* Submitting progress */}
-          {status === 'submitting' && (
-            <div className="flex flex-col items-center justify-center py-12 gap-4">
-              <div className="w-full max-w-xs">
-                <div className={`h-2 rounded-full ${th.border} border overflow-hidden`}>
-                  <div className="h-full bg-blue-500 rounded-full transition-all duration-300" style={{ width: `${submitProgress}%` }} />
-                </div>
-              </div>
-              <p className={`text-xs ${th.textFaint}`}>{submitProgress}% — {Math.round(activeItems.length * submitProgress / 100)} of {activeItems.length} orders submitted</p>
-            </div>
-          )}
-
-          {/* Order results */}
-          {status === 'done' && (
-            <div className="p-6 space-y-4">
-              <div className="flex gap-4">
-                {filledCount > 0 && <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500" /><span className="text-xs text-emerald-400 font-bold">{filledCount} submitted</span></div>}
-                {rejectedCount > 0 && <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-red-500" /><span className="text-xs text-red-400 font-bold">{rejectedCount} rejected</span></div>}
-              </div>
-              <div className="space-y-2">
-                {orderResults.map((r, i) => (
-                  <div key={i} className={`flex items-center justify-between p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
-                    <div>
-                      <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
-                      <span className={`ml-2 text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
-                      {r.error && <p className="text-[10px] text-red-400 mt-0.5">{r.error}</p>}
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
-                      {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <p className={`text-[10px] ${th.textFaint} text-center`}>
-                {dryRun
-                  ? '⚗ Dry run complete — orders validated against TastyTrade without being placed. Check console for full validation response.'
-                  : 'Verify working orders in TastyTrade. Positions will refresh on close.'}
-              </p>
-            </div>
-          )}
-
-          {/* Error state */}
-          {status === 'error' && (
-            <div className="p-6 flex flex-col items-center gap-3">
-              <span className="text-2xl">✕</span>
-              <p className="text-sm font-bold text-red-400">FAILED</p>
-              <div className={`p-3 rounded-lg bg-red-500/10 border border-red-500/40 w-full`}>
-                <p className="text-xs text-red-300" style={{ fontFamily: "'DM Mono', monospace" }}>{errorMsg}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Ready state — order table */}
-          {(status === 'ready') && (
-            <div className="p-4 space-y-3">
-              {priceErrorCount > 0 && (
-                <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/40">
-                  <span className="text-red-400 font-bold">✕</span>
-                  <p className="text-xs text-red-400 font-bold">{priceErrorCount} position{priceErrorCount !== 1 ? 's have' : ' has'} price errors — uncheck or fix before submitting.</p>
-                </div>
-              )}
-              {warningCount > 0 && (
-                <div className="flex items-center gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
-                  <span className="text-yellow-400">⚠</span>
-                  <p className="text-xs text-yellow-400">{warningCount} position{warningCount !== 1 ? 's have' : ' has'} warnings. Review before submitting.</p>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                {batchItems.map(item => {
-                  const isExcluded = excluded.has(item.pos.key);
-                  const ri = rollInputs[item.pos.key];
-                  const suggestion = rollSuggestions[item.pos.key];
-                  const verdict = verdicts[item.pos.key];
-                  const isStopHigh = verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH';
-                  const isOverridden = overrides.has(item.pos.key);
-                  return (
-                    <div key={item.pos.key} className={`rounded-lg border transition-all ${
-                      isExcluded ? 'opacity-40 border-dashed' :
-                      item.priceError != null && !isExcluded ? 'border-red-500/70' :
-                      isStopHigh && !isOverridden ? 'border-red-500/60' :
-                      verdict?.verdict === 'CAUTION' ? 'border-yellow-500/40' :
-                      item.stalePriceWarning || item.duplicateGtcWarning ? 'border-yellow-500/50' :
-                      th.border
-                    }`}>
-                      {/* Row header */}
-                      <div className="flex items-center gap-3 px-4 py-3">
-                        <input type="checkbox" checked={!isExcluded}
-                          onChange={() => setExcluded(prev => { const n = new Set(prev); isExcluded ? n.delete(item.pos.key) : n.add(item.pos.key); return n; })}
-                          className="w-4 h-4 accent-blue-500 cursor-pointer shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.pos.symbol}</span>
-                            <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(item.pos.strategy)}`}>{item.pos.strategy}</span>
-                            <span className={`text-[10px] font-bold ${ACTION_META[item.action].color}`}>{ACTION_META[item.action].label}</span>
-                            {/* Compact verdict badge */}
-                            {verdict && <ActionVerdictBadge verdict={verdict} compact th={th} />}
-                            {!verdict && !isExcluded && (
-                              <span className="text-[9px] text-indigo-500 animate-pulse">◈ evaluating...</span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
-                            <span className={`text-[10px] ${th.textFaint}`}>{item.pos.expDate} · {item.pos.dte}d</span>
-                            {item.stalePriceWarning && (
-                              <span className="text-[10px] text-yellow-400 font-bold">
-                                ⚠ Price moved {item.freshPrice != null && item.pos.currentValue != null ? `${Math.abs(((item.freshPrice - item.pos.currentValue) / item.pos.currentValue) * 100).toFixed(0)}%` : ''} since load
-                              </span>
-                            )}
-                            {item.duplicateGtcWarning && (
-                              <span className="text-[10px] text-yellow-400 font-bold">⚠ GTC already working</span>
-                            )}
-                            {item.freshPerContract != null && (
-                              <span className={`text-[10px] ${th.textFaint}`}>
-                                live: ${item.freshPerContract.toFixed(2)}/contract
-                              </span>
-                            )}
-                          </div>
-                          {item.priceError != null && !isExcluded && (
-                            <div className="mt-1.5 flex items-start gap-1.5">
-                              <span className="text-red-400 text-[9px] mt-0.5 shrink-0">✕</span>
-                              <p className="text-[9px] text-red-400 leading-relaxed">{item.priceError}</p>
-                            </div>
-                          )}
-                          {/* Full verdict reasoning for STOP/CAUTION */}
-                          {verdict && (verdict.verdict === 'STOP' || verdict.verdict === 'CAUTION') && !isExcluded && (
-                            <div className="mt-2">
-                              <p className={`text-[10px] leading-relaxed ${verdict.verdict === 'STOP' ? 'text-red-300' : 'text-yellow-300'}`}>
-                                {verdict.reasoning}
-                              </p>
-                              {isStopHigh && !isOverridden && (
-                                <button
-                                  onClick={() => setOverrides(prev => { const n = new Set(prev); n.add(item.pos.key); return n; })}
-                                  className="mt-1.5 text-[9px] px-2 py-0.5 border border-red-700 text-red-400 rounded hover:bg-red-600/20 transition-colors">
-                                  I understand the risk — override
-                                </button>
-                              )}
-                              {isStopHigh && isOverridden && (
-                                <span className="text-[9px] text-orange-400 mt-1 block">⚡ Override active — proceeding against AI advice</span>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="text-right shrink-0 space-y-1 min-w-[140px]">
-                          {/* Editable limit price */}
-                          <div className="flex items-center justify-end gap-1">
-                            <span className={`text-[9px] ${th.textFaint}`}>Limit $</span>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0.01"
-                              value={limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2)}
-                              onChange={e => setLimitOverrides(prev => ({ ...prev, [item.pos.key]: e.target.value }))}
-                              onBlur={e => {
-                                const v = parseFloat(e.target.value);
-                                if (isNaN(v) || v <= 0) setLimitOverrides(prev => { const n = { ...prev }; delete n[item.pos.key]; return n; });
-                                else setLimitOverrides(prev => ({ ...prev, [item.pos.key]: v.toFixed(2) }));
-                              }}
-                              className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${item.priceError != null ? 'border-red-500/60 text-red-400' : 'border-blue-500/40 text-blue-400'} bg-transparent outline-none focus:border-blue-400`}
-                              style={{ fontFamily: "'DM Mono', monospace" }}
-                            />
-                          </div>
-                          {/* Profit % helper for TAKE_PROFIT / PLACE_GTC */}
-                          {(item.action === 'TAKE_PROFIT' || item.action === 'PLACE_GTC') && (() => {
-                            const _qty2 = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
-                            const creditPc = item.pos.creditReceived / (_qty2 * 100);
-                            const currentLimit = parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2));
-                            const pct = creditPc > 0 ? Math.round((1 - currentLimit / creditPc) * 100) : 0;
-                            const _smartDefault = item.action === 'PLACE_GTC' ? getSmartGtcDefault(item.pos.symbol) : null;
-                            const _hasHistory = _smartDefault != null && _smartDefault !== 0.50;
-                            return (
-                              <div className="flex flex-col items-end gap-0.5">
-                                <div className="flex items-center justify-end gap-1">
-                                  <span className={`text-[9px] ${th.textFaint}`}>Close at</span>
-                                  <input
-                                    type="number"
-                                    step="5"
-                                    min="5"
-                                    max="95"
-                                    value={pct}
-                                    onChange={e => {
-                                      const p = parseInt(e.target.value);
-                                      if (!isNaN(p) && p >= 5 && p <= 95 && creditPc > 0) {
-                                        const newLimit = parseFloat((creditPc * (1 - p / 100)).toFixed(2));
-                                        setLimitOverrides(prev => ({ ...prev, [item.pos.key]: newLimit.toFixed(2) }));
-                                      }
-                                    }}
-                                    className={`w-12 text-[10px] font-bold text-right px-1.5 py-0.5 rounded border border-emerald-600/40 text-emerald-400 bg-transparent outline-none focus:border-emerald-400`}
-                                    style={{ fontFamily: "'DM Mono', monospace" }}
-                                  />
-                                  <span className={`text-[9px] ${th.textFaint}`}>%</span>
-                                </div>
-                                {_hasHistory && (
-                                  <span className="text-[8px] text-purple-400" title={`Based on your last 2-3 profitable ${item.pos.symbol} closes`}>
-                                    ⚡ from history
-                                  </span>
-                                )}
-                              </div>
-                            );
-                          })()}
-                          {/* Stop limit % helper for CUT_LOSSES */}
-                          {item.action === 'CUT_LOSSES' && (() => {
-                            const _qty3 = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
-                            const creditPc = item.pos.creditReceived / (_qty3 * 100);
-                            const currentLimit = parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2));
-                            const lossPct = creditPc > 0 ? Math.round((currentLimit / creditPc) * 100) : 0;
-                            return (
-                              <div className="flex items-center justify-end gap-1">
-                                <span className={`text-[9px] ${th.textFaint}`}>Stop at</span>
-                                <input
-                                  type="number"
-                                  step="5"
-                                  min="100"
-                                  max="300"
-                                  value={lossPct}
-                                  onChange={e => {
-                                    const p = parseInt(e.target.value);
-                                    if (!isNaN(p) && p >= 100 && p <= 300 && creditPc > 0) {
-                                      const newLimit = parseFloat((creditPc * (p / 100)).toFixed(2));
-                                      setLimitOverrides(prev => ({ ...prev, [item.pos.key]: newLimit.toFixed(2) }));
-                                    }
-                                  }}
-                                  className={`w-12 text-[10px] font-bold text-right px-1.5 py-0.5 rounded border border-red-600/40 text-red-400 bg-transparent outline-none focus:border-red-400`}
-                                  style={{ fontFamily: "'DM Mono', monospace" }}
-                                />
-                                <span className={`text-[9px] ${th.textFaint}`}>% credit</span>
-                              </div>
-                            );
-                          })()}
-                          {item.estPnl != null && (
-                            <p className={`text-[10px] font-bold ${item.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                              {item.estPnl >= 0 ? '+' : ''}${item.estPnl.toFixed(2)}
-                            </p>
-                          )}
-                          <p className={`text-[10px] ${th.textFaint}`}>{item.orderBody['time-in-force']}</p>
-                        </div>
-                      </div>
-
-                      {/* Roll inputs */}
-                      {item.action === 'CLOSE_ROLL' && !isExcluded && (
-                        <div className={`px-4 pb-3 border-t ${th.borderLight}`}>
-                          <div className="pt-3 space-y-3">
-
-                            {/* Suggested roll with full rule check */}
-                            {suggestion && (
-                              <div className={`rounded-lg border p-3 space-y-2 ${
-                                rollIsBlocking(suggestion) ? 'border-red-500/50 bg-red-500/5' :
-                                suggestion.ruleViolations.length > 0 ? 'border-yellow-500/40 bg-yellow-500/5' :
-                                'border-blue-500/30 bg-blue-500/5'
-                              }`}>
-                                {/* Header row */}
-                                <div className="flex items-center justify-between flex-wrap gap-2">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">Suggested Roll</span>
-                                    <span className="text-[10px] text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
-                                      {suggestion.expiry} ({suggestion.dte}d) · {suggestion.shortStrike}/{suggestion.longStrike} · δ{suggestion.delta.toFixed(2)}
-                                    </span>
-                                  </div>
-                                  <button onClick={() => setRollInputs(prev => ({
-                                    ...prev,
-                                    [item.pos.key]: { expiry: suggestion.expiry, shortStrike: String(suggestion.shortStrike), longStrike: String(suggestion.longStrike), credit: String(suggestion.credit) }
-                                  }))} className="text-[9px] px-2 py-0.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/20 transition-colors">
-                                    Use this
-                                  </button>
-                                </div>
-
-                                {/* Credit & rule metrics */}
-                                <div className="grid grid-cols-4 gap-2">
-                                  <div>
-                                    <p className={`text-[9px] ${th.textFaint}`}>Credit (mid)</p>
-                                    <p className={`text-[10px] font-bold ${suggestion.meetsMinCredit ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                                      ${suggestion.creditMid.toFixed(2)}
-                                    </p>
-                                    <p className={`text-[9px] ${th.textFaint}`}>{(suggestion.creditRatio * 100).toFixed(0)}% of width</p>
-                                  </div>
-                                  <div>
-                                    <p className={`text-[9px] ${th.textFaint}`}>Limit order</p>
-                                    <p className={`text-[10px] font-bold text-blue-400`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                                      ${suggestion.credit.toFixed(2)}
-                                    </p>
-                                    <p className={`text-[9px] ${th.textFaint}`}>85% of mid</p>
-                                  </div>
-                                  <div>
-                                    <p className={`text-[9px] ${th.textFaint}`}>OI (short/long)</p>
-                                    <p className={`text-[10px] font-bold ${suggestion.meetsOi ? 'text-emerald-400' : 'text-yellow-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                                      {suggestion.shortOi ?? '?'} / {suggestion.longOi ?? '?'}
-                                    </p>
-                                    <p className={`text-[9px] ${th.textFaint}`}>need ≥500</p>
-                                  </div>
-                                  <div>
-                                    <p className={`text-[9px] ${th.textFaint}`}>Bid-ask (sh/lg)</p>
-                                    <p className={`text-[10px] font-bold ${suggestion.meetsBidAsk ? 'text-emerald-400' : 'text-yellow-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                                      ${suggestion.shortBidAsk?.toFixed(2) ?? '?'} / ${suggestion.longBidAsk?.toFixed(2) ?? '?'}
-                                    </p>
-                                    <p className={`text-[9px] ${th.textFaint}`}>need ≤$0.10</p>
-                                  </div>
-                                </div>
-
-                                {/* Rule violations */}
-                                {suggestion.ruleViolations.length > 0 && (
-                                  <div className="space-y-1">
-                                    {suggestion.ruleViolations.map((v, i) => (
-                                      <div key={i} className="flex items-start gap-1.5">
-                                        <span className={`text-[9px] shrink-0 mt-0.5 ${rollIsBlocking(suggestion) ? 'text-red-400' : 'text-yellow-400'}`}>
-                                          {rollIsBlocking(suggestion) ? '✕' : '⚠'}
-                                        </span>
-                                        <p className={`text-[9px] leading-relaxed ${rollIsBlocking(suggestion) ? 'text-red-300' : 'text-yellow-300'}`}>{v}</p>
-                                      </div>
-                                    ))}
-                                    {rollIsBlocking(suggestion) && (
-                                      <p className="text-[9px] text-red-400 font-bold mt-1">This roll does not meet minimum Prosper rules. Consider closing only, or finding a better expiry manually.</p>
-                                    )}
-                                  </div>
-                                )}
-                                {suggestion.ruleViolations.length === 0 && (
-                                  <p className="text-[9px] text-emerald-400">✓ All Prosper rules met</p>
-                                )}
-                              </div>
-                            )}
-
-                            {/* Manual inputs */}
-                            <div className="grid grid-cols-4 gap-2">
-                              {[
-                                { label: 'New Expiry', key: 'expiry', placeholder: '2025-08-15' },
-                                { label: 'Short Strike', key: 'shortStrike', placeholder: '490' },
-                                { label: 'Long Strike', key: 'longStrike', placeholder: '485' },
-                                { label: 'Credit ($)', key: 'credit', placeholder: '1.50' },
-                              ].map(f => (
-                                <div key={f.key}>
-                                  <p className={`text-[9px] ${th.textFaint} mb-1`}>{f.label}</p>
-                                  <input
-                                    value={ri?.[f.key as keyof typeof ri] ?? ''}
-                                    onChange={e => setRollInputs(prev => ({ ...prev, [item.pos.key]: { ...prev[item.pos.key], [f.key]: e.target.value } }))}
-                                    placeholder={f.placeholder}
-                                    className={`w-full text-[10px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-purple-500`}
-                                    style={{ fontFamily: "'DM Mono', monospace" }}
-                                  />
-                                </div>
-                              ))}
-                            </div>
-
-                            {/* Live credit validation against inputs */}
-                            {ri?.credit && ri?.shortStrike && ri?.longStrike && (() => {
-                              const inputCredit = parseFloat(ri.credit);
-                              const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
-                              const inputRatio  = inputWidth > 0 ? inputCredit / inputWidth : 0;
-                              const minCredit   = inputWidth / 3;
-                              if (inputCredit > 0 && inputRatio < 1/3) {
-                                return (
-                                  <p className="text-[9px] text-red-400">
-                                    ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Prosper credit rule
-                                  </p>
-                                );
-                              }
-                              if (inputCredit > 0) {
-                                return (
-                                  <p className="text-[9px] text-emerald-400">
-                                    ✓ Credit ratio {(inputRatio * 100).toFixed(0)}% of spread width — meets 1/3 rule
-                                  </p>
-                                );
-                              }
-                              return null;
-                            })()}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className={`px-6 py-4 border-t ${th.border} shrink-0`}>
-          {status === 'ready' && (
-            <div className="space-y-3">
-              {/* Totals */}
-              <div className={`flex items-center justify-between p-3 rounded-lg ${th.card}`}>
-                <div className="flex gap-6">
-                  <div>
-                    <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Orders</p>
-                    <p className={`text-sm font-bold ${th.text}`}>{activeItems.length}</p>
-                  </div>
-                  <div>
-                    <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Total Debit</p>
-                    <p className="text-sm font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>${totalDebit.toFixed(2)}</p>
-                  </div>
-                  <div>
-                    <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Est. P&L</p>
-                    <p className={`text-sm font-bold ${totalEstPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                      {totalEstPnl >= 0 ? '+' : ''}${totalEstPnl.toFixed(2)}
-                    </p>
-                  </div>
-                </div>
-                {excluded.size > 0 && <span className={`text-[10px] ${th.textFaint}`}>{excluded.size} excluded</span>}
-              </div>
-              <div className="flex gap-3">
-                {(() => {
-                  const blockedItems = activeItems.filter(i =>
-                    verdicts[i.pos.key]?.verdict === 'STOP' &&
-                    verdicts[i.pos.key]?.confidence === 'HIGH' &&
-                    !overrides.has(i.pos.key)
-                  );
-                  const priceBlockedItems = activeItems.filter(i => i.priceError != null);
-                  const isBlocked = blockedItems.length > 0 || priceBlockedItems.length > 0;
-                  return (
-                    <>
-                      {isBlocked && (
-                        <div className="w-full">
-                          <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/40 mb-2">
-                            <span className="text-red-400 shrink-0 font-bold">✕</span>
-                            <div>
-                              {priceBlockedItems.length > 0 && (
-                                <p className="text-[10px] font-bold text-red-400">
-                                  {priceBlockedItems.length} position{priceBlockedItems.length !== 1 ? 's have' : ' has'} price errors — uncheck to skip them.
-                                </p>
-                              )}
-                              {blockedItems.length > 0 && (
-                                <p className="text-[10px] font-bold text-red-400 mt-0.5">
-                                  {blockedItems.length} position{blockedItems.length !== 1 ? 's' : ''} flagged STOP by AI — uncheck or override.
-                                </p>
-                              )}
-                              <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
-                                Uncheck or fix all flagged positions to enable Submit.
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex gap-3">
-                            <button disabled
-                              className="flex-1 py-3 bg-slate-700 text-slate-500 rounded-xl text-xs font-bold tracking-widest cursor-not-allowed">
-                              SUBMIT BLOCKED — OVERRIDE REQUIRED
-                            </button>
-                            <button onClick={onClose} className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                      {!isBlocked && (
-                        <>
-                          <button onClick={submitAll} disabled={activeItems.length === 0}
-                            className={`flex-1 py-3 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${
-                              dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'
-                            }`}>
-                            {dryRun
-                              ? `⚗ DRY RUN — Simulate ${activeItems.length} Order${activeItems.length !== 1 ? 's' : ''}`
-                              : `SUBMIT ${activeItems.length} ORDER${activeItems.length !== 1 ? 'S' : ''}`}
-                          </button>
-                          <button onClick={onClose} className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
-                            Cancel
-                          </button>
-                        </>
-                      )}
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-          )}
-          {status === 'done' && (
-            <div className="flex gap-3">
-              <button onClick={() => { onSuccess(); onClose(); }} className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'}`}>
-                {dryRun ? 'DRY RUN DONE — Close' : 'DONE — REFRESH POSITIONS'}
-              </button>
-              {!dryRun && (
-                <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
-                  className={`px-4 py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors flex items-center`}>
-                  TT ↗
-                </a>
-              )}
-            </div>
-          )}
-          {status === 'error' && (
-            <button onClick={onClose} className={`w-full py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
-              Close
-            </button>
-          )}
-          {(status === 'enriching' || status === 'submitting') && (
-            <button disabled className="w-full py-3 bg-slate-700 text-slate-500 rounded-xl text-xs font-bold tracking-widest">
-              {status === 'enriching' ? 'FETCHING DATA...' : 'SUBMITTING...'}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+  if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ scheduled</span>;
+  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium`} title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up</button>;
 }
+function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme]; rules: RulesType; }) {
+  const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
+  const [scheduled, setScheduled] = useState<string | null>(() => {
+    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; return all[key] || null; } catch { return null; }
+  });
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const dateInputRef = useRef<HTMLInputElement>(null);
+  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const d = addBusinessDays(new Date().toISOString().split('T')[0], 2);
+    return d.toISOString().split('T')[0];
+  });
 
-// ── Audit Log Panel ────────────────────────────────────────────────────────
-// ── Audit Log Panel ────────────────────────────────────────────────────────
-function AuditLogPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
-  const log = readAuditLog();
-  return (
-    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col`}>
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
-          <div>
-            <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>AUDIT LOG</h2>
-            <p className={`text-[10px] ${th.textFaint}`}>{log.length} entries · last 500 orders</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={exportAuditCsv} className={`text-[10px] px-3 py-1.5 border ${th.border} ${th.textFaint} rounded hover:border-blue-500 hover:text-blue-400 transition-colors`}>↓ Export CSV</button>
-            <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4">
-          {log.length === 0 ? (
-            <div className="flex items-center justify-center h-32">
-              <p className={`text-sm ${th.textFaint}`}>No orders logged yet</p>
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {log.map(entry => (
-                <div key={entry.id} className={`flex items-center gap-3 px-3 py-2 rounded border ${th.borderLight} text-[10px]`}>
-                  <span className={`${th.textFaint} shrink-0 w-32`} style={{ fontFamily: "'DM Mono', monospace" }}>{entry.timestamp.slice(0, 16).replace('T', ' ')}</span>
-                  <span className={`font-bold ${th.text} w-16 shrink-0`} style={{ fontFamily: "'DM Mono', monospace" }}>{entry.symbol}</span>
-                  <span className={`${ACTION_META[entry.action]?.color ?? 'text-slate-400'} w-24 shrink-0`}>{ACTION_META[entry.action]?.label ?? entry.action}</span>
-                  <span className={`${th.textFaint} w-20 shrink-0`} style={{ fontFamily: "'DM Mono', monospace" }}>${entry.limitPrice.toFixed(2)}</span>
-                  <span className={`${th.textFaint} flex-1 truncate`} style={{ fontFamily: "'DM Mono', monospace" }}>#{entry.orderId}</span>
-                  <span className={`shrink-0 font-bold ${entry.status === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>{entry.status}</span>
-                  {entry.estPnl != null && <span className={`shrink-0 ${entry.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{entry.estPnl >= 0 ? '+' : ''}${entry.estPnl.toFixed(2)}</span>}
-                  {entry.error && <span className="text-red-400 truncate max-w-xs" title={entry.error}>{entry.error}</span>}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Summary Bar ────────────────────────────────────────────────────────────
-// ── Memory Panel ───────────────────────────────────────────────────────────
-function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
-  const [mem, setMem] = useState<TradingMemory>(readMemory);
-  const [summarizing, setSummarizing] = useState(false);
-
-  const handleSummarizeAll = async () => {
-    setSummarizing(true);
-    try {
-      const m = readMemory();
-      // Summarize all symbols with enough data
-      for (const sym of Object.keys(m.symbolProfiles)) {
-        if (m.symbolProfiles[sym].recentTrades.length > MEMORY_RAW_TRADES_PER_SYMBOL) {
-          await summarizeSymbolHistory(sym);
-        }
-      }
-      // Force behavior summarization regardless of time interval
-      const m2 = readMemory();
-      m2.lastSummarized = null; // reset so summarize runs
-      writeMemory(m2);
-      await summarizeBehaviorProfile();
-      setMem(readMemory());
-    } finally { setSummarizing(false); }
-  };
-
-  const symbols = Object.values(mem.symbolProfiles).sort((a, b) => b.tradeCount - a.tradeCount);
-  const bp = mem.behaviorProfile;
-
-  return (
-    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-purple-400 text-sm">◆</span>
-              <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>TRADING MEMORY</h2>
-            </div>
-            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>
-              {bp.totalTrades} trades recorded · {symbols.length} symbols tracked
-              {mem.lastSummarized ? ` · Last summarized ${Math.round((Date.now() - new Date(mem.lastSummarized).getTime()) / 86400000)}d ago` : ''}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={handleSummarizeAll} disabled={summarizing}
-              className={`text-[10px] px-3 py-1.5 border border-purple-700 text-purple-400 rounded hover:border-purple-500 hover:bg-purple-500/10 transition-colors disabled:opacity-50`}>
-              {summarizing ? '◈ Summarizing...' : '◈ Summarize Now'}
-            </button>
-            <button onClick={() => { clearMemory(); setMem(emptyMemory()); }}
-              className={`text-[10px] px-3 py-1.5 border ${th.border} ${th.textFaint} rounded hover:border-red-500 hover:text-red-400 transition-colors`}>
-              Clear
-            </button>
-            <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {bp.totalTrades === 0 && (
-            <div className="flex flex-col items-center justify-center h-40 gap-2">
-              <p className={`text-sm ${th.textFaint}`}>No trades recorded yet</p>
-              <p className={`text-[10px] ${th.textFaint} text-center max-w-xs`}>
-                Memory builds automatically as you execute trades through Prosper. Each trade teaches the verdict engine your patterns.
-              </p>
-            </div>
-          )}
-
-          {/* Behavioral profile */}
-          {bp.totalTrades > 0 && (
-            <div className={`p-4 rounded-xl border border-purple-700/40 bg-purple-500/5`}>
-              <p className="text-[9px] text-purple-400 uppercase tracking-widest mb-3 font-bold">Your Trading Profile</p>
-              <div className="grid grid-cols-3 gap-4 mb-3">
-                <div>
-                  <p className={`text-[9px] ${th.textFaint}`}>Total trades</p>
-                  <p className={`text-sm font-bold ${th.text}`}>{bp.totalTrades}</p>
-                </div>
-                <div>
-                  <p className={`text-[9px] ${th.textFaint}`}>AI overrides</p>
-                  <p className={`text-sm font-bold ${bp.overrideCount > 0 ? 'text-yellow-400' : th.textFaint}`}>
-                    {bp.overrideCount}
-                    {bp.overrideCount > 0 && <span className={`text-[10px] ml-1 ${th.textFaint}`}>({Math.round((bp.overrideWins / bp.overrideCount) * 100)}% right)</span>}
-                  </p>
-                </div>
-                <div>
-                  <p className={`text-[9px] ${th.textFaint}`}>Symbols tracked</p>
-                  <p className={`text-sm font-bold ${th.text}`}>{symbols.length}</p>
-                </div>
-              </div>
-              {bp.summary && <p className={`text-[11px] ${th.textFaint} leading-relaxed mb-2`}>{bp.summary}</p>}
-              <div className="grid grid-cols-2 gap-3">
-                {bp.strengths.length > 0 && (
-                  <div>
-                    <p className="text-[9px] text-emerald-400 font-bold mb-1">Strengths</p>
-                    {bp.strengths.map((s, i) => <p key={i} className="text-[10px] text-emerald-300">▸ {s}</p>)}
-                  </div>
-                )}
-                {bp.weaknesses.length > 0 && (
-                  <div>
-                    <p className="text-[9px] text-red-400 font-bold mb-1">Watch out for</p>
-                    {bp.weaknesses.map((w, i) => <p key={i} className="text-[10px] text-red-300">▸ {w}</p>)}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Symbol profiles */}
-          {symbols.length > 0 && (
-            <div>
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3 font-bold`}>Symbol History</p>
-              <div className="space-y-3">
-                {symbols.map(profile => (
-                  <div key={profile.symbol} className={`p-4 rounded-lg border ${th.border}`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-3">
-                        <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{profile.symbol}</span>
-                        <span className={`text-[10px] ${th.textFaint}`}>{profile.tradeCount} trades</span>
-                        <span className={`text-[10px] font-bold ${profile.winRate >= 0.6 ? 'text-emerald-400' : profile.winRate >= 0.4 ? 'text-yellow-400' : 'text-red-400'}`}>
-                          {Math.round(profile.winRate * 100)}% win rate
-                        </span>
-                        <span className={`text-[10px] font-bold ${profile.avgPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          avg {profile.avgPnlPct.toFixed(1)}% P&L
-                        </span>
-                      </div>
-                    </div>
-                    {profile.historySummary && (
-                      <p className={`text-[10px] ${th.textFaint} leading-relaxed mb-2`}>{profile.historySummary}</p>
-                    )}
-                    {profile.recentTrades.slice(0, 3).map((t, i) => {
-                      const ago = Math.round((Date.now() - new Date(t.timestamp).getTime()) / 86400000);
-                      return (
-                        <div key={i} className={`flex items-center gap-3 text-[9px] py-1 border-t ${th.borderLight} first:border-t-0`}>
-                          <span className={`${th.textFaint} w-12 shrink-0`}>{ago}d ago</span>
-                          <span className={`${th.text} w-16 shrink-0`} style={{ fontFamily: "'DM Mono', monospace" }}>{t.strategy}</span>
-                          <span className={`${th.textFaint} flex-1`}>{t.action} @ {t.dte}d DTE</span>
-                          <span className={`font-bold ${t.outcome === 'WIN' ? 'text-emerald-400' : t.outcome === 'LOSS' ? 'text-red-400' : 'text-slate-400'}`}>
-                            {t.pnlPct >= 0 ? '+' : ''}{t.pnlPct.toFixed(1)}%
-                          </span>
-                          {t.aiVerdict && (
-                            <span className={`${t.aiVerdict === 'STOP' ? 'text-red-400' : t.aiVerdict === 'CAUTION' ? 'text-yellow-400' : 'text-emerald-400'}`}>
-                              AI:{t.aiVerdict}{t.aiOverridden ? '⚡' : ''}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
-  const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
-  const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
-  const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
-  const totalAtRisk = positions.reduce((s, p) => {
-    const shorts = p.legs.filter(l => l.direction === 'Short');
-    const longs  = p.legs.filter(l => l.direction === 'Long' && l.optionType === shorts[0]?.optionType);
-    if (shorts[0] && longs[0]) {
-      const width = Math.abs(shorts[0].strikePrice - longs[0].strikePrice);
-      return s + Math.max(0, (width * 100 * shorts[0].quantity) - p.creditReceived);
-    }
-    return s;
-  }, 0);
-  const totalTheta = positions.reduce((s, p) => {
-    if (p.currentValue != null && p.dte > 0) return s + p.currentValue / p.dte;
-    if (p.dte > 0) return s + p.creditReceived / p.dte;
-    return s;
-  }, 0);
-
-  return (
-    <div className={`grid grid-cols-5 border-b ${th.border}`}>
-      {[
-        { label: 'Open Positions', value: String(positions.length), sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`, color: th.text },
-        { label: 'Captured', value: `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, sub: `of $${totalCredit.toFixed(0)} · ${capturedPct.toFixed(0)}%`, color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: '50% Target', value: `$${Math.round(totalCredit * 0.5)}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / (totalCredit * 0.5)) * 100) : 0}% of target`, color: 'text-yellow-400' },
-        { label: 'At Risk', value: `$${totalAtRisk.toFixed(0)}`, sub: 'max loss if expired', color: th.textMuted },
-        { label: 'Est. Theta/Day', value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—', sub: 'daily decay', color: 'text-blue-400' },
-      ].map((item, i, arr) => (
-        <div key={item.label} className={`p-5 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
-          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>{item.label}</p>
-          <p className={`text-3xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
-          <p className={`text-[10px] ${th.textFaint} mt-1`}>{item.sub}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── Position Card ──────────────────────────────────────────────────────────
-// ── Analysis Panel ─────────────────────────────────────────────────────────
-const CONFIDENCE_COLOR: Record<string, string> = {
-  HIGH: 'text-emerald-400', MEDIUM: 'text-yellow-400', LOW: 'text-orange-400',
-};
-const REC_COLOR: Record<string, string> = {
-  HOLD: 'text-slate-400', WATCH: 'text-yellow-400', MANAGE: 'text-orange-400',
-  TAKE_PROFIT: 'text-emerald-400', CUT_LOSSES: 'text-red-400',
-  CLOSE: 'text-red-400', ROLL: 'text-purple-400',
-};
-
-// ── Chat Thread ────────────────────────────────────────────────────────────
-// Reusable multi-turn chat component. Receives initial context as the first
-// assistant message so the AI already "knows" the position or portfolio.
-
-function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
-  initialContext: string;   // the analysis text shown as the first assistant message
-  systemPrompt?: string;    // optional override — defaults to TRADING_SYSTEM_PROMPT
-  placeholder?: string;
-  th: typeof THEMES[Theme];
-}) {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'assistant', content: initialContext },
-  ]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const send = async () => {
-    const text = input.trim();
-    if (!text || loading) return;
-    setInput('');
-    setError(null);
-    const next: ChatMessage[] = [...messages, { role: 'user', content: text }];
-    setMessages(next);
-    setLoading(true);
-    try {
-      const reply = await callAIWithHistory(next, systemPrompt);
-      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-    } catch (e: any) {
-      setError(e.message ?? 'Failed');
-    } finally {
-      setLoading(false);
-      // Re-focus input after reply
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
-  };
-
-  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-  };
-
-  // Suggested follow-up prompts shown below the initial analysis
-  const suggestions = [
-    'What would make this go wrong fast?',
-    'If I roll, what strikes should I target?',
-    'Should I close early given current conditions?',
-    'What\'s my max pain scenario here?',
+  const presets: { label: string; days: number; hint: string }[] = [
+    { label: '+2d',  days: 2,  hint: 'Revisit soon' },
+    { label: '+1wk', days: 5,  hint: 'Post-spike settle' },
+    { label: '+2wk', days: 10, hint: 'Post-earnings' },
   ];
 
-  return (
-    <div className={`border-t ${th.border} flex flex-col`} style={{ background: 'rgba(99,102,241,0.03)' }}>
-      {/* Message history — skip the first assistant message, it's already shown above */}
-      {messages.length > 1 && (
-        <div className="px-4 py-3 space-y-3 max-h-80 overflow-y-auto">
-          {messages.slice(1).map((m, i) => (
-            <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              {m.role === 'assistant' && (
-                <span className="text-indigo-400 text-[10px] mt-1 shrink-0 font-bold">◈</span>
-              )}
-              <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[11px] leading-relaxed ${
-                m.role === 'user'
-                  ? 'bg-blue-600/20 border border-blue-600/30 text-blue-100 ml-auto'
-                  : `${th.card} border ${th.border} ${th.textMuted}`
-              }`}>
-                {m.content}
-              </div>
-            </div>
-          ))}
-          {loading && (
-            <div className="flex gap-3 justify-start">
-              <span className="text-indigo-400 text-[10px] mt-1 shrink-0 font-bold">◈</span>
-              <div className={`${th.card} border ${th.border} rounded-xl px-3 py-2`}>
-                <div className="flex gap-1 items-center h-4">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-              </div>
-            </div>
-          )}
-          {error && (
-            <p className="text-[10px] text-red-400 px-1">Error: {error} —
-              <button onClick={() => { setError(null); send(); }} className="underline ml-1">retry</button>
-            </p>
-          )}
-          <div ref={bottomRef} />
-        </div>
-      )}
+  const handleOpen = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setPopoverStyle({
+        position: 'fixed',
+        top: rect.bottom + 6,
+        left: rect.left,
+        zIndex: 9999,
+      });
+    }
+    setOpen(!open);
+  };
 
-      {/* Suggestions — only shown before any user message */}
-      {messages.length === 1 && (
-        <div className="px-4 pt-3 pb-1 flex flex-wrap gap-1.5">
-          {suggestions.map((s, i) => (
-            <button key={i} onClick={() => { setInput(s); setTimeout(() => inputRef.current?.focus(), 50); }}
-              className={`text-[10px] px-2.5 py-1 rounded-full border ${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400 transition-colors`}>
-              {s}
+  const handleSchedule = (days: number, label: string) => {
+    const url = buildEntryCalUrl(result, days);
+    const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a); a.click(); setTimeout(() => document.body.removeChild(a), 100);
+    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = label; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
+    setScheduled(label);
+    setTimeout(() => setOpen(false), 150);
+  };
+
+  const handleDatePick = (dateStr: string) => {
+    if (!dateStr) return;
+    setSelectedDate(dateStr);
+    const d = new Date(dateStr + 'T12:00:00');
+    const url = buildEntryCalUrl(result, 0, d);
+    // Create anchor, append, click, then defer removal so the tab opens before DOM cleanup
+    const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a); a.click(); setTimeout(() => document.body.removeChild(a), 100);
+    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = dateStr; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
+    setScheduled(dateStr);
+    setTimeout(() => setOpen(false), 150);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (btnRef.current && btnRef.current.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [open]);
+
+  if (scheduled) return (
+    <span
+      className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium cursor-pointer hover:border-emerald-400"
+      onClick={(e) => { e.stopPropagation(); setScheduled(null); }}
+      title="Click to reset"
+    >
+      ✓ re-screen {scheduled}
+    </span>
+  );
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={handleOpen}
+        className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors font-medium`}
+      >
+        📅 re-screen
+      </button>
+      {open && (
+        <div
+          onClick={e => e.stopPropagation()}
+          style={popoverStyle}
+          className={`${th.sidebar} border ${th.border} rounded-lg shadow-2xl p-3 w-52`}
+        >
+          <p className={`text-[8px] ${th.textFaint} tracking-widest mb-2 uppercase`}>Re-screen in:</p>
+          {presets.map(p => (
+            <button
+              key={p.label}
+              onClick={() => handleSchedule(p.days, p.label)}
+              className={`w-full text-left px-2 py-2 rounded hover:bg-emerald-500/10 border border-transparent hover:border-emerald-700 transition-colors mb-1`}
+            >
+              <span className="text-emerald-400 font-bold text-xs">{p.label}</span>
+              <span className={`text-[9px] ${th.textFaint} ml-2`}>{p.hint}</span>
             </button>
           ))}
+          <div className={`mt-2 pt-2 border-t ${th.border}`}>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5 uppercase`}>Pick a date:</p>
+            <div className="flex gap-1 items-center">
+              <input
+                ref={dateInputRef}
+                type="date"
+                min={new Date().toISOString().split('T')[0]}
+                value={selectedDate}
+                onChange={e => handleDatePick(e.target.value)}
+                className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} focus:outline-none focus:border-emerald-500 cursor-pointer`}
+              />
+              <button
+                onClick={e => { e.stopPropagation(); try { dateInputRef.current?.showPicker(); } catch { dateInputRef.current?.focus(); } }}
+                className={`px-1.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint} hover:text-emerald-400 hover:border-emerald-600 transition-colors text-xs`}
+                title="Open calendar"
+              >📅</button>
+            </div>
+          </div>
         </div>
       )}
+    </>
+  );
+}
 
-      {/* Input */}
-      <div className={`flex items-end gap-2 px-4 py-3`}>
-        <textarea
-          ref={inputRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          placeholder={placeholder ?? 'Ask a follow-up question... (Enter to send, Shift+Enter for newline)'}
-          rows={1}
-          disabled={loading}
-          className={`flex-1 resize-none text-[11px] px-3 py-2 rounded-xl border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-indigo-500 transition-colors placeholder:${th.textFaint} disabled:opacity-50`}
-          style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minHeight: '36px', maxHeight: '120px' }}
-          onInput={e => {
-            const el = e.currentTarget;
-            el.style.height = 'auto';
-            el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-          }}
-        />
-        <button onClick={send} disabled={loading || !input.trim()}
-          className="shrink-0 w-8 h-8 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-colors text-sm">
-          ↑
-        </button>
+// ── DTE Alert Banner ───────────────────────────────────────────────────────
+function DTEAlertBanner({ results, rules }: { results: ScreenResult[], rules: RulesType }) {
+  const isShortTerm = rules.DTE_MAX <= 29;
+  const alertThreshold = isShortTerm ? rules.DTE_MIN - 1 : 25;
+  const closeTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
+  const approaching = results.filter(r => r.qualified && r.bestCandidate && r.bestCandidate.dte <= alertThreshold);
+  if (approaching.length === 0) return null;
+  return (
+    <div className="border border-yellow-500/50 bg-yellow-500/10 rounded-lg px-4 py-3 flex items-start gap-3">
+      <span className="text-yellow-400 text-base mt-0.5">⚠</span>
+      <div className="flex-1">
+        <p className="text-xs text-yellow-400 font-bold tracking-wider mb-1">
+          {isShortTerm ? `APPROACHING ${rules.DTE_MIN} DTE — ACTIVE MANAGEMENT REQUIRED` : 'APPROACHING 21 DTE — ACTION REQUIRED'}
+        </p>
+        <p className="text-[10px] text-yellow-300 mb-2">
+          {isShortTerm
+            ? `Short term rules active (${rules.DTE_MIN}–${rules.DTE_MAX} DTE). Monitor closely — consider closing at 50% profit or ${closeTarget} DTE.`
+            : 'Close these positions regardless of profit/loss when they hit 21 DTE.'}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {approaching.map(r => (
+            <span key={r.symbol} className="text-[10px] bg-yellow-500/10 border border-yellow-600 rounded px-2 py-0.5 text-yellow-300 font-medium">
+              {r.symbol} {r.bestCandidate?.expiration} — <span className={r.bestCandidate!.dte <= closeTarget ? 'text-red-400 font-bold' : 'text-yellow-400'}>{r.bestCandidate?.dte}d</span>
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
 
-function AnalysisPanel({ analysis, pos, th }: { analysis: PositionAnalysis; pos: Position; th: typeof THEMES[Theme] }) {
-  // Build a rich initial context string for the chat thread
-  const chatContext = [
-    `I've analyzed your ${analysis.symbol} ${pos.strategy} position (${pos.expDate}, ${pos.dte} DTE).`,
-    ``,
-    `**Recommendation: ${analysis.recommendation.replace('_', ' ')}** (${analysis.confidence} confidence)`,
-    ``,
-    analysis.summary,
-    ``,
-    analysis.reasoning,
-    analysis.deviatesFromRules && analysis.deviationNote ? `\n**Note:** ${analysis.deviationNote}` : '',
-    analysis.risks.length > 0 ? `\n**Key risks:** ${analysis.risks.join(' · ')}` : '',
-    analysis.catalysts.length > 0 ? `\n**In your favor:** ${analysis.catalysts.join(' · ')}` : '',
-  ].filter(Boolean).join('\n');
-
+// ── Smart Suggestions Panel ────────────────────────────────────────────────
+function SmartSuggestionsPanel({ results, rules, th, onApplyAndRerun }: { results: ScreenResult[]; rules: RulesType; th: typeof THEMES[Theme]; onApplyAndRerun: (r: RulesType) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const disqualified = results.filter(r => !r.qualified);
+  const earningsFails = disqualified.filter(r => r.failReasons.some(f => f.includes('Earnings'))).length;
+  if (disqualified.length === 0 || results.length === 0) return null;
+  const suggestions = generateSuggestions(results, rules);
+  if (suggestions.length === 0 && earningsFails === 0) return null;
   return (
-    <div className={`border-t ${th.border}`} style={{ background: 'rgba(99,102,241,0.04)' }}>
-      <div className="px-4 py-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-[9px] text-indigo-400 tracking-widest font-bold uppercase">AI Analysis</span>
-            <span className={`text-[10px] font-bold ${REC_COLOR[analysis.recommendation] ?? 'text-white'}`}>
-              → {analysis.recommendation.replace('_', ' ')}
-            </span>
-            <span className={`text-[9px] font-bold ${CONFIDENCE_COLOR[analysis.confidence] ?? 'text-slate-400'}`}>
-              {analysis.confidence} confidence
-            </span>
-            {analysis.deviatesFromRules && (
-              <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/50 text-yellow-400 font-bold">
-                ⚡ Outside rules
-              </span>
-            )}
+    <div className={`border ${th.border} ${th.card} rounded-lg overflow-hidden`}>
+      <button onClick={() => setExpanded(!expanded)} className={`w-full px-4 py-3 flex items-center justify-between hover:bg-blue-500/5 transition-colors`}>
+        <div className="flex items-center gap-2">
+          <span className="text-blue-400 text-sm">◈</span>
+          <div className="text-left">
+            <p className={`text-xs font-bold tracking-wider ${th.text}`}>FILTER SUGGESTIONS</p>
+            <p className={`text-[9px] ${th.textFaint}`}>{suggestions.length} suggestion{suggestions.length !== 1 ? 's' : ''} · {disqualified.length} disqualified stocks analyzed</p>
           </div>
-          <span className={`text-[9px] ${th.textFaint}`}>{new Date(analysis.generatedAt).toLocaleTimeString()}</span>
         </div>
-
-        <p className={`text-xs ${th.textMuted} leading-relaxed`}>{analysis.summary}</p>
-        <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>{analysis.reasoning}</p>
-
-        {analysis.deviatesFromRules && analysis.deviationNote && (
-          <div className="flex items-start gap-2 p-2 rounded border border-yellow-600/30 bg-yellow-500/5">
-            <span className="text-yellow-400 shrink-0 text-[10px] mt-0.5">⚡</span>
-            <p className="text-[10px] text-yellow-300 leading-relaxed">{analysis.deviationNote}</p>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-3">
-          {analysis.risks.length > 0 && (
-            <div>
-              <p className="text-[9px] text-red-400 uppercase tracking-widest mb-1.5 font-bold">Risks</p>
-              <div className="space-y-1">
-                {analysis.risks.map((r, i) => (
-                  <div key={i} className="flex items-start gap-1.5">
-                    <span className="text-red-400 text-[9px] mt-0.5 shrink-0">▸</span>
-                    <p className="text-[10px] text-red-300 leading-snug">{r}</p>
-                  </div>
-                ))}
+        <span className={`${th.textFaint} text-xs`}>{expanded ? '▲' : '▼'}</span>
+      </button>
+      {expanded && (
+        <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
+          {earningsFails > 0 && (
+            <div className={`flex items-start gap-2 p-2 ${th.tag} rounded border ${th.borderLight}`}>
+              <span className={`${th.textFaint} text-xs mt-0.5`}>ℹ</span>
+              <div>
+                <p className={`text-[10px] ${th.textMuted} font-medium`}>{earningsFails} stock{earningsFails !== 1 ? 's' : ''} blocked by upcoming earnings</p>
+                <p className={`text-[9px] ${th.textFaint}`}>Earnings filter is a hard rule. Use the 📅 follow up button to schedule a re-screen.</p>
               </div>
             </div>
           )}
-          {analysis.catalysts.length > 0 && (
-            <div>
-              <p className="text-[9px] text-emerald-400 uppercase tracking-widest mb-1.5 font-bold">In your favor</p>
-              <div className="space-y-1">
-                {analysis.catalysts.map((c, i) => (
-                  <div key={i} className="flex items-start gap-1.5">
-                    <span className="text-emerald-400 text-[9px] mt-0.5 shrink-0">▸</span>
-                    <p className="text-[10px] text-emerald-300 leading-snug">{c}</p>
+          {suggestions.map((s, i) => (
+            <div key={i} className={`border ${th.border} rounded p-3 space-y-2`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[9px] bg-blue-500/20 text-blue-400 border border-blue-600 rounded px-1.5 py-0.5 font-medium">#{s.priority}</span>
+                    <p className={`text-xs ${th.text} font-medium`}>{s.label}</p>
                   </div>
-                ))}
+                  <p className={`text-[10px] ${th.textMuted} mb-1`}>{s.rationale}</p>
+                  <p className={`text-[9px] ${th.textFaint} italic`}>⚖ {s.tradeoff}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className={`text-[9px] ${th.textFaint}`}>{RULE_LABELS[s.rule]}</p>
+                  <p className={`text-xs ${th.textFaint} line-through`}>{s.currentValue}</p>
+                  <p className="text-xs text-emerald-500 font-bold">→ {s.suggestedValue}</p>
+                  <p className={`text-[9px] ${th.textFaint}`}>+{s.wouldQualify} stocks</p>
+                </div>
               </div>
+              <button onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })} className="w-full text-[9px] py-1.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-500/10 transition-colors font-medium tracking-wider">APPLY & RE-RUN</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Load Prompt Modal ──────────────────────────────────────────────────────
+function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClose: () => void; th: typeof THEMES[Theme] }) {
+  if (!state.show) return null;
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className={`${th.sidebar} border ${th.border} rounded-xl p-5 w-80 shadow-2xl`}>
+        <h3 className={`text-xs font-bold ${th.text} mb-1 tracking-wider`}>LOAD {state.type === 'global' ? 'SESSION' : 'FILTER'}</h3>
+        <p className={`text-[10px] ${th.textMuted} mb-4`}>Load <span className={`${th.text} font-medium`}>"{state.name}"</span> — how should it be applied?</p>
+        <div className="space-y-2 mb-4">
+          <button onClick={() => { state.onLoad?.(false); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:bg-blue-500/10 hover:border-blue-500 transition-colors`}>
+            <p className={`text-xs ${th.text} font-medium`}>Replace</p>
+            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Clear current tickers and load this {state.type === 'global' ? 'session' : 'filter'}</p>
+          </button>
+          <button onClick={() => { state.onLoad?.(true); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:bg-blue-500/10 hover:border-blue-500 transition-colors`}>
+            <p className={`text-xs ${th.text} font-medium`}>Merge</p>
+            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Add tickers from this {state.type === 'global' ? 'session' : 'filter'} to existing ones</p>
+          </button>
+        </div>
+        <button onClick={onClose} className={`w-full text-[10px] ${th.textFaint} hover:${th.textMuted} transition-colors py-1`}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Sessions Panel ─────────────────────────────────────────────────────────
+function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, onReclassify, th }: {
+  bps: string; bcs: string; ic: string; broken: string;
+  onLoadAll: (bps: string, bcs: string, ic: string, broken: string) => void;
+  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
+  onReclassify: (tickers: string[]) => Promise<void>;
+  th: typeof THEMES[Theme];
+}) {
+  const [globalFilters, setGlobalFilters] = useState<GlobalFilters>({});
+  const [showSave, setShowSave] = useState(false);
+  const [showLoad, setShowLoad] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [loadingPortfolio, setLoadingPortfolio] = useState(false);
+  const [portfolioStatus, setPortfolioStatus] = useState('');
+  const [lastLoadedName, setLastLoadedName] = useState<string | null>(null);
+  const [reclassifying, setReclassifying] = useState(false);
+  const [reclassifyStatus, setReclassifyStatus] = useState('');
+
+  const handleReclassify = async () => {
+    // Gather all tickers currently in the four boxes
+    const allTickers = [
+      ...normalizeTickerInput(bps),
+      ...normalizeTickerInput(bcs),
+      ...normalizeTickerInput(ic),
+      ...normalizeTickerInput(broken),
+    ];
+    if (allTickers.length === 0) {
+      setReclassifyStatus('⚠ No tickers in boxes');
+      setTimeout(() => setReclassifyStatus(''), 3000);
+      return;
+    }
+    setReclassifying(true);
+    setReclassifyStatus(`Analyzing ${allTickers.length} tickers...`);
+    try {
+      await onReclassify(allTickers);
+      setReclassifyStatus('✓ Done — tickers redistributed');
+      setTimeout(() => { setReclassifyStatus(''); setLastLoadedName(null); }, 3000);
+    } catch {
+      setReclassifyStatus('⚠ Error during re-classify');
+      setTimeout(() => setReclassifyStatus(''), 3000);
+    } finally {
+      setReclassifying(false);
+    }
+  };
+
+  const markSessionLoaded = (name: string) => {
+    setLastLoadedName(name);
+    try { localStorage.setItem(LS_SESSION_LOADED_AT, JSON.stringify({ name, at: Date.now() })); } catch {}
+  };
+
+  const handleLoadFromPortfolio = async () => {
+    setLoadingPortfolio(true);
+    setPortfolioStatus('Fetching positions...');
+    try {
+      const { current, historical } = await loadPortfolioTickers();
+      const all = [...current, ...historical];
+      if (all.length === 0) { setPortfolioStatus('No positions found'); setTimeout(() => setPortfolioStatus(''), 3000); return; }
+      const allStr = all.join(', ');
+      setPortfolioStatus(`Found ${current.length} current · ${historical.length} historical`);
+      setTimeout(() => setPortfolioStatus(''), 4000);
+      // Check if boxes already have tickers
+      const hasExisting = [bps, bcs, ic].some(v => normalizeTickerInput(v).length > 0);
+      if (hasExisting) {
+        onLoadPrompt({
+          name: `${all.length} tickers from portfolio`,
+          type: 'strategy',
+          onLoad: (doMerge: boolean) => {
+            if (doMerge) {
+              // Merge all into BPS box (user can redistribute)
+              onLoadAll(mergeTickers(bps, all), bcs, ic, broken);
+            } else {
+              onLoadAll(allStr, '', '', '');
+            }
+          },
+        });
+      } else {
+        onLoadAll(allStr, '', '', '');
+      }
+    } catch (e: any) {
+      setPortfolioStatus(`Error: ${e.message}`);
+      setTimeout(() => setPortfolioStatus(''), 4000);
+    }
+    setLoadingPortfolio(false);
+  };
+  const parseTickers = normalizeTickerInput;
+  const refreshFilters = useCallback(async () => { const f = await loadFilters('global') as GlobalFilters; setGlobalFilters(f); }, []);
+  useEffect(() => { refreshFilters(); }, [refreshFilters]);
+  const handleSave = async (replace = false) => {
+    if (!saveName.trim()) { setSaveError('Enter a session name'); return; }
+    const result = await saveFilter('global', saveName.trim(), { bps: parseTickers(bps), bcs: parseTickers(bcs), ic: parseTickers(ic) }, replace);
+    if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
+    await refreshFilters(); setShowSave(false); setSaveName(''); setSaveError('');
+  };
+  const handleLoadSelect = (name: string) => {
+    const session = globalFilters[name]; if (!session) return; setShowLoad(false);
+    const allEmpty = !parseTickers(bps).length && !parseTickers(bcs).length && !parseTickers(ic).length;
+    if (allEmpty) {
+      onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
+      markSessionLoaded(name);
+      return;
+    }
+    onLoadPrompt({ name, type: 'global', onLoad: (doMerge: boolean) => {
+      if (doMerge) onLoadAll(mergeTickers(bps, session.bps), mergeTickers(bcs, session.bcs), mergeTickers(ic, session.ic), broken);
+      else onLoadAll(tickersToString(session.bps), tickersToString(session.bcs), tickersToString(session.ic), '');
+      markSessionLoaded(name);
+    }});
+  };
+  const handleDelete = async (name: string) => { await deleteFilter('global', name); await refreshFilters(); };
+  const filterNames = Object.keys(globalFilters);
+  return (
+    <div className={`border-t ${th.border} pt-3`}>
+      <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium mb-2`}>SESSIONS</p>
+
+      {/* Loaded session indicator + re-classify */}
+      {lastLoadedName && (
+        <div className={`mb-2 px-2 py-1.5 rounded border border-yellow-700/50 bg-yellow-500/5 flex items-center justify-between gap-2`}>
+          <div>
+            <p className="text-[8px] text-yellow-400/80 leading-tight">Loaded: <span className="font-bold text-yellow-400">{lastLoadedName}</span></p>
+            {reclassifyStatus
+              ? <p className={`text-[8px] leading-tight ${reclassifyStatus.startsWith('✓') ? 'text-emerald-400' : 'text-yellow-400/70'}`}>{reclassifyStatus}</p>
+              : <p className="text-[8px] text-yellow-400/50 leading-tight">Trends may have shifted</p>
+            }
+          </div>
+          <button
+            onClick={handleReclassify}
+            disabled={reclassifying}
+            className="text-[8px] px-2 py-1 border border-yellow-600 text-yellow-400 rounded hover:bg-yellow-500/10 transition-colors font-bold shrink-0 whitespace-nowrap disabled:opacity-50">
+            {reclassifying ? '⟳ Analyzing...' : '↻ Re-classify'}
+          </button>
+        </div>
+      )}
+      <div className="flex gap-2 mb-2">
+        <button
+          onClick={handleLoadFromPortfolio}
+          disabled={loadingPortfolio}
+          className={`w-full text-[9px] px-2 py-1.5 border border-purple-700 rounded-lg text-purple-400 hover:border-purple-500 hover:text-purple-300 transition-colors font-medium flex items-center justify-center gap-1 disabled:opacity-40`}>
+          {loadingPortfolio ? '⟳ Loading...' : '📊 Load from Portfolio'}
+        </button>
+      </div>
+      {portfolioStatus && <p className={`text-[9px] ${portfolioStatus.startsWith('Error') ? 'text-red-400' : 'text-emerald-400'} mb-2`}>{portfolioStatus}</p>}
+      <div className="flex gap-2">
+        <button onClick={() => onLoadAll('', '', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
+        <div className="relative flex-1">
+          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
+          {showSave && (
+            <div className={`absolute top-8 left-0 z-40 ${th.sidebar} border ${th.border} rounded-lg p-2 w-56 shadow-xl`}>
+              <p className={`text-[9px] ${th.textFaint} mb-1.5`}>Saves all three scan lists as one session</p>
+              <div className="flex gap-1 mb-1">
+                <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
+                  className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
+                <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition-colors">Save</button>
+              </div>
+              {saveError && (<div className="flex gap-1 items-center mt-1"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-medium">Replace</button>}</div>)}
             </div>
           )}
         </div>
-
-        <div className={`flex items-center gap-2 pt-1`}>
-          <span className="text-[9px] text-indigo-400 font-bold tracking-widest uppercase">◈ Ask a follow-up</span>
-          <div className={`flex-1 h-px ${th.borderLight} border-t`} />
+        <div className="relative flex-1">
+          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>▼ Load Session</button>
+          {showLoad && (
+            <div className={`absolute top-8 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg overflow-hidden w-56 shadow-xl`}>
+              {filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>No saved sessions yet</p>
+                : filterNames.map(name => (
+                  <div key={name} className={`flex items-center justify-between px-3 py-2 hover:bg-blue-500/10 group cursor-pointer`}>
+                    <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} hover:${th.text} text-left flex-1 font-medium`}>{name}</button>
+                    <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                  </div>
+                ))}
+            </div>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
 
-      <ChatThread
-        initialContext={chatContext}
-        systemPrompt={TRADING_CHAT_PROMPT}
-        placeholder={`Ask about ${analysis.symbol}... e.g. "Should I roll to next month?"`}
-        th={th}
+// ── Strategy Box ──────────────────────────────────────────────────────────
+function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, strategy, disabled, onLoadPrompt, th }: {
+  label: string;
+  badge: string;
+  badgeColor: string;
+  borderFocus: string;
+  value: string;
+  onChange: (v: string) => void;
+  strategy: 'BPS' | 'BCS' | 'IC' | 'broken';
+  disabled?: boolean;
+  onLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void;
+  th: typeof THEMES[Theme]
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pendingTickersRef = useRef<string[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [savedFilters, setSavedFilters] = useState<SavedFilters>({});
+  const [showSaveInput, setShowSaveInput] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [showLoad, setShowLoad] = useState(false);
+  const [loadingFilters, setLoadingFilters] = useState(false);
+  const parseTickers = normalizeTickerInput;
+  const refreshFilters = useCallback(async () => { setLoadingFilters(true); const f = await loadFilters(strategy) as SavedFilters; setSavedFilters(f); setLoadingFilters(false); }, [strategy]);
+  useEffect(() => { refreshFilters(); }, [refreshFilters]);
+
+  const handleImgClick = () => {
+    if (fileRef.current) fileRef.current.value = '';
+    fileRef.current?.click();
+  };
+
+  const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return; setScanning(true);
+    try {
+      const tickers = await extractTickersFromImage(file);
+      if (tickers.length > 0) {
+        const hasExisting = parseTickers(value).length > 0;
+        if (hasExisting) {
+          pendingTickersRef.current = tickers;
+          onLoadPrompt({
+            name: `${tickers.length} ticker${tickers.length !== 1 ? 's' : ''} from image`,
+            type: 'strategy',
+            onLoad: (doMerge: boolean) => {
+              if (doMerge) onChange(mergeTickers(value, pendingTickersRef.current));
+              else onChange(tickersToString(pendingTickersRef.current));
+            },
+          });
+        } else {
+          onChange(tickersToString(tickers));
+        }
+      } else {
+        onChange('⚠ No tickers found in image');
+        setTimeout(() => onChange(''), 2500);
+      }
+    } catch (err: any) {
+      console.error(err);
+      onChange(`⚠ OCR error: ${err?.message ?? 'unknown'}`);
+      setTimeout(() => onChange(''), 3500);
+    }
+    setScanning(false);
+  };
+
+  const handleSave = async (replace = false) => {
+    if (!saveName.trim()) { setSaveError('Enter a name'); return; }
+    const tickers = parseTickers(value); if (tickers.length === 0) { setSaveError('No tickers to save'); return; }
+    const result = await saveFilter(strategy, saveName.trim(), { tickers }, replace);
+    if (result.conflict) { setSaveError(`"${saveName}" exists — replace?`); return; }
+    await refreshFilters(); setShowSaveInput(false); setSaveName(''); setSaveError('');
+  };
+  const handleLoadSelect = (name: string) => {
+    const tickers = savedFilters[name] ?? []; setShowLoad(false);
+    if (!hasValue) { onChange(tickersToString(tickers)); return; }
+    onLoadPrompt({ name, type: 'strategy', onLoad: (doMerge: boolean) => { if (doMerge) onChange(mergeTickers(value, tickers)); else onChange(tickersToString(tickers)); } });
+  };
+  const handleDelete = async (name: string) => { await deleteFilter(strategy, name); await refreshFilters(); };
+  const filterNames = Object.keys(savedFilters);
+  const hasValue = parseTickers(value).length > 0;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[9px] px-1.5 py-0.5 border rounded-md tracking-wider font-bold ${badgeColor}`}>{badge}</span>
+          <span className={`text-[10px] ${th.textMuted} font-medium tracking-wider`}>{label}</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
+          <button onClick={handleImgClick} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
+          <div className="relative">
+            <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled || !hasValue} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>💾</button>
+            {showSaveInput && (
+              <div className={`absolute top-6 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg p-2 w-44 shadow-xl`}>
+                <div className="flex gap-1 mb-1">
+                  <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
+                    className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
+                  <button onClick={() => handleSave()} className="text-[9px] px-1.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium">Save</button>
+                </div>
+                {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1 py-0.5 bg-yellow-600 text-white rounded">Replace</button>}</div>)}
+              </div>
+            )}
+          </div>
+          <div className="relative">
+            <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>▼</button>
+            {showLoad && (
+              <div className={`absolute top-6 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg overflow-hidden w-44 shadow-xl`}>
+                {loadingFilters ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>Loading...</p>
+                  : filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>No saved filters yet</p>
+                  : filterNames.map(name => (
+                    <div key={name} className={`flex items-center justify-between px-3 py-2 hover:bg-blue-500/10 group cursor-pointer`}>
+                      <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} text-left flex-1 font-medium`}>{name}</button>
+                      <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      <textarea
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder={`${label} tickers...`}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-14 resize-none focus:outline-none ${borderFocus} placeholder-slate-500 leading-relaxed disabled:opacity-40`}
       />
     </div>
   );
 }
 
-function PortfolioAnalysisPanel({ analysis, positions, onClose, th }: {
-  analysis: PortfolioAnalysis; positions: Position[]; onClose: () => void; th: typeof THEMES[Theme];
+// ── Result Card ────────────────────────────────────────────────────────────
+function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme] }) {
+  const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>·${w}·</span>;
+  if (c.strategy === 'IC' && c.shortCallStrike != null && c.longCallStrike != null) {
+    return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={th.text}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}<span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>{widthTag(c.callWidth ?? c.spreadWidth)}</div>;
+  }
+  return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
+}
+
+
+// ── Order Placement ────────────────────────────────────────────────────────
+async function getAccountNumber(): Promise<string> {
+  const token = await getAccessToken();
+  const data = await ttFetch('/customers/me/accounts', token);
+  const acct = data?.data?.items?.[0]?.account?.['account-number'];
+  if (!acct) throw new Error('No account found');
+  return acct;
+}
+
+function buildOrderLegs(result: ScreenResult, c: SpreadCandidate): any[] {
+  const legs: any[] = [];
+  if (c.strategy === 'BPS') {
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+  } else if (c.strategy === 'BCS') {
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+  } else if (c.strategy === 'IC') {
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortCallOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longCallOccSymbol!, quantity: 1, action: 'Buy to Open' });
+  }
+  return legs;
+}
+
+function buildOrderPayload(c: SpreadCandidate, quantity: number, legs: any[]): any {
+  const credit = ((c.totalCredit ?? c.credit) * quantity).toFixed(2);
+  return {
+    'time-in-force': 'GTC',
+    'order-type': 'Limit',
+    price: credit,
+    'price-effect': 'Credit',
+    legs: legs.map(l => ({ ...l, quantity })),
+  };
+}
+
+function TradeModal({ result, th, onClose }: {
+  result: ScreenResult; th: typeof THEMES[Theme]; onClose: () => void;
 }) {
-  // Build rich initial context for portfolio chat
-  const chatContext = [
-    `I've analyzed your portfolio of ${positions.length} open positions.`,
-    ``,
-    analysis.summary,
-    analysis.marketContext ? `\n**Market context:** ${analysis.marketContext}` : '',
-    analysis.dominantRisk ? `\n**Dominant risk:** ${analysis.dominantRisk}` : '',
-    analysis.priorityActions.length > 0 ? `\n**Priority actions:** ${analysis.priorityActions.map((a, i) => `${i+1}. ${a}`).join(' ')}` : '',
-    analysis.topRisks.length > 0 ? `\n**Portfolio risks:** ${analysis.topRisks.join(' · ')}` : '',
-    analysis.thetaYield ? `\n**Theta yield:** ${analysis.thetaYield}` : '',
-    ``,
-    `Positions: ${positions.map(p => `${p.symbol} ${p.strategy} (${p.dte}d, ${p.pnl != null ? ((p.pnl/p.creditReceived)*100).toFixed(0)+'% P&L' : 'no price'})`).join(', ')}`,
-  ].filter(Boolean).join('\n');
+  const c = result.bestCandidate!;
+  const [quantity, setQuantity] = useState(1);
+  const [phase, setPhase] = useState<'confirm' | 'dryrun' | 'placing' | 'done' | 'error'>('confirm');
+  const [dryRunResult, setDryRunResult] = useState<any>(null);
+  const [error, setError] = useState('');
+  const [orderId, setOrderId] = useState<string>('');
 
-  return (
-    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-indigo-400 text-sm">◈</span>
-              <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>PORTFOLIO ANALYSIS</h2>
-            </div>
-            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>Generated {new Date(analysis.generatedAt).toLocaleTimeString()}</p>
-          </div>
-          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
-        </div>
+  // GTC profit target (default 50%)
+  const defaultGtcPct = 50;
+  const [gtcPct, setGtcPct] = useState(defaultGtcPct);
+  const creditPerContract = c.totalCredit ?? c.credit;
+  const gtcBuyback = parseFloat((creditPerContract * (1 - gtcPct / 100)).toFixed(2));
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="p-6 space-y-5">
-            {/* Summary */}
-            <div className={`p-4 rounded-xl border ${th.border}`} style={{ background: 'rgba(99,102,241,0.05)' }}>
-              <p className={`text-xs ${th.textMuted} leading-relaxed`}>{analysis.summary}</p>
-            </div>
+  // Stop loss (default 200% of credit = 2× credit debit to close)
+  const defaultStopPct = 200;
+  const [stopPct, setStopPct] = useState(defaultStopPct);
+  const stopPrice = parseFloat((creditPerContract * (stopPct / 100)).toFixed(2));
 
-            {/* Market context */}
-            {analysis.marketContext && (
-              <div>
-                <p className="text-[9px] text-indigo-400 uppercase tracking-widest mb-2 font-bold">Market Context</p>
-                <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>{analysis.marketContext}</p>
-              </div>
-            )}
+  // Entry limit price (default = credit, can tweak)
+  const [entryLimit, setEntryLimit] = useState(parseFloat(creditPerContract.toFixed(2)));
 
-            <div className="grid grid-cols-2 gap-5">
-              {analysis.priorityActions.length > 0 && (
-                <div>
-                  <p className="text-[9px] text-blue-400 uppercase tracking-widest mb-2 font-bold">Priority Actions</p>
-                  <div className="space-y-2">
-                    {analysis.priorityActions.map((a, i) => (
-                      <div key={i} className="flex items-start gap-2">
-                        <span className="text-blue-400 text-[10px] font-bold shrink-0 mt-0.5">{i + 1}.</span>
-                        <p className={`text-[10px] ${th.textMuted} leading-snug`}>{a}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {analysis.topRisks.length > 0 && (
-                <div>
-                  <p className="text-[9px] text-red-400 uppercase tracking-widest mb-2 font-bold">Portfolio Risks</p>
-                  <div className="space-y-2">
-                    {analysis.topRisks.map((r, i) => (
-                      <div key={i} className="flex items-start gap-2">
-                        <span className="text-red-400 text-[9px] shrink-0 mt-0.5">▸</span>
-                        <p className="text-[10px] text-red-300 leading-snug">{r}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+  const hasOccSymbols = c.shortOccSymbol && c.longOccSymbol &&
+    (c.strategy !== 'IC' || (c.shortCallOccSymbol && c.longCallOccSymbol));
 
-            {analysis.dominantRisk && (
-              <div className="flex items-start gap-2 p-3 rounded-lg border border-red-500/20 bg-red-500/5">
-                <span className="text-red-400 shrink-0 text-[10px] mt-0.5 font-bold">!</span>
-                <div>
-                  <p className="text-[9px] text-red-400 uppercase tracking-widest mb-1 font-bold">Dominant Risk</p>
-                  <p className="text-[10px] text-red-300">{analysis.dominantRisk}</p>
-                </div>
-              </div>
-            )}
+  const credit = entryLimit * quantity;
+  const maxLoss = (c.spreadWidth - (c.totalCredit ?? c.credit)) * quantity * 100;
 
-            <div className="grid grid-cols-2 gap-5">
-              {analysis.sectorConcentration.length > 0 && (
-                <div>
-                  <p className="text-[9px] text-yellow-400 uppercase tracking-widest mb-2 font-bold">Concentration Risk</p>
-                  <div className="space-y-1">
-                    {analysis.sectorConcentration.map((s, i) => (
-                      <p key={i} className="text-[10px] text-yellow-300">▸ {s}</p>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {analysis.thetaYield && (
-                <div>
-                  <p className="text-[9px] text-emerald-400 uppercase tracking-widest mb-2 font-bold">Theta Yield</p>
-                  <p className={`text-[10px] ${th.textMuted}`}>{analysis.thetaYield}</p>
-                </div>
-              )}
-            </div>
-
-            {/* Divider before chat */}
-            <div className={`flex items-center gap-2 pt-1`}>
-              <span className="text-[9px] text-indigo-400 font-bold tracking-widest uppercase">◈ Ask about your portfolio</span>
-              <div className={`flex-1 h-px ${th.borderLight} border-t`} />
-            </div>
-          </div>
-
-          <ChatThread
-            initialContext={chatContext}
-            systemPrompt={TRADING_CHAT_PROMPT}
-            placeholder='Ask anything — e.g. "Which position should I close first if I need cash?" or "Am I too long tech?"'
-            th={th}
-          />
-        </div>
-
-        <div className={`px-6 py-4 border-t ${th.border} shrink-0`}>
-          <button onClick={onClose} className={`w-full py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Action Verdict Badge ───────────────────────────────────────────────────
-const VERDICT_STYLE = {
-  GO:      { border: 'border-emerald-500/60', bg: 'bg-emerald-500/8',  icon: '✓', iconColor: 'text-emerald-400', labelColor: 'text-emerald-300', label: 'GO' },
-  CAUTION: { border: 'border-yellow-500/60',  bg: 'bg-yellow-500/8',   icon: '⚠', iconColor: 'text-yellow-400',  labelColor: 'text-yellow-300',  label: 'CAUTION' },
-  STOP:    { border: 'border-red-500/60',     bg: 'bg-red-500/8',      icon: '✕', iconColor: 'text-red-400',     labelColor: 'text-red-300',     label: 'STOP' },
-};
-
-function ActionVerdictBadge({ verdict, compact = false, th }: {
-  verdict: ActionVerdict;
-  compact?: boolean;
-  th: typeof THEMES[Theme];
-}) {
-  const style = VERDICT_STYLE[verdict.verdict];
-  if (compact) {
-    return (
-      <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${style.border} ${style.bg}`}>
-        <span className={`text-[10px] font-bold ${style.iconColor}`}>{style.icon}</span>
-        <span className={`text-[10px] font-bold ${style.labelColor}`}>{style.label}</span>
-        <span className={`text-[10px] ${th.textFaint} truncate max-w-[200px]`}>{verdict.headline}</span>
-      </div>
-    );
-  }
-  return (
-    <div className={`rounded-xl border ${style.border} p-4 space-y-2`} style={{ background: 'rgba(0,0,0,0.3)' }}>
-      <div className="flex items-center gap-2">
-        <span className={`text-lg ${style.iconColor}`}>{style.icon}</span>
-        <span className={`text-xs font-bold tracking-widest ${style.labelColor}`}>{style.label}</span>
-        <span className={`text-[9px] font-bold ${verdict.confidence === 'HIGH' ? style.labelColor : 'text-slate-400'} ml-1`}>
-          {verdict.confidence} CONFIDENCE
-        </span>
-      </div>
-      <p className={`text-sm font-bold ${style.labelColor} leading-snug`}>{verdict.headline}</p>
-      <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>{verdict.reasoning}</p>
-    </div>
-  );
-}
-
-// ── Extend Profit Button ───────────────────────────────────────────────────
-// ── Extend Profit State Assessment ───────────────────────────────────────
-// Evaluates whether conditions favor or warn against extending profit target
-function assessExtendConditions(pos: Position): {
-  signal: 'favorable' | 'neutral' | 'warning' | 'bad';
-  reasons: string[];
-  warnings: string[];
-} {
-  const reasons: string[] = [];
-  const warnings: string[] = [];
-  let score = 0;
-
-  // P&L check — most important
-  const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
-  if (pnlPct < 0) {
-    warnings.push(`Position is at a loss (${pnlPct.toFixed(0)}%) — extending a losing position is rarely right`);
-    score -= 3;
-  } else if (pnlPct < 30) {
-    warnings.push(`Only ${pnlPct.toFixed(0)}% profit captured — haven't hit standard target yet`);
-    score -= 1;
-  } else if (pnlPct >= 50) {
-    reasons.push(`${pnlPct.toFixed(0)}% profit already captured — solid base to extend from`);
-    score += 2;
-  }
-
-  // DTE check
-  if (pos.dte < 21) {
-    warnings.push(`${pos.dte} DTE — gamma risk is elevated, holding longer is dangerous`);
-    score -= 3;
-  } else if (pos.dte < 28) {
-    warnings.push(`${pos.dte} DTE — getting close to gamma zone, extend only if trend is strong`);
-    score -= 1;
-  } else if (pos.dte >= 30) {
-    reasons.push(`${pos.dte} DTE — plenty of time, gamma risk is low`);
-    score += 1;
-  }
-
-  // IVR check
-  if (pos.ivr != null && pos.ivr < 30) {
-    warnings.push(`IVR ${pos.ivr} — below minimum threshold, edge is thin`);
-    score -= 2;
-  } else if (pos.ivr != null && pos.ivr >= 40) {
-    reasons.push(`IVR ${pos.ivr} — elevated volatility means more premium to capture`);
-    score += 1;
-  }
-
-  // Buffer check
-  if (pos.buffer != null && pos.buffer < 5 && pos.dte > 14) {
-    warnings.push(`Buffer only ${pos.buffer.toFixed(1)}% — thin cushion makes holding longer risky`);
-    score -= 2;
-  } else if (pos.buffer != null && pos.buffer >= 10) {
-    reasons.push(`${pos.buffer.toFixed(1)}% buffer — strong cushion supports holding longer`);
-    score += 1;
-  }
-
-  // Theta check
-  if (pos.theta != null && pos.theta < 0.02) {
-    warnings.push(`Theta only $${(pos.theta * 100).toFixed(2)}/day — slow decay, extra holding time has low reward`);
-    score -= 1;
-  } else if (pos.theta != null && pos.theta >= 0.05) {
-    reasons.push(`Theta $${(pos.theta * 100).toFixed(2)}/day — strong decay working in your favor`);
-    score += 1;
-  }
-
-  const signal = score >= 3 ? 'favorable' : score >= 0 ? 'neutral' : score >= -2 ? 'warning' : 'bad';
-  return { signal, reasons, warnings };
-}
-
-function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<'success' | 'error' | null>(null);
-  const [resultMsg, setResultMsg] = useState('');
-  const [verdict, setVerdict] = useState<ActionVerdict | null>(null);
-  const [verdictLoading, setVerdictLoading] = useState(false);
-  const [selectedPct, setSelectedPct] = useState<number | null>(null);
-
-  if (!pos.hasGtc) return null;
-
-  const currentTargetPct = pos.gtcOrderPrice != null && pos.creditReceived > 0
-    ? Math.round((1 - pos.gtcOrderPrice / (pos.creditReceived / 100)) * 100)
-    : Math.round(pos.profitTarget * 100);
-
-  const options = [55, 60, 65, 70, 75, 80, 85, 90].filter(pct => pct > currentTargetPct);
-  if (options.length === 0) return null;
-
-  // Re-fetch the live GTC order ID if it wasn't captured at load time
-  const resolveGtcOrderId = async (token: string): Promise<string | null> => {
-    if (pos.gtcOrderId) return pos.gtcOrderId;
-    const orders = await fetchGtcOrders(pos.accountNumber, token);
-    const shortSymbol = pos.legs.find(l => l.direction === 'Short')?.symbol ?? '';
-    const match = orders.find(o =>
-      !isStopOrder(o) &&
-      o.legs.some(l => normalizeOccSymbol(l.symbol) === normalizeOccSymbol(shortSymbol) && isBuyToCloseAction(l.action))
-    );
-    return match?.id ?? null;
-  };
-
-  const handleOpen = async () => {
-    setOpen(true);
-    setResult(null);
-    setVerdict(null);
-    setSelectedPct(null);
-    // Fetch a general extend verdict immediately when dropdown opens
-    setVerdictLoading(true);
-    try {
-      const v = await evaluateAction(pos, 'EXTEND_PROFIT', String(options[0]));
-      setVerdict(v);
-    } catch { /* verdict optional */ }
-    finally { setVerdictLoading(false); }
-  };
-
-  const handleSelectPct = async (pct: number) => {
-    setSelectedPct(pct);
-    setVerdict(null);
-    setVerdictLoading(true);
-    try {
-      const v = await evaluateAction(pos, 'EXTEND_PROFIT', String(pct));
-      setVerdict(v);
-    } catch { /* verdict optional */ }
-    finally { setVerdictLoading(false); }
-  };
-
-  const extend = async (targetPct: number) => {
-    setLoading(true);
-    setResult(null);
+  const runDryRun = async () => {
+    setPhase('dryrun'); setError('');
     try {
       const token = await getAccessToken();
-      const orderId = await resolveGtcOrderId(token);
-      if (!orderId) {
-        throw new Error('Could not find a working GTC order for this position. It may have already been filled or cancelled. Refresh positions and try again.');
-      }
-      const newPrice = parseFloat(((pos.creditReceived / 100) * (1 - targetPct / 100)).toFixed(2));
-      await ttPatch(
-        `/accounts/${pos.accountNumber}/orders/${orderId}`,
-        token,
-        { price: newPrice.toFixed(2), 'time-in-force': 'GTC' }
-      );
-      setResult('success');
-      setResultMsg(`Target extended to ${targetPct}% — GTC updated to $${newPrice.toFixed(2)}`);
-      setOpen(false);
-    } catch (e: any) {
-      setResult('error');
-      setResultMsg(e.message ?? 'Update failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const extendAssessment = assessExtendConditions(pos);
-  const assessColor = extendAssessment.signal === 'favorable' ? 'border-emerald-600 text-emerald-400' :
-                      extendAssessment.signal === 'neutral'   ? 'border-slate-600 text-slate-400' :
-                      extendAssessment.signal === 'warning'   ? 'border-yellow-600 text-yellow-400' :
-                                                                'border-red-700 text-red-400';
-
-  return (
-    <div className="relative">
-      <button
-        onClick={e => { e.stopPropagation(); open ? setOpen(false) : handleOpen(); }}
-        className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${
-          result === 'success' ? 'border-emerald-600 text-emerald-400' :
-          result === 'error'   ? 'border-red-600 text-red-400' :
-          open ? 'border-blue-500 text-blue-400 bg-blue-500/10' :
-          assessColor
-        }`}>
-        {result === 'success' ? '✓ Extended' : result === 'error' ? '✕ Failed' : '↑ Extend Profit'}
-      </button>
-
-      {open && (
-        <div className={`fixed z-[200] ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-80`}
-          style={{ bottom: '80px', left: '50%', transform: 'translateX(-50%)' }}
-          onClick={e => e.stopPropagation()}>
-          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>
-            Extend target — current: {currentTargetPct}%
-          </p>
-
-          {/* State assessment banner */}
-          <div className={`mb-3 p-2.5 rounded-lg border text-[9px] leading-relaxed ${
-            extendAssessment.signal === 'favorable' ? 'border-emerald-600/40 bg-emerald-500/5' :
-            extendAssessment.signal === 'neutral'   ? 'border-slate-600/40 bg-slate-500/5' :
-            extendAssessment.signal === 'warning'   ? 'border-yellow-600/40 bg-yellow-500/5' :
-                                                      'border-red-600/40 bg-red-500/5'
-          }`}>
-            <p className={`font-bold mb-1 ${
-              extendAssessment.signal === 'favorable' ? 'text-emerald-400' :
-              extendAssessment.signal === 'neutral'   ? 'text-slate-400' :
-              extendAssessment.signal === 'warning'   ? 'text-yellow-400' : 'text-red-400'
-            }`}>
-              {extendAssessment.signal === 'favorable' ? '✓ Conditions favor extension' :
-               extendAssessment.signal === 'neutral'   ? '◦ Neutral — proceed with caution' :
-               extendAssessment.signal === 'warning'   ? '⚠ Conditions are marginal' :
-               '✕ Conditions do not favor extension'}
-            </p>
-            {extendAssessment.warnings.map((w, i) => (
-              <p key={i} className="text-red-300/80 mt-0.5">▸ {w}</p>
-            ))}
-            {extendAssessment.reasons.map((r, i) => (
-              <p key={i} className="text-emerald-300/80 mt-0.5">▸ {r}</p>
-            ))}
-          </div>
-
-          {/* Verdict */}
-          {verdictLoading && (
-            <div className="flex items-center gap-2 mb-3 p-2 rounded-lg border border-indigo-700/40 bg-indigo-500/5">
-              <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
-              <p className="text-[10px] text-indigo-400">Evaluating move...</p>
-            </div>
-          )}
-          {verdict && !verdictLoading && (
-            <div className="mb-3">
-              <ActionVerdictBadge verdict={verdict} th={th} />
-            </div>
-          )}
-
-          {/* Target dropdown + confirm */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <select
-                value={selectedPct ?? ''}
-                onChange={e => { const v = parseInt(e.target.value); if (!isNaN(v)) handleSelectPct(v); }}
-                className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} text-blue-400 outline-none focus:border-blue-500 cursor-pointer`}
-                style={{ fontFamily: "'DM Mono', monospace" }}>
-                <option value="">Select target %...</option>
-                {options.map(pct => {
-                  const newPrice = ((pos.creditReceived / 100) * (1 - pct / 100)).toFixed(2);
-                  return <option key={pct} value={pct}>{pct}% profit — BTC @ ${newPrice}</option>;
-                })}
-              </select>
-            </div>
-            {selectedPct != null && (
-              <button
-                disabled={loading}
-                onClick={() => extend(selectedPct)}
-                className={`w-full py-2 rounded-lg text-[10px] font-bold transition-colors disabled:opacity-50 ${
-                  verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH'
-                    ? 'bg-red-600/20 border border-red-600 text-red-400 hover:bg-red-600/40'
-                    : 'bg-blue-600 hover:bg-blue-500 text-white'
-                }`}>
-                {loading ? 'Updating...' :
-                 verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH'
-                   ? `Override & Extend to ${selectedPct}%`
-                   : `Confirm — Extend to ${selectedPct}%`}
-              </button>
-            )}
-          </div>
-
-          {result === 'error' && <p className="text-[9px] text-red-400 mt-2">{resultMsg}</p>}
-          <button onClick={() => setOpen(false)} className={`w-full mt-3 text-[9px] ${th.textFaint} hover:${th.text} text-center`}>
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {result === 'success' && resultMsg && (
-        <p className={`absolute bottom-full mb-1 left-0 text-[9px] text-emerald-400 whitespace-nowrap bg-black/80 px-2 py-1 rounded border border-emerald-700`}>
-          {resultMsg}
-        </p>
-      )}
-    </div>
-  );
-}
-
-// ── Set / Update Stop Loss Button ─────────────────────────────────────────
-// When a GTC profit-target order already exists on the position, TastyTrade
-// rejects a second standalone stop order targeting the same legs. The correct
-// approach is to:
-//   1. Cancel the existing standalone GTC limit order
-//   2. Re-submit both the profit target AND the stop together as an OCO
-//      complex order via POST /accounts/{acct}/complex-orders
-// If no existing GTC limit order exists, we submit the stop as a standalone
-// order via POST /accounts/{acct}/orders.
-
-async function ttDelete(path: string, token: string): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-  });
-  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error?.message ?? data?.['error-message'] ?? `DELETE ${path} failed (${res.status})`);
-  }
-}
-
-async function ttPostComplex(path: string, token: string, body: unknown) {
-  console.log('TT COMPLEX ORDER BODY:', JSON.stringify(body, null, 2));
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
-  const data = await res.json();
-  console.log('TT COMPLEX ORDER RESPONSE:', JSON.stringify(data, null, 2));
-  if (!res.ok) {
-    const errMsg =
-      data?.error?.message ??
-      data?.['error-message'] ??
-      (Array.isArray(data?.error?.errors)
-        ? data.error.errors.map((e: any) => `${e.domain ?? ''} ${e.reason ?? e.message ?? e}`).join('; ')
-        : null) ??
-      JSON.stringify(data?.error ?? data).slice(0, 300);
-    throw new Error(`Complex order rejected: ${errMsg}`);
-  }
-  return data;
-}
-
-// ── Stop/GTC AI suggestion ─────────────────────────────────────────────────
-interface StopGtcSuggestion {
-  gtcPrice: number;       // recommended profit-target BTC price
-  gtcPct: number;         // what % of credit that represents
-  stopPrice: number;      // recommended stop trigger price
-  stopMultiple: number;   // how many × credit that is
-  rationale: string;      // 2-3 sentence explanation
-  gtcRationale: string;   // why this GTC level specifically
-  stopRationale: string;  // why this stop level specifically
-  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
-  deviatesFromRules: boolean;
-  deviationNote: string | null;
-}
-
-const STOP_GTC_SYSTEM_PROMPT = `You are an expert options trader specializing in credit spreads using the Prosper Trading methodology. Your job is to recommend optimal GTC profit-target and stop-loss prices for an open spread position.
-
-CRITICAL RULE — STOP MUST BE ABOVE CURRENT SPREAD VALUE:
-The stop trigger price MUST be strictly above the current spread value (buyback cost). A stop at or below the current value would execute immediately and be rejected by the broker. This is a hard constraint — never violate it.
-
-CRITICAL RULE — GTC MUST BE BELOW CURRENT SPREAD VALUE:
-The GTC profit-target price MUST be strictly below the current spread value. A GTC at or above current value would execute immediately. This is a hard constraint — never violate it.
-
-STOP LOSS PHILOSOPHY — ANCHOR TO CURRENT VALUE, NOT ORIGINAL CREDIT:
-The "2× original credit" rule is an ENTRY rule designed for when you first open the position. Once significant profit has been captured, it becomes meaningless and dangerous — a position at 80% profit with a 2× credit stop has virtually no protection.
-
-CORRECT APPROACH: Anchor the stop to the CURRENT spread value, not original credit.
-- Ask: "How much of my captured profit am I willing to give back before stopping out?"
-- A position at 50%+ profit captured: stop should be set to protect most of that gain — typically current value × 2.0 to 3.0 (allowing the spread to double or triple from here before stopping)
-- A position at 20-40% profit: more room needed — current value × 2.5 to 4.0
-- A position at 0-20% profit or a loss: tighter protection — current value × 1.5 to 2.5
-
-ADDITIONAL STOP ADJUSTMENTS (on top of current-value anchor):
-- Buffer < 2%: tighten aggressively — near breach, use current value × 1.5 to 2.0
-- Buffer < 5% AND DTE > 21: tighten — position needs protection, use current value × 1.5 to 2.5
-- Buffer < 5% AND DTE < 14: less urgent — theta working hard, normal stop is fine
-- Buffer > 15%: can use current value × 3.0 to 4.0 — stock has room to move
-- DTE < 21: position should be closing anyway — note this and set tight stop
-- DTE > 35: more time = more room for noise — slightly looser stop acceptable
-- High IVR (>60): spreads swing more on normal days — use current value × 2.5 minimum to avoid noise triggers
-- Low IVR (<30): IV collapsing, edge gone — tighter stop appropriate, current value × 1.5 to 2.0
-- Earnings within expiry: binary event risk — tighten significantly, current value × 1.5
-- Trend against strategy: thesis may be broken — tighten to current value × 1.5 to 2.0
-
-GTC PROFIT TARGET:
-- Standard: 50% of original credit received
-- Tighten to 40% if: DTE < 25, buffer < 5%, earnings approaching, or significant profit already captured (>60%) and you want to lock it in
-- Loosen to 60-65% if: DTE > 35, trend strongly confirms, IVR elevated with more premium to capture
-- The GTC price = credit_per_contract × (1 - target_pct/100). MUST be below current spread value.
-
-OUTPUT FORMAT — JSON only, nothing else:
-{
-  "gtcPrice": <number: BTC limit price, MUST be below current spread value>,
-  "gtcPct": <number: percentage of credit this represents, e.g. 50>,
-  "stopPrice": <number: stop trigger price, MUST be above current spread value>,
-  "stopMultiple": <number: how many times the CURRENT spread value this represents — NOT original credit>,
-  "rationale": "<2-3 sentence overall rationale — reference actual numbers from the position>",
-  "gtcRationale": "<1-2 sentences specifically about the GTC choice>",
-  "stopRationale": "<1-2 sentences specifically about the stop — reference current spread value, not original credit>",
-  "confidence": "HIGH|MEDIUM|LOW",
-  "deviatesFromRules": true|false,
-  "deviationNote": null or "<explanation if deviating from standard rules>"
-}`;
-
-function buildStopGtcPrompt(pos: Position): string {
-  const creditPerContract = pos.creditReceived / 100;
-  const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
-  const currentValuePerContract = pos.currentValue != null ? pos.currentValue / (qty * 100) : null;
-  const pnlPct = pos.pnl != null && pos.creditReceived > 0
-    ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
-  const profitCaptured = currentValuePerContract != null
-    ? parseFloat(((1 - currentValuePerContract / creditPerContract) * 100).toFixed(1))
-    : null;
-  const currentGtcPct = pos.gtcOrderPrice != null
-    ? Math.round((1 - pos.gtcOrderPrice / creditPerContract) * 100)
-    : Math.round(pos.profitTarget * 100);
-
-  const gtcMax  = currentValuePerContract != null ? (currentValuePerContract - 0.01).toFixed(2) : 'N/A';
-  const stopMin = currentValuePerContract != null ? (currentValuePerContract + 0.01).toFixed(2) : 'N/A';
-  const stopMax = (creditPerContract * 3.0).toFixed(2);
-
-  return `Recommend optimal GTC profit-target and stop-loss prices for this position.
-
-HARD PRICE CONSTRAINTS (broker rejects violations):
-Current spread value (live): ${currentValuePerContract?.toFixed(2) ?? 'unknown'}/contract
-GTC MUST be below: ${gtcMax} (below current spread value)
-Stop MUST be between: ${stopMin} and ${stopMax} (above current value, below 3x original credit)
-
-POSITION: ${pos.symbol} ${pos.strategy}
-Expiry: ${pos.expDate} | DTE: ${pos.dte} | Entry DTE: ${pos.entryDte}
-Strikes: ${pos.legs.map(l => l.direction + ' ' + l.strikePrice + l.optionType).join(', ')}
-
-CREDIT AND P&L:
-Original credit: ${creditPerContract.toFixed(2)}/contract (${pos.creditReceived.toFixed(2)} total)
-Current spread value: ${currentValuePerContract?.toFixed(2) ?? 'unknown'}/contract
-Profit captured: ${profitCaptured != null ? profitCaptured + '%' : pnlPct + '%'} of original credit
-P&L dollars: ${pos.pnl?.toFixed(2) ?? 'unknown'}
-${profitCaptured != null && profitCaptured > 50 ? 'WARNING: ' + profitCaptured + '% profit already captured. Stop must protect this gain — anchor to current spread value, NOT original credit. A stop at 2x original credit is meaningless here.' : ''}
-
-MARKET DATA:
-Stock price: ${pos.stockPrice?.toFixed(2) ?? 'unknown'}
-Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
-IVR: ${pos.ivr ?? 'unknown'} | IV: ${pos.iv ?? 'unknown'}% | HV30: ${pos.hv30 ?? 'unknown'}%
-Theta/day: ${pos.theta?.toFixed(4) ?? 'unknown'} | Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
-Earnings within expiry: ${pos.earningsDate ? 'YES — ' + pos.earningsDate : 'None'}
-
-CURRENT ORDERS:
-GTC profit-target: ${pos.hasGtc ? 'Yes — at $' + (pos.gtcOrderPrice?.toFixed(2) ?? '?') + '/contract (' + currentGtcPct + '% profit)' : 'None set'}
-Stop loss: ${pos.stopLossStatus}${pos.stopLossPrice ? ' @ $' + pos.stopLossPrice.toFixed(2) + '/contract' : ''}
-
-FLAGS: ${[
-  pos.needsClose ? 'AT 21 DTE — closing soon anyway' : '',
-  pos.buffer != null && pos.buffer < 2 ? 'CRITICAL buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE — near breach' : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? 'TIGHT buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE' : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? 'WATCH buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE' : '',
-  pos.earningsDate ? 'EARNINGS ' + pos.earningsDate : '',
-  (pos.ivr ?? 0) < 30 ? 'IVR BELOW 30 — edge thin' : '',
-  (pos.ivr ?? 0) > 70 ? 'IVR ABOVE 70 — elevated volatility' : '',
-  profitCaptured != null && profitCaptured > 70 ? profitCaptured + '% PROFIT CAPTURED — stop must protect gains, anchor to current value' : '',
-].filter(Boolean).join(' | ') || 'None'}
-
-IMPORTANT: stopMultiple in your response should be relative to the CURRENT spread value (${currentValuePerContract?.toFixed(2) ?? '?'}), not original credit. Respond as JSON only.`;
-}
-async function fetchStopGtcSuggestion(pos: Position): Promise<StopGtcSuggestion> {
-  const prompt = buildStopGtcPrompt(pos);
-  const res = await fetch('/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
-      system: STOP_GTC_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  if (!res.ok) throw new Error(`AI request failed: ${res.status}`);
-  const data = await res.json();
-  const text = (data?.content?.find((b: any) => b.type === 'text')?.text ?? '')
-    .replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  return JSON.parse(text) as StopGtcSuggestion;
-}
-
-function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
-  // ── Price bounds ──────────────────────────────────────────────────────────
-  // All valid GTC and stop prices must respect these hard bounds derived from
-  // live spread value and credit received. These are enforced everywhere:
-  // AI suggestion prompt, input validation, and pre-submit preflight.
-  //
-  // GTC (profit target BTC price):
-  //   MUST be below current spread value — otherwise executes immediately.
-  //   Minimum meaningful target: 10% of credit (anything less = take profit now).
-  //   Maximum: current spread value - $0.01
-  //
-  // Stop trigger:
-  //   MUST be above current spread value — otherwise executes immediately.
-  //   Maximum reasonable stop: 3× credit per contract (beyond that = max loss anyway).
-  //   Minimum: current spread value + $0.01
-
-  const creditPerContract = pos.creditReceived / 100;
-  const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
-  // currentValue from pos is total across all contracts × 100
-  // Per-contract spread value = currentValue / (qty * 100)
-  const liveValuePerContract = pos.currentValue != null
-    ? pos.currentValue / (qty * 100)
-    : null;
-
-  // Hard bounds
-  const gtcMin  = parseFloat((creditPerContract * 0.05).toFixed(2));            // 5% profit floor
-  const gtcMax  = liveValuePerContract != null
-    ? parseFloat((liveValuePerContract - 0.01).toFixed(2))
-    : parseFloat((creditPerContract * 0.90).toFixed(2));                        // fallback: 10% profit
-  const stopMin = liveValuePerContract != null
-    ? parseFloat((liveValuePerContract + 0.01).toFixed(2))
-    : parseFloat((creditPerContract * 1.50).toFixed(2));                        // fallback: 1.5× credit
-  const stopMax = parseFloat((creditPerContract * 3.0).toFixed(2));             // 3× credit hard ceiling
-
-  // ── State ─────────────────────────────────────────────────────────────────
-  const [open, setOpen]       = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [phase, setPhase]     = useState('');
-  const [result, setResult]   = useState<'success' | 'error' | null>(null);
-  const [resultMsg, setResultMsg] = useState('');
-  const [stopPrice, setStopPrice] = useState('');
-  const [gtcPrice,  setGtcPrice]  = useState('');
-
-  // AI suggestion
-  const [suggestion, setSuggestion]           = useState<StopGtcSuggestion | null>(null);
-  const [suggestionLoading, setSuggestionLoading] = useState(false);
-  const [suggestionError, setSuggestionError]   = useState<string | null>(null);
-
-  // Live price fetch state
-  const [livePrice, setLivePrice]         = useState<number | null>(null);  // per-contract
-  const [livePriceLoading, setLivePriceLoading] = useState(false);
-  const [livePriceError, setLivePriceError]   = useState<string | null>(null);
-
-  // Confirmation step before destructive OCO replace
-  const [confirming, setConfirming] = useState(false);
-
-  // Mounted guard — prevents state updates after unmount
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  const needsOco = pos.hasGtc && !!pos.gtcOrderId;
-  const existingGtcPrice = pos.gtcOrderPrice
-    ?? parseFloat((creditPerContract * (1 - pos.profitTarget)).toFixed(2));
-
-  // ── Validation helpers ────────────────────────────────────────────────────
-  const effectiveLive = livePrice ?? liveValuePerContract;  // prefer freshly fetched
-
-  function validateGtc(val: number): string | null {
-    if (isNaN(val) || val <= 0) return 'Enter a valid GTC price';
-    if (val < gtcMin) return `GTC $${val.toFixed(2)} is too low — minimum is $${gtcMin.toFixed(2)} (5% profit)`;
-    if (effectiveLive != null && val >= effectiveLive)
-      return `GTC $${val.toFixed(2)} ≥ current spread value $${effectiveLive.toFixed(2)} — would execute immediately. Lower it or use Take Profit.`;
-    return null;
-  }
-
-  function validateStop(val: number): string | null {
-    if (isNaN(val) || val <= 0) return 'Enter a valid stop price';
-    if (effectiveLive != null && val <= effectiveLive)
-      return `Stop $${val.toFixed(2)} ≤ current spread value $${effectiveLive.toFixed(2)} — would execute immediately. Raise it.`;
-    if (val > stopMax)
-      return `Stop $${val.toFixed(2)} exceeds 3× credit ($${stopMax.toFixed(2)}) — beyond max loss, no protection value.`;
-    return null;
-  }
-
-  const gtcError  = needsOco ? validateGtc(parseFloat(gtcPrice || '0'))  : null;
-  const stopError = validateStop(parseFloat(stopPrice || '0'));
-  const hasErrors = !!stopError || (needsOco && !!gtcError);
-
-  // ── Live price fetch ──────────────────────────────────────────────────────
-  const fetchLivePrice = async () => {
-    if (!mountedRef.current) return;
-    setLivePriceLoading(true);
-    setLivePriceError(null);
-    try {
-      const token = await getAccessToken();
-      const fresh = await fetchFreshPositionPrice(pos, token);
-      if (!mountedRef.current) return;
-      if (fresh != null) {
-        const perContract = fresh / (qty * 100);
-        setLivePrice(perContract);
-        console.log(`LIVE PRICE FETCH ${pos.symbol}: $${perContract.toFixed(4)}/contract (total $${fresh.toFixed(2)})`);
-      } else {
-        setLivePriceError('Could not fetch live price — using last known value');
-      }
-    } catch (e: any) {
-      if (!mountedRef.current) return;
-      setLivePriceError(`Price fetch failed: ${e.message}`);
-    } finally {
-      if (mountedRef.current) setLivePriceLoading(false);
-    }
-  };
-
-  // ── AI suggestion ─────────────────────────────────────────────────────────
-  const fetchSuggestion = async () => {
-    if (!mountedRef.current) return;
-    setSuggestionLoading(true);
-    setSuggestionError(null);
-    try {
-      const s = await fetchStopGtcSuggestion(pos);
-      if (!mountedRef.current) return;
-
-      // Clamp AI suggestion to hard bounds before showing
-      const clampedGtc  = Math.min(Math.max(s.gtcPrice,  gtcMin),  gtcMax);
-      const clampedStop = Math.min(Math.max(s.stopPrice, stopMin), stopMax);
-
-      // If live price is known, enforce directional constraint
-      const live = livePrice ?? liveValuePerContract;
-      const safeGtc  = live != null ? Math.min(clampedGtc,  live - 0.01) : clampedGtc;
-      const safeStop = live != null ? Math.max(clampedStop, live + 0.01) : clampedStop;
-
-      if (!mountedRef.current) return;
-      setSuggestion({
-        ...s,
-        gtcPrice:  parseFloat(safeGtc.toFixed(2)),
-        stopPrice: parseFloat(safeStop.toFixed(2)),
-        gtcPct:    Math.round((1 - safeGtc / creditPerContract) * 100),
-        stopMultiple: parseFloat((safeStop / creditPerContract).toFixed(1)),
+      const accountNumber = await getAccountNumber();
+      const legs = buildOrderLegs(result, c);
+      const payload = buildOrderPayload(c, quantity, legs);
+      payload.price = entryLimit.toFixed(2);
+      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders/dry-run`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
-      setGtcPrice(safeGtc.toFixed(2));
-      setStopPrice(safeStop.toFixed(2));
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Dry run failed (${res.status})`);
+      setDryRunResult(data?.data);
+      setPhase('confirm');
     } catch (e: any) {
-      if (!mountedRef.current) return;
-      setSuggestionError(e.message ?? 'AI suggestion failed');
-    } finally {
-      if (mountedRef.current) setSuggestionLoading(false);
+      setError(e.message); setPhase('error');
     }
   };
 
-  // ── Open handler ──────────────────────────────────────────────────────────
-  const handleOpen = async () => {
-    setOpen(true);
-    setResult(null);
-    setPhase('');
-    setSuggestion(null);
-    setSuggestionError(null);
-    setConfirming(false);
-    setLivePrice(null);
-    setLivePriceError(null);
-
-    // Step 1: fetch live price first so bounds are accurate
-    setLivePriceLoading(true);
+  const placeOrder = async () => {
+    setPhase('placing'); setError('');
     try {
       const token = await getAccessToken();
-      if (!mountedRef.current) return;
-      const fresh = await fetchFreshPositionPrice(pos, token);
-      if (!mountedRef.current) return;
-      if (fresh != null) {
-        const perContract = fresh / (qty * 100);
-        setLivePrice(perContract);
-        console.log(`LIVE PRICE FETCH ${pos.symbol}: $${perContract.toFixed(4)}/contract`);
-        // Set initial input defaults using live price
-        const initGtc  = Math.min(existingGtcPrice, perContract - 0.01);
-        const initStop = Math.max(perContract * 2.0,  perContract + 0.01);
-        setGtcPrice(Math.max(initGtc, gtcMin).toFixed(2));
-        setStopPrice(Math.min(initStop, stopMax).toFixed(2));
-      } else {
-        setLivePriceError('Could not fetch live price — using estimates');
-        setGtcPrice(Math.max(existingGtcPrice, gtcMin).toFixed(2));
-        const naiveStop = Math.max(creditPerContract * 2.0, stopMin);
-        setStopPrice(Math.min(naiveStop, stopMax).toFixed(2));
-      }
-    } catch (e: any) {
-      if (!mountedRef.current) return;
-      // Keep modal open even on price fetch failure — show error, use fallback values
-      console.warn('SetStopLossButton live price fetch failed:', e.message);
-      setLivePriceError(`Price fetch failed: ${e.message ?? 'unknown error'}`);
-      setGtcPrice(Math.max(existingGtcPrice, gtcMin).toFixed(2));
-      setStopPrice(Math.min(creditPerContract * 2.0, stopMax).toFixed(2));
-    } finally {
-      if (mountedRef.current) setLivePriceLoading(false);
-    }
+      const accountNumber = await getAccountNumber();
+      const legs = buildOrderLegs(result, c);
+      const payload = buildOrderPayload(c, quantity, legs);
+      payload.price = entryLimit.toFixed(2);
 
-    // Step 2: fetch AI suggestion (non-blocking, runs after live price)
-    if (mountedRef.current) fetchSuggestion();
-  };
+      // 1. Place entry order
+      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Order failed (${res.status})`);
+      const entryOrderId = data?.data?.order?.id ?? 'submitted';
 
-  const applySuggestion = () => {
-    if (!suggestion) return;
-    setGtcPrice(suggestion.gtcPrice.toFixed(2));
-    setStopPrice(suggestion.stopPrice.toFixed(2));
-  };
-
-  // ── Submit ────────────────────────────────────────────────────────────────
-  const submit = async () => {
-    const stopTrigger = parseFloat(stopPrice);
-    const gtcLimit    = parseFloat(gtcPrice);
-
-    // Final pre-submit validation — fetch fresh price one more time
-    setLoading(true);
-    setPhase('Verifying live prices...');
-    setResult(null);
-    try {
-      const token = await getAccessToken();
-
-      // Re-fetch live price immediately before submit
-      const freshTotal = await fetchFreshPositionPrice(pos, token);
-      const freshPerContract = freshTotal != null ? freshTotal / (qty * 100) : null;
-      if (freshPerContract != null) {
-        console.log(`PRE-SUBMIT LIVE PRICE ${pos.symbol}: $${freshPerContract.toFixed(4)}/contract`);
-        setLivePrice(freshPerContract);
-
-        // Hard stop: block if prices violate bounds against fresh price
-        if (needsOco && gtcLimit >= freshPerContract) {
-          setResult('error');
-          setResultMsg(
-            `GTC $${gtcLimit.toFixed(2)} ≥ live spread value $${freshPerContract.toFixed(2)}. ` +
-            `Spread has moved — profit target already hit. Use Take Profit instead.`
-          );
-          return;
-        }
-        if (stopTrigger <= freshPerContract) {
-          setResult('error');
-          setResultMsg(
-            `Stop $${stopTrigger.toFixed(2)} ≤ live spread value $${freshPerContract.toFixed(2)}. ` +
-            `Spread has moved — stop would execute immediately. Raise the stop trigger.`
-          );
-          return;
-        }
-      }
-
-      const itype = instrType(pos.symbol);
-      const legs = pos.legs.map(leg => ({
-        symbol: leg.symbol,
-        quantity: leg.quantity,
-        action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as 'Buy to Close' | 'Sell to Close',
-        'instrument-type': itype,
-      }));
-
-      if (needsOco) {
-        setPhase('Cancelling existing GTC order...');
-        console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
-        await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
-
-        setPhase('Placing OCO order...');
-        const ocoBody = {
-          type: 'OCO',
-          orders: [
-            {
-              'order-type': 'Limit',
-              'time-in-force': 'GTC',
-              price: gtcLimit.toFixed(2),
-              'price-effect': 'Debit',
-              legs,
-            },
-            {
-              'order-type': 'Stop Limit',
-              'time-in-force': 'GTC',
-              'stop-trigger': stopTrigger.toFixed(2),
-              price: parseFloat((stopTrigger * 1.10).toFixed(2)).toFixed(2),  // 10% above trigger for fill room
-              'price-effect': 'Debit',
-              legs,
-            },
-          ],
-        };
-        const res = await ttPostComplex(`/accounts/${pos.accountNumber}/complex-orders`, token, ocoBody);
-        const orderId = String(res?.data?.['complex-order']?.id ?? res?.data?.id ?? 'submitted');
-        setResult('success');
-        setResultMsg(`OCO placed — profit @ $${gtcLimit.toFixed(2)} / stop @ $${stopTrigger.toFixed(2)} (ID #${orderId})`);
-      } else {
-        setPhase('Placing stop order...');
-        const stopBody = {
-          'order-type': 'Stop Limit',
+      // 2. Place GTC profit target (Buy to Close the spread at gtcBuyback)
+      try {
+        const gtcLegs = legs.map((l: any) => ({
+          ...l,
+          quantity,
+          action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
+        }));
+        const gtcPayload = {
           'time-in-force': 'GTC',
-          'stop-trigger': stopTrigger.toFixed(2),
-          price: parseFloat((stopTrigger * 1.10).toFixed(2)).toFixed(2),
+          'order-type': 'Limit',
+          price: gtcBuyback.toFixed(2),
           'price-effect': 'Debit',
-          legs,
+          legs: gtcLegs,
         };
-        const res = await ttPost(`/accounts/${pos.accountNumber}/orders`, token, stopBody);
-        const orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
-        setResult('success');
-        setResultMsg(`Stop Limit placed @ trigger $${stopTrigger.toFixed(2)} (ID #${orderId})`);
-      }
-      setOpen(false);
-      setConfirming(false);
+        await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(gtcPayload),
+        });
+      } catch { /* GTC placement failure is non-fatal — entry already in */ }
+
+      // 3. Place stop-limit order (Buy to Close at stopPrice)
+      try {
+        const stopLegs = legs.map((l: any) => ({
+          ...l,
+          quantity,
+          action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
+        }));
+        const stopPayload = {
+          'time-in-force': 'GTC',
+          'order-type': 'Stop',
+          'stop-trigger': stopPrice.toFixed(2),
+          price: parseFloat((stopPrice * 1.05).toFixed(2)).toString(), // 5% slippage buffer
+          'price-effect': 'Debit',
+          legs: stopLegs,
+        };
+        await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(stopPayload),
+        });
+      } catch { /* stop placement failure is non-fatal */ }
+
+      setOrderId(entryOrderId);
+      setPhase('done');
     } catch (e: any) {
-      setResult('error');
-      setResultMsg(e.message ?? 'Failed');
-    } finally {
-      setLoading(false);
-      setPhase('');
+      setError(e.message); setPhase('error');
     }
   };
 
-  // ── Derived display values ────────────────────────────────────────────────
-  const btnLabel =
-    result === 'success' ? '✓ Stop Set'       :
-    result === 'error'   ? '✕ Failed'          :
-    pos.stopLossStatus === 'none'  ? '+ Set Stop'      :
-    pos.stopLossStatus === 'loose' ? '⚠ Update Stop'   :
-    '✎ Stop';
-
-  const stopParsed  = parseFloat(stopPrice || '0');
-  const gtcParsed   = parseFloat(gtcPrice  || '0');
-  const stopMultipleDisplay = creditPerContract > 0 ? (stopParsed / creditPerContract).toFixed(1) : '—';
-  const gtcPctDisplay       = creditPerContract > 0 ? Math.round((1 - gtcParsed / creditPerContract) * 100) : 0;
-  const effectiveLiveDisplay = livePrice ?? liveValuePerContract;
+  const bpEffect = dryRunResult?.['buying-power-effect'];
+  const bpChange = bpEffect?.['change-in-buying-power'];
+  const bpEffect2 = bpEffect?.['change-in-buying-power-effect'];
+  const marginReq = bpEffect?.['change-in-margin-requirement'];
 
   return (
-    <div className="relative">
-      <button
-        onClick={e => { e.stopPropagation(); open ? setOpen(false) : handleOpen(); }}
-        className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${
-          result === 'success' ? 'border-emerald-600 text-emerald-400' :
-          result === 'error'   ? 'border-red-600 text-red-400' :
-          open ? 'border-orange-500 text-orange-400 bg-orange-500/10' :
-          pos.stopLossStatus === 'none'  ? 'border-red-700 text-red-400 hover:border-orange-500 hover:text-orange-400' :
-          pos.stopLossStatus === 'loose' ? 'border-yellow-700 text-yellow-400 hover:border-orange-500 hover:text-orange-400' :
-          'border-slate-600 text-slate-400 hover:border-orange-500 hover:text-orange-400'
-        }`}>
-        {btnLabel}
-      </button>
-
-      {open && (
-        <div
-          className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-96`}
-          onClick={e => e.stopPropagation()}>
-
-          {/* Header */}
-          <div className="flex items-center justify-between mb-3">
-            <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>
-              {needsOco ? 'Set Stop Loss — OCO' : 'Set Stop Loss'}
-            </p>
-            <span className={`text-[9px] font-bold ${th.textFaint}`}>{pos.symbol} {pos.strategy}</span>
-          </div>
-
-          {/* Live price bar */}
-          <div className={`flex items-center justify-between px-3 py-2 rounded-lg border ${th.borderLight} mb-3`}>
-            <div className="flex items-center gap-2">
-              <span className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Live spread value</span>
-              {livePriceLoading && <div className="w-3 h-3 border border-blue-500 border-t-transparent rounded-full animate-spin" />}
-              {!livePriceLoading && effectiveLiveDisplay != null && (
-                <span className="text-[11px] font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>
-                  ${effectiveLiveDisplay.toFixed(2)}/contract
-                </span>
-              )}
-              {!livePriceLoading && effectiveLiveDisplay == null && (
-                <span className={`text-[10px] ${th.textFaint}`}>unavailable</span>
-              )}
-            </div>
-            <button
-              onClick={fetchLivePrice}
-              disabled={livePriceLoading}
-              className={`text-[9px] ${th.textFaint} hover:text-blue-400 transition-colors disabled:opacity-40`}>
-              ↻
-            </button>
-          </div>
-
-          {livePriceError && (
-            <p className="text-[9px] text-yellow-400 mb-2">⚠ {livePriceError}</p>
-          )}
-
-          {/* OCO info */}
-          {needsOco && (
-            <div className="mb-3 p-2.5 rounded-lg border border-yellow-600/40 bg-yellow-500/5">
-              <p className="text-[10px] text-yellow-300 leading-relaxed">
-                <span className="font-bold">⚠ Existing GTC (${existingGtcPrice.toFixed(2)}) will be cancelled</span> and replaced with an OCO pair. One fills → the other cancels.
-              </p>
-            </div>
-          )}
-
-          {/* AI Suggestion */}
-          <div className={`mb-3 rounded-lg border ${th.borderLight} overflow-hidden`}>
-            <div className={`flex items-center justify-between px-3 py-2 ${th.card}`}>
-              <div className="flex items-center gap-1.5">
-                <span className="text-indigo-400 text-[10px]">◈</span>
-                <span className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest">AI Recommendation</span>
-                {suggestion && <span className={`text-[9px] ${th.textFaint}`}>— within valid bounds</span>}
-              </div>
-              {!suggestionLoading && (
-                <button onClick={fetchSuggestion} className={`text-[9px] ${th.textFaint} hover:text-indigo-400 transition-colors`}>
-                  ↻ Refresh
-                </button>
-              )}
-            </div>
-
-            {suggestionLoading && (
-              <div className="flex items-center gap-2 px-3 py-3">
-                <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
-                <p className="text-[10px] text-indigo-400">Analyzing position...</p>
-              </div>
-            )}
-
-            {suggestionError && !suggestionLoading && (
-              <div className="px-3 py-2 flex items-center justify-between">
-                <p className="text-[10px] text-red-400">{suggestionError}</p>
-                <button onClick={fetchSuggestion} className="text-[9px] text-blue-400 hover:underline">Retry</button>
-              </div>
-            )}
-
-            {suggestion && !suggestionLoading && (
-              <div className="px-3 py-3 space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="p-2 rounded border border-emerald-700/40 bg-emerald-500/5">
-                    <p className="text-[9px] text-emerald-400 font-bold uppercase tracking-widest mb-0.5">GTC Target</p>
-                    <p className="text-sm font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${suggestion.gtcPrice.toFixed(2)}</p>
-                    <p className={`text-[9px] ${th.textFaint}`}>{suggestion.gtcPct}% profit</p>
-                  </div>
-                  <div className="p-2 rounded border border-orange-700/40 bg-orange-500/5">
-                    <p className="text-[9px] text-orange-400 font-bold uppercase tracking-widest mb-0.5">Stop Trigger</p>
-                    <p className="text-sm font-bold text-orange-400" style={{ fontFamily: "'DM Mono', monospace" }}>${suggestion.stopPrice.toFixed(2)}</p>
-                    <p className={`text-[9px] ${th.textFaint}`}>{suggestion.stopMultiple}× credit</p>
-                  </div>
-                </div>
-                <p className={`text-[10px] ${th.textFaint} leading-relaxed`}>{suggestion.rationale}</p>
-                {suggestion.gtcRationale && <p className="text-[9px] text-emerald-400/80"><span className="font-bold">GTC: </span>{suggestion.gtcRationale}</p>}
-                {suggestion.stopRationale && <p className="text-[9px] text-orange-400/80"><span className="font-bold">Stop: </span>{suggestion.stopRationale}</p>}
-                {suggestion.deviatesFromRules && suggestion.deviationNote && (
-                  <p className="text-[9px] text-yellow-400">⚡ {suggestion.deviationNote}</p>
-                )}
-                <div className="flex items-center justify-between pt-1">
-                  <span className={`text-[9px] font-bold ${suggestion.confidence === 'HIGH' ? 'text-emerald-400' : suggestion.confidence === 'MEDIUM' ? 'text-yellow-400' : 'text-slate-400'}`}>
-                    {suggestion.confidence} confidence
-                  </span>
-                  <button onClick={applySuggestion} className="text-[9px] px-2.5 py-1 border border-indigo-600 text-indigo-400 rounded hover:bg-indigo-600/20 transition-colors font-bold">
-                    Use these values ↓
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Inputs */}
-          <div className="space-y-2 mb-3">
-            {needsOco && (
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className={`text-[10px] ${th.textFaint} w-28 shrink-0`}>GTC target $</span>
-                  <input
-                    type="number" min={gtcMin} max={gtcMax} step="0.01" value={gtcPrice}
-                    onChange={e => setGtcPrice(e.target.value)}
-                    className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${
-                      gtcError ? 'border-red-500' : th.inputBorder
-                    } ${th.input} text-emerald-400 outline-none focus:border-emerald-500`}
-                    style={{ fontFamily: "'DM Mono', monospace" }}
-                  />
-                  {gtcPctDisplay > 0 && <span className={`text-[9px] ${th.textFaint} w-12 shrink-0`}>{gtcPctDisplay}%</span>}
-                </div>
-                {gtcError && <p className="text-[9px] text-red-400 mt-1 ml-28">{gtcError}</p>}
-                {!gtcError && effectiveLiveDisplay != null && (
-                  <p className={`text-[9px] ${th.textFaint} mt-0.5 ml-28`}>
-                    valid range: ${gtcMin.toFixed(2)} – ${Math.min(gtcMax, effectiveLiveDisplay - 0.01).toFixed(2)}
-                  </p>
-                )}
-              </div>
-            )}
-            <div>
-              <div className="flex items-center gap-2">
-                <span className={`text-[10px] ${th.textFaint} w-28 shrink-0`}>Stop trigger $</span>
-                <input
-                  type="number" min={stopMin} max={stopMax} step="0.01" value={stopPrice}
-                  onChange={e => setStopPrice(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !hasErrors && !confirming) setConfirming(true); if (e.key === 'Escape') setOpen(false); }}
-                  autoFocus={!needsOco}
-                  className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${
-                    stopError ? 'border-red-500' : th.inputBorder
-                  } ${th.input} text-orange-400 outline-none focus:border-orange-500`}
-                  style={{ fontFamily: "'DM Mono', monospace" }}
-                />
-                {stopParsed > 0 && <span className={`text-[9px] ${th.textFaint} w-12 shrink-0`}>{stopMultipleDisplay}×</span>}
-              </div>
-              {stopError && <p className="text-[9px] text-red-400 mt-1 ml-28">{stopError}</p>}
-              {!stopError && effectiveLiveDisplay != null && (
-                <p className={`text-[9px] ${th.textFaint} mt-0.5 ml-28`}>
-                  valid range: ${Math.max(stopMin, effectiveLiveDisplay + 0.01).toFixed(2)} – ${stopMax.toFixed(2)}
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Confirmation step for OCO — destructive, show summary before committing */}
-          {confirming && !hasErrors && (
-            <div className="mb-3 p-3 rounded-lg border border-orange-600/50 bg-orange-500/5 space-y-2">
-              <p className="text-[10px] text-orange-300 font-bold">Confirm order</p>
-              {needsOco && (
-                <p className="text-[10px] text-yellow-300">
-                  1. Cancel existing GTC #{pos.gtcOrderId} (${existingGtcPrice.toFixed(2)})
-                </p>
-              )}
-              <p className="text-[10px] text-orange-300">
-                {needsOco ? '2.' : '1.'} Place {needsOco ? 'OCO' : 'Stop Limit GTC'}:
-                {needsOco && ` profit target $${gtcParsed.toFixed(2)} (${gtcPctDisplay}%)`}
-                {needsOco && ' /'} stop trigger ${stopParsed.toFixed(2)} ({stopMultipleDisplay}× credit)
-              </p>
-              {effectiveLiveDisplay != null && (
-                <p className={`text-[9px] ${th.textFaint}`}>
-                  Live spread: ${effectiveLiveDisplay.toFixed(2)} | Credit: ${creditPerContract.toFixed(2)} | Qty: {qty}
-                </p>
-              )}
-              <div className="flex gap-2 pt-1">
-                <button
-                  onClick={submit}
-                  disabled={loading}
-                  className={`flex-1 py-2 text-white text-[10px] font-bold rounded-lg transition-colors disabled:opacity-50 ${
-                    needsOco ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-orange-600 hover:bg-orange-500'
-                  }`}>
-                  {loading ? (phase || 'Submitting...') : 'Confirm & Submit'}
-                </button>
-                <button
-                  onClick={() => setConfirming(false)}
-                  disabled={loading}
-                  className={`px-4 py-2 border ${th.border} ${th.textFaint} rounded-lg text-[10px] hover:border-white/30 transition-colors disabled:opacity-50`}>
-                  Back
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Primary action button — leads to confirm step, not direct submit */}
-          {!confirming && (
-            <button
-              disabled={hasErrors || livePriceLoading}
-              onClick={() => setConfirming(true)}
-              className={`w-full py-2 text-white text-[10px] font-bold rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                needsOco ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-orange-600 hover:bg-orange-500'
-              }`}>
-              {livePriceLoading
-                ? 'Fetching live price...'
-                : hasErrors
-                ? 'Fix errors above to continue'
-                : needsOco
-                ? `Review OCO — profit $${gtcParsed.toFixed(2)} / stop $${stopParsed.toFixed(2)}`
-                : `Review Stop @ $${stopParsed.toFixed(2)}`}
-            </button>
-          )}
-
-          {result === 'error' && <p className="text-[9px] text-red-400 mt-2 leading-relaxed">{resultMsg}</p>}
-          <button onClick={() => { setOpen(false); setConfirming(false); }} className={`w-full mt-2 text-[9px] ${th.textFaint} hover:${th.text} text-center`}>
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {result === 'success' && resultMsg && (
-        <p className="absolute bottom-full mb-1 left-0 text-[9px] text-emerald-400 whitespace-nowrap bg-black/80 px-2 py-1 rounded border border-emerald-700 max-w-xs truncate" title={resultMsg}>
-          {resultMsg}
-        </p>
-      )}
-    </div>
-  );
-}
-// ── Greek Value Tint Helpers ──────────────────────────────────────────────
-// Returns a faint background class based on how favorable the Greek is
-// for a short premium (credit spread) position.
-
-function thetaTint(theta: number | null): string {
-  if (theta == null) return '';
-  if (theta >= 0.10) return 'bg-emerald-500/30 rounded px-1';
-  if (theta >= 0.05) return 'bg-emerald-500/20 rounded px-1';
-  if (theta >= 0.01) return 'bg-emerald-500/12 rounded px-1';
-  if (theta < 0)     return 'bg-red-500/25 rounded px-1';
-  return '';
-}
-
-function deltaTint(delta: number | null): string {
-  if (delta == null) return '';
-  const abs = Math.abs(delta);
-  if (abs <= 0.05)  return 'bg-emerald-500/30 rounded px-1';
-  if (abs <= 0.10)  return 'bg-emerald-500/20 rounded px-1';
-  if (abs <= 0.15)  return 'bg-yellow-500/25 rounded px-1';
-  if (abs <= 0.25)  return 'bg-orange-500/25 rounded px-1';
-  return 'bg-red-500/25 rounded px-1';
-}
-
-function gammaTint(gamma: number | null): string {
-  if (gamma == null) return '';
-  const abs = Math.abs(gamma);
-  if (abs <= 0.001)  return 'bg-emerald-500/30 rounded px-1';
-  if (abs <= 0.003)  return 'bg-emerald-500/20 rounded px-1';
-  if (abs <= 0.006)  return 'bg-yellow-500/25 rounded px-1';
-  if (abs <= 0.010)  return 'bg-orange-500/25 rounded px-1';
-  return 'bg-red-500/25 rounded px-1';
-}
-
-function vegaTint(vega: number | null): string {
-  if (vega == null) return '';
-  // Short vega (negative) is favorable for premium sellers
-  if (vega <= -0.10) return 'bg-emerald-500/30 rounded px-1';
-  if (vega <= -0.05) return 'bg-emerald-500/20 rounded px-1';
-  if (vega <= -0.01) return 'bg-emerald-500/12 rounded px-1';
-  if (vega >= 0)     return 'bg-red-500/25 rounded px-1';
-  return '';
-}
-
-// ── Buffer Color Helpers ──────────────────────────────────────────────────
-function bufferColor(buffer: number | null, dte: number): string {
-  if (buffer == null) return 'text-[#808080]';
-  // < 7 DTE — theta acceleration, very relaxed thresholds
-  if (dte < 7) {
-    if (buffer < 2)  return 'text-yellow-400';
-    return 'text-emerald-400';
-  }
-  // 7-14 DTE
-  if (dte < 14) {
-    if (buffer < 2)  return 'text-yellow-400';
-    if (buffer < 3)  return 'text-yellow-400';
-    if (buffer < 5)  return 'text-emerald-400';
-    return 'text-emerald-400';
-  }
-  // 14-21 DTE
-  if (dte < 21) {
-    if (buffer < 2)  return 'text-orange-400';
-    if (buffer < 3)  return 'text-yellow-400';
-    if (buffer < 5)  return 'text-emerald-400';
-    return 'text-emerald-400';
-  }
-  // 21-30 DTE
-  if (dte < 30) {
-    if (buffer < 2)  return 'text-red-400';
-    if (buffer < 3)  return 'text-orange-400';
-    if (buffer < 5)  return 'text-yellow-400';
-    if (buffer < 8)  return 'text-emerald-400';
-    return 'text-emerald-400';
-  }
-  // > 30 DTE
-  if (buffer < 2)  return 'text-red-400';
-  if (buffer < 3)  return 'text-orange-400';
-  if (buffer < 5)  return 'text-yellow-400';
-  if (buffer < 8)  return 'text-emerald-400';
-  return 'text-emerald-400';
-}
-
-// Highlights the active row in the tooltip table
-function isBufferRow(buffer: number, label: string): boolean {
-  if (label === '> 8%')  return buffer >= 8;
-  if (label === '5-8%')  return buffer >= 5 && buffer < 8;
-  if (label === '3-5%')  return buffer >= 3 && buffer < 5;
-  if (label === '2-3%')  return buffer >= 2 && buffer < 3;
-  if (label === '< 2%')  return buffer < 2;
-  return false;
-}
-
-// Highlights the active DTE column in the tooltip table (col index 0-4)
-function isDteCol(dte: number, col: number): boolean {
-  if (col === 0) return dte > 30;
-  if (col === 1) return dte >= 21 && dte <= 30;
-  if (col === 2) return dte >= 14 && dte < 21;
-  if (col === 3) return dte >= 7 && dte < 14;
-  if (col === 4) return dte < 7;
-  return false;
-}
-
-function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExecute }: {
-  pos: Position;
-  th: typeof THEMES[Theme];
-  checked: boolean;
-  onToggle: (key: string) => void;
-  onProfitTargetChange: (key: string, value: number) => void;
-  onExecute: (pos: Position, action: ActionType) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [trend, setTrend] = useState<TrendResult | null>(null);
-  const [editingTarget, setEditingTarget] = useState(false);
-  const [targetInput, setTargetInput] = useState(String(Math.round(pos.profitTarget * 100)));
-  const [analysis, setAnalysis] = useState<PositionAnalysis | null>(null);
-  const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [showAnalysis, setShowAnalysis] = useState(false);
-
-  const handleAnalyze = async () => {
-    if (analysis) return; // already have it — button handles show/hide
-    setAnalysisLoading(true);
-    setAnalysisError(null);
-    try {
-      const result = await analyzePosition(pos, trend);
-      setAnalysis(result);
-      setShowAnalysis(true);
-    } catch (e: any) {
-      setAnalysisError(e.message ?? 'Analysis failed');
-      setShowAnalysis(true);
-    } finally {
-      setAnalysisLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    getTrend(pos.symbol).then(t => setTrend(t)).catch(() => {});
-  }, [pos.symbol]);
-
-  const rec = getRecommendation(pos, trend);
-
-  const shortPuts  = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Short');
-  const longPuts   = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Long');
-  const shortCalls = pos.legs.filter(l => l.optionType === 'C' && l.direction === 'Short');
-  const longCalls  = pos.legs.filter(l => l.optionType === 'C' && l.direction === 'Long');
-
-  const strikesSummary = () => {
-    if (pos.strategy === 'BPS' && shortPuts[0] && longPuts[0]) return `${shortPuts[0].strikePrice}P / ${longPuts[0].strikePrice}P`;
-    if (pos.strategy === 'BCS' && shortCalls[0] && longCalls[0]) return `${shortCalls[0].strikePrice}C / ${longCalls[0].strikePrice}C`;
-    if (pos.strategy === 'IC') return `${shortPuts[0]?.strikePrice}P/${longPuts[0]?.strikePrice}P · ${shortCalls[0]?.strikePrice}C/${longCalls[0]?.strikePrice}C`;
-    return pos.legs.map(l => `${l.strikePrice}${l.optionType}`).join(' / ');
-  };
-
-  const handleTargetSave = () => {
-    const val = Math.min(100, Math.max(10, parseInt(targetInput) || 50)) / 100;
-    setEditingTarget(false);
-    onProfitTargetChange(pos.key, val);
-  };
-
-  const borderClass = checked
-    ? 'border-blue-500/60'
-    : pos.needsClose ? 'border-red-500/60'
-    : pos.hitTarget ? 'border-emerald-500/60'
-    : th.border;
-
-  return (
-    <div className={`border ${borderClass} ${th.card} rounded-lg transition-all`}>
-      {pos.needsClose && (
-        <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
-          <span className="text-red-400 text-xs">⚠</span>
-          <span className="text-xs text-red-400 font-bold tracking-wider">CLOSE NOW — {pos.dte} DTE</span>
-        </div>
-      )}
-      {pos.hitTarget && !pos.needsClose && (
-        <div className="bg-emerald-500/10 border-b border-emerald-500/40 px-4 py-1.5 flex items-center gap-2">
-          <span className="text-emerald-400 text-xs">✓</span>
-          <span className="text-xs text-emerald-400 font-bold tracking-wider">{Math.round(pos.profitTarget * 100)}% PROFIT TARGET HIT</span>
-        </div>
-      )}
-
-      <div className="flex items-stretch">
-        {/* Checkbox */}
-        <div className="flex items-center px-3 border-r border-inherit shrink-0 cursor-pointer" onClick={e => { e.stopPropagation(); onToggle(pos.key); }}>
-          <input type="checkbox" checked={checked} onChange={() => onToggle(pos.key)}
-            className="w-4 h-4 accent-blue-500 cursor-pointer" onClick={e => e.stopPropagation()} />
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-md max-h-[92vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className={`text-sm font-bold ${th.text} tracking-widest`}>PLACE ORDER — {result.symbol}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl">✕</button>
         </div>
 
-        {/* Expand toggle */}
-        <button onClick={() => setExpanded(!expanded)}
-          className={`px-3 flex items-center border-r ${th.borderLight} ${th.textFaint} hover:${th.textMuted} transition-colors shrink-0`}>
-          <span className="text-[10px]">{expanded ? '▲' : '▼'}</span>
-        </button>
+        {!hasOccSymbols && (
+          <div className="p-3 bg-yellow-500/10 border border-yellow-600 rounded-lg mb-4">
+            <p className="text-xs text-yellow-400">OCC symbols not available for this spread — rescan to populate them.</p>
+          </div>
+        )}
 
-        {/* Data columns */}
-        <div className="overflow-x-auto flex-1">
-          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1100px' }}>
-
-            {/* ── POSITION ───────────────────────────── */}
-            <div className="border-t-2 border-slate-600/60 pt-1">
-              <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
-              <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
-            </div>
-
-            <div className="border-t-2 border-slate-600/60 pt-1 border-r border-r-slate-700/40 pr-2">
-              <p className={`text-[9px] ${th.textFaint}`}>Entry / Expiry / DTE</p>
-              <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.entryDate && <span className={`block text-[10px] ${th.textFaint}`}>{pos.entryDate}</span>}
-                <span className={`block font-bold ${th.text}`}>{pos.expDate}</span>
-                <span className={`block ${dteColor(pos.dte)}`}>({pos.dte}d)</span>
-              </p>
-            </div>
-
-            {/* ── MARKET ─────────────────────────────── */}
-            <div className="border-t-2 border-sky-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Stock</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.stockPrice != null ? `$${pos.stockPrice.toFixed(2)}` : '—'}</p>
-            </div>
-
-            <div className="relative group border-t-2 border-sky-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>% Buffer</p>
-              <p className={`text-xs font-bold ${bufferColor(pos.buffer, pos.dte)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.buffer != null ? `${pos.buffer.toFixed(1)}%` : '—'}
-              </p>
-              {/* Tooltip */}
-              <div className="absolute bottom-full left-0 mb-2 z-50 hidden group-hover:block w-72 pointer-events-none">
-                <div className="bg-[#1a1a1a] border border-[#333] rounded-xl p-3 shadow-2xl text-[10px]">
-                  <p className="text-white font-bold mb-2 tracking-wide">BUFFER RISK GUIDE</p>
-                  <p className="text-[#888] mb-2">Color adjusts based on buffer % <span className="text-white">and</span> DTE remaining. Same buffer is safer with less time left.</p>
-                  <table className="w-full border-collapse">
-                    <thead>
-                      <tr>
-                        <th className="text-left text-[#666] pb-1 pr-2 font-normal">Buffer</th>
-                        <th className="text-center text-[#666] pb-1 px-1 font-normal">&gt;30d</th>
-                        <th className="text-center text-[#666] pb-1 px-1 font-normal">21-30d</th>
-                        <th className="text-center text-[#666] pb-1 px-1 font-normal">14-21d</th>
-                        <th className="text-center text-[#666] pb-1 px-1 font-normal">7-14d</th>
-                        <th className="text-center text-[#666] pb-1 px-1 font-normal">&lt;7d</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[
-                        { label: '> 8%',  cols: ['🟢','🟢','🟢','🟢','🟢'] },
-                        { label: '5-8%',  cols: ['🟢','🟢','🟢','🟡','🟢'] },
-                        { label: '3-5%',  cols: ['🟡','🟡','🟢','🟢','🟢'] },
-                        { label: '2-3%',  cols: ['🟠','🟠','🟡','🟡','🟢'] },
-                        { label: '< 2%',  cols: ['🔴','🔴','🟠','🟡','🟡'] },
-                      ].map(row => (
-                        <tr key={row.label} className={pos.buffer != null && isBufferRow(pos.buffer, row.label) ? 'bg-white/5 rounded' : ''}>
-                          <td className="text-[#aaa] pr-2 py-0.5 font-mono">{row.label}</td>
-                          {row.cols.map((c, i) => (
-                            <td key={i} className={`text-center px-1 py-0.5 ${pos.dte != null && isDteCol(pos.dte, i) ? 'bg-white/10 rounded' : ''}`}>{c}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <p className="text-[#555] mt-2 leading-tight">Your position: <span className="text-white">{pos.buffer?.toFixed(1) ?? '—'}% buffer</span> at <span className="text-white">{pos.dte}d DTE</span></p>
-                </div>
-              </div>
-            </div>
-
-            <div className="border-t-2 border-sky-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
-              <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
-            </div>
-
-            {/* ── P&L ────────────────────────────────── */}
-            <div className="border-t-2 border-emerald-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Buyback</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}</p>
-            </div>
-
-            <div className="border-t-2 border-emerald-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
-              <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
-            </div>
-
-            <div onClick={e => e.stopPropagation()} className="border-t-2 border-emerald-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
-              {editingTarget ? (
-                <div className="flex items-center gap-1">
-                  <input type="number" min="10" max="100" value={targetInput}
-                    onChange={e => setTargetInput(e.target.value)}
-                    onBlur={handleTargetSave}
-                    onKeyDown={e => { if (e.key === 'Enter') handleTargetSave(); if (e.key === 'Escape') setEditingTarget(false); }}
-                    autoFocus className="text-xs w-12 bg-transparent border-b border-blue-500 outline-none text-blue-400"
-                    style={{ fontFamily: "'DM Mono', monospace" }} />
-                  <span className="text-[9px] text-blue-400">%</span>
-                </div>
-              ) : (
-                <p className={`text-xs cursor-pointer hover:text-blue-400 transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
-                  style={{ fontFamily: "'DM Mono', monospace" }}
-                  onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}>
-                  ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
-                </p>
-              )}
-            </div>
-
-            <div className="border-t-2 border-emerald-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
-              <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
-              <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
-              </p>
-            </div>
-
-            {/* ── GREEKS ─────────────────────────────── */}
-            <div className="border-t-2 border-purple-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Theta</p>
-              <p className={`text-xs font-bold inline-block ${thetaTint(pos.theta)} ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
-              </p>
-            </div>
-
-            <div className="border-t-2 border-purple-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Delta</p>
-              <p className={`text-xs font-bold inline-block ${deltaTint(pos.netDelta)} ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
-              </p>
-            </div>
-
-            <div className="border-t-2 border-purple-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
-              <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
-              </p>
-            </div>
-
-            <div className="border-t-2 border-purple-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Vega</p>
-              <p className={`text-xs font-bold inline-block ${vegaTint(pos.netVega)} ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
-              </p>
-            </div>
-
-            <div className="border-t-2 border-purple-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
-              <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
-              <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.ivr ?? '—'}
-              </p>
-            </div>
-
-            {/* ── ORDERS ─────────────────────────────── */}
-            <div className="border-t-2 border-amber-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
-              <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>{pos.hasGtc ? '✓ Live' : '✕ None'}</p>
-            </div>
-
-            <div className="border-t-2 border-amber-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
-              <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
-              {(() => {
-                const cfg =
-                  pos.stopLossStatus === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-400' } :
-                  pos.stopLossStatus === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
-                  pos.stopLossStatus === 'none'  ? { icon: '✕', label: 'None',  cls: 'text-red-400'     } :
-                                                   { icon: '—', label: '?',     cls: th.textFaint        };
-                return (
-                  <p className={`text-xs font-bold ${cfg.cls}`}>
-                    {cfg.icon} {cfg.label}
-                    {pos.stopLossPrice != null && (
-                      <span className={`ml-1 ${th.textFaint} text-[10px] font-normal`}>${pos.stopLossPrice.toFixed(2)}</span>
-                    )}
-                  </p>
-                );
-              })()}
-            </div>
-
-            {/* ── ACTION ─────────────────────────────── */}
-            <div className="border-t-2 border-slate-500/40 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Suggested</p>
-              <span className={`text-[10px] font-bold ${ACTION_META[rec.action].color}`}>{ACTION_META[rec.action].label}</span>
-              <p className={`text-[9px] ${th.textFaint} mt-0.5 leading-tight`}>{rec.detail}</p>
-              {(() => { const sig = getExtendSignal(pos); return sig ? <p className="text-[9px] text-blue-400 mt-0.5 leading-tight">{sig}</p> : null; })()}
+        {/* Trade summary */}
+        <div className={`${th.card} border ${th.border} rounded-xl p-4 mb-4 space-y-2`}>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Strategy</span>
+            <span className={`font-bold ${c.strategy === 'BPS' ? 'text-emerald-400' : c.strategy === 'BCS' ? 'text-red-400' : 'text-blue-400'}`}>{c.strategy}</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Strikes</span>
+            <span className={th.text}>{c.shortStrike} / {c.longStrike}{c.strategy === 'IC' ? ` · ${c.shortCallStrike} / ${c.longCallStrike}` : ''}</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Expiry</span>
+            <span className={th.text}>{c.expiration} ({c.dte}d)</span>
+          </div>
+          <div className="flex justify-between text-xs items-center">
+            <span className={th.textFaint}>Entry limit / contract</span>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setEntryLimit(v => parseFloat(Math.max(0.01, v - 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs hover:border-blue-500`}>−</button>
+              <span className="text-emerald-400 font-bold text-xs w-12 text-center">${entryLimit.toFixed(2)}</span>
+              <button onClick={() => setEntryLimit(v => parseFloat((v + 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs hover:border-blue-500`}>+</button>
             </div>
           </div>
+          <div className="flex justify-between text-xs">
+            <span className={th.textFaint}>Order type</span>
+            <span className={th.text}>Limit · GTC</span>
+          </div>
         </div>
-      </div>
 
-      {/* Action + Analyze row */}
-      <div className={`flex items-center justify-between px-4 py-2 border-t ${th.borderLight}`}>
-        {/* Quick action buttons */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).map(action => {
-            const meta = ACTION_META[action];
-            if (action === 'TAKE_PROFIT' && !pos.hitTarget && rec.action !== 'TAKE_PROFIT') return null;
-            if (action === 'PLACE_GTC' && pos.hasGtc) return null;
-            return (
-              <button key={action}
-                onClick={e => { e.stopPropagation(); onExecute(pos, action); }}
-                className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${meta.btnClass}`}>
-                {meta.label}
+        {/* Quantity */}
+        <div className="flex items-center gap-3 mb-4">
+          <span className={`text-xs ${th.textFaint}`}>Contracts</span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setQuantity(q => Math.max(1, q - 1))} className={`w-7 h-7 rounded border ${th.border} ${th.textMuted} hover:border-blue-500 text-sm`}>−</button>
+            <span className={`text-sm font-bold ${th.text} w-6 text-center`}>{quantity}</span>
+            <button onClick={() => setQuantity(q => Math.min(20, q + 1))} className={`w-7 h-7 rounded border ${th.border} ${th.textMuted} hover:border-blue-500 text-sm`}>+</button>
+          </div>
+          <div className="ml-auto text-right">
+            <p className="text-emerald-400 font-bold text-sm">${credit.toFixed(2)} credit</p>
+            <p className={`text-[10px] ${th.textFaint}`}>Max loss ~${maxLoss.toFixed(0)}</p>
+          </div>
+        </div>
+
+        {/* GTC Profit Target */}
+        <div className={`${th.card} border ${th.border} rounded-xl p-4 mb-3`}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold tracking-widest text-emerald-400">GTC PROFIT TARGET</p>
+            <span className={`text-[9px] ${th.textFaint}`}>closes at ${gtcBuyback.toFixed(2)} debit</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {[25, 50, 65, 75].map(pct => (
+              <button key={pct} onClick={() => setGtcPct(pct)}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold border transition-colors ${gtcPct === pct ? 'bg-emerald-600 border-emerald-500 text-white' : `${th.border} ${th.textFaint} hover:border-emerald-600`}`}>
+                {pct}%
               </button>
-            );
-          })}
-          <ExtendProfitButton pos={pos} th={th} />
-          <SetStopLossButton pos={pos} th={th} />
-          {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(rec.action) && (
-            <span className={`text-[9px] ${th.textFaint} ml-1`}>← suggested</span>
-          )}
-        </div>
-
-        <button
-          onClick={e => { e.stopPropagation(); if (analysis || analysisLoading) { setShowAnalysis(v => !v); } else { handleAnalyze(); } }}
-          className={`text-[10px] px-3 py-1 border rounded-lg transition-colors font-bold flex items-center gap-1.5 ${
-            showAnalysis && analysis
-              ? 'border-indigo-500 text-indigo-300 bg-indigo-500/10'
-              : analysis
-              ? 'border-indigo-600 text-indigo-400 hover:bg-indigo-500/10'
-              : 'border-indigo-800 text-indigo-500 hover:border-indigo-600 hover:text-indigo-400'
-          }`}>
-          <span>◈</span>
-          <span>{analysisLoading ? 'Analyzing...' : showAnalysis && analysis ? 'Hide Analysis' : analysis ? 'Show Analysis' : 'Analyze with AI'}</span>
-        </button>
-      </div>
-
-      {/* Expanded legs */}
-      {expanded && (
-        <div className={`border-t ${th.border} px-4 py-3`}>
-          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Legs</p>
-          <div className="space-y-1.5">
-            {pos.legs.map((leg, i) => (
-              <div key={i} className="flex items-center gap-4 flex-wrap">
-                <span className={`text-[10px] w-10 font-bold ${leg.direction === 'Short' ? 'text-red-400' : 'text-emerald-400'}`}>{leg.direction}</span>
-                <span className={`text-[10px] ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{leg.quantity}x {leg.strikePrice} {leg.optionType === 'P' ? 'Put' : 'Call'}</span>
-                <span className={`text-[10px] ${th.textFaint}`}>Avg open: <span className={th.text}>${leg.avgOpenPrice.toFixed(2)}</span></span>
-                {leg.currentPrice != null && <span className={`text-[10px] ${th.textFaint}`}>Current: <span className={th.text}>${leg.currentPrice.toFixed(2)}</span></span>}
-              </div>
             ))}
           </div>
+          <p className={`text-[9px] ${th.textFaint} mt-2`}>Buy to close at ${gtcBuyback.toFixed(2)} when {gtcPct}% of ${creditPerContract.toFixed(2)} credit is captured</p>
         </div>
-      )}
 
-      {/* AI analysis panel */}
-      {showAnalysis && (
-        <>
-          {analysisLoading && (
-            <div className={`border-t ${th.border} px-4 py-4 flex items-center gap-3`} style={{ background: 'rgba(99,102,241,0.04)' }}>
-              <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
-              <p className={`text-xs ${th.textFaint}`}>Analyzing position with AI...</p>
-              <button onClick={() => setShowAnalysis(false)} className={`ml-auto text-[10px] ${th.textFaint} hover:${th.text}`}>✕</button>
-            </div>
-          )}
-          {analysisError && (
-            <div className={`border-t ${th.border} px-4 py-3 flex items-center gap-2`}>
-              <p className="text-[10px] text-red-400">Analysis failed: {analysisError}</p>
-              <button onClick={() => { setAnalysisError(null); handleAnalyze(); }} className="text-[10px] text-blue-400 hover:underline">Retry</button>
-              <button onClick={() => setShowAnalysis(false)} className={`ml-auto text-[10px] ${th.textFaint}`}>✕</button>
-            </div>
-          )}
-          {analysis && !analysisLoading && (
-            <div className="relative">
-              <button onClick={() => setShowAnalysis(false)} className={`absolute top-3 right-3 text-[10px] ${th.textFaint} hover:${th.text} z-10`}>✕</button>
-              <AnalysisPanel analysis={analysis} pos={pos} th={th} />
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-// ── Position Section with group-action header ──────────────────────────────
-function PositionSection({ title, titleColor, positions, th, checked, onToggle, onToggleAll, onProfitTargetChange, groupAction, onGroupAction, onExecute }: {
-  title: string; titleColor: string; positions: Position[];
-  th: typeof THEMES[Theme]; checked: Set<string>;
-  onToggle: (key: string) => void; onToggleAll: (keys: string[], select: boolean) => void;
-  onProfitTargetChange: (key: string, value: number) => void;
-  groupAction: ActionType; onGroupAction: (positions: Position[], action: ActionType) => void;
-  onExecute: (pos: Position, action: ActionType) => void;
-}) {
-  const keys = positions.map(p => p.key);
-  const allChecked = keys.length > 0 && keys.every(k => checked.has(k));
-  const someChecked = keys.some(k => checked.has(k));
-  const meta = ACTION_META[groupAction];
-  const checkboxRef = (el: HTMLInputElement | null) => { if (el) el.indeterminate = someChecked && !allChecked; };
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <input type="checkbox" ref={checkboxRef} checked={allChecked}
-            onChange={() => onToggleAll(keys, !allChecked)}
-            className="w-4 h-4 accent-blue-500 cursor-pointer" />
-          <p className={`text-[10px] ${titleColor} tracking-widest font-bold uppercase`}>{title} — {positions.length}</p>
+        {/* Stop Loss */}
+        <div className={`${th.card} border ${th.border} rounded-xl p-4 mb-4`}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold tracking-widest text-red-400">STOP LOSS</p>
+            <span className={`text-[9px] ${th.textFaint}`}>triggers at ${stopPrice.toFixed(2)} debit</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {[150, 200, 250, 300].map(pct => (
+              <button key={pct} onClick={() => setStopPct(pct)}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold border transition-colors ${stopPct === pct ? 'bg-red-700 border-red-500 text-white' : `${th.border} ${th.textFaint} hover:border-red-700`}`}>
+                {pct}%
+              </button>
+            ))}
+          </div>
+          <p className={`text-[9px] ${th.textFaint} mt-2`}>Stop triggers when spread costs ${stopPrice.toFixed(2)} to close ({stopPct}% of credit = {stopPct - 100}% loss on credit received)</p>
         </div>
-        {groupAction !== 'HOLD' && (
-          <button onClick={() => onGroupAction(positions, groupAction)}
-            className={`text-[10px] px-3 py-1.5 border rounded font-bold transition-colors ${meta.btnClass}`}>
-            {meta.label} All
+
+        {/* Dry run result */}
+        {dryRunResult && (
+          <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4 space-y-1">
+            <p className="text-[10px] text-emerald-400 font-bold tracking-wider">DRY RUN PASSED</p>
+            {bpChange && <p className="text-xs text-emerald-300">Buying power: {bpEffect2 === 'Debit' ? '−' : '+'}${parseFloat(bpChange).toFixed(2)}</p>}
+            {marginReq && <p className="text-xs text-emerald-300">Margin required: ${parseFloat(marginReq).toFixed(2)}</p>}
+          </div>
+        )}
+
+        {phase === 'done' && (
+          <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4 space-y-1">
+            <p className="text-xs text-emerald-400 font-bold">✓ Entry order submitted — ID {orderId}</p>
+            <p className="text-[10px] text-emerald-400/70">GTC profit target ({gtcPct}%) and stop loss ({stopPct}%) orders placed automatically.</p>
+            <p className="text-[10px] text-emerald-400/70">Verify all 3 working orders in TastyTrade.</p>
+          </div>
+        )}
+
+        {phase === 'error' && error && (
+          <div className="p-3 bg-red-500/10 border border-red-600 rounded-lg mb-4">
+            <p className="text-xs text-red-400">{error}</p>
+          </div>
+        )}
+
+        {phase !== 'done' && (
+          <div className="flex gap-2">
+            {!dryRunResult ? (
+              <button onClick={runDryRun} disabled={!hasOccSymbols || phase === 'dryrun'}
+                className="flex-1 py-2.5 border border-blue-600 text-blue-400 rounded-xl text-xs font-bold tracking-widest hover:bg-blue-500/10 transition-colors disabled:opacity-40">
+                {phase === 'dryrun' ? 'VALIDATING...' : 'VALIDATE ORDER'}
+              </button>
+            ) : (
+              <>
+                <button onClick={runDryRun} disabled={phase === 'dryrun'}
+                  className={`py-2.5 px-3 border ${th.border} ${th.textFaint} rounded-xl text-xs hover:border-blue-500 transition-colors disabled:opacity-40`}>
+                  ↺
+                </button>
+                <button onClick={placeOrder} disabled={phase === 'placing'}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors disabled:opacity-40">
+                  {phase === 'placing' ? 'PLACING...' : `PLACE + GTC + STOP`}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {phase === 'done' && (
+          <button onClick={onClose} className={`w-full py-2.5 border ${th.border} ${th.textMuted} rounded-xl text-xs font-bold tracking-widest`}>
+            CLOSE
           </button>
         )}
       </div>
-      <div className="space-y-2">
-        {positions.map(p => (
-          <PositionCard key={p.key} pos={p} th={th} checked={checked.has(p.key)} onToggle={onToggle} onProfitTargetChange={onProfitTargetChange} onExecute={onExecute} />
-        ))}
-      </div>
     </div>
   );
 }
 
-// ── Sticky Bulk Action Bar ─────────────────────────────────────────────────
-function BulkActionBar({ selectedKeys, positions, onExecute, onClear, th }: {
-  selectedKeys: Set<string>; positions: Position[];
-  onExecute: (items: { pos: Position; action: ActionType }[]) => void;
-  onClear: () => void; th: typeof THEMES[Theme];
+function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrders, cachedEntry }: {
+  result: ScreenResult;
+  th: typeof THEMES[Theme];
+  rules: RulesType;
+  screenMode?: 'filter' | 'rank';
+  rankConfig?: RankConfig;
+  onTrade?: (result: ScreenResult) => void;
+  gtcOrders?: GtcOrder[];
+  cachedEntry?: RawScanEntry;
 }) {
-  if (selectedKeys.size === 0) return null;
-  const selected = positions.filter(p => selectedKeys.has(p.key));
-  const actions: ActionType[] = ['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'];
+  const [expanded, setExpanded] = useState(false);
+  const [showBestFinder, setShowBestFinder] = useState(false);
+
+  const c = result.bestCandidate;
+  const t = result.trendResult;
+
+  // Ranking
+  const scored = rankConfig ? scoreCandidate(result, rankConfig) : null;
+  const light = scored ? trafficLight(scored.score, rankConfig!) : null;
+  const isRankMode = screenMode === 'rank';
+  const stratBadge = result.strategy === 'BPS'
+    ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500'
+    : result.strategy === 'BCS'
+    ? 'bg-red-500/15 border-red-500 text-red-500'
+    : 'bg-blue-500/15 border-blue-500 text-blue-500';
+
+  const isShortTerm = rules.DTE_MAX <= 29;
+  const dteAlertThreshold = isShortTerm ? rules.DTE_MIN - 1 : DTE_ALERT_THRESHOLD;
+  const dteCloseTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
+  const isApproaching = c && c.dte <= dteAlertThreshold;
+  const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings'))
+    && result.earningsDate
+    && daysUntil(result.earningsDate) >= 0;
+
+  const scoreBorderL = light
+    ? light.emoji === '🟢' ? 'border-l-4 border-l-emerald-500'
+    : light.emoji === '🟡' ? 'border-l-4 border-l-yellow-400'
+    : light.emoji === '🟠' ? 'border-l-4 border-l-orange-400'
+    : 'border-l-4 border-l-red-500'
+    : strategyAccent(result.strategy);
+
+  const cardBorder = isApproaching ? 'border-yellow-500/50' : th.border;
+  const cardBg = result.qualified ? th.cardQualified : `${th.card} opacity-50`;
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className="mx-auto max-w-7xl px-6 pb-4">
-        <div className={`${th.sidebar} border ${th.border} rounded-xl px-5 py-3 flex items-center gap-4 shadow-2xl`}>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="w-6 h-6 rounded-full bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold">{selectedKeys.size}</span>
-            <span className={`text-xs font-bold ${th.text}`}>selected</span>
-          </div>
-          <div className={`w-px h-6 ${th.border} border-l`} />
-          <div className="flex items-center gap-2 flex-1 flex-wrap">
-            {actions.map(action => {
-              const meta = ACTION_META[action];
-              return (
-                <button key={action}
-                  onClick={() => onExecute(selected.map(pos => ({ pos, action })))}
-                  className={`text-[10px] px-3 py-1.5 border rounded font-bold transition-colors ${meta.btnClass}`}>
-                  {meta.label}
-                </button>
-              );
-            })}
-          </div>
-          <button onClick={onClear} className={`text-[10px] ${th.textFaint} hover:${th.text} shrink-0 transition-colors`}>
-            ✕ Clear
-          </button>
+    <div className={`border ${cardBorder} ${scoreBorderL} ${cardBg} rounded-lg cursor-pointer transition-all hover:shadow-md`}
+         onClick={() => setExpanded(!expanded)}>
+
+      {/* Header Row */}
+      <div className="px-4 py-3 flex items-center gap-2">
+        {/* Col 1: Symbol + price — fixed */}
+        <div className="w-16 shrink-0">
+          <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
+          {result.price && <p className={`text-[10px] ${th.textFaint}`}>${result.price.toFixed(2)}</p>}
+          {result.isEtf && (
+            <p className="text-[8px] text-blue-400/70 tracking-wider leading-tight">
+              {result.symbol === 'SPX' || result.symbol === 'XSP' || result.symbol === 'NDX' || result.symbol === 'RUT' ? 'index' : 'etf'}
+            </p>
+          )}
+          <a
+            href={`https://www.tradingview.com/chart/?symbol=${result.symbol}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            title="Open chart in TradingView"
+            className="inline-flex items-center gap-0.5 mt-0.5 text-[9px] text-slate-500 hover:text-blue-400 transition-colors"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+            <span className="tracking-wide">chart</span>
+          </a>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Main Page ──────────────────────────────────────────────────────────────
-
-// ── Performance Panel ──────────────────────────────────────────────────────
-function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
-  const auditLog: AuditEntry[] = (() => {
-    try { return JSON.parse(localStorage.getItem('prosper-audit-log') ?? '[]'); } catch { return []; }
-  })();
-
-  const closed = auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
-    (e.action === 'TAKE_PROFIT' || e.action === 'CUT_LOSSES' || e.action === 'CLOSE_ROLL'));
-
-  const winners = closed.filter(e => (e.estPnl ?? 0) > 0);
-  const losers  = closed.filter(e => (e.estPnl ?? 0) <= 0);
-  const winRate    = closed.length > 0 ? (winners.length / closed.length * 100) : 0;
-  const avgWin     = winners.length > 0 ? winners.reduce((s, e) => s + (e.estPnl ?? 0), 0) / winners.length : 0;
-  const avgLoss    = losers.length  > 0 ? Math.abs(losers.reduce((s, e) => s + (e.estPnl ?? 0), 0) / losers.length) : 0;
-  const expectancy = (winRate / 100) * avgWin - (1 - winRate / 100) * avgLoss;
-  const totalPnl   = closed.reduce((s, e) => s + (e.estPnl ?? 0), 0);
-
-  // Monthly bucketing
-  const byMonth: Record<string, { pnl: number; trades: number; wins: number }> = {};
-  for (const e of closed) {
-    const month = e.timestamp.slice(0, 7);
-    if (!byMonth[month]) byMonth[month] = { pnl: 0, trades: 0, wins: 0 };
-    byMonth[month].pnl    += e.estPnl ?? 0;
-    byMonth[month].trades += 1;
-    if ((e.estPnl ?? 0) > 0) byMonth[month].wins += 1;
-  }
-  const months       = Object.keys(byMonth).sort();
-  const last3Months  = months.slice(-3);
-  const last12Months = months.slice(-12);
-  const qPnl = last3Months.reduce((s, m)  => s + byMonth[m].pnl, 0);
-  const yPnl = last12Months.reduce((s, m) => s + byMonth[m].pnl, 0);
-  const mPnl = months.length > 0 ? byMonth[months[months.length - 1]].pnl : 0;
-
-  // By symbol
-  const bySymbol: Record<string, { pnl: number; trades: number; wins: number }> = {};
-  for (const e of closed) {
-    if (!bySymbol[e.symbol]) bySymbol[e.symbol] = { pnl: 0, trades: 0, wins: 0 };
-    bySymbol[e.symbol].pnl    += e.estPnl ?? 0;
-    bySymbol[e.symbol].trades += 1;
-    if ((e.estPnl ?? 0) > 0) bySymbol[e.symbol].wins += 1;
-  }
-  const symbolRows  = Object.entries(bySymbol).sort((a, b) => b[1].pnl - a[1].pnl);
-  const maxSymbolPnl = Math.max(...symbolRows.map(r => Math.abs(r[1].pnl)), 1);
-  const maxBarPnl    = Math.max(...months.map(m => Math.abs(byMonth[m].pnl)), 1);
-
-  const kpis = [
-    { label: 'Win Rate',    value: `${winRate.toFixed(0)}%`,                              sub: `${winners.length}W / ${losers.length}L`,     color: winRate >= 70 ? 'text-emerald-400' : winRate >= 50 ? 'text-yellow-400' : 'text-red-400' },
-    { label: 'Expectancy', value: `${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(0)}`, sub: 'per trade avg',                             color: expectancy >= 0 ? 'text-emerald-400' : 'text-red-400' },
-    { label: 'Total P&L',  value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,    sub: 'all closed trades',                         color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-    { label: 'Avg Win',    value: `+$${avgWin.toFixed(0)}`,                                sub: `avg loss: -$${avgLoss.toFixed(0)}`,          color: 'text-emerald-400' },
-  ];
-
-  const periods = [
-    { label: 'This Month',   value: mPnl, sub: 'current month' },
-    { label: 'Last Quarter', value: qPnl, sub: 'last 3 months' },
-    { label: 'Last 12 Mo',   value: yPnl, sub: 'rolling annual' },
-  ];
-
-  return (
-    <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col`}>
-
-        {/* Header */}
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
-          <div>
-            <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>PERFORMANCE</h2>
-            <p className={`text-[10px] ${th.textFaint}`}>{closed.length} closed trades · estimated P&L from audit log</p>
-          </div>
-          <button onClick={onClose} className={`${th.textFaint} hover:text-white text-lg leading-none`}>✕</button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {closed.length === 0 ? (
-            <div className={`text-center py-16 ${th.textFaint}`}>
-              <p className="text-3xl mb-3">📊</p>
-              <p className="text-sm">No closed trades in audit log yet.</p>
-              <p className="text-[11px] mt-1 opacity-60">Trades appear here after you submit Take Profit, Cut Losses, or Close/Roll orders.</p>
-            </div>
-          ) : (
-            <>
-              {/* KPI strip */}
-              <div className="grid grid-cols-4 gap-3">
-                {kpis.map(k => (
-                  <div key={k.label} className={`${th.card} border ${th.border} rounded-xl p-4`}>
-                    <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>{k.label}</p>
-                    <p className={`text-xl font-bold ${k.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{k.value}</p>
-                    <p className={`text-[9px] ${th.textFaint} mt-0.5`}>{k.sub}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Period P&L */}
-              <div className="grid grid-cols-3 gap-3">
-                {periods.map(p => (
-                  <div key={p.label} className={`${th.card} border ${th.border} rounded-xl p-4`}>
-                    <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>{p.label}</p>
-                    <p className={`text-xl font-bold ${p.value >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                      {p.value >= 0 ? '+' : ''}${p.value.toFixed(0)}
-                    </p>
-                    <p className={`text-[9px] ${th.textFaint} mt-0.5`}>{p.sub}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* Monthly bar chart */}
-              {months.length > 0 && (
-                <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
-                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-4`}>Monthly P&L</p>
-                  <div className="flex items-end gap-2" style={{ height: '120px' }}>
-                    {months.slice(-12).map(m => {
-                      const d = byMonth[m];
-                      const pct = Math.abs(d.pnl) / maxBarPnl;
-                      const h = Math.max(pct * 90, 4);
-                      return (
-                        <div key={m} className="flex-1 flex flex-col items-center justify-end gap-1" style={{ height: '120px' }}>
-                          <p className={`text-[8px] ${th.textFaint} text-center`}>{d.pnl >= 0 ? '+' : ''}${d.pnl.toFixed(0)}</p>
-                          <div
-                            className={`w-full rounded-t transition-all ${d.pnl >= 0 ? 'bg-emerald-500/60 hover:bg-emerald-500/80' : 'bg-red-500/60 hover:bg-red-500/80'}`}
-                            style={{ height: `${h}px` }}
-                            title={`${m}: ${d.trades} trades, ${d.wins} wins`}
-                          />
-                          <p className={`text-[8px] ${th.textFaint} text-center`}>{m.slice(5)}</p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* By Symbol */}
-              {symbolRows.length > 0 && (
-                <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
-                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>By Symbol</p>
-                  <div className="space-y-2">
-                    {symbolRows.map(([sym, d]) => (
-                      <div key={sym} className="flex items-center gap-3">
-                        <span className={`text-[10px] font-bold ${th.text} w-16 shrink-0`}>{sym}</span>
-                        <span className={`text-[9px] ${th.textFaint} w-16 shrink-0`}>{d.trades} trade{d.trades !== 1 ? 's' : ''}</span>
-                        <span className={`text-[9px] w-14 shrink-0 ${d.wins / d.trades >= 0.7 ? 'text-emerald-400' : d.wins / d.trades >= 0.5 ? 'text-yellow-400' : 'text-red-400'}`}>
-                          {(d.wins / d.trades * 100).toFixed(0)}% win
-                        </span>
-                        <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${d.pnl >= 0 ? 'bg-emerald-500' : 'bg-red-500'}`}
-                            style={{ width: `${Math.min(Math.abs(d.pnl) / maxSymbolPnl * 100, 100)}%` }}
-                          />
-                        </div>
-                        <span className={`text-[10px] font-bold w-16 text-right shrink-0 ${d.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                          {d.pnl >= 0 ? '+' : ''}${d.pnl.toFixed(0)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Trade log */}
-              <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
-                <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>Trade History</p>
-                <div className="space-y-0 max-h-64 overflow-y-auto">
-                  {[...closed].reverse().map(e => (
-                    <div key={e.id} className={`flex items-center gap-3 py-2 border-b ${th.borderLight} last:border-0`}>
-                      <span className={`text-[9px] ${th.textFaint} w-20 shrink-0`}>{e.timestamp.slice(0, 10)}</span>
-                      <span className={`text-[10px] font-bold ${th.text} w-14 shrink-0`}>{e.symbol}</span>
-                      <span className={`text-[9px] ${th.textFaint} w-10 shrink-0`}>{e.strategy}</span>
-                      <span className={`text-[9px] w-24 shrink-0 ${
-                        e.action === 'TAKE_PROFIT' ? 'text-emerald-400' :
-                        e.action === 'CUT_LOSSES'  ? 'text-red-400'     : 'text-blue-400'
-                      }`}>{e.action.replace(/_/g, ' ')}</span>
-                      <span className={`text-[10px] font-bold ml-auto ${(e.estPnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                        {(e.estPnl ?? 0) >= 0 ? '+' : ''}${(e.estPnl ?? 0).toFixed(0)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <p className={`text-[9px] ${th.textFaint} text-center pb-2`}>
-                ⚠ P&L figures are estimates from order submission. Actual fills may differ. Reconcile with TastyTrade for accurate accounting.
-              </p>
-            </>
+        {/* Col 2: Badges — fixed width */}
+        <div className="w-52 shrink-0 flex items-center gap-1 flex-wrap">
+          {result.ruleSetApplied && (
+            <span className={`text-[8px] px-1.5 py-0.5 border rounded shrink-0 font-medium tracking-wider
+              ${result.ruleSetApplied.includes('ETF')
+                ? 'border-blue-800 text-blue-400/80 bg-blue-500/5'
+                : result.ruleSetApplied === 'Strict'
+                ? 'border-red-900 text-red-400/70 bg-red-500/5'
+                : result.ruleSetApplied === 'Course'
+                ? 'border-slate-700 text-slate-400/70'
+                : result.ruleSetApplied === 'Relaxed'
+                ? 'border-emerald-900 text-emerald-400/70 bg-emerald-500/5'
+                : result.ruleSetApplied === 'Low Vol'
+                ? 'border-yellow-900 text-yellow-400/70 bg-yellow-500/5'
+                : result.ruleSetApplied === 'Short Term'
+                ? 'border-orange-900 text-orange-400/70 bg-orange-500/5'
+                : result.ruleSetApplied === 'Intermediate'
+                ? 'border-amber-900 text-amber-400/70 bg-amber-500/5'
+                : 'border-slate-700 text-slate-500'
+              }`}>
+              {result.ruleSetApplied}
+            </span>
+          )}
+          {isRankMode && scored && light && (
+            <span className={`text-[9px] px-2 py-0.5 border rounded shrink-0 font-bold ${light.color} ${light.border} ${light.bg}`}>
+              {light.emoji} {scored.score} — {light.label}
+            </span>
+          )}
+          <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
+          {(result.strategy === 'BPS' || result.strategy === 'BCS') && result.ivr != null && result.ivr >= 30 && (
+            <span className="text-[9px] px-1.5 py-0.5 border border-blue-500/50 text-blue-400/80 rounded shrink-0">+ IC</span>
           )}
         </div>
-      </div>
-    </div>
-  );
-}
-
-function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
-  return (
-    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
-          <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>DASHBOARD LEGEND</h2>
-          <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
+        {/* Col 3: Data fields — fixed widths */}
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div className={`text-xs ${th.label} w-20 shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
+          {c && <>
+            <div className="text-xs shrink-0 w-36"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= dteCloseTarget ? 'text-red-500' : c.dte <= dteAlertThreshold ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
+            <div className="w-28 shrink-0"><StrikesDisplay c={c} th={th} /></div>
+            <div className="text-xs shrink-0 w-20"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+            <div className="text-xs shrink-0 w-16"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
+            <div className="text-xs shrink-0 w-16"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
+            <div className="text-xs shrink-0 w-12"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+            {(() => {
+              const stop = classifyStopLoss(c, gtcOrders ?? []);
+              const sl =
+                stop.status === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-500' } :
+                stop.status === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
+                stop.status === 'none'  ? { icon: '✗', label: 'None',  cls: 'text-red-500'     } :
+                                          { icon: '—', label: '?',     cls: 'text-slate-400'   };
+              return (
+                <div className="text-xs shrink-0 w-28">
+                  <span className={th.label}>Stop </span>
+                  <span className={`font-medium ${sl.cls}`}>{sl.icon} {sl.label}</span>
+                  {stop.price != null && (
+                    <span className={`ml-1 ${th.textFaint} text-[10px]`}>${stop.price.toFixed(2)}</span>
+                  )}
+                </div>
+              );
+            })()}
+            <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
+            {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
+            {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
+          </>}
+          {!result.qualified && result.failReasons.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`text-[10px] text-red-500 font-medium`}>{result.failReasons.slice(0, 2).join(' · ')}</span>
+              {hasEarningsBlock && result.earningsDate && <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>}
+            </div>
+          )}
         </div>
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 text-[11px]">
+        {/* Col 4: Expand + re-screen — right aligned */}
+        <div className="flex items-center gap-2 ml-auto shrink-0">
+          <div className={`${th.textFaint} text-xs`}>{expanded ? '▲' : '▼'}</div>
+        </div>
+      </div>
+
+      {/* Expanded Content */}
+      {expanded && (
+        <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
+          {t && <div className={`text-[10px] ${th.textMuted} pb-2 border-b ${th.border}`}><span className={`${trendColor(t.trend)} mr-2 font-medium`}>{trendIcon(t.trend)} {t.trend.toUpperCase()}</span>{t.reason}</div>}
+
+          {/* Score breakdown in rank mode */}
+          {isRankMode && scored && light && (
+            <div className={`border ${light.border} ${light.bg} rounded-lg p-3`}>
+              <div className="flex items-center justify-between mb-2">
+                <p className={`text-[10px] font-bold ${light.color}`}>{light.emoji} Score {scored.score}/100 — {light.label}</p>
+              </div>
+              <div className="grid grid-cols-5 gap-2">
+                {[
+                  { label: 'Momentum', val: scored.dims.momentum, max: rankConfig!.weightMomentum },
+                  { label: 'IV', val: scored.dims.ivr, max: rankConfig!.weightIvr },
+                  { label: 'Range', val: scored.dims.range, max: rankConfig!.weightRange },
+                  { label: 'Technical', val: scored.dims.technical, max: rankConfig!.weightTechnical },
+                  { label: 'Liquidity', val: scored.dims.liquidity, max: rankConfig!.weightLiquidity },
+                ].map(d => (
+                  <div key={d.label} className="text-center">
+                    <p className={`text-[8px] ${th.textFaint} mb-1`}>{d.label}</p>
+                    <div className={`h-1 rounded-full bg-slate-700 mb-1`}>
+                      <div className={`h-full rounded-full ${light!.color.replace('text-', 'bg-')}`}
+                        style={{ width: `${d.max > 0 ? (d.val / d.max) * 100 : 0}%` }} />
+                    </div>
+                    <p className={`text-[9px] font-bold ${th.text}`}>{d.val}<span className={`${th.textFaint} font-normal`}>/{d.max}</span></p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {Object.entries(result.checks).map(([key, check]) => (
+              <div key={key} className="flex items-start gap-2">
+                <span className={`text-xs mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
+                <div>
+                  <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{key}</p>
+                  <p className={`text-xs ${th.text} font-medium`}>{check.value}</p>
+                  <p className={`text-[10px] ${th.textMuted}`}>{check.reason}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {hasEarningsBlock && result.earningsDate && (
+            <div className={`pt-2 border-t ${th.border} flex items-center gap-3`}>
+              <p className={`text-[10px] ${th.textFaint} flex-1`}>Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
+              <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>
+            </div>
+          )}
+
+          {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
+            <div className={`pt-2 border-t ${th.border}`}>
+              <p className={`text-[10px] ${th.textMuted}`}>Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p>
+            </div>
+          )}
+
+          {result.failReasons.length > 0 && (
+            <div className={`pt-2 border-t ${th.border}`}>
+              <p className="text-[10px] text-red-500 font-medium">{result.failReasons.join(' · ')}</p>
+            </div>
+          )}
 
           {/* Action Buttons */}
-          <div>
-            <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>Action Buttons</p>
-            <div className="space-y-2">
-              {[
-                { label: '✕ Cut Losses', color: 'border-red-600 text-red-400', desc: 'Close position at a loss. Use when thesis is broken or breach is imminent.' },
-                { label: '↻ Close/Roll', color: 'border-purple-600 text-purple-400', desc: 'Close current position and re-enter next expiry. Use at 21 DTE or when rolling a winner.' },
-                { label: '✓ Take Profit', color: 'border-emerald-600 text-emerald-400', desc: 'Close for profit now. Appears when position hits your profit target.' },
-                { label: '⏱ Place GTC', color: 'border-blue-600 text-blue-400', desc: 'Set a GTC limit order at your profit target. Always do this at entry.' },
-                { label: '↑ Extend Profit', color: 'border-slate-600 text-slate-400', desc: 'Move GTC target higher to capture more premium. Color indicates conditions: green=favorable, yellow=marginal, red=unfavorable.' },
-                { label: '✎ Stop / ⚠ Update Stop', color: 'border-orange-600 text-orange-400', desc: 'Set or update stop loss. Creates an OCO order paired with your GTC profit target.' },
-              ].map(b => (
-                <div key={b.label} className="flex items-start gap-3">
-                  <span className={`text-[9px] px-2 py-0.5 border rounded font-bold shrink-0 ${b.color}`}>{b.label}</span>
-                  <p className={`${th.textFaint} leading-relaxed`}>{b.desc}</p>
-                </div>
-              ))}
-            </div>
+          <div className="flex gap-2 mt-2">
+            {c && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onTrade?.(result); }}
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors"
+              >
+                ⚡ TRADE THIS
+              </button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowBestFinder(true); }}
+              className="flex-1 py-2.5 border border-emerald-600 hover:bg-emerald-500/10 text-emerald-400 rounded-xl text-xs font-medium tracking-wider transition-colors"
+            >
+              🔍 FIND BEST
+            </button>
           </div>
+        </div>
+      )}
 
-          {/* GTC & Stop Status */}
-          <div>
-            <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>GTC & Stop Loss Status</p>
-            <div className="space-y-1.5">
-              {[
-                { label: '✓ Live', color: 'text-emerald-400', desc: 'Active GTC or stop order working in TastyTrade.' },
-                { label: '⚠ Loose', color: 'text-yellow-400', desc: 'Stop exists but is set above 2× credit — too loose to provide real protection.' },
-                { label: '✕ None', color: 'text-red-400', desc: 'No GTC or stop order. Position is unprotected.' },
-              ].map(s => (
-                <div key={s.label} className="flex items-center gap-3">
-                  <span className={`text-[10px] font-bold w-16 shrink-0 ${s.color}`}>{s.label}</span>
-                  <p className={`${th.textFaint}`}>{s.desc}</p>
-                </div>
-              ))}
-            </div>
-          </div>
+      {/* Best Opportunity Modal — rendered via portal to escape card click handler */}
+      {showBestFinder && createPortal(
+        <BestOpportunityFinder
+          symbol={result.symbol}
+          onClose={() => setShowBestFinder(false)}
+          th={th}
+          rules={rules}
+          preferredStrategy={result.strategy as 'BPS' | 'BCS' | 'IC'}
+          cachedEntry={cachedEntry}
+        />,
+        document.body
+      )}
+    </div>
+  );
+}
 
-          {/* Greeks */}
-          <div>
-            <p className={`text-[9px] text-purple-400 uppercase tracking-widest mb-3 font-bold`}>Greeks — Color Tints</p>
-            <p className={`${th.textFaint} mb-2`}>Background tint shows how favorable each Greek is for a short premium position.</p>
-            <div className="space-y-1.5">
-              {[
-                { greek: 'Theta', green: 'High positive — strong daily decay collecting', red: 'Negative — time working against you' },
-                { greek: 'Delta', green: 'Near zero — position is directionally neutral', red: 'High absolute value — large directional exposure' },
-                { greek: 'Gamma', green: 'Near zero — low gamma risk', red: 'High magnitude — gamma risk building (especially near expiry)' },
-                { greek: 'Vega', green: 'Negative — short vega working for you (IV decay)', red: 'Positive or near zero — IV exposure is a risk' },
-              ].map(g => (
-                <div key={g.greek} className="flex items-start gap-3">
-                  <span className={`text-[10px] font-bold w-12 shrink-0 text-purple-400`}>{g.greek}</span>
-                  <div>
-                    <span className="text-emerald-400">🟢 {g.green}</span>
-                    <span className={`ml-3 text-red-400`}>🔴 {g.red}</span>
+// ── Auto Trend Debug Panel ─────────────────────────────────────────────────
+function AutoTrendDebugPanel({ entries, th }: { entries: AutoTrendEntry[]; th: typeof THEMES[Theme] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  if (entries.length === 0) return null;
+
+  const stratColor = (s: string) =>
+    s === 'BPS' ? 'text-emerald-400 border-emerald-600 bg-emerald-500/10'
+    : s === 'BCS' ? 'text-red-400 border-red-600 bg-red-500/10'
+    : s === 'IC' ? 'text-blue-400 border-blue-600 bg-blue-500/10'
+    : 'text-amber-400 border-amber-600 bg-amber-500/10';
+
+  const barColor = (val: number) =>
+    val > 0 ? 'bg-emerald-500' : val < 0 ? 'bg-red-500' : 'bg-slate-600';
+
+  const ScoreBar = ({ label, value, max = 50 }: { label: string; value: number; max?: number }) => {
+    const pct = Math.min(100, (Math.abs(value) / max) * 50); // 50% = center
+    const isPos = value >= 0;
+    return (
+      <div className="flex items-center gap-2">
+        <span className={`text-[9px] w-16 shrink-0 ${th.textFaint}`}>{label}</span>
+        <div className="flex-1 h-1.5 bg-slate-700 rounded-full relative overflow-hidden">
+          <div
+            className={`absolute h-full rounded-full ${barColor(value)}`}
+            style={{ width: `${pct}%`, left: isPos ? '50%' : `${50 - pct}%` }}
+          />
+          <div className="absolute left-1/2 top-0 w-px h-full bg-slate-500 opacity-50" />
+        </div>
+        <span className={`text-[9px] w-8 text-right font-mono shrink-0 ${value > 0 ? 'text-emerald-400' : value < 0 ? 'text-red-400' : th.textFaint}`}>
+          {value > 0 ? '+' : ''}{value}
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <div className={`border ${th.border} rounded-xl overflow-hidden`}>
+      <div className={`px-4 py-2.5 border-b ${th.border} flex items-center justify-between`}>
+        <p className={`text-[10px] font-bold tracking-widest ${th.textMuted}`}>TREND DETECT RESULTS</p>
+        <span className={`text-[9px] ${th.textFaint}`}>{entries.length} tickers</span>
+      </div>
+      <div className="divide-y divide-slate-800">
+        {entries.map(({ symbol, result }) => {
+          const s = result.scores;
+          const isOpen = expanded === symbol;
+          const label = result.strategy === 'NO_TRADE' ? 'REVIEW' : result.strategy;
+          return (
+            <div key={symbol}>
+              <button
+                className={`w-full px-4 py-2.5 flex items-center gap-3 hover:bg-slate-800/40 transition-colors text-left`}
+                onClick={() => setExpanded(isOpen ? null : symbol)}
+              >
+                <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${stratColor(label)}`}>{label}</span>
+                <span className={`text-xs font-bold ${th.text} w-16 shrink-0`}>{symbol}</span>
+                <span className={`text-[9px] ${th.textFaint} flex-1 truncate`}>{result.reason}</span>
+                {s && (
+                  <span className={`text-[9px] font-mono shrink-0 ${s.total > 0 ? 'text-emerald-400' : s.total < 0 ? 'text-red-400' : th.textFaint}`}>
+                    {s.total > 0 ? '+' : ''}{s.total}
+                  </span>
+                )}
+                <span className={`text-[9px] ${th.textFaint} shrink-0`}>{isOpen ? '▲' : '▼'}</span>
+              </button>
+
+              {isOpen && s && (
+                <div className={`px-4 pb-3 pt-1 ${th.card} space-y-2`}>
+                  <p className={`text-[9px] ${th.textFaint} font-mono leading-relaxed mb-2`}>{result.reason}</p>
+                  <div className="space-y-1.5">
+                    <ScoreBar label="Momentum" value={s.momentum} max={50} />
+                    <ScoreBar label="MA Align" value={s.maAlignment} max={40} />
+                    <ScoreBar label="Slope" value={s.slope} max={25} />
+                    <ScoreBar label="Structure" value={s.structure} max={60} />
+                    <ScoreBar label="Chop ✗" value={-s.chop} max={25} />
+                    <ScoreBar label="Vol/Mat ✗" value={-s.volatility} max={40} />
                   </div>
+                  <div className={`flex items-center justify-between pt-1.5 border-t ${th.border} mt-1`}>
+                    <span className={`text-[9px] font-bold ${th.textMuted}`}>TOTAL</span>
+                    <span className={`text-[10px] font-black font-mono ${s.total > 0 ? 'text-emerald-400' : s.total < 0 ? 'text-red-400' : th.textFaint}`}>
+                      {s.total > 0 ? '+' : ''}{s.total}
+                    </span>
+                  </div>
+                  {result.metrics && (
+                    <div className={`grid grid-cols-2 gap-x-4 gap-y-0.5 pt-1.5 border-t ${th.border}`}>
+                      {[
+                        ['Mom 20d', `${(result.metrics.momentum20 * 100).toFixed(1)}%`],
+                        ['Mom 60d', `${(result.metrics.momentum60 * 100).toFixed(1)}%`],
+                        ['Mom 90d', `${(result.metrics.momentum90 * 100).toFixed(1)}%`],
+                        ['Range 60d', `${(result.metrics.range60 * 100).toFixed(1)}%`],
+                        ['Chop ratio', result.metrics.chopRatio.toFixed(1)],
+                        ['Dist MA50', `${(result.metrics.distFromMa50 * 100).toFixed(1)}%`],
+                        ['↑Hi/↑Lo', `${result.metrics.higherHighs ? '✓' : '✗'}/${result.metrics.higherLows ? '✓' : '✗'}`],
+                        ['↓Hi/↓Lo', `${result.metrics.lowerHighs ? '✓' : '✗'}/${result.metrics.lowerLows ? '✓' : '✗'}`],
+                      ].map(([k, v]) => (
+                        <div key={k} className="flex justify-between">
+                          <span className={`text-[9px] ${th.textFaint}`}>{k}</span>
+                          <span className={`text-[9px] font-mono ${th.textMuted}`}>{v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              ))}
+              )}
             </div>
-          </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
-          {/* Buffer */}
+// ── Range Indicator ────────────────────────────────────────────────────────
+function RangeIndicator({ value, strict, course, relaxed, lowvol, fmt }: {
+  value: number; strict?: number; course?: number; relaxed?: number; lowvol?: number;
+  fmt?: (v: number) => string;
+}) {
+  const f = fmt ?? ((v: number) => String(v));
+  const points = [
+    strict  != null ? { v: strict,  label: 'Strict',  color: 'bg-red-500' }    : null,
+    course  != null ? { v: course,  label: 'Course',  color: 'bg-blue-500' }   : null,
+    relaxed != null ? { v: relaxed, label: 'Relaxed', color: 'bg-emerald-500' }: null,
+    lowvol  != null ? { v: lowvol,  label: 'Low Vol', color: 'bg-yellow-500' } : null,
+  ].filter(Boolean) as { v: number; label: string; color: string }[];
+  if (!points.length) return null;
+  const allVals = points.map(p => p.v);
+  const min = Math.min(...allVals, value) * 0.9;
+  const max = Math.max(...allVals, value) * 1.1;
+  const pct = (v: number) => Math.round(((v - min) / (max - min)) * 100);
+  return (
+    <div className="mt-1 relative h-3">
+      <div className="absolute inset-x-0 top-1.5 h-px bg-slate-700 rounded" />
+      {points.map(p => (
+        <div key={p.label} className={`absolute w-1.5 h-1.5 rounded-full ${p.color} top-1 -translate-x-1/2`}
+          style={{ left: `${pct(p.v)}%` }} title={`${p.label}: ${f(p.v)}`} />
+      ))}
+      <div className="absolute w-2 h-2 rounded-full bg-white border-2 border-slate-900 top-0.5 -translate-x-1/2 z-10"
+        style={{ left: `${pct(value)}%` }} title={`Current: ${f(value)}`} />
+    </div>
+  );
+}
+
+// ── Slider ─────────────────────────────────────────────────────────────────
+function Slider({ label, hint, value, min, max, step = 1, fmt, onChange, th }: {
+  label: string; hint?: string; value: number; min: number; max: number; step?: number;
+  fmt?: (v: number) => string; onChange: (v: number) => void; th: typeof THEMES[Theme];
+}) {
+  const f = fmt ?? ((v: number) => String(v));
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between">
+        <p className={`text-[9px] ${th.textFaint} tracking-wider uppercase font-medium leading-tight`}>{label}</p>
+        <span className={`text-[10px] font-bold ${th.text}`}>{f(value)}</span>
+      </div>
+      {hint && <p className={`text-[8px] ${th.textFaint} opacity-60`}>{hint}</p>}
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={e => onChange(parseFloat(e.target.value))}
+        className="w-full h-1.5 rounded-full appearance-none cursor-pointer accent-blue-500"
+        style={{ background: `linear-gradient(to right, #3b82f6 ${((value - min) / (max - min)) * 100}%, #374151 0%)` }}
+      />
+      <div className="flex justify-between">
+        <span className={`text-[8px] ${th.textFaint}`}>{f(min)}</span>
+        <span className={`text-[8px] ${th.textFaint}`}>{f(max)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Rules Modal Subcomponents ──────────────────────────────────────────────
+function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, label, hint }: {
+  ruleKey: keyof RulesType;
+  rawValues: Record<string, string>;
+  editedRules: RulesType;
+  onRawChange: (key: string, raw: string) => void;
+  onBlur: (key: keyof RulesType, raw: string) => void;
+  th: typeof THEMES[Theme];
+  label?: string;
+  hint?: string;
+}) {
+  return (
+    <div className="flex flex-col">
+      <p className={`text-[9px] ${th.textFaint} tracking-wider uppercase font-medium leading-tight`}>
+        {label ?? RULE_LABELS[ruleKey]}
+      </p>
+      <p className={`text-[8px] ${th.textFaint} opacity-60 mb-1 leading-tight min-h-[12px]`}>
+        {hint ?? ''}
+      </p>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={rawValues[ruleKey] ?? String(editedRules[ruleKey])}
+        onChange={e => onRawChange(ruleKey, e.target.value)}
+        onBlur={e => onBlur(ruleKey, e.target.value)}
+        onFocus={e => e.target.select()}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-1.5 text-xs ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
+      />
+    </div>
+  );
+}
+
+function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] }) {
+  return (
+    <div className={`col-span-full pt-3 pb-1 border-b ${th.border}`}>
+      <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold`}>{label}</p>
+    </div>
+  );
+}
+
+// ── Rules Modal ────────────────────────────────────────────────────────────
+// ── Run Mode Modal ─────────────────────────────────────────────────────────
+const FILTER_PRESETS = [
+  { key: 'strict',    label: 'Strict',      color: 'border-red-500 text-red-400',         desc: 'Tightest rules — high conviction only' },
+  { key: 'course',   label: 'Course',      color: 'border-blue-500 text-blue-400',        desc: 'Baseline rules — balanced approach' },
+  { key: 'relaxed',  label: 'Relaxed',     color: 'border-emerald-500 text-emerald-400',  desc: 'Looser rules — more opportunities' },
+  { key: 'lowvol',   label: 'Low Vol',     color: 'border-yellow-500 text-yellow-400',    desc: 'Adapted for low IVR environments' },
+  { key: 'shortterm',   label: 'Short Term',   color: 'border-orange-500 text-orange-400',  desc: '7–14 DTE — very active daily management' },
+  { key: 'intermediate',label: 'Intermediate', color: 'border-amber-500 text-amber-400',    desc: '15–29 DTE — active management' },
+];
+
+function RunModeModal({ th, lastMode, lastPreset, onRun, onClose }: {
+  th: typeof THEMES[Theme];
+  lastMode: 'filter' | 'rank';
+  lastPreset: string;
+  onRun: (mode: 'filter' | 'rank', preset?: string) => void;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<'filter' | 'rank'>(lastMode);
+  const [preset, setPreset] = useState(lastPreset || 'course');
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      <div className={`${th.card} border ${th.border} rounded-2xl shadow-2xl w-[420px] p-6 flex flex-col gap-5`}>
+        <div className="flex items-center justify-between">
+          <p className={`text-sm font-bold tracking-widest ${th.text}`}>RUN HUNTER</p>
+          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg leading-none`}>✕</button>
+        </div>
+
+        {/* Mode selection */}
+        <div className="flex gap-3">
+          {(['filter', 'rank'] as const).map(m => (
+            <button key={m} onClick={() => setMode(m)}
+              className={`flex-1 py-3 rounded-xl border text-xs font-bold tracking-wider transition-all ${
+                mode === m
+                  ? m === 'filter' ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-purple-500/20 border-purple-500 text-purple-400'
+                  : `${th.card} ${th.border} ${th.textFaint} hover:${th.textMuted}`
+              }`}>
+              {m === 'filter' ? '⊘ FILTER' : '⬡ RANK'}
+              <p className={`text-[9px] mt-1 font-normal opacity-70`}>
+                {m === 'filter' ? 'Gate by rules — pass/fail' : 'Score & sort all tickers'}
+              </p>
+            </button>
+          ))}
+        </div>
+
+        {/* Preset selection — only shown in filter mode */}
+        {mode === 'filter' && (
+          <div className="flex flex-col gap-2">
+            <p className={`text-[9px] tracking-widest font-medium ${th.textFaint}`}>SELECT PRESET</p>
+            {FILTER_PRESETS.map(p => (
+              <button key={p.key} onClick={() => setPreset(p.key)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border text-left transition-all ${
+                  preset === p.key ? `${p.color} bg-white/5` : `${th.border} ${th.textFaint} hover:${th.textMuted}`
+                }`}>
+                <span className={`text-[10px] font-bold w-20 shrink-0 ${preset === p.key ? p.color.split(' ')[1] : ''}`}>{p.label}</span>
+                <span className="text-[9px] opacity-70">{p.desc}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <button onClick={() => onRun(mode, mode === 'filter' ? preset : undefined)}
+          className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-xl text-xs font-bold tracking-widest transition-colors shadow-lg border border-blue-400/30">
+          RUN HUNTER →
+        </button>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
+  stockRules: RulesType;
+  etfRules: RulesType;
+  rankConfig: RankConfig;
+  onClose: () => void;
+  onRun: (stockRules: RulesType, etfRules: RulesType, stockLabel: string, etfLabel: string, rankConfig: RankConfig) => void;
+  th: typeof THEMES[Theme];
+}) {
+  const [stockEdited, setStockEdited] = useState<RulesType>({ ...stockRules });
+  const [stockRaw, setStockRaw] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(stockRules).map(([k, v]) => [k, String(v)])));
+  const [stockPreset, setStockPreset] = useState<string | null>(() => { try { return localStorage.getItem(LS_ACTIVE_PRESET); } catch { return null; } });
+  const [etfEdited, setEtfEdited] = useState<RulesType>({ ...etfRules });
+  const [etfRaw, setEtfRaw] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(etfRules).map(([k, v]) => [k, String(v)])));
+  const [etfPreset, setEtfPreset] = useState<string | null>(() => { try { return localStorage.getItem(LS_ACTIVE_PRESET_ETF); } catch { return null; } });
+  const [rankEdited, setRankEdited] = useState<RankConfig>({ ...rankConfig });
+
+  const makeHandlers = (
+    edited: RulesType,
+    setEdited: React.Dispatch<React.SetStateAction<RulesType>>,
+    setRaw: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  ) => ({
+    onChange: (key: string, raw: string) => setRaw(prev => ({ ...prev, [key]: raw })),
+    onBlur: (key: keyof RulesType, raw: string) => {
+      const val = parseFloat(raw);
+      if (!isNaN(val)) { setEdited(prev => ({ ...prev, [key]: val })); setRaw(prev => ({ ...prev, [key]: String(val) })); }
+      else setRaw(prev => ({ ...prev, [key]: String(edited[key]) }));
+    },
+  });
+
+  const stockHandlers = makeHandlers(stockEdited, setStockEdited, setStockRaw);
+  const etfHandlers = makeHandlers(etfEdited, setEtfEdited, setEtfRaw);
+
+  const applyPresetToStock = (p: typeof RULE_PRESETS[number]) => {
+    const merged = { ...DEFAULT_RULES, ...p.rules };
+    setStockEdited(merged); setStockRaw(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
+    setStockPreset(p.key); try { localStorage.setItem(LS_ACTIVE_PRESET, p.key); } catch {}
+  };
+  const applyPresetToEtf = (p: typeof RULE_PRESETS[number]) => {
+    const merged = { ...DEFAULT_ETF_RULES, ...p.rules };
+    setEtfEdited(merged); setEtfRaw(Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v)])));
+    setEtfPreset(p.key); try { localStorage.setItem(LS_ACTIVE_PRESET_ETF, p.key); } catch {}
+  };
+  const handleResetStock = () => {
+    setStockEdited({ ...DEFAULT_RULES }); setStockRaw(Object.fromEntries(Object.entries(DEFAULT_RULES).map(([k, v]) => [k, String(v)])));
+    setStockPreset(null); try { localStorage.removeItem(LS_RULES); localStorage.removeItem(LS_ACTIVE_PRESET); } catch {}
+  };
+  const handleResetEtf = () => {
+    setEtfEdited({ ...DEFAULT_ETF_RULES }); setEtfRaw(Object.fromEntries(Object.entries(DEFAULT_ETF_RULES).map(([k, v]) => [k, String(v)])));
+    setEtfPreset(null); try { localStorage.removeItem(LS_RULES_ETF); localStorage.removeItem(LS_ACTIVE_PRESET_ETF); } catch {}
+  };
+  const handleResetRank = () => setRankEdited({ ...DEFAULT_RANK_CONFIG });
+
+  const handleRun = () => {
+    saveRulesToStorage(stockEdited); saveEtfRulesToStorage(etfEdited);
+    try { localStorage.setItem(LS_RANK_CONFIG, JSON.stringify(rankEdited)); } catch {}
+    const sLabel = stockPreset ? (RULE_PRESETS.find(p => p.key === stockPreset)?.label ?? 'Custom') : 'Custom';
+    const eLabel = etfPreset ? (RULE_PRESETS.find(p => p.key === etfPreset)?.label ?? 'ETF Custom') : 'ETF Custom';
+    onRun(stockEdited, etfEdited, sLabel, eLabel, rankEdited);
+  };
+
+  const RuleCol = ({ edited, raw, handlers, presetKey, onApplyPreset, onReset, isEtf }: {
+    edited: RulesType; raw: Record<string, string>;
+    handlers: { onChange: (k: string, v: string) => void; onBlur: (k: keyof RulesType, v: string) => void };
+    presetKey: string | null; onApplyPreset: (p: typeof RULE_PRESETS[number]) => void; onReset: () => void; isEtf: boolean;
+  }) => {
+    const ri = (key: keyof RulesType, lbl?: string, hint?: string) => (
+      <div>
+        <RuleInput ruleKey={key} rawValues={raw} editedRules={edited} onRawChange={handlers.onChange} onBlur={handlers.onBlur} th={th} label={lbl} hint={hint} />
+        <RangeIndicator
+          value={edited[key] as number}
+          strict={(RULE_PRESETS.find(p => p.key === 'strict')?.rules as any)?.[key]}
+          course={(RULE_PRESETS.find(p => p.key === 'course')?.rules as any)?.[key]}
+          relaxed={(RULE_PRESETS.find(p => p.key === 'relaxed')?.rules as any)?.[key]}
+          lowvol={(RULE_PRESETS.find(p => p.key === 'lowvol')?.rules as any)?.[key]}
+          fmt={(v) => String(v)}
+        />
+      </div>
+    );
+    return (
+      <div className="flex-1 min-w-0">
+        <div className={`px-4 py-2.5 border-b ${th.border} flex items-center justify-between ${isEtf ? 'bg-blue-500/5' : ''}`}>
           <div>
-            <p className={`text-[9px] text-sky-400 uppercase tracking-widest mb-3 font-bold`}>% Buffer — DTE Aware Coloring</p>
-            <p className={`${th.textFaint} mb-2`}>Same buffer % is safer with less time remaining. Hover the buffer value on any card to see the full reference table.</p>
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                { color: 'text-emerald-400', label: 'Green', desc: 'Healthy buffer for current DTE' },
-                { color: 'text-yellow-400', label: 'Yellow', desc: 'Watch — tightening for this DTE' },
-                { color: 'text-orange-400', label: 'Orange', desc: 'Marginal — active monitoring needed' },
-                { color: 'text-red-400', label: 'Red', desc: 'Critical — near breach risk' },
-              ].map(b => (
-                <div key={b.label} className="flex items-center gap-2">
-                  <span className={`font-bold ${b.color}`}>{b.label}</span>
-                  <span className={th.textFaint}>{b.desc}</span>
-                </div>
-              ))}
-            </div>
+            <p className={`text-[10px] font-bold tracking-widest ${isEtf ? 'text-blue-400' : th.text}`}>{isEtf ? '🏦 ETF / INDEX' : '📈 STOCK'}</p>
+            <p className={`text-[8px] ${th.textFaint} mt-0.5`}>{isEtf ? 'Auto-applied to ETFs & Indexes' : 'Auto-applied to individual stocks'}</p>
           </div>
-
-          {/* Extend Profit button colors */}
+          <button onClick={onReset} className="text-[8px] border border-yellow-700 text-yellow-600 px-2 py-0.5 rounded hover:bg-yellow-500/10 transition-colors">RESET</button>
+        </div>
+        <div className="px-4 py-2 border-b border-dashed border-slate-800">
+          <p className="text-[8px] tracking-widest uppercase mb-1.5 opacity-40">Quick presets:</p>
+          <div className="flex gap-1 flex-wrap">
+            {RULE_PRESETS.map(p => (
+              <button key={p.key} onClick={() => onApplyPreset(p)} title={p.desc}
+                className={'px-2 py-1 rounded text-[8px] font-bold border transition-colors ' + (presetKey === p.key ? p.color : 'border-slate-700 text-slate-500 hover:border-slate-500')}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="px-4 py-3 space-y-3">
           <div>
-            <p className={`text-[9px] text-blue-400 uppercase tracking-widest mb-3 font-bold`}>↑ Extend Profit Button Colors</p>
-            <div className="space-y-1.5">
-              {[
-                { color: 'text-emerald-400', label: 'Green border', desc: 'Conditions favor extension — good profit, healthy DTE, strong IVR' },
-                { color: 'text-slate-400', label: 'Grey border', desc: 'Neutral — proceed carefully, no strong signal either way' },
-                { color: 'text-yellow-400', label: 'Yellow border', desc: 'Marginal — one or more conditions are weak' },
-                { color: 'text-red-400', label: 'Red border', desc: 'Unfavorable — position at loss, thin DTE, or low IVR' },
-              ].map(b => (
-                <div key={b.label} className="flex items-start gap-2">
-                  <span className={`font-bold shrink-0 ${b.color}`}>{b.label}</span>
-                  <span className={th.textFaint}>{b.desc}</span>
-                </div>
-              ))}
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>① Volatility & Timing</p>
+            <div className="grid grid-cols-2 gap-3">
+              {ri('IVR_MIN','IVR Min %','Floor')}
+              {ri('IVR_IC_MAX','IVR Max % (IC)','IC only')}
+              {ri('DTE_MIN','DTE Min')}
+              {ri('DTE_MAX','DTE Max')}
             </div>
           </div>
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>② Delta</p>
+            <div className="grid grid-cols-2 gap-3">
+              {ri('SPREAD_DELTA_MIN','Spread δ Min')}
+              {ri('SPREAD_DELTA_MAX','Spread δ Max')}
+              {ri('IC_DELTA_MIN','IC δ Min')}
+              {ri('IC_DELTA_MAX','IC δ Max')}
+            </div>
+          </div>
+          <div>
+            <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>③ Liquidity · Credit · Return</p>
+            <div className="grid grid-cols-2 gap-3">
+              {ri('OI_MIN','Min OI','Per leg')}
+              {ri('BID_ASK_MAX','Max Bid-Ask','Per leg')}
+              {ri('MAX_SPREAD_WIDTH','Max Width $','Optimizer cap')}
+              {ri('CREDIT_RATIO_MIN','Min Credit Ratio','0.33=course')}
+              {ri('ROC_MIN_SPREAD','Min ROC Spread')}
+              {ri('ROC_MIN_IC','Min ROC IC')}
+              {ri('POP_MIN','Min POP %')}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
+  const sl = (key: keyof RankConfig, label: string, hint: string, min: number, max: number, step = 1, fmt?: (v: number) => string) => (
+    <Slider label={label} hint={hint} value={rankEdited[key] as number} min={min} max={max} step={step}
+      fmt={fmt} onChange={v => setRankEdited(prev => ({ ...prev, [key]: v }))} th={th} />
+  );
+
+  const totalWeight = rankEdited.weightMomentum + rankEdited.weightIvr + rankEdited.weightRange + rankEdited.weightTechnical + rankEdited.weightLiquidity;
+
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-full max-w-6xl max-h-[92vh] overflow-auto`}>
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border}`}>
+          <div>
+            <h2 className="text-sm font-bold tracking-widest text-red-500">SCREENING RULES</h2>
+            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Stock and ETF/Index rules apply automatically per ticker. Ranking config drives the score in Rank mode. Dots on inputs show preset positions.</p>
+          </div>
+          <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg`}>✕</button>
+        </div>
+        <div className="flex divide-x divide-slate-800">
+          <RuleCol edited={stockEdited} raw={stockRaw} handlers={stockHandlers} presetKey={stockPreset} onApplyPreset={applyPresetToStock} onReset={handleResetStock} isEtf={false} />
+          <RuleCol edited={etfEdited} raw={etfRaw} handlers={etfHandlers} presetKey={etfPreset} onApplyPreset={applyPresetToEtf} onReset={handleResetEtf} isEtf={true} />
+
+          {/* Ranking config column */}
+          <div className="w-72 shrink-0">
+            <div className={`px-4 py-2.5 border-b ${th.border} flex items-center justify-between bg-purple-500/5`}>
+              <div>
+                <p className="text-[10px] font-bold tracking-widest text-purple-400">⬡ RANKING</p>
+                <p className={`text-[8px] ${th.textFaint} mt-0.5`}>Scoring weights and thresholds</p>
+              </div>
+              <button onClick={handleResetRank} className="text-[8px] border border-yellow-700 text-yellow-600 px-2 py-0.5 rounded hover:bg-yellow-500/10 transition-colors">RESET</button>
+            </div>
+            <div className="px-4 py-3 space-y-4">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold`}>Scoring Weights</p>
+                  <span className={`text-[8px] font-bold ${totalWeight === 100 ? 'text-emerald-400' : 'text-yellow-400'}`}>{totalWeight}/100 pts</span>
+                </div>
+                <div className="space-y-3">
+                  {sl('weightMomentum',  'Momentum',   '14d trend strength + direction', 0, 40)}
+                  {sl('weightIvr',       'IV Quality', 'IVR, peaks ~65, penalty >80',    0, 35)}
+                  {sl('weightRange',     '52W Range',  'Price position vs strategy',     0, 30)}
+                  {sl('weightTechnical', 'Technical',  'MA alignment + slope',           0, 25)}
+                  {sl('weightLiquidity', 'Liquidity',  'OI + credit ratio quality',      0, 20)}
+                </div>
+              </div>
+              <div>
+                <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-3`}>DTE Sweet Spot</p>
+                <div className="space-y-3">
+                  {sl('dteSweetSpot', 'Center DTE',  'Full score at this DTE',         14, 45)}
+                  {sl('dteRange',     '± Range',     'Days either side for full score', 1, 14)}
+                </div>
+              </div>
+              <div>
+                <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-3`}>Traffic Light Thresholds</p>
+                <div className="space-y-3">
+                  {sl('thresholdGreen',  '🟢 Green floor',  'Strong — take the trade',       40, 100)}
+                  {sl('thresholdYellow', '🟡 Yellow floor', 'Acceptable — proceed with care', 20, 80)}
+                  {sl('thresholdOrange', '🟠 Orange floor', 'Marginal — paper trade only',    10, 60)}
+                </div>
+                <p className={`text-[8px] ${th.textFaint} mt-2 leading-relaxed`}>🔴 Red = below orange floor. Earnings always blocks regardless of score.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className={`flex gap-3 px-6 py-4 border-t ${th.border}`}>
+          <p className={`text-[9px] ${th.textFaint} flex-1 self-center`}>Stocks and ETFs/Indexes auto-apply their own rules. Ranking scores apply in Rank mode only. Dots on inputs show where each preset sits.</p>
+          <button onClick={onClose} className={`border ${th.border} ${th.textMuted} py-2 px-4 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
+          <button onClick={handleRun} className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-6 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
         </div>
       </div>
     </div>
   );
 }
 
-export default function PortfolioPage() {
-  const [theme, setTheme] = useState<Theme>(getSavedTheme);
-  const th = THEMES[theme];
+// ── Trend Detection with Yahoo Finance ──────────────────────────────────────
+async function runTrendDetection(
+  autoTickers: string,
+  bpsTickers: string,
+  bcsTickers: string,
+  icTickers: string,
+  brokenTickers: string,
+  handleBpsChange: (v: string) => void,
+  handleBcsChange: (v: string) => void,
+  handleIcChange: (v: string) => void,
+  handleBrokenChange: (v: string) => void,
+  setAutoTickers: (v: string) => void,
+  setError: (e: string) => void,
+  setStatus: (s: string) => void,
+  setLoading: (l: boolean) => void,
+  parseTickers: (s: string) => string[],
+  setAutoTrendEntries: (entries: AutoTrendEntry[]) => void,
+  showLoadPrompt: (state: Omit<LoadPromptState, 'show'>) => void
+) {
+  const autoList = Array.from(new Set(parseTickers(autoTickers)));
+  if (autoList.length === 0) {
+    setError('Enter at least one ticker for trend detection.');
+    return;
+  }
 
-  const [positions, setPositions] = useState<Position[]>([]);
+  setError('');
+  setLoading(true);
+  setAutoTrendEntries([]);
+
+  try {
+    setStatus(`Analyzing ${autoList.length} ticker${autoList.length === 1 ? '' : 's'} with Yahoo Finance...`);
+    const distributions: { bps: string[]; bcs: string[]; ic: string[]; broken: string[] } = { bps: [], bcs: [], ic: [], broken: [] };
+    const entries: AutoTrendEntry[] = [];
+    let completed = 0;
+
+    const analyzeSymbol = async (symbol: string) => {
+      try {
+        const trendResult = await getTrend(symbol);
+        entries.push({ symbol, result: trendResult });
+        if (trendResult.strategy === 'BPS') {
+          distributions.bps.push(symbol);
+        } else if (trendResult.strategy === 'BCS') {
+          distributions.bcs.push(symbol);
+        } else if (trendResult.strategy === 'IC') {
+          distributions.ic.push(symbol);
+        } else {
+          distributions.broken.push(symbol);
+        }
+      } catch (e: any) {
+        const msg = e?.message ?? '';
+        const isInvalidSymbol = msg.includes('404') || msg.includes('no bars') || msg.includes('Not enough valid');
+        if (isInvalidSymbol) {
+          console.warn(`Skipping invalid/no-data symbol: ${symbol} — ${msg}`);
+        } else {
+          console.warn(`Trend detection error for ${symbol}: ${msg}`);
+          distributions.broken.push(symbol);
+        }
+      } finally {
+        completed += 1;
+        setStatus(`Analyzed ${completed}/${autoList.length} tickers...`);
+      }
+    };
+
+    for (let i = 0; i < autoList.length; i += TREND_DETECTION_CONCURRENCY) {
+      const chunk = autoList.slice(i, i + TREND_DETECTION_CONCURRENCY);
+      await Promise.all(chunk.map(analyzeSymbol));
+    }
+
+    // Sort entries to match strategy grouping order: BPS, BCS, IC, Review
+    const order = ['BPS', 'BCS', 'IC', 'NO_TRADE'];
+    entries.sort((a, b) => order.indexOf(a.result.strategy) - order.indexOf(b.result.strategy));
+    setAutoTrendEntries(entries);
+
+    const statusMsg = `✅ Trend detection complete: ${distributions.bps.length} BPS, ${distributions.bcs.length} BCS, ${distributions.ic.length} IC, ${distributions.broken.length} broken/unknown.`;
+
+    const applyDistributions = (doMerge: boolean) => {
+      if (doMerge) {
+        if (distributions.bps.length > 0) handleBpsChange(mergeTickers(bpsTickers, distributions.bps));
+        if (distributions.bcs.length > 0) handleBcsChange(mergeTickers(bcsTickers, distributions.bcs));
+        if (distributions.ic.length > 0) handleIcChange(mergeTickers(icTickers, distributions.ic));
+        if (distributions.broken.length > 0) handleBrokenChange(mergeTickers(brokenTickers, distributions.broken));
+      } else {
+        handleBpsChange(tickersToString(distributions.bps));
+        handleBcsChange(tickersToString(distributions.bcs));
+        handleIcChange(tickersToString(distributions.ic));
+        handleBrokenChange(tickersToString(distributions.broken));
+      }
+    };
+
+    // Check if any box already has tickers — if so, prompt replace vs merge
+    const hasExisting =
+      parseTickers(bpsTickers).length > 0 ||
+      parseTickers(bcsTickers).length > 0 ||
+      parseTickers(icTickers).length > 0 ||
+      parseTickers(brokenTickers).length > 0;
+
+    setAutoTickers('');
+    setStatus(statusMsg);
+
+    if (hasExisting) {
+      const total = distributions.bps.length + distributions.bcs.length + distributions.ic.length + distributions.broken.length;
+      showLoadPrompt({
+        name: `${total} ticker${total !== 1 ? 's' : ''} from trend detection`,
+        type: 'strategy',
+        onLoad: applyDistributions,
+      });
+    } else {
+      applyDistributions(false);
+    }
+  } catch (e: any) {
+    setError(e.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+// ── Yahoo Finance getTrend vNext ────────────────────────────────────────────
+async function getTrend(symbol: string): Promise<TrendResult> {
+  const cleanSymbol = normalizeTickerToken(symbol) ?? symbol.toUpperCase();
+  const res = await fetch(`/api/chart?symbol=${encodeURIComponent(cleanSymbol)}`, { cache: 'no-store' });
+
+  if (!res.ok) throw new Error(`Yahoo chart fetch failed for ${cleanSymbol} (${res.status})`);
+
+  const data = await res.json();
+  const bars: { c: number }[] = data?.bars ?? [];
+  const closes = bars.map(b => b.c).filter((c): c is number => Number.isFinite(c));
+
+  const unknownResult = (reason: string): TrendResult => ({
+    trend: 'unknown',
+    strategy: 'NO_TRADE',
+    subtype: 'UNKNOWN',
+    confidence: 0,
+    ma20: 0,
+    ma50: 0,
+    ma200: 0,
+    reason,
+  });
+
+  if (closes.length < 90) {
+    throw new Error(`no bars: ${cleanSymbol} returned only ${closes.length} closes — likely invalid symbol`);
+  }
+
+  const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
+  const pct = (current: number, prior: number) => prior === 0 ? 0 : (current - prior) / prior;
+  const max = (values: number[]) => Math.max(...values);
+  const min = (values: number[]) => Math.min(...values);
+  const clamp = (value: number, low = 0, high = 100) => Math.max(low, Math.min(high, value));
+  const signedScale = (value: number, fullAt: number, maxPoints: number) => {
+    const sign = value >= 0 ? 1 : -1;
+    return sign * Math.min(1, Math.abs(value) / fullAt) * maxPoints;
+  };
+
+  const currentPrice = closes[closes.length - 1];
+  const ma20 = avg(closes.slice(-20));
+  const ma50 = avg(closes.slice(-50));
+  const ma200 = closes.length >= 200 ? avg(closes.slice(-200)) : avg(closes);
+  const ma20Prev = avg(closes.slice(-40, -20));
+  const ma50Prev = closes.length >= 100 ? avg(closes.slice(-100, -50)) : avg(closes.slice(-90, -40));
+
+  const ma20Slope = pct(ma20, ma20Prev);
+  const ma50Slope = pct(ma50, ma50Prev);
+  const momentum10 = pct(currentPrice, closes[closes.length - 11]);
+  const momentum20 = pct(currentPrice, closes[closes.length - 21]);
+  const momentum40 = pct(currentPrice, closes[closes.length - 41]);
+  const momentum60 = pct(currentPrice, closes[closes.length - 61]);
+  const momentum90 = pct(currentPrice, closes[closes.length - 91]);
+
+  const last10 = closes.slice(-10);
+  const last20 = closes.slice(-20);
+  const prior20 = closes.slice(-40, -20);
+  const last40 = closes.slice(-40);
+  const prior40 = closes.slice(-80, -40);
+  const last60 = closes.slice(-60);
+  const prior60 = closes.slice(-120, -60);
+  const last90 = closes.slice(-90);
+
+  const high20 = max(last20), low20 = min(last20);
+  const high40 = max(last40), low40 = min(last40);
+  const high60 = max(last60), low60 = min(last60);
+  const high90 = max(last90), low90 = min(last90);
+  const priorHigh20 = max(prior20), priorLow20 = min(prior20);
+  const priorHigh40 = max(prior40), priorLow40 = min(prior40);
+  const priorHigh60 = prior60.length ? max(prior60) : priorHigh40;
+  const priorLow60 = prior60.length ? min(prior60) : priorLow40;
+
+  const range60 = pct(high60, low60);
+  const net60 = Math.abs(momentum60);
+  const chopRatio = net60 < 0.01 ? 99 : range60 / net60;
+  const distFromMa20 = pct(currentPrice, ma20);
+  const distFromMa50 = pct(currentPrice, ma50);
+  const drawdownFrom60High = pct(currentPrice, high60); // negative number
+  const drawdownFrom90High = pct(currentPrice, high90); // negative number
+  const reboundFrom60Low = pct(currentPrice, low60);
+  const reboundFrom90Low = pct(currentPrice, low90);
+  const near60High = currentPrice >= high60 * 0.96;
+  const near60Low = currentPrice <= low60 * 1.04;
+
+  const higherLows = low20 > priorLow20 * 0.985;
+  const higherHighs = high20 > priorHigh20 * 1.005;
+  const lowerHighs = high20 < priorHigh20 * 1.015;
+  const lowerLows = low20 < priorLow20 * 0.995;
+  const regimeHigherLows = low40 > priorLow40 * 0.985;
+  const regimeHigherHighs = high40 > priorHigh40 * 1.005;
+  const regimeLowerHighs = high40 < priorHigh40 * 1.015;
+  const regimeLowerLows = low40 < priorLow40 * 0.995;
+  const brokePriorSupport = currentPrice < priorLow60 * 0.985 || currentPrice < priorLow40 * 0.985;
+  const brokePriorResistance = currentPrice > priorHigh60 * 1.015 || currentPrice > priorHigh40 * 1.015;
+
+  const isIdx = INDEX_TICKERS.has(cleanSymbol.toUpperCase());
+  const highVolName = Math.abs(momentum60) > 0.18 || range60 > 0.34 || Math.abs(momentum90) > 0.30;
+  const maxHealthyRange60 = isIdx ? 0.22 : highVolName ? 0.48 : 0.34;
+  const maxChaoticRange60 = isIdx ? 0.30 : highVolName ? 0.72 : 0.52;
+
+  let momentumScore = 0;
+  momentumScore += signedScale(momentum20, 0.10, 18);
+  momentumScore += signedScale(momentum60, 0.22, 22);
+  // A small 90-day memory prevents a few right-edge candles from fully reversing the regime.
+  momentumScore += signedScale(momentum90, 0.35, 8);
+
+  let maAlignmentScore = 0;
+  if (currentPrice > ma20) maAlignmentScore += 8; else maAlignmentScore -= 8;
+  if (currentPrice > ma50) maAlignmentScore += 10; else maAlignmentScore -= 10;
+  if (ma20 > ma50) maAlignmentScore += 10; else maAlignmentScore -= 10;
+  // Distance from the 50MA matters, but too much distance is handled by maturity/exhaustion below.
+  maAlignmentScore += signedScale(distFromMa50, 0.12, 6);
+
+  let slopeScore = 0;
+  slopeScore += signedScale(ma20Slope, 0.035, 13);
+  slopeScore += signedScale(ma50Slope, 0.025, 9);
+
+  let structureScore = 0;
+  if (higherHighs) structureScore += 7;
+  if (higherLows) structureScore += 9;
+  if (regimeHigherHighs) structureScore += 8;
+  if (regimeHigherLows) structureScore += 10;
+  if (lowerHighs) structureScore -= 9;
+  if (lowerLows) structureScore -= 7;
+  if (regimeLowerHighs) structureScore -= 10;
+  if (regimeLowerLows) structureScore -= 8;
+
+  let regimeScore = 0;
+  if (brokePriorResistance && momentum40 > 0) regimeScore += 12;
+  if (brokePriorSupport && momentum40 < 0) regimeScore -= 12;
+  if (currentPrice > high90 * 0.98 && momentum60 > 0.08) regimeScore += 8;
+  if (currentPrice < low90 * 1.04 && momentum60 < -0.08) regimeScore -= 8;
+  // Failed trend behavior: prior strength followed by a decisive break is bearish even if the long chart was once bullish.
+  if (momentum90 > 0.10 && momentum20 < -0.07 && currentPrice < ma20 && drawdownFrom60High < -0.12) regimeScore -= 16;
+  // Recovery behavior: prior weakness followed by reclaiming averages can be a bullish reversal.
+  if (momentum90 < -0.10 && momentum20 > 0.07 && currentPrice > ma20 && reboundFrom60Low > 0.12) regimeScore += 14;
+
+  const rawDirectionalScore = momentumScore + maAlignmentScore + slopeScore + structureScore + regimeScore;
+
+  let volatilityPenalty = 0;
+  if (range60 > maxHealthyRange60) volatilityPenalty += range60 > maxChaoticRange60 ? 22 : 9;
+
+  let chopPenalty = 0;
+  if (chopRatio > 6.0) chopPenalty += 18;
+  else if (chopRatio > 4.0) chopPenalty += 10;
+  else if (chopRatio > 3.0) chopPenalty += 5;
+
+  // Trend maturity / exhaustion: direction may be right, but trade quality is poor when the move is vertical.
+  let maturityPenalty = 0;
+  const upsideExhausted =
+    (momentum10 > 0.18 && momentum20 > 0.28) ||
+    (distFromMa50 > 0.28 && reboundFrom60Low > 0.55) ||
+    (near60High && reboundFrom60Low > 0.75 && range60 > 0.55);
+  const downsideExhausted =
+    (momentum10 < -0.18 && momentum20 < -0.28) ||
+    (distFromMa50 < -0.25 && Math.abs(drawdownFrom60High) > 0.45) ||
+    (near60Low && Math.abs(drawdownFrom60High) > 0.55 && range60 > 0.55);
+
+  if (upsideExhausted || downsideExhausted) maturityPenalty += highVolName ? 16 : 24;
+  if (Math.abs(momentum20) > 0.40) maturityPenalty += 12;
+
+  const penalty = volatilityPenalty + chopPenalty + maturityPenalty;
+  const directionalScore = rawDirectionalScore > 0
+    ? rawDirectionalScore - penalty
+    : rawDirectionalScore + penalty;
+
+  const scores = {
+    momentum: Math.round(momentumScore),
+    maAlignment: Math.round(maAlignmentScore),
+    slope: Math.round(slopeScore),
+    structure: Math.round(structureScore + regimeScore),
+    chop: Math.round(chopPenalty),
+    volatility: Math.round(volatilityPenalty + maturityPenalty),
+    total: Math.round(directionalScore),
+  };
+
+  const metrics = {
+    price: currentPrice,
+    ma20,
+    ma50,
+    ma200,
+    momentum10,
+    momentum20,
+    momentum40,
+    momentum60,
+    momentum90,
+    ma20Slope,
+    ma50Slope,
+    range60,
+    chopRatio,
+    distFromMa20,
+    distFromMa50,
+    drawdownFrom60High,
+    drawdownFrom90High,
+    reboundFrom60Low,
+    reboundFrom90Low,
+    higherHighs,
+    higherLows,
+    lowerHighs,
+    lowerLows,
+    regimeHigherHighs,
+    regimeHigherLows,
+    regimeLowerHighs,
+    regimeLowerLows,
+    brokePriorSupport,
+    brokePriorResistance,
+    upsideExhausted,
+    downsideExhausted,
+  };
+
+
+
+  // ── Spike-resistant range metrics ─────────────────────────────────────────
+  // Raw high60/low60 are poisoned by single outlier candles (AFL Feb spike,
+  // INTC April spike). Sort last60 closes and trim the top/bottom 3 values
+  // to get a robust range that ignores event-driven wicks.
+  const last60Sorted = [...last60].sort((a, b) => a - b);
+  const trimN = Math.min(3, Math.floor(last60.length * 0.05));
+  const trimmedLow60  = last60Sorted[trimN];
+  const trimmedHigh60 = last60Sorted[last60Sorted.length - 1 - trimN];
+  const trimmedRange60   = trimmedLow60 > 0 ? (trimmedHigh60 - trimmedLow60) / trimmedLow60 : range60;
+  const trimmedNet60     = Math.abs(momentum60);
+  const trimmedChopRatio = trimmedNet60 < 0.01 ? 99 : trimmedRange60 / trimmedNet60;
+  const trimmedDrawdownFrom60High = trimmedHigh60 > 0 ? (currentPrice - trimmedHigh60) / trimmedHigh60 : drawdownFrom60High;
+  const trimmedReboundFrom60Low  = trimmedLow60  > 0 ? (currentPrice - trimmedLow60)  / trimmedLow60  : reboundFrom60Low;
+
+  // Use trimmed metrics for classification decisions; keep raw in `metrics` for display.
+  const tRange60    = trimmedRange60;
+  const tChopRatio  = trimmedChopRatio;
+  const tDD60High   = trimmedDrawdownFrom60High;
+  const tReb60Low   = trimmedReboundFrom60Low;
+
+  const absScore = Math.abs(directionalScore);
+  const conflictPenalty = Math.abs(momentumScore) > 12 && Math.abs(maAlignmentScore) > 12 && Math.sign(momentumScore) !== Math.sign(maAlignmentScore) ? 12 : 0;
+  const confidence = Math.round(clamp(absScore - conflictPenalty - penalty * 0.35, 0, 100));
+
+  // ── STEP 1: Hard exits — broken/untradeable charts ─────────────────────────
+  // Catastrophic recent drop (>25% in last 10 bars) = event-driven, not tradeable.
+  // Exception: stock already in a confirmed sustained downtrend (the drop is just the final leg).
+  const recentCatastrophicDrop = pct(currentPrice, max(closes.slice(-11, -1))) < -0.25;
+  const preCatastrophicDowntrend =
+    (lowerHighs || regimeLowerHighs) &&
+    (lowerLows || regimeLowerLows) &&
+    tDD60High < -0.30 &&
+    momentum60 < -0.10;
+  if (recentCatastrophicDrop && !preCatastrophicDowntrend) {
+    return {
+      trend: 'unknown', strategy: 'NO_TRADE', subtype: 'CHOP', confidence: 20,
+      ma20, ma50, ma200, scores, metrics,
+      reason: `REVIEW: catastrophic drop >25% in last 10 bars — event-driven, chart not yet tradeable. Wait for structure to form.`,
+    };
+  }
+
+  // ── STEP 2: Compute regime scores ─────────────────────────────────────────
+  // Three competing scores: trendStrength, rangeScore, chaoticScore.
+  // Classification is determined by which wins, not by gate order.
+
+  // trendStrength: how cleanly directional is this chart?
+  const trendStrength = absScore;
+
+  // rangeScore: evidence the chart is IC-range-bound.
+  // High when: recent range is tight, price is mid-channel, MAs are flat/converging,
+  // no clear directional structure, oscillating behavior.
+  let rangeScore = 0;
+  const recentRange20Pct = high20 > 0 ? (high20 - low20) / low20 : 1;
+  // Tight recent action
+  if (recentRange20Pct < 0.08) rangeScore += 20;
+  else if (recentRange20Pct < 0.12) rangeScore += 12;
+  else if (recentRange20Pct < 0.18) rangeScore += 5;
+  // Flat MAs (converging = sideways regime)
+  const maSpreadPct = Math.abs(pct(ma20, ma50));
+  if (maSpreadPct < 0.015) rangeScore += 18;
+  else if (maSpreadPct < 0.03) rangeScore += 10;
+  else if (maSpreadPct < 0.05) rangeScore += 4;
+  // Weak momentum (price going nowhere on net)
+  if (Math.abs(momentum60) < 0.03) rangeScore += 16;
+  else if (Math.abs(momentum60) < 0.06) rangeScore += 8;
+  else if (Math.abs(momentum60) < 0.10) rangeScore += 2;
+  // Oscillating structure (no consistent higher-high/lower-low pattern)
+  const mixedStructure = (higherHighs && lowerLows) || (lowerHighs && higherLows) ||
+    (!higherHighs && !lowerHighs && !higherLows && !lowerLows);
+  if (mixedStructure) rangeScore += 14;
+  // Chop: only add range score when chop is genuine (trimmed), not spike-induced
+  if (tChopRatio > 4.0) rangeScore += 10;
+  else if (tChopRatio > 2.5) rangeScore += 5;
+  // Price near MA20 (center of range)
+  if (Math.abs(distFromMa20) < 0.03) rangeScore += 8;
+  else if (Math.abs(distFromMa20) < 0.06) rangeScore += 3;
+  // Penalize strong directional MA alignment
+  if (Math.abs(maAlignmentScore) > 22) rangeScore -= 15;
+  else if (Math.abs(maAlignmentScore) > 14) rangeScore -= 8;
+
+  // chaoticScore: evidence the chart is broken/untradeable.
+  let chaoticScore = 0;
+  // Extreme trimmed range (even after spike removal, it's wild)
+  if (tRange60 > maxChaoticRange60) chaoticScore += 30;
+  else if (tRange60 > maxHealthyRange60 * 1.3) chaoticScore += 15;
+  // Strong directional score + exhaustion = broken, not tradeable
+  if (upsideExhausted && directionalScore > 45) chaoticScore += 25;
+  if (downsideExhausted && directionalScore < -45) chaoticScore += 25;
+  // Post-crash stabilization REDUCES chaoticScore — it's actually IC-eligible
+  const postCrashStabilized =
+    range60 > maxHealthyRange60 &&
+    recentRange20Pct < 0.10 &&
+    Math.abs(momentum20) < 0.05 &&
+    Math.abs(momentum40) < 0.12 &&
+    tDD60High < -0.15;
+  if (postCrashStabilized) chaoticScore -= 20;
+
+  // ── STEP 3: Directional memory — overrides marginal range calls ───────────
+  // Two booleans only. Computed from trimmed metrics + structure.
+  // Bearish: lower-high structure + slope confirmed + no strong bounce
+  const clearBearishStructure =
+    (lowerHighs || regimeLowerHighs) &&
+    (lowerLows || regimeLowerLows || brokePriorSupport || (ma20Slope < -0.008 && tDD60High < -0.12)) &&
+    (ma20Slope < -0.005 || momentum40 < -0.03 || ma50Slope < -0.008) &&
+    tDD60High < -0.06 &&
+    !(momentum90 > 0.25 && tDD60High < -0.20 && tRange60 > 0.35);
+
+  const bearishDirectionalMemory =
+    clearBearishStructure &&
+    directionalScore <= -10 &&
+    !(momentum20 > 0.08 && currentPrice > ma20 && tReb60Low > 0.20) &&
+    !(momentum60 > 0.12 && currentPrice > ma50);
+
+  // Bullish: higher-low structure + price above MA50 + slope confirmed + no sharp breakdown
+  const clearBullishStructure =
+    (higherLows || regimeHigherLows) &&
+    currentPrice > ma50 &&
+    (ma20Slope > 0.005 || momentum40 > 0.03) &&
+    directionalScore >= 8 &&
+    tDD60High > -0.25;
+
+  const bullishDirectionalMemory =
+    clearBullishStructure &&
+    directionalScore >= 15 &&
+    !(momentum20 < -0.06 && currentPrice < ma20);
+
+  // ── STEP 4: Strong directional patterns (high confidence, fire first) ──────
+  const bullishContinuation =
+    directionalScore >= 68 && ma20 > ma50 && currentPrice > ma20 &&
+    momentum60 > 0.07 && (higherLows || regimeHigherLows) && !upsideExhausted;
+
+  const bearishContinuation =
+    directionalScore <= -62 && currentPrice < ma20 &&
+    (ma20 < ma50 || ma20Slope < -0.015) &&
+    (momentum60 < -0.06 || momentum20 < -0.08) &&
+    (lowerHighs || lowerLows || brokePriorSupport);
+
+  const bullishReversal =
+    directionalScore >= 48 && currentPrice > ma20 &&
+    momentum20 > 0.035 && momentum60 > 0.07 &&
+    (higherLows || regimeHigherLows) && regimeHigherLows &&
+    momentum90 > -0.35 && !upsideExhausted;
+
+  const bearishReversal =
+    directionalScore <= -48 && currentPrice < ma20 &&
+    momentum20 < -0.035 &&
+    (momentum60 < -0.035 || ma20Slope < -0.012 || brokePriorSupport) &&
+    (lowerHighs || lowerLows || regimeLowerHighs || regimeLowerLows) &&
+    !downsideExhausted;
+
+  // High-vol recovery: confirmed V-bounce above both MAs (catches DDOG/PANW-type recoveries)
+  const volatileRecovery =
+    momentum20 > 0.06 && momentum10 > 0.02 &&
+    currentPrice > ma20 && currentPrice > ma50 &&
+    (higherLows || regimeHigherLows) &&
+    tReb60Low > 0.20 && !upsideExhausted;
+
+  if (bullishContinuation) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'CONTINUATION', confidence,
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BPS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.` };
+  }
+  if (bearishContinuation) {
+    return { trend: 'downtrend', strategy: 'BCS', subtype: 'CONTINUATION', confidence,
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BCS CONTINUATION: score ${scores.total}, momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure/regime ${scores.structure}.` };
+  }
+  if (bullishReversal) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'REVERSAL', confidence: Math.max(55, Math.min(74, confidence)),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BPS REVERSAL: recovery with improving structure. Score ${scores.total}, 20d mom ${(momentum20 * 100).toFixed(1)}%, 60d mom ${(momentum60 * 100).toFixed(1)}%.` };
+  }
+  if (bearishReversal) {
+    return { trend: 'downtrend', strategy: 'BCS', subtype: 'REVERSAL', confidence: Math.max(55, Math.min(74, confidence)),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BCS REVERSAL: deterioration/failure after prior strength. Score ${scores.total}, 20d mom ${(momentum20 * 100).toFixed(1)}%, 60d mom ${(momentum60 * 100).toFixed(1)}%.` };
+  }
+  if (volatileRecovery) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'REVERSAL', confidence: Math.max(52, Math.min(72, confidence)),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BPS RECOVERY: confirmed V-bounce above both MAs. Score ${scores.total}, 20d mom +${(momentum20 * 100).toFixed(1)}%, rebound from low ${(tReb60Low * 100).toFixed(1)}%.` };
+  }
+
+  // ── STEP 5: Regime classification by score dominance ──────────────────────
+  // Now that strong directional patterns have been handled, decide between
+  // IC (rangeScore wins), BCS/BPS (trendStrength + directional memory wins),
+  // or chaotic/extended (chaoticScore wins).
+
+  // Chaotic/extended: broken chart, no clean trade
+  if (chaoticScore >= 30 && chaoticScore > rangeScore && chaoticScore > trendStrength * 0.6) {
+    if (upsideExhausted || downsideExhausted) {
+      return { trend: directionalScore > 0 ? 'uptrend' : 'downtrend', strategy: 'NO_TRADE', subtype: 'UNKNOWN',
+        confidence: Math.max(42, Math.min(58, confidence)), ma20, ma50, ma200, scores, metrics,
+        reason: `REVIEW EXTENDED: ${directionalScore > 0 ? 'bullish' : 'bearish'} direction but move is mature/vertical. 20d mom ${(momentum20 * 100).toFixed(1)}%, dist 50MA ${(distFromMa50 * 100).toFixed(1)}%, trimmed range ${(tRange60 * 100).toFixed(1)}%.` };
+    }
+    return { trend: 'sideways', strategy: 'NO_TRADE', subtype: 'CHOP',
+      confidence: Math.max(25, Math.min(48, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `NO_TRADE CHOP: trimmed 60d range ${(tRange60 * 100).toFixed(1)}%, chop ${tChopRatio.toFixed(1)}, directional score ${scores.total}.` };
+  }
+
+  // Directional memory overrides IC when structure is confirmed
+  if (bearishDirectionalMemory && rangeScore < trendStrength + 15) {
+    const isStrong = directionalScore <= -15 && (currentPrice < ma50 || (lowerHighs && regimeLowerHighs));
+    return { trend: 'downtrend', strategy: 'BCS',
+      subtype: isStrong ? 'CONTINUATION' : 'REVERSAL',
+      confidence: Math.max(isStrong ? 52 : 45, Math.min(isStrong ? 70 : 62, confidence)),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `BCS (bearish structure): score ${scores.total} — lower highs/lows confirmed, price rolling over. Trimmed range ${(tRange60 * 100).toFixed(1)}%, chop ${tChopRatio.toFixed(1)}.` };
+  }
+
+  if (bullishDirectionalMemory && rangeScore < trendStrength + 15) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'CONTINUATION',
+      confidence: Math.max(52, Math.min(70, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `BPS (bullish structure): score ${scores.total} — higher lows, price above MA50, slope confirms direction. Trimmed range ${(tRange60 * 100).toFixed(1)}%, chop ${tChopRatio.toFixed(1)}.` };
+  }
+
+  // IC: range wins when rangeScore clearly dominates and no directional memory override
+  const rangeDominates = rangeScore >= 40 && rangeScore > trendStrength * 0.7;
+  if (rangeDominates || postCrashStabilized) {
+    return { trend: 'sideways', strategy: 'IC', subtype: 'RANGE',
+      confidence: Math.max(55, Math.min(78, Math.round(rangeScore * 0.78))),
+      ma20, ma50, ma200, scores, metrics,
+      reason: `IC RANGE: range score ${Math.round(rangeScore)} vs trend strength ${Math.round(trendStrength)}. Trimmed range ${(tRange60 * 100).toFixed(1)}%, chop ${tChopRatio.toFixed(1)}, MA spread ${(maSpreadPct * 100).toFixed(1)}%.${postCrashStabilized ? ` Post-crash stabilization: last 20 bars tight at ${(recentRange20Pct * 100).toFixed(1)}%.` : ''}` };
+  }
+
+  // Weak directional leans — assign direction if there's any structural support
+  if (directionalScore <= -18 && currentPrice < ma50 && (lowerHighs || brokePriorSupport)) {
+    return { trend: 'downtrend', strategy: 'BCS', subtype: 'REVERSAL',
+      confidence: Math.max(40, Math.min(55, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `BCS (weak lean): score ${scores.total} — below MA50 with lower-high or support break. Monitor carefully.` };
+  }
+  if (directionalScore >= 18 && currentPrice > ma50 && (higherLows || regimeHigherLows) && momentum60 > 0.05) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'REVERSAL',
+      confidence: Math.max(40, Math.min(55, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `BPS (weak lean): score ${scores.total} — above MA50 with higher-low structure. Monitor carefully.` };
+  }
+  if (directionalScore >= 45 && currentPrice > ma50 && momentum60 > 0.04 && ma20Slope > 0) {
+    return { trend: 'uptrend', strategy: 'BPS', subtype: 'REVERSAL',
+      confidence: Math.max(42, Math.min(58, confidence)), ma20, ma50, ma200, scores, metrics,
+      reason: `BPS (strong score, recovering): score ${scores.total} — above MA50, positive slope and momentum. Higher-low structure not yet confirmed.` };
+  }
+
+  // Final fallback: genuinely ambiguous
+  return {
+    trend: 'unknown', strategy: 'NO_TRADE', subtype: 'UNKNOWN',
+    confidence: Math.max(35, Math.min(54, confidence)),
+    ma20, ma50, ma200, scores, metrics,
+    reason: `REVIEW: conflicting signals — score ${scores.total}, range score ${Math.round(rangeScore)}, trend strength ${Math.round(trendStrength)}. Momentum ${scores.momentum}, MA ${scores.maAlignment}, slope ${scores.slope}, structure ${scores.structure}.`,
+  };
+}
+
+// ── Best Opportunity Finder ────────────────────────────────────────────────
+interface BestSetup {
+  strategy: string;
+  grade: 'A+' | 'A' | 'B' | 'C';
+  setup: SpreadCandidate;
+  score: number;
+  notes: string[];
+  result: ScreenResult;
+}
+
+interface LevelResult {
+  presetKey: string;
+  presetLabel: string;
+  presetColor: string;
+  rulesUsed: RulesType;
+  ruleDiffs: string[];
+  ranked: BestSetup[];
+  failures: { strategy: string; reasons: string[] }[];
+}
+
+function getRuleDiffs(base: RulesType, relaxed: Partial<RulesType>): string[] {
+  const labels: Record<string, string> = {
+    IVR_MIN: 'IVR floor', OI_MIN: 'Min OI', BID_ASK_MAX: 'Max bid-ask',
+    CREDIT_RATIO_MIN: 'Credit ratio', ROC_MIN_SPREAD: 'ROC spread', ROC_MIN_IC: 'ROC IC',
+  };
+  return Object.entries(relaxed)
+    .filter(([k, v]) => base[k as keyof RulesType] !== v)
+    .map(([k, v]) => {
+      const label = labels[k] || k;
+      const from = base[k as keyof RulesType];
+      return `${label}: ${from} → ${v}`;
+    });
+}
+
+function BestOpportunityFinder({
+  symbol, onClose, th, rules, preferredStrategy, cachedEntry,
+}: {
+  symbol: string; onClose: () => void; th: typeof THEMES[Theme];
+  rules: RulesType; preferredStrategy?: 'BPS' | 'BCS' | 'IC';
+  cachedEntry?: RawScanEntry;
+}) {
   const [loading, setLoading] = useState(false);
+  const [levelResults, setLevelResults] = useState<LevelResult[]>([]);
   const [error, setError] = useState('');
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
-  const [showAuditLog, setShowAuditLog] = useState(false);
-  const [showPerformance, setShowPerformance] = useState(false);
-  const [showMemory, setShowMemory] = useState(false);
-  const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
-  const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
-  const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
 
-  // Trigger weekly behavior summarization silently on load
-  useEffect(() => { summarizeBehaviorProfile().catch(() => {}); }, []);
+  const COURSE_RULES = { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 };
+  const levels = [
+    { presetKey: 'strict',    presetLabel: 'Strict',     presetColor: 'border-red-500 text-red-400',         rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
+    { presetKey: 'course',    presetLabel: 'Course',     presetColor: 'border-blue-500 text-blue-400',       rules: COURSE_RULES },
+    { presetKey: 'relaxed',   presetLabel: 'Relaxed',    presetColor: 'border-emerald-500 text-emerald-400', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
+    { presetKey: 'lowvol',    presetLabel: 'Low Vol',    presetColor: 'border-yellow-500 text-yellow-400',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
+    { presetKey: 'shortterm',    presetLabel: 'Short Term',   presetColor: 'border-orange-500 text-orange-400',  rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 7,  DTE_MAX: 14 } },
+    { presetKey: 'intermediate', presetLabel: 'Intermediate', presetColor: 'border-amber-500 text-amber-400',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 15, DTE_MAX: 29 } },
+  ];
 
-  const handleAnalyzePortfolio = async () => {
-    if (positions.length === 0) return;
-    setPortfolioAnalysisLoading(true);
+  const scoreCandidateLocal = (result: ScreenResult, strat: string): BestSetup | null => {
+    if (!result.qualified || !result.bestCandidate) return null;
+    const c = result.bestCandidate;
+    const ivrScore = Math.min(result.ivr ?? 30, 100);
+    const score = (c.roc || 0) * 0.35 + ((c.pop || 70) * 0.30) + (c.creditRatio * 100 * 0.15) + (ivrScore * 0.20);
+    let grade: BestSetup['grade'] = 'C';
+    if (score > 75) grade = 'A+'; else if (score > 62) grade = 'A'; else if (score > 50) grade = 'B';
+    const notes: string[] = [];
+    if (c.dte < 35) notes.push(`DTE is ${c.dte} — shorter side, watch 21 DTE closely`);
+    if (c.dte < 29) notes.push(`⚠ Short term setup — active daily management required, gamma risk elevated`);
+    if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% elevated — verify no binary event`);
+    if (result.ivr && result.ivr < 35) notes.push(`IVR ${result.ivr.toFixed(0)}% — low volatility environment, premium is thin, size down or wait`);
+    else if (result.ivr && result.ivr < 50) notes.push(`IVR ${result.ivr.toFixed(0)}% — moderate volatility, grade reflects reduced premium opportunity`);
+    if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
+    if (notes.length === 0) notes.push('Clean setup — all rules pass');
+    return { strategy: strat, grade, setup: c, score, notes, result };
+  };
+
+  // Only run the preferred strategy. If none specified, run all three.
+  // This prevents BCS from surfacing as "best" on a BPS-classified stock.
+  const strategiesToRun: ('BPS' | 'BCS' | 'IC')[] = preferredStrategy
+    ? [preferredStrategy]
+    : ['BPS', 'BCS', 'IC'];
+
+  const findBest = async () => {
+    setLoading(true); setError(''); setLevelResults([]);
     try {
-      const result = await analyzePortfolio(positions);
-      setPortfolioAnalysis(result);
+      // Always fetch live data — never use cache
+      const token = await getAccessToken();
+      const [metricsArray, fetchedPrice] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
+      const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
+      const price = fetchedPrice;
+      const baseChainData = await getChain(symbol, token, rules);
+
+      const results: LevelResult[] = [];
+      for (const level of levels) {
+        const mergedRules = { ...rules, ...level.rules };
+        const ruleDiffs = getRuleDiffs({ ...DEFAULT_RULES, ...COURSE_RULES }, level.rules);
+        const candidates: BestSetup[] = [];
+        const failures: { strategy: string; reasons: string[] }[] = [];
+        for (const strat of strategiesToRun) {
+          const result = runChecklist(symbol, strat, metrics, baseChainData, price, mergedRules);
+          const setup = scoreCandidateLocal(result, strat);
+          if (setup) candidates.push(setup);
+          else failures.push({ strategy: strat, reasons: result.failReasons.length > 0 ? result.failReasons : ['No qualifying strikes found'] });
+        }
+        results.push({ presetKey: level.presetKey, presetLabel: level.presetLabel, presetColor: level.presetColor, rulesUsed: mergedRules, ruleDiffs, ranked: candidates.sort((a, b) => b.score - a.score), failures });
+      }
+      setLevelResults(results);
     } catch (e: any) {
-      setPortfolioAnalysis({ loading: false, error: e.message, netDelta: null, dominantRisk: '', sectorConcentration: [], thetaYield: '', topRisks: [], priorityActions: [], marketContext: '', summary: '', generatedAt: new Date().toISOString() });
+      setError(e.message || 'Failed to analyze chain');
     } finally {
-      setPortfolioAnalysisLoading(false);
+      setLoading(false);
     }
   };
 
-  const marketStatus = getMarketStatus();
+  // Auto-run immediately on open (always live)
+  useEffect(() => {
+    findBest();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const fetchPositions = async () => {
-    setLoading(true); setError(''); setChecked(new Set());
-    try {
-      const data = await loadPositions();
-      setPositions(data);
-      setLastRefresh(new Date());
-    } catch (e: any) {
-      if (e.message === 'Not authenticated' || e.message === 'Session expired') { window.location.href = '/login'; return; }
-      setError(e.message);
-    } finally { setLoading(false); }
-  };
-
-  useEffect(() => { fetchPositions(); }, []);
-
-  const handleProfitTargetChange = (key: string, value: number) => {
-    try {
-      const targets = JSON.parse(localStorage.getItem(LS_PROFIT_TARGETS) ?? '{}');
-      targets[key] = value; localStorage.setItem(LS_PROFIT_TARGETS, JSON.stringify(targets));
-    } catch {}
-    setPositions(prev => prev.map(p => {
-      if (p.key !== key) return p;
-      return { ...p, profitTarget: value, targetPrice: p.creditReceived * value, hitTarget: p.pnl != null && p.pnl >= p.creditReceived * value };
-    }));
-  };
-
-  const onToggle = (key: string) => setChecked(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
-  const onToggleAll = (keys: string[], select: boolean) => setChecked(prev => { const n = new Set(prev); keys.forEach(k => select ? n.add(k) : n.delete(k)); return n; });
-  const onClear = () => setChecked(new Set());
-
-  const openBatch = (items: { pos: Position; action: ActionType }[]) => { if (items.length > 0) setBatchItems(items); };
-  const onGroupAction = (pos: Position[], action: ActionType) => openBatch(pos.map(p => ({ pos: p, action })));
-  const onBulkExecute = (items: { pos: Position; action: ActionType }[]) => { openBatch(items); onClear(); };
-
-  const needsClose = positions.filter(p => p.needsClose);
-  const hitTarget  = positions.filter(p => p.hitTarget && !p.needsClose);
-  const noGtc      = positions.filter(p => !p.hasGtc && !p.needsClose && !p.hitTarget);
-  const normal     = positions.filter(p => !p.needsClose && !p.hitTarget && p.hasGtc);
+  const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
 
   return (
-    <div className={`min-h-screen ${th.bg} pb-24 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+    <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden`}>
+        {/* Sticky header */}
+        <div className="px-6 pt-6 pb-4 shrink-0">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity — {symbol}</h2>
+              <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
+                Tests all rule levels against {preferredStrategy ?? 'all strategies'}. Always uses live chain data.
+              </p>
+            </div>
+            <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white ml-4">✕</button>
+          </div>
 
+          <button onClick={findBest} disabled={loading}
+            className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors">
+            {loading ? 'ANALYZING LIVE DATA...' : '↺ RE-ANALYZE (LIVE)'}
+          </button>
+
+          {error && <div className="p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm mt-3">{error}</div>}
+        </div>
+
+        {/* Scrollable results */}
+        <div className="overflow-y-auto flex-1 px-6 pb-6">
+          <div className="space-y-4">
+          {levelResults.map(level => (
+            <div key={level.presetKey} className={`border ${th.border} rounded-xl overflow-hidden`}>
+              <div className={`flex items-center justify-between px-4 py-2.5 border-b ${th.border} ${th.card}`}>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] font-bold tracking-widest px-2 py-0.5 border rounded ${level.presetColor}`}>{level.presetLabel.toUpperCase()}</span>
+                  {level.ruleDiffs.length === 0 ? (
+                    <span className={`text-[9px] ${th.textFaint}`}>Course baseline — no changes</span>
+                  ) : level.presetKey === 'strict' ? (
+                    <span className="text-[9px] text-red-400">Tighter: {level.ruleDiffs.join(' · ')}</span>
+                  ) : level.presetKey === 'shortterm' ? (
+                    <span className="text-[9px] text-orange-400">7–14 DTE · very active daily management, high gamma risk</span>
+                  ) : level.presetKey === 'intermediate' ? (
+                    <span className="text-[9px] text-amber-400">15–29 DTE · active management required</span>
+                  ) : (
+                    <span className="text-[9px] text-yellow-400">Relaxed vs Course: {level.ruleDiffs.join(' · ')}</span>
+                  )}
+                </div>
+                {level.ranked.length > 0
+                  ? <span className={`text-[10px] ${th.textFaint}`}>{level.ranked.length} setup{level.ranked.length !== 1 ? 's' : ''} found</span>
+                  : <span className="text-[10px] text-slate-500">No setup found</span>}
+              </div>
+
+              {level.ranked.length > 0 ? (
+                <div className="divide-y divide-[inherit]" style={{ borderColor: 'inherit' }}>
+                  {level.ranked.map((setup, idx) => (
+                    <div key={setup.strategy} className={`p-4 ${idx === 0 ? '' : 'opacity-80'}`}>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border ${idx === 0 ? 'border-emerald-500 text-emerald-400' : idx === 1 ? 'border-slate-500 text-slate-400' : 'border-slate-700 text-slate-500'}`}>{idx + 1}</span>
+                          <span className={`text-xs font-bold px-2 py-0.5 border rounded ${setup.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : setup.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{setup.strategy}</span>
+                          {preferredStrategy && setup.strategy !== preferredStrategy && (
+                            <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/60 bg-yellow-500/10 text-yellow-400 font-bold">⚠ contradicts {preferredStrategy} box</span>
+                          )}
+                          <span className={`text-xs font-bold ${gradeColor(setup.grade)}`}>Grade {setup.grade}</span>
+                          <span className={`text-[9px] ${th.textFaint}`}>score {setup.score.toFixed(1)}</span>
+                        </div>
+                        <button
+                          onClick={() => { alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${setup.setup.shortStrike}/${setup.setup.longStrike}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`); }}
+                          className="text-[9px] px-2 py-1 border border-emerald-600 text-emerald-400 rounded hover:bg-emerald-600/10 transition-colors font-medium tracking-wider"
+                        >TRADE →</button>
+                      </div>
+                      <div className="grid grid-cols-4 gap-3 mb-2">
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.expiration} <span className="text-slate-500">({setup.setup.dte}d)</span></p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortStrike}/{setup.setup.longStrike}</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit</p><p className="text-xs font-bold text-emerald-400">${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>ROC / POP</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.roc.toFixed(0)}% / {setup.setup.pop?.toFixed(0) ?? '—'}%</p></div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3 mb-2">
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>50% Target</p><p className="text-xs font-bold text-emerald-400">${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit Ratio</p><p className={`text-xs font-bold ${th.text}`}>{(setup.setup.creditRatio * 100).toFixed(0)}% of width</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI Short/Long</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortOI} / {setup.setup.longOI}</p></div>
+                      </div>
+                      <p className={`text-[9px] ${th.textFaint}`}>{setup.notes[0]}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="px-4 py-3 space-y-1.5">
+                  {level.failures.map(f => (
+                    <div key={f.strategy} className="flex items-start gap-2">
+                      <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${f.strategy === 'BPS' ? 'text-emerald-400 border-emerald-800' : f.strategy === 'BCS' ? 'text-red-400 border-red-800' : 'text-blue-400 border-blue-800'}`}>{f.strategy}</span>
+                      <p className={`text-[9px] ${th.textFaint}`}>{f.reasons.join(' · ')}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Raw Scan Cache ─────────────────────────────────────────────────────────
+interface RawScanEntry {
+  symbol: string;
+  strategy: 'BPS' | 'BCS' | 'IC';
+  metrics: { symbol: string; ivRank: number | null; earningsExpectedDate: string | null };
+  chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean };
+  price: number | null;
+  trendResult?: TrendResult;
+}
+
+// ── Main App ───────────────────────────────────────────────────────────────
+export default function Home() {
+  const [theme, setTheme] = useState<Theme>(getSavedTheme);
+  const th = THEMES[theme];
+
+  const [autoTickers, setAutoTickers] = useState('');
+  const autoFileRef = useRef<HTMLInputElement>(null);
+  const [autoScanning, setAutoScanning] = useState(false);
+  const autoPendingTickersRef = useRef<string[]>([]);
+  const [bpsTickers, setBpsTickers] = useState('');
+  const [bcsTickers, setBcsTickers] = useState('');
+  const [icTickers, setIcTickers] = useState('');
+  const [brokenTickers, setBrokenTickers] = useState('');
+  const [results, setResults] = useState<ScreenResult[]>([]);
+  const [rawScanCache, setRawScanCache] = useState<RawScanEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const [showRulesModal, setShowRulesModal] = useState(false);
+  const [showRunModal, setShowRunModal] = useState(false);
+  const [tradeResult, setTradeResult] = useState<ScreenResult | null>(null);
+  const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
+  const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
+  const [runtimeEtfRules, setRuntimeEtfRules] = useState<RulesType>(getSavedEtfRules);
+  const [rankConfig, setRankConfig] = useState<RankConfig>(getSavedRankConfig);
+  const [screenMode, setScreenMode] = useState<'filter' | 'rank'>(() => {
+    try { return (localStorage.getItem(LS_SCREEN_MODE) as 'filter' | 'rank') ?? 'filter'; } catch { return 'filter'; }
+  });
+  const [sessionLoadedAt, setSessionLoadedAt] = useState<{ name: string; at: number } | null>(() => {
+    try { const s = localStorage.getItem(LS_SESSION_LOADED_AT); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
+  const [stockPresetLabel, setStockPresetLabel] = useState<string>(() => {
+    try { const k = localStorage.getItem(LS_ACTIVE_PRESET); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'Custom'; } catch { return 'Custom'; }
+  });
+  const [etfPresetLabel, setEtfPresetLabel] = useState<string>(() => {
+    try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
+  });
+  const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
+  const [gtcOrders, setGtcOrders] = useState<GtcOrder[]>([]);
+  useEffect(() => {
+    try {
+      setBpsTickers(localStorage.getItem(LS_BPS) || '');
+      setBcsTickers(localStorage.getItem(LS_BCS) || '');
+      setIcTickers(localStorage.getItem(LS_IC) || '');
+      setBrokenTickers(localStorage.getItem(LS_BROKEN) || '');
+    } catch {}
+  }, []);
+
+  const handleBpsChange = (v: string) => { setBpsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BPS, v); } catch {} };
+  const handleBcsChange = (v: string) => { setBcsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BCS, v); } catch {} };
+  const handleIcChange = (v: string) => { setIcTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_IC, v); } catch {} };
+  const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
+  const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); if (!newBps && !newBcs && !newIc && !newBroken) { setResults([]); setAutoTrendEntries([]); } };
+  const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
+
+  const parseTickers = normalizeTickerInput;
+  const autoTickerList = parseTickers(autoTickers);
+
+  const downloadCSV = () => {
+    const headers = ['Symbol','Strategy','Trend','Trend Subtype','Trend Confidence','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Earnings Date','Fail Reasons'];
+    const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.trendResult?.subtype||'',r.trendResult?.confidence!=null?r.trendResult.confidence.toFixed(0)+'%':'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
+    const blob = new Blob([[headers.join(','),...rows].join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
+  };
+
+  const runTrendDetectionWrapper = () => {
+    return runTrendDetection(
+      autoTickers, bpsTickers, bcsTickers, icTickers, brokenTickers,
+      handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
+      setAutoTickers, setError, setStatus, setLoading, parseTickers,
+      setAutoTrendEntries, showLoadPrompt
+    );
+  };
+
+  // ── Apply rules client-side against cached raw scan data ──────────────────
+  // Called instead of runScreen when rules change but tickers haven't changed.
+  // Zero API calls — instant re-filter.
+  const applyRules = useCallback((sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
+    if (rawScanCache.length === 0) return; // No cache yet — need a full scan first
+
+    const screenResults: ScreenResult[] = rawScanCache.map(entry => {
+      try {
+        return runChecklist(entry.symbol, entry.strategy, entry.metrics, entry.chainData, entry.price, sRules, entry.trendResult, sLabel, eRules, eLabel);
+      } catch (e: any) {
+        return {
+          symbol: entry.symbol, strategy: entry.strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+          failReasons: [e.message], trendResult: entry.trendResult,
+          checks: { ivr: { status: 'fail' as const, value: 'Error', reason: e.message }, earnings: { status: 'pending' as const, value: '—', reason: '—' }, oi: { status: 'pending' as const, value: '—', reason: '—' }, delta: { status: 'pending' as const, value: '—', reason: '—' }, credit: { status: 'pending' as const, value: '—', reason: '—' }, roc: { status: 'pending' as const, value: '—', reason: '—' }, pop: { status: 'pending' as const, value: '—', reason: '—' } }
+        };
+      }
+    });
+
+    const effectiveMode = modeOverride ?? screenMode;
+    if (effectiveMode === 'rank') {
+      screenResults.sort((a, b) => {
+        const sA = scoreCandidate(a, rankConfig)?.score ?? 0;
+        const sB = scoreCandidate(b, rankConfig)?.score ?? 0;
+        return sB - sA;
+      });
+    } else {
+      screenResults.sort((a, b) => {
+        if (a.qualified && !b.qualified) return -1;
+        if (!a.qualified && b.qualified) return 1;
+        return (b.ivr ?? 0) - (a.ivr ?? 0);
+      });
+    }
+
+    setResults(screenResults);
+  }, [rawScanCache, screenMode, rankConfig]);
+
+  const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
+    setError('');
+    setResults([]);
+    setAutoTrendEntries([]);
+
+    const autoList = parseTickers(autoTickers);
+    const bps = parseTickers(bpsTickers);
+    const bcs = parseTickers(bcsTickers);
+    const ic = parseTickers(icTickers);
+
+    if (!autoList.length && !bps.length && !bcs.length && !ic.length) {
+      setError('Enter at least one ticker.');
+      return;
+    }
+
+    setRuntimeStockRules(sRules);
+    setRuntimeEtfRules(eRules);
+    setLoading(true);
+
+    try {
+      setStatus('Getting access token...');
+      const token = await getAccessToken();
+
+      const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic]));
+
+      setStatus('Fetching GTC orders...');
+      const accountNumberForGtc = await getAccountNumber();
+      const liveGtcOrders = await fetchGtcOrders(accountNumberForGtc, token);
+      setGtcOrders(liveGtcOrders);
+
+      setStatus('Fetching market metrics...');
+      const metricsArray = await getMarketMetrics(allSymbols, token);
+
+      const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
+
+      const screenResults: ScreenResult[] = [];
+      const scanCache: RawScanEntry[] = [];
+
+      const errResult = (symbol: string, strategy: string, msg: string, trendResult?: TrendResult): ScreenResult => ({
+        symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+        failReasons: [msg], trendResult,
+        checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' }, pop: { status: 'pending', value: '—', reason: '—' } }
+      });
+
+      // getChain uses the appropriate rule set for DTE filtering — pass stock rules as base,
+      // runChecklist will auto-select ETF rules internally per ticker
+      const getChainRules = (isEtfTicker: boolean) => isEtfTicker ? eRules : sRules;
+
+      // Scan AUTO tickers (with trend detection)
+      for (let i = 0; i < autoList.length; i++) {
+        const symbol = autoList[i];
+        setStatus(`Scanning ${symbol} (${i+1}/${autoList.length})...`);
+        let trendResult: TrendResult | undefined;
+        try { trendResult = await getTrend(symbol); } catch (e) { console.warn(e); }
+        const strategy: 'BPS' | 'BCS' | 'IC' =
+          trendResult?.strategy === 'BPS' || trendResult?.strategy === 'BCS' || trendResult?.strategy === 'IC'
+            ? trendResult.strategy : 'IC';
+        try {
+          const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
+          const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
+          const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+          scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
+          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+        } catch (e: any) {
+          screenResults.push(errResult(symbol, strategy, e.message, trendResult));
+        }
+      }
+
+      // Scan manual boxes
+      for (const { symbols, strategy } of [
+        { symbols: bps, strategy: 'BPS' as const },
+        { symbols: bcs, strategy: 'BCS' as const },
+        { symbols: ic, strategy: 'IC' as const }
+      ]) {
+        for (const symbol of symbols) {
+          setStatus(`Scanning ${symbol}...`);
+          try {
+            const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
+            const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
+            const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+            scanCache.push({ symbol, strategy, metrics, chainData, price });
+            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
+          } catch (e: any) {
+            screenResults.push(errResult(symbol, strategy, e.message));
+          }
+        }
+      }
+
+      // Store raw cache for instant re-filtering
+      setRawScanCache(scanCache);
+
+      // Remove duplicates and sort
+      const uniqueResults = screenResults.filter((r, index, self) =>
+        index === self.findIndex(t => t.symbol === r.symbol && t.strategy === r.strategy)
+      );
+
+      if ((modeOverride ?? screenMode) === 'rank') {
+        // Sort by score descending; no-candidate results go to the bottom
+        uniqueResults.sort((a, b) => {
+          const sA = scoreCandidate(a, rankConfig)?.score ?? 0;
+          const sB = scoreCandidate(b, rankConfig)?.score ?? 0;
+          return sB - sA;
+        });
+      } else {
+        uniqueResults.sort((a, b) => {
+          if (a.qualified && !b.qualified) return -1;
+          if (!a.qualified && b.qualified) return 1;
+          return (b.ivr ?? 0) - (a.ivr ?? 0);
+        });
+      }
+
+      setResults(uniqueResults);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setStatus('');
+      setLoading(false);
+    }
+  };
+
+  const qualified = results.filter(r => r.qualified);
+  const disqualified = results.filter(r => !r.qualified);
+
+  return (
+    <div className={`min-h-screen ${th.bg} text-slate-100 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       {/* Header */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-4">
           <div>
             <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
-            <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>PORTFOLIO MANAGEMENT</p>
+            <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-            <Link href="/" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
-            <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">PORTFOLIO</span>
-            <button onClick={() => setShowPerformance(true)} className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</button>
+            <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
+            <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
           </nav>
         </div>
+        
         <div className="flex items-center gap-3">
-          <span className={`text-[10px] font-bold ${marketStatus.open ? 'text-emerald-400' : 'text-yellow-400'}`}>{marketStatus.label}</span>
-          {lastRefresh && <span className="text-[10px] text-white/30">Updated {lastRefresh.toLocaleTimeString()}</span>}
-          {/* Dry Run toggle — always visible */}
-          <button
-            onClick={() => { const next = !dryRunMode; setDryRunMode(next); setDryRun(next); }}
-            className={`text-[10px] px-3 py-1.5 border rounded font-bold transition-colors tracking-wider ${
-              dryRunMode
-                ? 'border-amber-500 text-amber-300 bg-amber-500/15'
-                : 'border-white/10 text-white/30 hover:border-amber-700 hover:text-amber-500'
-            }`}>
-            ⚗ {dryRunMode ? 'Dry Run ON' : 'Dry Run'}
-          </button>
-          <button onClick={() => setShowAuditLog(true)}
-            className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider">
-            📋 Audit Log
-          </button>
-          <button onClick={() => setShowMemory(true)}
-            className="text-[10px] px-3 py-1.5 border border-purple-800 text-purple-400 rounded hover:border-purple-600 hover:text-purple-300 transition-colors tracking-wider">
-            ◆ Memory
-          </button>
-          {positions.length > 0 && (
-            <button onClick={handleAnalyzePortfolio} disabled={portfolioAnalysisLoading}
-              className="text-[10px] px-3 py-1.5 border border-indigo-700 text-indigo-400 rounded hover:border-indigo-500 hover:text-indigo-300 transition-colors tracking-wider disabled:opacity-50 font-bold">
-              {portfolioAnalysisLoading ? '◈ Analyzing...' : '◈ Analyze Portfolio'}
-            </button>
-          )}
-          <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
-            className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider">
-            TastyTrade ↗
-          </a>
-          <button onClick={fetchPositions} disabled={loading}
-            className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider disabled:opacity-40">
-            {loading ? 'LOADING...' : '↻ REFRESH'}
-          </button>
-          <button onClick={() => { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; }}
-            className="text-[10px] px-3 py-1.5 border border-white/10 text-white/30 rounded hover:border-white/30 hover:text-white/60 transition-colors tracking-wider">
-            SIGN OUT
-          </button>
-          <button onClick={() => setShowHelp(true)}
-            className="text-[10px] px-3 py-1.5 border border-white/20 text-white/60 rounded hover:border-white/40 hover:text-white/80 transition-colors tracking-wider font-bold"
-            title="Dashboard legend & color guide">
-            ? Help
-          </button>
+          <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
           <ThemeToggle theme={theme} setTheme={setTheme} />
         </div>
       </div>
 
-      {/* Dry run mode banner — persistent, hard to miss */}
-      {dryRunMode && (
-        <div className="bg-amber-500/15 border-b border-amber-500/40 px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-amber-400 text-lg font-bold">⚗</span>
-            <div>
-              <p className="text-amber-300 text-xs font-bold tracking-wider">DRY RUN MODE IS ACTIVE</p>
-              <p className="text-amber-500 text-[10px]">All order actions will be simulated — nothing will be sent to TastyTrade</p>
+      <div className="flex h-[calc(100vh-57px)]">
+        {/* Sidebar */}
+        <div className={`w-80 border-r ${th.border} ${th.sidebar} p-4 overflow-auto flex flex-col gap-4 shrink-0`}>
+          {/* AUTO / TREND DETECT */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] px-1.5 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500 rounded-md tracking-wider font-bold">AUTO</span>
+                <span className={`text-[11px] ${th.textMuted} tracking-wider font-medium`}>TREND DETECT</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <input ref={autoFileRef} type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                  const file = e.target.files?.[0]; if (!file) return; setAutoScanning(true);
+                  try {
+                    const tickers = await extractTickersFromImage(file);
+                    if (tickers.length > 0) {
+                      const hasExisting = autoTickers.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean).length > 0;
+                      if (hasExisting) {
+                        autoPendingTickersRef.current = tickers;
+                        showLoadPrompt({
+                          name: `${tickers.length} ticker${tickers.length !== 1 ? 's' : ''} from image`,
+                          type: 'strategy',
+                          onLoad: (doMerge: boolean) => {
+                            if (doMerge) setAutoTickers(mergeTickers(autoTickers, autoPendingTickersRef.current));
+                            else setAutoTickers(tickersToString(autoPendingTickersRef.current));
+                          },
+                        });
+                      } else {
+                        setAutoTickers(tickersToString(tickers));
+                      }
+                    } else {
+                      setError('No tickers found in image');
+                    }
+                  } catch (err: any) {
+                    console.error(err);
+                    setError(`OCR error: ${err?.message ?? 'unknown'}`);
+                  }
+                  setAutoScanning(false);
+                }} />
+                <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; autoFileRef.current?.click(); }} disabled={loading || autoScanning}
+                  className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>
+                  {autoScanning ? '⟳' : '↑ img'}
+                </button>
+                <span className={`text-[9px] font-medium ${th.textFaint}`}>{autoTickerList.length}</span>
+              </div>
+            </div>
+            <textarea value={autoTickers} onChange={e => { setAutoTickers(e.target.value); setRawScanCache([]); }} placeholder="AAPL, MSFT, XOM&#10;auto-detects BPS/BCS/IC → assigns to boxes below"
+              className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-16 resize-none focus:outline-none focus:border-purple-500 placeholder-slate-500 leading-relaxed`} />
+            <div className="flex items-center justify-between mt-1">
+              <p className={`text-[9px] ${th.textFaint}`}>Yahoo trend detection</p>
+              <div className="flex items-center gap-1">
+                {autoTickerList.length > 0 && (
+                  <button
+                    onClick={() => setAutoTickers('')}
+                    disabled={loading}
+                    className="text-[9px] px-2 py-1 border border-red-800 rounded text-red-500 hover:border-red-500 hover:text-red-400 transition-colors disabled:opacity-40 font-bold"
+                  >
+                    ✕
+                  </button>
+                )}
+                <button
+                  onClick={runTrendDetectionWrapper}
+                  disabled={loading || autoTickerList.length === 0}
+                  className="text-[9px] px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold tracking-wider transition-colors disabled:opacity-40"
+                >
+                  {loading ? '...' : 'ANALYZE TRENDS'}
+                </button>
+              </div>
             </div>
           </div>
-          <button
-            onClick={() => { setDryRunMode(false); setDryRun(false); }}
-            className="text-[10px] px-3 py-1.5 border border-amber-600 text-amber-400 rounded hover:bg-amber-500/20 transition-colors font-bold">
-            Turn Off Dry Run
+
+          <SessionsPanel bps={bpsTickers} bcs={bcsTickers} ic={icTickers} broken={brokenTickers} onLoadAll={handleGlobalLoad} onLoadPrompt={showLoadPrompt} onReclassify={async (tickers) => {
+            // Clear boxes, put all tickers into auto box, run trend detection
+            handleBpsChange('');
+            handleBcsChange('');
+            handleIcChange('');
+            handleBrokenChange('');
+            const tickerStr = tickers.join(', ');
+            await runTrendDetection(
+              tickerStr, '', '', '', '',
+              handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
+              () => {}, setError, setStatus, setLoading, parseTickers,
+              setAutoTrendEntries, showLoadPrompt
+            );
+          }} th={th} />
+
+          <div className={`border-t ${th.border} pt-3 space-y-4`}>
+            <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
+            <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox
+              label="Broken (Review)"
+              badge="REVIEW"
+              badgeColor="bg-amber-500/15 text-amber-500 border-amber-500"
+              borderFocus="focus:border-amber-500"
+              value={brokenTickers}
+              onChange={handleBrokenChange}
+              strategy="broken"
+              disabled={loading}
+              onLoadPrompt={showLoadPrompt}
+              th={th}
+            />
+          </div>
+
+          {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
+
+          <button onClick={() => setShowRunModal(true)} disabled={loading}
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
+            {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
+
+          {/* Last Rules Used — hidden in rank mode */}
+          {screenMode === 'filter' && <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
+            <p className={`${th.textMuted} mb-2 tracking-widest font-medium`}>ACTIVE RULES</p>
+            <div className="space-y-3">
+              {[
+                { label: '📈 Stock', rules: runtimeStockRules, preset: stockPresetLabel },
+                { label: '🏦 ETF/Index', rules: runtimeEtfRules, preset: etfPresetLabel },
+              ].map(({ label, rules, preset }) => (
+                <div key={label}>
+                  <p className={`${th.textFaint} font-bold mb-1`}>{label} <span className="font-normal opacity-60">({preset})</span></p>
+                  {[
+                    ['IVR', `≥ ${rules.IVR_MIN}%`],
+                    ['DTE', `${rules.DTE_MIN}–${rules.DTE_MAX}d`],
+                    ['Credit ratio', `≥ ${(rules.CREDIT_RATIO_MIN * 100).toFixed(0)}%`],
+                    ['OI per leg', `≥ ${rules.OI_MIN}`],
+                    ['Bid-Ask', `≤ $${rules.BID_ASK_MAX}`],
+                    ['Max width', `$${rules.MAX_SPREAD_WIDTH}`],
+                    ['Min ROC spread', `${rules.ROC_MIN_SPREAD}%`],
+                    ['Min ROC IC', `${rules.ROC_MIN_IC}%`],
+                  ].map(([k, v]) => (
+                    <div key={k} className="flex justify-between">
+                      <span className={th.textFaint}>{k}</span>
+                      <span className={`${th.textMuted} font-medium`}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>}
         </div>
-      )}
 
-      {error && <div className="mx-6 mt-4 p-4 bg-red-500/10 border border-red-500 rounded-lg text-red-400 text-sm">{error}</div>}
+        {/* Main content */}
+        <div className="flex-1 overflow-auto p-5">
 
-      {loading && positions.length === 0 && (
-        <div className="flex items-center justify-center h-64">
-          <div className={`text-sm ${th.textFaint} tracking-widest`}>FETCHING POSITIONS...</div>
-        </div>
-      )}
+          {/* Stale session warning */}
+          {sessionLoadedAt && (() => {
+            const daysSince = (Date.now() - sessionLoadedAt.at) / (1000 * 60 * 60 * 24);
+            if (daysSince < 2) return null;
+            return (
+              <div className="mb-4 px-4 py-3 border border-yellow-600/50 bg-yellow-500/8 rounded-lg flex items-start gap-3">
+                <span className="text-yellow-400 text-sm mt-0.5">⚠</span>
+                <div className="flex-1">
+                  <p className="text-xs text-yellow-400 font-bold tracking-wider">STALE SESSION — "{sessionLoadedAt.name}"</p>
+                  <p className="text-[10px] text-yellow-400/70 mt-0.5">
+                    Loaded {Math.floor(daysSince)} day{Math.floor(daysSince) !== 1 ? 's' : ''} ago. Market conditions may have shifted — tickers could belong in different boxes now.
+                  </p>
+                </div>
+                <button
+                  onClick={async () => {
+                    const tickers = [...parseTickers(bpsTickers), ...parseTickers(bcsTickers), ...parseTickers(icTickers), ...parseTickers(brokenTickers)];
+                    if (tickers.length === 0) return;
+                    handleBpsChange(''); handleBcsChange(''); handleIcChange(''); handleBrokenChange('');
+                    setSessionLoadedAt(null);
+                    try { localStorage.removeItem(LS_SESSION_LOADED_AT); } catch {}
+                    await runTrendDetection(
+                      tickers.join(', '), '', '', '', '',
+                      handleBpsChange, handleBcsChange, handleIcChange, handleBrokenChange,
+                      () => {}, setError, setStatus, setLoading, parseTickers,
+                      setAutoTrendEntries, showLoadPrompt
+                    );
+                  }}
+                  className="text-[9px] px-3 py-1.5 border border-yellow-600 text-yellow-400 rounded hover:bg-yellow-500/10 transition-colors font-bold shrink-0 whitespace-nowrap">
+                  ↻ Re-classify now
+                </button>
+                <button
+                  onClick={() => { setSessionLoadedAt(null); try { localStorage.removeItem(LS_SESSION_LOADED_AT); } catch {} }}
+                  className="text-yellow-600 hover:text-yellow-400 text-sm shrink-0">✕</button>
+              </div>
+            );
+          })()}
 
-      {!loading && !error && positions.length === 0 && (
-        <div className="flex flex-col items-center justify-center h-64 gap-2">
-          <p className={`text-sm ${th.textFaint} tracking-widest`}>NO OPEN POSITIONS FOUND</p>
-          <p className={`text-xs ${th.textFaint}`}>Options positions from your TastyTrade account will appear here</p>
-        </div>
-      )}
+          {results.length === 0 && !loading && autoTrendEntries.length === 0 && (
+            <div className={`h-full flex flex-col items-center justify-center ${th.textFaint}`}>
+              <div className="text-4xl mb-3 opacity-20">◈</div>
+              <p className={`text-[10px] tracking-widest ${th.textMuted}`}>ADD TICKERS AND RUN HUNTER</p>
+              <p className={`text-[9px] mt-2 ${th.textFaint}`}>Save sessions · Load scan lists · Upload Finviz screenshots</p>
+            </div>
+          )}
+          {loading && <div className="h-full flex flex-col items-center justify-center gap-2"><div className={`text-[10px] tracking-widest ${th.textMuted} animate-pulse font-medium`}>{status || 'SCANNING...'}</div></div>}
 
-      {positions.length > 0 && (
-        <>
-          <SummaryBar positions={positions} th={th} />
-          <div className="overflow-x-auto">
-            <div className="p-6 space-y-8" style={{ minWidth: '1200px' }}>
+          {/* Trend detect debug panel — shown after ANALYZE TRENDS, cleared when RUN HUNTER fires */}
+          {!loading && autoTrendEntries.length > 0 && results.length === 0 && (
+            <div className="space-y-4">
+              <AutoTrendDebugPanel entries={autoTrendEntries} th={th} />
+            </div>
+          )}
+          {results.length > 0 && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex gap-4 text-[10px] tracking-wider font-medium">
+                  {screenMode === 'filter' ? (
+                    <>
+                      <span className="text-emerald-500">{qualified.length} QUALIFIED</span>
+                      <span className={th.textFaint}>{disqualified.length} DISQUALIFIED</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-emerald-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s >= rankConfig.thresholdGreen; }).length} 🟢</span>
+                      <span className="text-yellow-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s >= rankConfig.thresholdYellow && s < rankConfig.thresholdGreen; }).length} 🟡</span>
+                      <span className="text-orange-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s >= rankConfig.thresholdOrange && s < rankConfig.thresholdYellow; }).length} 🟠</span>
+                      <span className="text-red-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s < rankConfig.thresholdOrange; }).length} 🔴</span>
+                    </>
+                  )}
+                  <span className={th.textFaint}>{results.length} SCANNED</span>
+                  {rawScanCache.length > 0 && (
+                    <span className="text-purple-400 border border-purple-700 rounded px-1.5 py-0.5 text-[9px]" title="Filters applied to cached scan — click RUN HUNTER to rescan">⚡ cached</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {results.some(r => !r.qualified && r.earningsDate && daysUntil(r.earningsDate) >= 0 && r.failReasons.some(f => f.includes('Earnings'))) && (
+                    <button onClick={() => {
+                      const toSchedule = results.filter(r => !r.qualified && r.earningsDate && daysUntil(r.earningsDate) >= 0 && r.failReasons.some(f => f.includes('Earnings')));
+                      const stored = (() => { try { const s = localStorage.getItem(LS_CAL); return s ? JSON.parse(s) : {}; } catch { return {}; } })();
+                      toSchedule.forEach((r, i) => {
+                        const key = `${r.symbol}-${r.earningsDate}`;
+                        if (!stored[key]) {
+                          setTimeout(() => window.open(buildEarningsCalUrl(r.symbol, r.strategy, r.earningsDate!, r.ivr), '_blank'), i * 300);
+                          stored[key] = true;
+                        }
+                      });
+                      try { localStorage.setItem(LS_CAL, JSON.stringify(stored)); } catch {}
+                    }}
+                    className={`text-[10px] px-3 py-1.5 border border-blue-700 rounded-lg text-blue-400 hover:border-blue-500 hover:text-blue-300 transition-colors tracking-wider`}>
+                      📅 Schedule All Earnings Follow-ups
+                    </button>
+                  )}
+                  <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
+                  <button onClick={() => setShowRunModal(true)} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-purple-500 hover:text-purple-400 transition-colors tracking-wider`}>
+                    {screenMode === 'filter' ? '⊘ Filter' : '⬡ Rank'} ↺
+                  </button>
+                </div>
+              </div>
 
-              {needsClose.length > 0 && (
-                <PositionSection
-                  title="⚠ Close Now — 21 DTE or Less" titleColor="text-red-400"
-                  positions={needsClose} th={th} checked={checked}
-                  onToggle={onToggle} onToggleAll={onToggleAll}
-                  onProfitTargetChange={handleProfitTargetChange}
-                  groupAction="CLOSE_ROLL" onGroupAction={onGroupAction}
-                  onExecute={(pos, action) => openBatch([{ pos, action }])}
-                />
+              {screenMode === 'filter' && (
+                <SmartSuggestionsPanel results={results} rules={runtimeStockRules} th={th} onApplyAndRerun={(r) => {
+                  setRuntimeStockRules(r);
+                  if (rawScanCache.length > 0) {
+                    applyRules(r, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+                  } else {
+                    runScreen(r, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+                  }
+                }} />
               )}
 
-              {hitTarget.length > 0 && (
-                <PositionSection
-                  title="✓ Profit Target Hit" titleColor="text-emerald-400"
-                  positions={hitTarget} th={th} checked={checked}
-                  onToggle={onToggle} onToggleAll={onToggleAll}
-                  onProfitTargetChange={handleProfitTargetChange}
-                  groupAction="TAKE_PROFIT" onGroupAction={onGroupAction}
-                  onExecute={(pos, action) => openBatch([{ pos, action }])}
-                />
-              )}
-
-              {noGtc.length > 0 && (
-                <PositionSection
-                  title="⏱ Missing GTC Order" titleColor="text-blue-400"
-                  positions={noGtc} th={th} checked={checked}
-                  onToggle={onToggle} onToggleAll={onToggleAll}
-                  onProfitTargetChange={handleProfitTargetChange}
-                  groupAction="PLACE_GTC" onGroupAction={onGroupAction}
-                  onExecute={(pos, action) => openBatch([{ pos, action }])}
-                />
-              )}
-
-              {normal.length > 0 && (
-                <PositionSection
-                  title="Active Positions" titleColor={th.textFaint}
-                  positions={normal} th={th} checked={checked}
-                  onToggle={onToggle} onToggleAll={onToggleAll}
-                  onProfitTargetChange={handleProfitTargetChange}
-                  groupAction="HOLD" onGroupAction={onGroupAction}
-                  onExecute={(pos, action) => openBatch([{ pos, action }])}
-                />
+              {screenMode === 'filter' ? (
+                <>
+                  {qualified.length > 0 && (
+                    <div>
+                      <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                    </div>
+                  )}
+                  {disqualified.length > 0 && (
+                    <div>
+                      <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div>
+                  <p className="text-[9px] text-purple-400 tracking-widest mb-2 font-medium">⬡ RANKED — ALL OPPORTUNITIES</p>
+                  <div className="space-y-2">{results.map((r, i) => (
+                    <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
+                      <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
+                    </div>
+                  ))}</div>
+                </div>
               )}
             </div>
-          </div>
-        </>
-      )}
+          )}
+        </div>
+      </div>
 
-      <BulkActionBar
-        selectedKeys={checked} positions={positions}
-        onExecute={onBulkExecute} onClear={onClear} th={th}
-      />
-
-      {batchItems && (
-        <BatchConfirmModal
-          items={batchItems}
-          dryRun={dryRunMode}
-          onClose={() => setBatchItems(null)}
-          onSuccess={fetchPositions}
+      {tradeResult && tradeResult.bestCandidate && <TradeModal result={tradeResult} th={th} onClose={() => setTradeResult(null)} />}
+      <LoadPromptModal state={loadPrompt} onClose={() => setLoadPrompt(p => ({ ...p, show: false }))} th={th} />
+      {showRunModal && (
+        <RunModeModal
           th={th}
+          lastMode={screenMode}
+          lastPreset={stockPresetLabel}
+          onClose={() => setShowRunModal(false)}
+          onRun={(mode, preset) => {
+            setShowRunModal(false);
+            setScreenMode(mode);
+            try { localStorage.setItem(LS_SCREEN_MODE, mode); } catch {}
+            if (mode === 'rank') {
+              runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel, 'rank');
+            } else {
+              const found = FILTER_PRESETS.find(p => p.key === preset);
+              if (found) {
+                setStockPresetLabel(found.label);
+                setShowRulesModal(false);
+              }
+              runScreen(runtimeStockRules, runtimeEtfRules, found?.label ?? stockPresetLabel, etfPresetLabel, 'filter');
+            }
+          }}
         />
       )}
-
-      {showAuditLog && <AuditLogPanel onClose={() => setShowAuditLog(false)} th={th} />}
-      {showPerformance && <PerformancePanel onClose={() => setShowPerformance(false)} th={th} />}
-      {showMemory && <MemoryPanel onClose={() => setShowMemory(false)} th={th} />}
-
-      {showHelp && <HelpLegendModal onClose={() => setShowHelp(false)} th={th} />}
-
-      {portfolioAnalysis && !portfolioAnalysis.error && (
-        <PortfolioAnalysisPanel analysis={portfolioAnalysis} positions={positions} onClose={() => setPortfolioAnalysis(null)} th={th} />
-      )}
-      {portfolioAnalysis?.error && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-red-900/80 border border-red-500 rounded-lg px-4 py-3 text-xs text-red-300 flex items-center gap-3">
-          Portfolio analysis failed: {portfolioAnalysis.error}
-          <button onClick={() => setPortfolioAnalysis(null)} className="text-red-400 hover:text-red-200">✕</button>
-        </div>
-      )}
+      {showRulesModal && <RulesModal stockRules={runtimeStockRules} etfRules={runtimeEtfRules} rankConfig={rankConfig} onClose={() => setShowRulesModal(false)} onRun={(sRules, eRules, sLabel, eLabel, rCfg) => { setShowRulesModal(false); setRuntimeStockRules(sRules); setRuntimeEtfRules(eRules); setStockPresetLabel(sLabel); setEtfPresetLabel(eLabel); setRankConfig(rCfg); if (rawScanCache.length > 0) { applyRules(sRules, eRules, sLabel, eLabel); } else { runScreen(sRules, eRules, sLabel, eLabel); } }} th={th} />}
     </div>
   );
 }
