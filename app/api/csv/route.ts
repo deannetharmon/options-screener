@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv',
-      'Content-Disposition': `attachment; filename="prosper-screen-${new Date().toISOString().split('T')[0]}.csv"`,
+      'Content-Disposition': `attachment; filename="hunter-screen-${new Date().toISOString().split('T')[0]}.csv"`,
     },
   });
 }
