@@ -1,4 +1,4 @@
-// File location: app/portfolio/page.tsx
+// app/portfolio/page.tsx
 
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -251,7 +251,11 @@ function isMarketOpen(): boolean {
   const now = new Date();
   const day = now.getDay();
   if (day === 0 || day === 6) return false;
-  const etOffset = -5 * 60; // EST (ignores DST — good enough for a guard)
+  const year = now.getUTCFullYear();
+  const dstStart = new Date(Date.UTC(year, 2, 8 - new Date(Date.UTC(year, 2, 1)).getUTCDay(), 7));
+  const dstEnd   = new Date(Date.UTC(year, 10, 1 + (7 - new Date(Date.UTC(year, 10, 1)).getUTCDay()) % 7, 6));
+  const isDST    = now >= dstStart && now < dstEnd;
+  const etOffset = isDST ? -4 * 60 : -5 * 60;
   const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
   const etMin = utcMin + etOffset;
   const openMin = MARKET_OPEN_HOUR * 60 + MARKET_OPEN_MIN;
@@ -1862,6 +1866,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
 
   // Roll state per position
   const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
+  const [rollMode, setRollMode] = useState<Record<string, string>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
@@ -2022,7 +2027,8 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
       if (ovr !== undefined && ovr !== '') {
         const parsed = parseFloat(ovr);
         if (!isNaN(parsed) && parsed > 0) {
-          const updatedBody = buildCloseOrder(i.pos, parsed, i.orderBody['time-in-force'] as 'GTC' | 'Day');
+          const tif = i.orderBody['time-in-force'] as ('GTC' | 'Day');
+          const updatedBody = buildCloseOrder(i.pos, parsed, tif);
           return { ...i, limitPrice: parsed, orderBody: updatedBody };
         }
       }
@@ -2100,11 +2106,15 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
             orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
           }
 
-          // If roll, also submit open order
-          if (item.action === 'CLOSE_ROLL') {
+          // Only submit roll open leg when user chose Close + Roll
+          if (item.action === 'CLOSE_ROLL' && rollMode[item.pos.key] === 'roll') {
             const ri = rollInputs[item.pos.key];
             if (ri?.expiry && ri.shortStrike && ri.longStrike && ri.credit) {
-              const optType: 'P' | 'C' = item.pos.strategy === 'BCS' ? 'C' : 'P';
+              const _expDate = new Date(ri.expiry);
+              const _tod = new Date(); _tod.setHours(0,0,0,0);
+              if (isNaN(_expDate.getTime())) throw new Error('Roll expiry is not a valid date.');
+              if (_expDate <= _tod) throw new Error('Roll expiry is in the past. Enter a future date.');
+              const optType: ('P' | 'C') = item.pos.strategy === 'BCS' ? 'C' : 'P';
               const suggestion = rollSuggestions[item.pos.key];
               const qty = item.pos.legs[0]?.quantity ?? 1;
 
@@ -2309,16 +2319,33 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
               </div>
               <div className="space-y-2">
                 {orderResults.map((r, i) => (
-                  <div key={i} className={`flex items-center justify-between p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
-                    <div>
-                      <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
-                      <span className={`ml-2 text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
-                      {r.error && <p className="text-[10px] text-red-400 mt-0.5">{r.error}</p>}
+                  <div key={i} className={`p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
+                        <span className={`text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
+                        {(r.status === 'error' || r.status === 'rejected') && <span className="text-[9px] text-red-400 font-bold">&#x2715; REJECTED</span>}
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
+                        {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
-                      {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
-                    </div>
+                    {r.error && (
+                      <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
+                        <p className="text-[10px] text-red-300 leading-relaxed">{r.error}</p>
+                        {r.error.toLowerCase().includes('preflight') && (
+                          <div className="mt-1.5 space-y-1">
+                            <p className="text-[9px] text-yellow-400">Preflight failures are usually caused by:</p>
+                            <p className="text-[9px] text-yellow-300/80">An existing GTC/OCO order — cancel it in TastyTrade first</p>
+                            <p className="text-[9px] text-yellow-300/80">Submitting outside market hours with a Day order</p>
+                            <p className="text-[9px] text-yellow-300/80">Insufficient buying power or margin</p>
+                            <p className="text-[9px] text-yellow-300/80">Invalid strike or expiry date</p>
+                            <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer" className="inline-block mt-1 text-[9px] text-blue-400 underline">Open TastyTrade to check orders</a>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2529,7 +2556,13 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                       {/* Roll inputs */}
                       {item.action === 'CLOSE_ROLL' && !isExcluded && (
                         <div className={`px-4 pb-3 border-t ${th.borderLight}`}>
-                          <div className="pt-3 space-y-3">
+                          <div className="flex items-center gap-2 pt-2 pb-1">
+                            <span className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Action:</span>
+                            <button onClick={() => setRollMode(p => ({...p, [item.pos.key]: 'close'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${(rollMode[item.pos.key] ?? 'close') === 'close' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : th.border + ' ' + th.textFaint}`}>&#10003; Close Only</button>
+                            <button onClick={() => setRollMode(p => ({...p, [item.pos.key]: 'roll'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${rollMode[item.pos.key] === 'roll' ? 'border-purple-500 text-purple-400 bg-purple-500/10' : th.border + ' ' + th.textFaint}`}>&#8635; Close + Roll</button>
+                            <span className={`text-[9px] ${rollMode[item.pos.key] === 'roll' ? 'text-purple-400/70' : 'text-emerald-400/70'}`}>{rollMode[item.pos.key] === 'roll' ? 'Closes and opens new spread.' : 'Closes position only.'}</span>
+                          </div>
+                          <div className="pt-2 space-y-3" style={{display: rollMode[item.pos.key] === 'roll' ? undefined : 'none'}}>
 
                             {/* Suggested roll with full rule check */}
                             {suggestion && (
@@ -2611,7 +2644,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                             {/* Manual inputs */}
                             <div className="grid grid-cols-4 gap-2">
                               {[
-                                { label: 'New Expiry', key: 'expiry', placeholder: '2025-08-15' },
+                                { label: 'New Expiry', key: 'expiry', placeholder: (() => { const d = new Date(); d.setDate(d.getDate() + 45); return d.toISOString().slice(0, 10); })() },
                                 { label: 'Short Strike', key: 'shortStrike', placeholder: '490' },
                                 { label: 'Long Strike', key: 'longStrike', placeholder: '485' },
                                 { label: 'Credit ($)', key: 'credit', placeholder: '1.50' },
