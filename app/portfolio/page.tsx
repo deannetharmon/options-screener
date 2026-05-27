@@ -1,5 +1,4 @@
 // app/portfolio/page.tsx
-
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
@@ -251,7 +250,11 @@ function isMarketOpen(): boolean {
   const now = new Date();
   const day = now.getDay();
   if (day === 0 || day === 6) return false;
-  const etOffset = -5 * 60; // EST (ignores DST — good enough for a guard)
+  const year = now.getUTCFullYear();
+  const dstStart = new Date(Date.UTC(year, 2, 8 - new Date(Date.UTC(year, 2, 1)).getUTCDay(), 7));
+  const dstEnd   = new Date(Date.UTC(year, 10, 1 + (7 - new Date(Date.UTC(year, 10, 1)).getUTCDay()) % 7, 6));
+  const isDST    = now >= dstStart && now < dstEnd;
+  const etOffset = isDST ? -4 * 60 : -5 * 60;
   const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
   const etMin = utcMin + etOffset;
   const openMin = MARKET_OPEN_HOUR * 60 + MARKET_OPEN_MIN;
@@ -845,7 +848,7 @@ function rollIsBlocking(suggestion: RollSuggestion): boolean {
 }
 
 // ── OCC Symbol Builder ─────────────────────────────────────────────────────
-function buildOccSymbol(underlying: string, expiry: string, optType: string, strike: number): string {
+function buildOccSymbol(underlying: string, expiry: string, optType: 'P' | 'C', strike: number): string {
   const exp = expiry.replace(/-/g, '').slice(2); // YYMMDD
   const under = underlying.padEnd(6, ' ');
   const strikeStr = String(Math.round(strike * 1000)).padStart(8, '0');
@@ -857,7 +860,7 @@ function instrType(symbol: string): 'Equity Option' | 'Index Option' {
 }
 
 // ── Order Builders ─────────────────────────────────────────────────────────
-function buildCloseOrder(pos: Position, limitPrice: number, tif: string = 'Day'): OrderBody {
+function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' = 'Day'): OrderBody {
   const itype = instrType(pos.symbol);
   const effectiveTif = (!isMarketOpen() && tif === 'Day') ? 'GTC' : tif;
   // TastyTrade REST API price convention:
@@ -880,7 +883,7 @@ function buildCloseOrder(pos: Position, limitPrice: number, tif: string = 'Day')
 }
 
 function buildOpenSpreadOrder(
-  underlying: string, expiry: string, optType: string,
+  underlying: string, expiry: string, optType: 'P' | 'C',
   shortStrike: number, longStrike: number, quantity: number, credit: number,
   shortSymbolOverride?: string, longSymbolOverride?: string
 ): OrderBody {
@@ -906,7 +909,7 @@ function buildOpenSpreadOrder(
 function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: number } {
   const match = sym.trim().replace(/\s+/g, '').match(/^([A-Z/]+)(\d{6})([CP])(\d{8})$/);
   if (!match) return { optionType: 'C', strikePrice: 0 };
-  return { optionType: match[3] as ('P' | 'C'), strikePrice: parseInt(match[4], 10) / 1000 };
+  return { optionType: match[3] as 'P' | 'C', strikePrice: parseInt(match[4], 10) / 1000 };
 }
 
 function normalizeOccSymbol(symbol: string): string { return String(symbol ?? '').replace(/\s+/g, '').trim(); }
@@ -1003,12 +1006,11 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
     return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif)).filter(order => {
       const tif = order.timeInForce.toUpperCase();
       const type = order.orderType.toLowerCase();
-      // Parent OCO envelope has no tif/type — check nested sub-orders
-      // Accept if any nested order has GTC tif, or if tif is empty (parent envelope)
+      // Accept GTC and PENDING tif (automation orders show as pending before activation)
+      // Accept empty orderType for combined complex/automation order envelopes
       const isGtcTif = tif === 'GTC' || tif === '' || tif === 'PENDING';
       const isLimitOrStop = type.includes('limit') || type.includes('stop') || type === '';
-      if ((!isGtcTif || !isLimitOrStop) && order.legs.length === 0) return false;
-      if (order.legs.length === 0) return false;
+      if (!isGtcTif || !isLimitOrStop || order.legs.length === 0) return false;
       const key = `${order.id}|${order.orderType}|${order.price}|${order.stopPrice ?? ''}|${order.legs.map(l => `${l.symbol}:${l.action}`).join(',')}`;
       if (seen.has(key)) return false;
       seen.add(key); return true;
@@ -1170,26 +1172,17 @@ async function loadPositions(): Promise<Position[]> {
   try {
     const complexData = await ttFetch(`/accounts/${accountNumber}/complex-orders`, token);
     for (const order of complexData?.data?.items ?? []) {
-      // Parent OCO envelope has no status/tif/type — check nested sub-orders instead
-      const nestedOrders: any[] = order.orders ?? [];
-      const hasActiveNested = nestedOrders.some(no => {
-        const s = (no['status'] ?? '').toLowerCase();
-        return ['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(s);
-      });
-      // Also accept if parent has no terminal-at (still open) and has nested orders
-      const parentActive = !order['terminal-at'] && nestedOrders.length > 0;
-      console.log(`COMPLEX ORDER: id=${order.id} hasActiveNested=${hasActiveNested} parentActive=${parentActive} nestedStatuses=${nestedOrders.map((o:any) => o['status']).join(',')}`);
-      if (hasActiveNested || parentActive) {
-        for (const nestedOrder of nestedOrders) for (const leg of nestedOrder.legs ?? []) {
-          // Prefer underlying-symbol; fall back to parsing the OCC option symbol
-          const underlying = leg['underlying-symbol'];
-          if (underlying) {
-            gtcSymbols.add(underlying.split(' ')[0].trim());
-          } else if (leg.symbol) {
-            // OCC format: SPX   260726P07290000 — split on first digit sequence
-            const fromOcc = leg.symbol.split(/\d{6}/)[0].trim();
-            if (fromOcc) gtcSymbols.add(fromOcc);
-          }
+      const status = (order['status'] ?? '').toLowerCase();
+      console.log(`COMPLEX ORDER: id=${order.id} status=${status} tif=${order['time-in-force']} type=${order['order-type']} orders=${order.orders?.length ?? 0}`);
+      if (['working', 'live', 'contingent', 'received', 'routed', 'pending', 'queued'].includes(status)) {
+        for (const nestedOrder of order.orders ?? []) for (const leg of nestedOrder.legs ?? []) {
+          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
+        }
+        // Also add legs directly on the parent complex order envelope
+        for (const leg of order.legs ?? []) {
+          const sym = leg['underlying-symbol'] ?? leg.symbol ?? '';
+          if (sym) gtcSymbols.add(sym.split(' ')[0].trim());
         }
       }
     }
@@ -1254,7 +1247,7 @@ async function loadPositions(): Promise<Position[]> {
       const parsed = parseOptionSymbol(l.symbol);
       return {
         symbol: l.symbol, optionType: parsed.optionType, strikePrice: parsed.strikePrice,
-        direction: l['quantity-direction'] as ('Short' | 'Long'),
+        direction: l['quantity-direction'] as 'Short' | 'Long',
         quantity: parseInt(l['quantity'] ?? '1', 10),
         avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
         currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
@@ -1285,13 +1278,10 @@ async function loadPositions(): Promise<Position[]> {
       beta: betaMap[symbol] ?? null,
       earningsDate: earningsMap[symbol] ?? null,
       hasGtc: (() => {
-        // Check both the position symbol and its weekly option variant
-        // SPX positions may have SPXW option legs; SPXW positions may have SPXW legs
         if (gtcSymbols.has(symbol)) return true;
-        // Map underlying to possible OCC prefix variants
-        const variants: Record<string, string> = { 'SPX': 'SPXW', 'NDX': 'NDXP', 'RUT': 'RUTW', 'VIX': 'VIXW' };
-        const reverseVariants: Record<string, string> = { 'SPXW': 'SPX', 'NDXP': 'NDX', 'RUTW': 'RUT', 'VIXW': 'VIX' };
-        const variant = variants[symbol] ?? reverseVariants[symbol];
+        const v: Record<string, string> = { 'SPX': 'SPXW', 'NDX': 'NDXP', 'RUT': 'RUTW', 'VIX': 'VIXW' };
+        const rv: Record<string, string> = { 'SPXW': 'SPX', 'NDXP': 'NDX', 'RUTW': 'RUT', 'VIXW': 'VIX' };
+        const variant = v[symbol] ?? rv[symbol];
         return variant ? gtcSymbols.has(variant) : false;
       })(),
       gtcOrderId: (() => {
@@ -1392,22 +1382,6 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
   return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
-}
-
-// Separate function so getRecommendation stays clean — called in PositionCard render
-function getExtendSignal(pos: Position): string | null {
-  if (!pos.hasGtc) return null;
-  const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
-  // Only suggest extension when: profit > 50%, DTE > 25, IVR >= 35, buffer > 5%
-  if (
-    pnlPct >= 50 &&
-    pos.dte >= 25 &&
-    (pos.ivr == null || pos.ivr >= 35) &&
-    (pos.buffer == null || pos.buffer >= 5)
-  ) {
-    return `↑ Consider extending — ${pnlPct.toFixed(0)}% profit with ${pos.dte}d left`;
-  }
-  return null;
 }
 
 // ── AI Analysis ───────────────────────────────────────────────────────────
@@ -1855,18 +1829,19 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
 }) {
   const [status, setStatus] = useState<BatchStatus>('enriching');
   const [batchItems, setBatchItems] = useState<BatchOrderItem[]>([]);
-  const [excluded, setExcluded] = useState(new Set() as Set<string>);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [orderResults, setOrderResults] = useState<OrderResult[]>([]);
   const [submitProgress, setSubmitProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
 
   // Roll state per position
-  const [rollInputs, setRollInputs] = useState({} as Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>);
-  const [rollSuggestions, setRollSuggestions] = useState({} as Record<string, RollSuggestion | null>);
-  const [verdicts, setVerdicts] = useState({} as Record<string, ActionVerdict>);
-  const [overrides, setOverrides] = useState(new Set() as Set<string>);
+  const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
+  const [rollMode, setRollMode] = useState<Record<string, string>>({});
+  const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
+  const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
+  const [overrides, setOverrides] = useState<Set<string>>(new Set());
   // User-editable limit price overrides per position key
-  const [limitOverrides, setLimitOverrides] = useState({} as Record<string, string>);
+  const [limitOverrides, setLimitOverrides] = useState<Record<string, string>>({});
 
   const marketStatus = getMarketStatus();
 
@@ -2022,7 +1997,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
       if (ovr !== undefined && ovr !== '') {
         const parsed = parseFloat(ovr);
         if (!isNaN(parsed) && parsed > 0) {
-          const updatedBody = buildCloseOrder(i.pos, parsed, i.orderBody['time-in-force'] as ('GTC' | 'Day'));
+          const updatedBody = buildCloseOrder(i.pos, parsed, i.orderBody['time-in-force'] as 'GTC' | 'Day');
           return { ...i, limitPrice: parsed, orderBody: updatedBody };
         }
       }
@@ -2070,7 +2045,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                     const freshLimit = item.action === 'TAKE_PROFIT'
                       ? parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2))
                       : parseFloat((livePerContract * 1.02).toFixed(2));
-                    item.orderBody = buildCloseOrder(item.pos, freshLimit, item.orderBody['time-in-force'] as ('GTC' | 'Day'));
+                    item.orderBody = buildCloseOrder(item.pos, freshLimit, item.orderBody['time-in-force'] as 'GTC' | 'Day');
                     (item as any).limitPrice = freshLimit;
                   }
                 }
@@ -2100,10 +2075,13 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
             orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
           }
 
-          // If roll, also submit open order
-          if (item.action === 'CLOSE_ROLL') {
+          // Only submit open leg when user chose Close + Roll
+          if (item.action === 'CLOSE_ROLL' && rollMode[item.pos.key] === 'roll') {
             const ri = rollInputs[item.pos.key];
             if (ri?.expiry && ri.shortStrike && ri.longStrike && ri.credit) {
+              const _ed = new Date(ri.expiry); const _td = new Date(); _td.setHours(0,0,0,0);
+              if (isNaN(_ed.getTime())) throw new Error('Roll expiry is not a valid date.');
+              if (_ed <= _td) throw new Error('Roll expiry is in the past. Enter a future date.');
               const optType: 'P' | 'C' = item.pos.strategy === 'BCS' ? 'C' : 'P';
               const suggestion = rollSuggestions[item.pos.key];
               const qty = item.pos.legs[0]?.quantity ?? 1;
@@ -2309,16 +2287,33 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
               </div>
               <div className="space-y-2">
                 {orderResults.map((r, i) => (
-                  <div key={i} className={`flex items-center justify-between p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
-                    <div>
-                      <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
-                      <span className={`ml-2 text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
-                      {r.error && <p className="text-[10px] text-red-400 mt-0.5">{r.error}</p>}
+                  <div key={i} className={`p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
+                        <span className={`text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
+                        {(r.status === 'error' || r.status === 'rejected') && <span className="text-[9px] text-red-400 font-bold">REJECTED</span>}
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
+                        {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
-                      {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
-                    </div>
+                    {r.error && (
+                      <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
+                        <p className="text-[10px] text-red-300 leading-relaxed">{r.error}</p>
+                        {r.error.toLowerCase().includes('preflight') && (
+                          <div className="mt-1.5 space-y-1">
+                            <p className="text-[9px] text-yellow-400">Preflight failures are usually caused by:</p>
+                            <p className="text-[9px] text-yellow-300/80">An existing GTC/OCO order — cancel it in TastyTrade first</p>
+                            <p className="text-[9px] text-yellow-300/80">Submitting outside market hours with a Day order</p>
+                            <p className="text-[9px] text-yellow-300/80">Insufficient buying power or margin</p>
+                            <p className="text-[9px] text-yellow-300/80">Invalid strike or expiry date</p>
+                            <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer" className="inline-block mt-1 text-[9px] text-blue-400 underline">Open TastyTrade to check orders</a>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2529,7 +2524,13 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                       {/* Roll inputs */}
                       {item.action === 'CLOSE_ROLL' && !isExcluded && (
                         <div className={`px-4 pb-3 border-t ${th.borderLight}`}>
-                          <div className="pt-3 space-y-3">
+                          <div className="flex items-center gap-2 pt-2 pb-2">
+                            <span className={`text-[9px] ${th.textFaint} uppercase`}>Action:</span>
+                            <button onClick={() => setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'close'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${(rollMode[item.pos.key] ?? 'close') === 'close' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : th.border + ' ' + th.textFaint}`}>Close Only</button>
+                            <button onClick={() => setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'roll'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${rollMode[item.pos.key] === 'roll' ? 'border-purple-500 text-purple-400 bg-purple-500/10' : th.border + ' ' + th.textFaint}`}>Close + Roll</button>
+                            <span className={`text-[9px] ${th.textFaint}`}>{rollMode[item.pos.key] === 'roll' ? 'Closes and opens new spread.' : 'Closes position only.'}</span>
+                          </div>
+                          <div className="pt-2 space-y-3" style={{display: rollMode[item.pos.key] === 'roll' ? undefined : 'none'}}>
 
                             {/* Suggested roll with full rule check */}
                             {suggestion && (
@@ -2611,7 +2612,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                             {/* Manual inputs */}
                             <div className="grid grid-cols-4 gap-2">
                               {[
-                                { label: 'New Expiry', key: 'expiry', placeholder: '2025-08-15' },
+                                { label: 'New Expiry', key: 'expiry', placeholder: (() => { const d = new Date(); d.setDate(d.getDate() + 45); return d.toISOString().slice(0, 10); })() },
                                 { label: 'Short Strike', key: 'shortStrike', placeholder: '490' },
                                 { label: 'Long Strike', key: 'longStrike', placeholder: '485' },
                                 { label: 'Credit ($)', key: 'credit', placeholder: '1.50' },
@@ -3419,74 +3420,10 @@ function ActionVerdictBadge({ verdict, compact = false, th }: {
 }
 
 // ── Extend Profit Button ───────────────────────────────────────────────────
-// ── Extend Profit State Assessment ───────────────────────────────────────
-// Evaluates whether conditions favor or warn against extending profit target
-type ExtendConditionResult = { signal: string; reasons: string[]; warnings: string[] };
-function assessExtendConditions(pos: Position): ExtendConditionResult {
-  const reasons: string[] = [];
-  const warnings: string[] = [];
-  let score = 0;
-
-  // P&L check — most important
-  const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
-  if (pnlPct < 0) {
-    warnings.push(`Position is at a loss (${pnlPct.toFixed(0)}%) — extending a losing position is rarely right`);
-    score -= 3;
-  } else if (pnlPct < 30) {
-    warnings.push(`Only ${pnlPct.toFixed(0)}% profit captured — haven't hit standard target yet`);
-    score -= 1;
-  } else if (pnlPct >= 50) {
-    reasons.push(`${pnlPct.toFixed(0)}% profit already captured — solid base to extend from`);
-    score += 2;
-  }
-
-  // DTE check
-  if (pos.dte < 21) {
-    warnings.push(`${pos.dte} DTE — gamma risk is elevated, holding longer is dangerous`);
-    score -= 3;
-  } else if (pos.dte < 28) {
-    warnings.push(`${pos.dte} DTE — getting close to gamma zone, extend only if trend is strong`);
-    score -= 1;
-  } else if (pos.dte >= 30) {
-    reasons.push(`${pos.dte} DTE — plenty of time, gamma risk is low`);
-    score += 1;
-  }
-
-  // IVR check
-  if (pos.ivr != null && pos.ivr < 30) {
-    warnings.push(`IVR ${pos.ivr} — below minimum threshold, edge is thin`);
-    score -= 2;
-  } else if (pos.ivr != null && pos.ivr >= 40) {
-    reasons.push(`IVR ${pos.ivr} — elevated volatility means more premium to capture`);
-    score += 1;
-  }
-
-  // Buffer check
-  if (pos.buffer != null && pos.buffer < 5 && pos.dte > 14) {
-    warnings.push(`Buffer only ${pos.buffer.toFixed(1)}% — thin cushion makes holding longer risky`);
-    score -= 2;
-  } else if (pos.buffer != null && pos.buffer >= 10) {
-    reasons.push(`${pos.buffer.toFixed(1)}% buffer — strong cushion supports holding longer`);
-    score += 1;
-  }
-
-  // Theta check
-  if (pos.theta != null && pos.theta < 0.02) {
-    warnings.push(`Theta only $${(pos.theta * 100).toFixed(2)}/day — slow decay, extra holding time has low reward`);
-    score -= 1;
-  } else if (pos.theta != null && pos.theta >= 0.05) {
-    reasons.push(`Theta $${(pos.theta * 100).toFixed(2)}/day — strong decay working in your favor`);
-    score += 1;
-  }
-
-  const signal = score >= 3 ? 'favorable' : score >= 0 ? 'neutral' : score >= -2 ? 'warning' : 'bad';
-  return { signal, reasons, warnings };
-}
-
 function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+  const [result, setResult] = useState<'success' | 'error' | null>(null);
   const [resultMsg, setResultMsg] = useState('');
   const [verdict, setVerdict] = useState<ActionVerdict | null>(null);
   const [verdictLoading, setVerdictLoading] = useState(false);
@@ -3564,12 +3501,6 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
     }
   };
 
-  const extendAssessment = assessExtendConditions(pos);
-  const assessColor = extendAssessment.signal === 'favorable' ? 'border-emerald-600 text-emerald-400' :
-                      extendAssessment.signal === 'neutral'   ? 'border-slate-600 text-slate-400' :
-                      extendAssessment.signal === 'warning'   ? 'border-yellow-600 text-yellow-400' :
-                                                                'border-red-700 text-red-400';
-
   return (
     <div className="relative">
       <button
@@ -3578,7 +3509,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
           result === 'success' ? 'border-emerald-600 text-emerald-400' :
           result === 'error'   ? 'border-red-600 text-red-400' :
           open ? 'border-blue-500 text-blue-400 bg-blue-500/10' :
-          assessColor
+          'border-slate-600 text-slate-400 hover:border-blue-500 hover:text-blue-400'
         }`}>
         {result === 'success' ? '✓ Extended' : result === 'error' ? '✕ Failed' : '↑ Extend Profit'}
       </button>
@@ -3586,34 +3517,9 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
       {open && (
         <div className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-80`}
           onClick={e => e.stopPropagation()}>
-          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>
+          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>
             Extend target — current: {currentTargetPct}%
           </p>
-
-          {/* State assessment banner */}
-          <div className={`mb-3 p-2.5 rounded-lg border text-[9px] leading-relaxed ${
-            extendAssessment.signal === 'favorable' ? 'border-emerald-600/40 bg-emerald-500/5' :
-            extendAssessment.signal === 'neutral'   ? 'border-slate-600/40 bg-slate-500/5' :
-            extendAssessment.signal === 'warning'   ? 'border-yellow-600/40 bg-yellow-500/5' :
-                                                      'border-red-600/40 bg-red-500/5'
-          }`}>
-            <p className={`font-bold mb-1 ${
-              extendAssessment.signal === 'favorable' ? 'text-emerald-400' :
-              extendAssessment.signal === 'neutral'   ? 'text-slate-400' :
-              extendAssessment.signal === 'warning'   ? 'text-yellow-400' : 'text-red-400'
-            }`}>
-              {extendAssessment.signal === 'favorable' ? '✓ Conditions favor extension' :
-               extendAssessment.signal === 'neutral'   ? '◦ Neutral — proceed with caution' :
-               extendAssessment.signal === 'warning'   ? '⚠ Conditions are marginal' :
-               '✕ Conditions do not favor extension'}
-            </p>
-            {extendAssessment.warnings.map((w, i) => (
-              <p key={i} className="text-red-300/80 mt-0.5">▸ {w}</p>
-            ))}
-            {extendAssessment.reasons.map((r, i) => (
-              <p key={i} className="text-emerald-300/80 mt-0.5">▸ {r}</p>
-            ))}
-          </div>
 
           {/* Verdict */}
           {verdictLoading && (
@@ -3908,7 +3814,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   const [open, setOpen]       = useState(false);
   const [loading, setLoading] = useState(false);
   const [phase, setPhase]     = useState('');
-  const [result, setResult]   = useState<string | null>(null);
+  const [result, setResult]   = useState<'success' | 'error' | null>(null);
   const [resultMsg, setResultMsg] = useState('');
   const [stopPrice, setStopPrice] = useState('');
   const [gtcPrice,  setGtcPrice]  = useState('');
@@ -4117,7 +4023,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       const legs = pos.legs.map(leg => ({
         symbol: leg.symbol,
         quantity: leg.quantity,
-        action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as ('Buy to Close' | 'Sell to Close'),
+        action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as 'Buy to Close' | 'Sell to Close',
         'instrument-type': itype,
       }));
 
@@ -4434,49 +4340,6 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
     </div>
   );
 }
-// ── Greek Value Tint Helpers ──────────────────────────────────────────────
-// Returns a faint background class based on how favorable the Greek is
-// for a short premium (credit spread) position.
-
-function thetaTint(theta: number | null): string {
-  if (theta == null) return '';
-  if (theta >= 0.10) return 'bg-emerald-500/10 rounded px-1';
-  if (theta >= 0.05) return 'bg-emerald-500/8 rounded px-1';
-  if (theta >= 0.01) return 'bg-emerald-500/5 rounded px-1';
-  if (theta < 0)     return 'bg-red-500/10 rounded px-1';
-  return '';
-}
-
-function deltaTint(delta: number | null): string {
-  if (delta == null) return '';
-  const abs = Math.abs(delta);
-  if (abs <= 0.05)  return 'bg-emerald-500/10 rounded px-1';
-  if (abs <= 0.10)  return 'bg-emerald-500/8 rounded px-1';
-  if (abs <= 0.15)  return 'bg-yellow-500/8 rounded px-1';
-  if (abs <= 0.25)  return 'bg-orange-500/10 rounded px-1';
-  return 'bg-red-500/10 rounded px-1';
-}
-
-function gammaTint(gamma: number | null): string {
-  if (gamma == null) return '';
-  const abs = Math.abs(gamma);
-  if (abs <= 0.001)  return 'bg-emerald-500/10 rounded px-1';
-  if (abs <= 0.003)  return 'bg-emerald-500/8 rounded px-1';
-  if (abs <= 0.006)  return 'bg-yellow-500/8 rounded px-1';
-  if (abs <= 0.010)  return 'bg-orange-500/10 rounded px-1';
-  return 'bg-red-500/10 rounded px-1';
-}
-
-function vegaTint(vega: number | null): string {
-  if (vega == null) return '';
-  // Short vega (negative) is favorable for premium sellers
-  if (vega <= -0.10) return 'bg-emerald-500/10 rounded px-1';
-  if (vega <= -0.05) return 'bg-emerald-500/8 rounded px-1';
-  if (vega <= -0.01) return 'bg-emerald-500/5 rounded px-1';
-  if (vega >= 0)     return 'bg-red-500/10 rounded px-1';
-  return '';
-}
-
 // ── Buffer Color Helpers ──────────────────────────────────────────────────
 function bufferColor(buffer: number | null, dte: number): string {
   if (buffer == null) return 'text-[#808080]';
@@ -4628,15 +4491,14 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
         {/* Data columns */}
         <div className="overflow-x-auto flex-1">
-          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1100px' }}>
+          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 50px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'center', minWidth: '1040px' }}>
 
-            {/* ── POSITION ───────────────────────────── */}
-            <div className="border-t-2 border-slate-600/60 pt-1">
+            <div>
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
               <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
             </div>
 
-            <div className="border-t-2 border-slate-600/60 pt-1 border-r border-r-slate-700/40 pr-2">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Entry / Expiry / DTE</p>
               <p className="text-xs leading-tight" style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.entryDate && <span className={`block text-[10px] ${th.textFaint}`}>{pos.entryDate}</span>}
@@ -4645,13 +4507,12 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </p>
             </div>
 
-            {/* ── MARKET ─────────────────────────────── */}
-            <div className="border-t-2 border-sky-600/50 pt-1">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Stock</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.stockPrice != null ? `$${pos.stockPrice.toFixed(2)}` : '—'}</p>
             </div>
 
-            <div className="relative group border-t-2 border-sky-600/50 pt-1">
+            <div className="relative group">
               <p className={`text-[9px] ${th.textFaint}`}>% Buffer</p>
               <p className={`text-xs font-bold ${bufferColor(pos.buffer, pos.dte)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.buffer != null ? `${pos.buffer.toFixed(1)}%` : '—'}
@@ -4694,23 +4555,22 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </div>
             </div>
 
-            <div className="border-t-2 border-sky-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
             </div>
 
-            {/* ── P&L ────────────────────────────────── */}
-            <div className="border-t-2 border-emerald-600/50 pt-1">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Buyback</p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}</p>
             </div>
 
-            <div className="border-t-2 border-emerald-600/50 pt-1">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
               <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
             </div>
 
-            <div onClick={e => e.stopPropagation()} className="border-t-2 border-emerald-600/50 pt-1">
+            <div onClick={e => e.stopPropagation()}>
               <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
               {editingTarget ? (
                 <div className="flex items-center gap-1">
@@ -4731,56 +4591,54 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               )}
             </div>
 
-            <div className="border-t-2 border-emerald-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
               <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
               </p>
             </div>
 
-            {/* ── GREEKS ─────────────────────────────── */}
-            <div className="border-t-2 border-purple-600/50 pt-1">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Theta</p>
-              <p className={`text-xs font-bold inline-block ${thetaTint(pos.theta)} ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
               </p>
             </div>
 
-            <div className="border-t-2 border-purple-600/50 pt-1">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Delta</p>
-              <p className={`text-xs font-bold inline-block ${deltaTint(pos.netDelta)} ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
               </p>
             </div>
 
-            <div className="border-t-2 border-purple-600/50 pt-1">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
-              <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
               </p>
             </div>
 
-            <div className="border-t-2 border-purple-600/50 pt-1">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Vega</p>
-              <p className={`text-xs font-bold inline-block ${vegaTint(pos.netVega)} ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
               </p>
             </div>
 
-            <div className="border-t-2 border-purple-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>IVR</p>
               <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.ivr ?? '—'}
               </p>
             </div>
 
-            {/* ── ORDERS ─────────────────────────────── */}
-            <div className="border-t-2 border-amber-600/50 pt-1">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
               <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>{pos.hasGtc ? '✓ Live' : '✕ None'}</p>
             </div>
 
-            <div className="border-t-2 border-amber-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
               {(() => {
                 const cfg =
@@ -4799,12 +4657,11 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               })()}
             </div>
 
-            {/* ── ACTION ─────────────────────────────── */}
-            <div className="border-t-2 border-slate-500/40 pt-1">
+            {/* Recommendation */}
+            <div>
               <p className={`text-[9px] ${th.textFaint}`}>Suggested</p>
               <span className={`text-[10px] font-bold ${ACTION_META[rec.action].color}`}>{ACTION_META[rec.action].label}</span>
               <p className={`text-[9px] ${th.textFaint} mt-0.5 leading-tight`}>{rec.detail}</p>
-              {(() => { const sig = getExtendSignal(pos); return sig ? <p className="text-[9px] text-blue-400 mt-0.5 leading-tight">{sig}</p> : null; })()}
             </div>
           </div>
         </div>
@@ -5171,7 +5028,7 @@ export default function PortfolioPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [checked, setChecked] = useState(new Set() as Set<string>);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
   const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
