@@ -1,4 +1,4 @@
-// path: app/portfolio/page.tsx
+// app/portfolio/page.tsx
 
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -22,7 +22,6 @@ const LS_AUDIT_LOG = 'prosper-audit-log';
 const LS_THEME = 'prosper-theme';
 const LS_MEMORY = 'prosper-trading-memory';
 const LS_DRY_RUN = 'prosper-dry-run';
-const LS_POSITION_SNAPSHOT = 'prosper-position-snapshot';
 const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
 const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
 const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
@@ -252,7 +251,12 @@ function isMarketOpen(): boolean {
   const now = new Date();
   const day = now.getDay();
   if (day === 0 || day === 6) return false;
-  const etOffset = -5 * 60; // EST (ignores DST — good enough for a guard)
+  // DST-aware ET offset: EDT = UTC-4 (Mar 2nd Sun – Nov 1st Sun); EST = UTC-5 otherwise
+  const year = now.getUTCFullYear();
+  const dstStart = new Date(Date.UTC(year, 2, 8 - new Date(Date.UTC(year, 2, 1)).getUTCDay(), 7)); // 2nd Sun Mar 2:00 AM ET
+  const dstEnd   = new Date(Date.UTC(year, 10, 1 + (7 - new Date(Date.UTC(year, 10, 1)).getUTCDay()) % 7, 6)); // 1st Sun Nov 2:00 AM ET
+  const isDST    = now >= dstStart && now < dstEnd;
+  const etOffset = isDST ? -4 * 60 : -5 * 60;
   const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
   const etMin = utcMin + etOffset;
   const openMin = MARKET_OPEN_HOUR * 60 + MARKET_OPEN_MIN;
@@ -1863,6 +1867,8 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
 
   // Roll state per position
   const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
+  // rollMode: 'close' = close only (default), 'roll' = close + re-enter
+  const [rollMode, setRollMode] = useState<Record<string, 'close' | 'roll'>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
@@ -2105,6 +2111,15 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
           if (item.action === 'CLOSE_ROLL') {
             const ri = rollInputs[item.pos.key];
             if (ri?.expiry && ri.shortStrike && ri.longStrike && ri.credit) {
+              // Validate expiry is a real future date before submitting
+              const expiryDate = new Date(ri.expiry);
+              const today = new Date(); today.setHours(0,0,0,0);
+              if (isNaN(expiryDate.getTime())) {
+                throw new Error(`Roll expiry "${ri.expiry}" is not a valid date. Enter a date like ${new Date(Date.now() + 45*86400000).toISOString().slice(0,10)}.`);
+              }
+              if (expiryDate <= today) {
+                throw new Error(`Roll expiry ${ri.expiry} is in the past or today. Enter a future expiry date.`);
+              }
               const optType: 'P' | 'C' = item.pos.strategy === 'BCS' ? 'C' : 'P';
               const suggestion = rollSuggestions[item.pos.key];
               const qty = item.pos.legs[0]?.quantity ?? 1;
@@ -2310,16 +2325,38 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
               </div>
               <div className="space-y-2">
                 {orderResults.map((r, i) => (
-                  <div key={i} className={`flex items-center justify-between p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
-                    <div>
-                      <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
-                      <span className={`ml-2 text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
-                      {r.error && <p className="text-[10px] text-red-400 mt-0.5">{r.error}</p>}
+                  <div key={i} className={`p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
+                        <span className={`text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
+                        {(r.status === 'error' || r.status === 'rejected') && (
+                          <span className="text-[9px] text-red-400 font-bold">✕ REJECTED</span>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
+                        {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
-                      {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
-                    </div>
+                    {r.error && (
+                      <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
+                        <p className="text-[10px] text-red-300 font-mono leading-relaxed">{r.error}</p>
+                        {r.error.toLowerCase().includes('preflight') && (
+                          <div className="mt-1.5 space-y-1">
+                            <p className="text-[9px] text-yellow-400">⚠ Preflight failures are usually caused by:</p>
+                            <p className="text-[9px] text-yellow-300/80">▸ An existing GTC/OCO order on this position — cancel it in TastyTrade first</p>
+                            <p className="text-[9px] text-yellow-300/80">▸ Submitting outside market hours with a Day order</p>
+                            <p className="text-[9px] text-yellow-300/80">▸ Insufficient buying power or margin</p>
+                            <p className="text-[9px] text-yellow-300/80">▸ Invalid strike or expiry date</p>
+                            <a href="https://my.tastytrade.com" target="_blank" rel="noopener noreferrer"
+                              className="inline-block mt-1 text-[9px] text-blue-400 underline">
+                              → Open TastyTrade to check and cancel conflicting orders
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2530,7 +2567,35 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                       {/* Roll inputs */}
                       {item.action === 'CLOSE_ROLL' && !isExcluded && (
                         <div className={`px-4 pb-3 border-t ${th.borderLight}`}>
-                          <div className="pt-3 space-y-3">
+                          {/* Close Only vs Close + Roll toggle — prominent, defaults to Close Only */}
+                          <div className="flex items-center gap-2 pt-3 pb-2">
+                            <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest shrink-0`}>Action:</p>
+                            <button
+                              onClick={() => setRollMode(prev => ({ ...prev, [item.pos.key]: 'close' }))}
+                              className={`text-[10px] px-3 py-1 rounded border font-bold transition-colors ${
+                                (rollMode[item.pos.key] ?? 'close') === 'close'
+                                  ? 'border-emerald-500 bg-emerald-500/15 text-emerald-400'
+                                  : `${th.border} ${th.textFaint} hover:border-emerald-600`
+                              }`}>
+                              ✓ Close Only
+                            </button>
+                            <button
+                              onClick={() => setRollMode(prev => ({ ...prev, [item.pos.key]: 'roll' }))}
+                              className={`text-[10px] px-3 py-1 rounded border font-bold transition-colors ${
+                                rollMode[item.pos.key] === 'roll'
+                                  ? 'border-purple-500 bg-purple-500/15 text-purple-400'
+                                  : `${th.border} ${th.textFaint} hover:border-purple-600`
+                              }`}>
+                              ↻ Close + Roll
+                            </button>
+                            {(rollMode[item.pos.key] ?? 'close') === 'close' && (
+                              <span className="text-[9px] text-emerald-400/70">Position will be closed. No new trade will be entered.</span>
+                            )}
+                            {rollMode[item.pos.key] === 'roll' && (
+                              <span className="text-[9px] text-purple-400/70">Position closes and a new spread opens.</span>
+                            )}
+                          </div>
+                          <div className="space-y-3" style={{ display: rollMode[item.pos.key] === 'roll' ? 'block' : 'none' }}>
 
                             {/* Suggested roll with full rule check */}
                             {suggestion && (
@@ -2612,7 +2677,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                             {/* Manual inputs */}
                             <div className="grid grid-cols-4 gap-2">
                               {[
-                                { label: 'New Expiry', key: 'expiry', placeholder: '2025-08-15' },
+                                { label: 'New Expiry', key: 'expiry', placeholder: (() => { const d = new Date(); d.setDate(d.getDate() + 45); return d.toISOString().slice(0, 10); })() },
                                 { label: 'Short Strike', key: 'shortStrike', placeholder: '490' },
                                 { label: 'Long Strike', key: 'longStrike', placeholder: '485' },
                                 { label: 'Credit ($)', key: 'credit', placeholder: '1.50' },
@@ -2653,6 +2718,7 @@ function BatchConfirmModal({ items: initialItems, onClose, onSuccess, dryRun, th
                               return null;
                             })()}
                           </div>
+                          </div>{/* end roll inputs wrapper */}
                         </div>
                       )}
                     </div>
@@ -4969,396 +5035,31 @@ function BulkActionBar({ selectedKeys, positions, onExecute, onClear, th }: {
 
 // ── Main Page ──────────────────────────────────────────────────────────────
 
-// ── Monthly Chart Component ────────────────────────────────────────────────
-function MonthlyChart({ byMonth, months, th }: {
-  byMonth: Record<string, { pnl: number; trades: number; wins: number }>;
-  months: string[];
-  th: typeof THEMES[Theme];
-}) {
-  const [scale, setScale] = useState<'weekly' | 'monthly' | 'quarterly'>('monthly');
-
-  // Build weekly buckets from monthly data — approximate by distributing evenly
-  // For real weekly we'd need the trade closeDate from the parent, so we use monthly as base
-  // and just change label granularity
-  const chartData = (() => {
-    if (scale === 'quarterly') {
-      const byQ: Record<string, { pnl: number; trades: number; wins: number }> = {};
-      for (const m of months) {
-        const [year, month] = m.split('-').map(Number);
-        const q = `${year}-Q${Math.ceil(month / 3)}`;
-        if (!byQ[q]) byQ[q] = { pnl: 0, trades: 0, wins: 0 };
-        byQ[q].pnl += byMonth[m].pnl;
-        byQ[q].trades += byMonth[m].trades;
-        byQ[q].wins += byMonth[m].wins;
-      }
-      return Object.entries(byQ).sort(([a], [b]) => a.localeCompare(b))
-        .map(([label, d]) => ({ label, ...d }));
-    }
-    // Monthly (default) — use months as-is with short label
-    return months.map(m => ({
-      label: new Date(m + '-15').toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
-      ...byMonth[m],
-    }));
+// ── Performance Panel ──────────────────────────────────────────────────────
+function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
+  const auditLog: AuditEntry[] = (() => {
+    try { return JSON.parse(localStorage.getItem('prosper-audit-log') ?? '[]'); } catch { return []; }
   })();
 
-  const chartItems = chartData.slice(-12);
-  let cumulative = 0;
-  const cumulativeValues = chartItems.map(d => { cumulative += d.pnl; return cumulative; });
-  const maxCumulative = Math.max(...cumulativeValues, 1);
-  const minCumulative = Math.min(...cumulativeValues, 0);
-  const maxBar = Math.max(...chartItems.map(d => Math.abs(d.pnl)), 1);
-  const chartH = 160, chartW = 600, padL = 48, padR = 12, padT = 16, padB = 28;
-  const innerW = chartW - padL - padR;
-  const innerH = chartH - padT - padB;
-  const barSpacing = innerW / chartItems.length;
-  const barW = Math.max(barSpacing - 4, 4);
-  const barH = (val: number) => (Math.abs(val) / maxBar) * innerH * 0.85;
-  const range = maxCumulative - minCumulative || 1;
-  const lineY = (val: number) => padT + ((maxCumulative - val) / range) * innerH;
-  const points = cumulativeValues.map((v, i) => `${padL + i * barSpacing + barSpacing / 2},${lineY(v)}`);
-  const linePath = `M ${points.join(' L ')}`;
+  const closed = auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
+    (e.action === 'TAKE_PROFIT' || e.action === 'CUT_LOSSES' || e.action === 'CLOSE_ROLL'));
 
-  return (
-    <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
-      <div className="flex items-center justify-between mb-3">
-        <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Premium Earnings</p>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1 bg-black/20 rounded-lg p-0.5">
-            {(['monthly', 'quarterly'] as const).map(s => (
-              <button key={s} onClick={() => setScale(s)}
-                className={`text-[9px] px-2 py-1 rounded transition-colors tracking-wider ${scale === s ? 'bg-white/20 text-white' : `${th.textFaint} hover:text-white`}`}>
-                {s === 'monthly' ? 'MO' : 'QTR'}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-sm bg-emerald-500/60" />
-              <span className={`text-[9px] ${th.textFaint}`}>P&L</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-2.5 h-0.5 bg-cyan-400 rounded" />
-              <span className={`text-[9px] ${th.textFaint}`}>Cumulative</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" style={{ height: '160px' }}>
-        {[0, 0.25, 0.5, 0.75, 1].map(pct => {
-          const y = padT + pct * innerH;
-          const val = maxCumulative - pct * range;
-          return (
-            <g key={pct}>
-              <line x1={padL} y1={y} x2={chartW - padR} y2={y} stroke="currentColor" strokeOpacity="0.08" strokeWidth="1" />
-              <text x={padL - 4} y={y + 3} textAnchor="end" fontSize="7" fill="currentColor" fillOpacity="0.4">
-                {val >= 1000 ? `$${(val/1000).toFixed(1)}k` : val >= 0 ? `$${val.toFixed(0)}` : `-$${Math.abs(val).toFixed(0)}`}
-              </text>
-            </g>
-          );
-        })}
-        {chartItems.map((d, i) => {
-          const h = barH(d.pnl);
-          const x = padL + i * barSpacing + (barSpacing - barW) / 2;
-          const y = padT + innerH - h;
-          const isPos = d.pnl >= 0;
-          const label = Math.abs(d.pnl) >= 1000 ? `$${(d.pnl/1000).toFixed(1)}k` : `$${Math.abs(d.pnl).toFixed(0)}`;
-          return (
-            <g key={i}>
-              <rect x={x} y={y} width={barW} height={Math.max(h, 2)}
-                fill={isPos ? 'rgb(16 185 129 / 0.5)' : 'rgb(239 68 68 / 0.5)'} rx="2" />
-              {h > 14 && (
-                <text x={x + barW / 2} y={y - 3} textAnchor="middle" fontSize="7"
-                  fill={isPos ? 'rgb(52 211 153)' : 'rgb(248 113 113)'}>
-                  {isPos ? '+' : '-'}{label}
-                </text>
-              )}
-              <text x={x + barW / 2} y={chartH - 4} textAnchor="middle" fontSize="7" fill="currentColor" fillOpacity="0.4">
-                {d.label}
-              </text>
-            </g>
-          );
-        })}
-        <path d={linePath} fill="none" stroke="rgb(34 211 238)" strokeWidth="1.5" strokeLinejoin="round" />
-        {cumulativeValues.map((v, i) => {
-          const x = padL + i * barSpacing + barSpacing / 2;
-          const y = lineY(v);
-          return <g key={i}><circle cx={x} cy={y} r="3" fill="rgb(34 211 238)" /><circle cx={x} cy={y} r="1.5" fill="rgb(8 8 8)" /></g>;
-        })}
-      </svg>
-    </div>
-  );
-}
-
-// ── Performance Panel ──────────────────────────────────────────────────────
-interface ClosedTrade {
-  id: string;
-  symbol: string;
-  strategy: string;
-  openDate: string;
-  closeDate: string;
-  credit: number;   // per contract
-  debit: number;    // per contract
-  qty: number;
-  pnl: number;      // total dollars
-  orderId: string;
-}
-
-async function fetchClosedTrades(token: string): Promise<ClosedTrade[]> {
-  const accountsData = await ttFetch('/customers/me/accounts', token);
-  const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
-  if (!accountNumber) throw new Error('No account found');
-
-  // Fetch ALL transaction types — Trade, Expiration, Assignment, etc.
-  const allItems: any[] = [];
-  let pageOffset = 0;
-  const perPage = 250;
-  while (true) {
-    const data = await ttFetch(
-      `/accounts/${accountNumber}/transactions?per-page=${perPage}&page-offset=${pageOffset}`,
-      token
-    );
-    const items = data?.data?.items ?? [];
-    allItems.push(...items);
-    const total = data?.data?.pagination?.['total-items'] ?? items.length;
-    if (allItems.length >= total || items.length < perPage) break;
-    pageOffset += perPage;
-    if (pageOffset > 2000) break;
-  }
-
-  // Parse OCC symbol → expiry + strikes
-  function parseOCC(sym: string) {
-    const s = (sym ?? '').replace(/\s+/g, '');
-    const m = s.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
-    if (!m) return null;
-    return {
-      exp: `20${m[2].slice(0,2)}-${m[2].slice(2,4)}-${m[2].slice(4,6)}`,
-      optType: m[3],
-      strike: parseInt(m[4]) / 1000,
-    };
-  }
-
-  // Group ALL option transactions by position key: underlying::exp::strikes_sorted
-  // Each unique spread = one position
-  const positions: Record<string, {
-    underlying: string;
-    exp: string;
-    strikes: number[];
-    optTypes: string[];
-    transactions: { date: string; action: string; value: number; price: number; qty: number }[];
-  }> = {};
-
-  for (const t of allItems) {
-    const instType = t['instrument-type'] ?? '';
-    if (!instType.includes('Option')) continue;
-
-    const parsed = parseOCC(t.symbol);
-    if (!parsed) continue;
-
-    const underlying = t['underlying-symbol'] ?? '';
-    const date = (t['transaction-date'] ?? '').slice(0, 10);
-    const action = t['action'] ?? t['transaction-sub-type'] ?? '';
-    const price = parseFloat(t['price'] ?? '0');
-    const qty = parseFloat(t['quantity'] ?? '1');
-
-    // Net value: Credit = positive, Debit = negative
-    const valueEffect = t['value-effect'] ?? t['net-value-effect'] ?? '';
-    const netValue = parseFloat(t['value'] ?? t['net-value'] ?? '0');
-    const signedValue = valueEffect === 'Credit' ? netValue : -netValue;
-
-    // Build position key — group by underlying + expiry + ALL strikes in the spread
-    // We need to collect legs of same order together first
-    const orderKey = String(t['order-id'] ?? t['id'] ?? '');
-
-    const posKey = `${underlying}::${parsed.exp}::${parsed.strike}::${parsed.optType}`;
-
-    if (!positions[posKey]) {
-      positions[posKey] = {
-        underlying,
-        exp: parsed.exp,
-        strikes: [parsed.strike],
-        optTypes: [parsed.optType],
-        transactions: [],
-      };
-    }
-    positions[posKey].transactions.push({ date, action, value: signedValue, price, qty });
-  }
-
-  // Now group single-leg positions into spreads by matching same order-id
-  // Better approach: group by order-id first, then build spread positions
-  const orderGroups: Record<string, any[]> = {};
-  for (const t of allItems) {
-    const instType = t['instrument-type'] ?? '';
-    if (!instType.includes('Option')) continue;
-    const oid = String(t['order-id'] ?? t['id'] ?? '');
-    if (!oid) continue;
-    if (!orderGroups[oid]) orderGroups[oid] = [];
-    orderGroups[oid].push(t);
-  }
-
-  // Build spread-level positions keyed by underlying::exp::strikes_sorted
-  const spreadPositions: Record<string, {
-    underlying: string;
-    exp: string;
-    strikes: number[];
-    optTypes: string[];
-    firstDate: string;
-    lastDate: string;
-    netValue: number; // cumulative: credits positive, debits negative
-    qty: number;
-    isOpen: boolean;
-    hasClose: boolean;
-  }> = {};
-
-  for (const [oid, legs] of Object.entries(orderGroups)) {
-    const underlying = legs[0]['underlying-symbol'] ?? '';
-    const strikes = legs.map((l: any) => parseOCC(l.symbol)?.strike ?? 0).filter(Boolean).sort((a: number, b: number) => a - b);
-    const optTypes = Array.from(new Set(legs.map((l: any) => parseOCC(l.symbol)?.optType ?? 'P')));
-    const exp = parseOCC(legs[0].symbol)?.exp ?? '';
-    const date = (legs[0]['transaction-date'] ?? '').slice(0, 10);
-    const key = `${underlying}::${exp}::${strikes.join('-')}`;
-
-    // Net value for this order
-    let orderNet = 0;
-    for (const leg of legs) {
-      const ve = leg['value-effect'] ?? leg['net-value-effect'] ?? '';
-      const val = parseFloat(leg['value'] ?? leg['net-value'] ?? '0');
-      orderNet += ve === 'Credit' ? val : -val;
-    }
-
-    const actions = legs.map((l: any) => l['action'] ?? '');
-    const isOpen = actions.some((a: string) => a.includes('Open'));
-    const isClose = actions.some((a: string) => a.includes('Close') || a === 'Expiration' || a === 'Assignment');
-
-    if (!spreadPositions[key]) {
-      spreadPositions[key] = {
-        underlying, exp, strikes, optTypes,
-        firstDate: date, lastDate: date,
-        netValue: 0, qty: parseFloat(legs[0]['quantity'] ?? '1'),
-        isOpen: false, hasClose: false,
-      };
-    }
-
-    spreadPositions[key].netValue += orderNet;
-    if (date < spreadPositions[key].firstDate) spreadPositions[key].firstDate = date;
-    if (date > spreadPositions[key].lastDate) spreadPositions[key].lastDate = date;
-    if (isOpen) spreadPositions[key].isOpen = true;
-    if (isClose) spreadPositions[key].hasClose = true;
-  }
-
-  // Also handle expirations (no order-id, transaction-type = Receive Deliver or Expiration)
-  for (const t of allItems) {
-    const instType = t['instrument-type'] ?? '';
-    if (!instType.includes('Option')) continue;
-    const txType = t['transaction-type'] ?? '';
-    const subType = t['transaction-sub-type'] ?? '';
-    if (txType === 'Trade') continue; // already handled above
-
-    const parsed = parseOCC(t.symbol);
-    if (!parsed) continue;
-    const underlying = t['underlying-symbol'] ?? '';
-    const date = (t['transaction-date'] ?? '').slice(0, 10);
-    const ve = t['value-effect'] ?? t['net-value-effect'] ?? '';
-    const val = parseFloat(t['value'] ?? t['net-value'] ?? '0');
-    const signedVal = ve === 'Credit' ? val : (ve === 'Debit' ? -val : 0);
-    const qty = parseFloat(t['quantity'] ?? '1');
-
-    // Try to find matching spread position — match by underlying + exp + strike
-    // For expirations, we may only have one leg, find the spread it belongs to
-    const possibleKeys = Object.keys(spreadPositions).filter(k =>
-      k.startsWith(`${underlying}::${parsed.exp}::`) && k.includes(String(parsed.strike))
-    );
-
-    if (possibleKeys.length > 0) {
-      const key = possibleKeys[0];
-      spreadPositions[key].netValue += signedVal;
-      spreadPositions[key].hasClose = true;
-      if (date > spreadPositions[key].lastDate) spreadPositions[key].lastDate = date;
-    } else {
-      // Standalone expiration — create new position
-      const key = `${underlying}::${parsed.exp}::${parsed.strike}`;
-      if (!spreadPositions[key]) {
-        spreadPositions[key] = {
-          underlying, exp: parsed.exp, strikes: [parsed.strike],
-          optTypes: [parsed.optType], firstDate: date, lastDate: date,
-          netValue: 0, qty, isOpen: false, hasClose: true,
-        };
-      }
-      spreadPositions[key].netValue += signedVal;
-      spreadPositions[key].hasClose = true;
-    }
-  }
-
-  // Convert to trades — only include closed positions (hasClose = true)
-  // netValue > 0 = net profit, < 0 = net loss
-  const trades: ClosedTrade[] = [];
-  for (const [key, pos] of Object.entries(spreadPositions)) {
-    if (!pos.hasClose) continue; // still open
-    if (Math.abs(pos.netValue) < 1) continue; // negligible / fees only
-
-    const strategy = pos.optTypes.every(t => t === 'P') ? 'BPS'
-      : pos.optTypes.every(t => t === 'C') ? 'BCS'
-      : pos.optTypes.includes('P') && pos.optTypes.includes('C') ? 'IC'
-      : 'BPS';
-
-    // Approximate credit and debit from netValue and qty
-    // netValue is total P&L in dollars; credit/debit are per-contract estimates
-    const pnl = pos.netValue; // already in dollars net of fees
-    const perContract = pos.qty > 0 ? Math.abs(pnl / pos.qty / 100) : 0;
-
-    trades.push({
-      id: key,
-      symbol: pos.underlying,
-      strategy,
-      openDate: pos.firstDate,
-      closeDate: pos.lastDate,
-      credit: pnl > 0 ? perContract + perContract * 0.5 : perContract * 0.5, // rough estimate for display
-      debit: pnl > 0 ? perContract * 0.5 : perContract + perContract * 0.5,
-      qty: pos.qty,
-      pnl: Math.round(pnl * 100) / 100,
-      orderId: key,
-    });
-  }
-
-  return trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
-}
-
-function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
-  const [trades, setTrades] = useState<ClosedTrade[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    (async () => {
-      setLoading(true); setError('');
-      try {
-        const token = await getAccessToken();
-        const result = await fetchClosedTrades(token);
-        setTrades(result);
-      } catch (e: any) {
-        setError(e.message ?? 'Failed to load trade history');
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  // Derived stats
-  const winners = trades.filter(t => t.pnl > 0);
-  const losers  = trades.filter(t => t.pnl <= 0);
-  const winRate    = trades.length > 0 ? (winners.length / trades.length * 100) : 0;
-  const avgWin     = winners.length > 0 ? winners.reduce((s, t) => s + t.pnl, 0) / winners.length : 0;
-  const avgLoss    = losers.length  > 0 ? Math.abs(losers.reduce((s, t) => s + t.pnl, 0) / losers.length) : 0;
+  const winners = closed.filter(e => (e.estPnl ?? 0) > 0);
+  const losers  = closed.filter(e => (e.estPnl ?? 0) <= 0);
+  const winRate    = closed.length > 0 ? (winners.length / closed.length * 100) : 0;
+  const avgWin     = winners.length > 0 ? winners.reduce((s, e) => s + (e.estPnl ?? 0), 0) / winners.length : 0;
+  const avgLoss    = losers.length  > 0 ? Math.abs(losers.reduce((s, e) => s + (e.estPnl ?? 0), 0) / losers.length) : 0;
   const expectancy = (winRate / 100) * avgWin - (1 - winRate / 100) * avgLoss;
-  const totalPnl   = trades.reduce((s, t) => s + t.pnl, 0);
+  const totalPnl   = closed.reduce((s, e) => s + (e.estPnl ?? 0), 0);
 
   // Monthly bucketing
   const byMonth: Record<string, { pnl: number; trades: number; wins: number }> = {};
-  for (const t of trades) {
-    const month = t.closeDate.slice(0, 7);
+  for (const e of closed) {
+    const month = e.timestamp.slice(0, 7);
     if (!byMonth[month]) byMonth[month] = { pnl: 0, trades: 0, wins: 0 };
-    byMonth[month].pnl    += t.pnl;
+    byMonth[month].pnl    += e.estPnl ?? 0;
     byMonth[month].trades += 1;
-    if (t.pnl > 0) byMonth[month].wins += 1;
+    if ((e.estPnl ?? 0) > 0) byMonth[month].wins += 1;
   }
   const months       = Object.keys(byMonth).sort();
   const last3Months  = months.slice(-3);
@@ -5369,20 +5070,21 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
 
   // By symbol
   const bySymbol: Record<string, { pnl: number; trades: number; wins: number }> = {};
-  for (const t of trades) {
-    if (!bySymbol[t.symbol]) bySymbol[t.symbol] = { pnl: 0, trades: 0, wins: 0 };
-    bySymbol[t.symbol].pnl    += t.pnl;
-    bySymbol[t.symbol].trades += 1;
-    if (t.pnl > 0) bySymbol[t.symbol].wins += 1;
+  for (const e of closed) {
+    if (!bySymbol[e.symbol]) bySymbol[e.symbol] = { pnl: 0, trades: 0, wins: 0 };
+    bySymbol[e.symbol].pnl    += e.estPnl ?? 0;
+    bySymbol[e.symbol].trades += 1;
+    if ((e.estPnl ?? 0) > 0) bySymbol[e.symbol].wins += 1;
   }
-  const symbolRows   = Object.entries(bySymbol).sort((a, b) => b[1].pnl - a[1].pnl);
+  const symbolRows  = Object.entries(bySymbol).sort((a, b) => b[1].pnl - a[1].pnl);
   const maxSymbolPnl = Math.max(...symbolRows.map(r => Math.abs(r[1].pnl)), 1);
+  const maxBarPnl    = Math.max(...months.map(m => Math.abs(byMonth[m].pnl)), 1);
 
   const kpis = [
-    { label: 'Win Rate',   value: `${winRate.toFixed(0)}%`,                                sub: `${winners.length}W / ${losers.length}L`,  color: winRate >= 70 ? 'text-emerald-400' : winRate >= 50 ? 'text-yellow-400' : 'text-red-400' },
-    { label: 'Expectancy', value: `${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(0)}`, sub: 'per trade avg',                           color: expectancy >= 0 ? 'text-emerald-400' : 'text-red-400' },
-    { label: 'Total P&L',  value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,    sub: 'all closed trades',                       color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-    { label: 'Avg Win',    value: `+$${avgWin.toFixed(0)}`,                                sub: `avg loss: -$${avgLoss.toFixed(0)}`,        color: 'text-emerald-400' },
+    { label: 'Win Rate',    value: `${winRate.toFixed(0)}%`,                              sub: `${winners.length}W / ${losers.length}L`,     color: winRate >= 70 ? 'text-emerald-400' : winRate >= 50 ? 'text-yellow-400' : 'text-red-400' },
+    { label: 'Expectancy', value: `${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(0)}`, sub: 'per trade avg',                             color: expectancy >= 0 ? 'text-emerald-400' : 'text-red-400' },
+    { label: 'Total P&L',  value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,    sub: 'all closed trades',                         color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
+    { label: 'Avg Win',    value: `+$${avgWin.toFixed(0)}`,                                sub: `avg loss: -$${avgLoss.toFixed(0)}`,          color: 'text-emerald-400' },
   ];
 
   const periods = [
@@ -5399,37 +5101,19 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
         <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
           <div>
             <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>PERFORMANCE</h2>
-            <p className={`text-[10px] ${th.textFaint}`}>
-              {loading ? 'Fetching trade history from TastyTrade...' : error ? 'Error loading data' : `${trades.length} closed trades · live from TastyTrade`}
-            </p>
+            <p className={`text-[10px] ${th.textFaint}`}>{closed.length} closed trades · estimated P&L from audit log</p>
           </div>
           <button onClick={onClose} className={`${th.textFaint} hover:text-white text-lg leading-none`}>✕</button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {loading && (
-            <div className={`text-center py-16 ${th.textFaint}`}>
-              <p className="text-3xl mb-3 animate-pulse">📊</p>
-              <p className="text-sm tracking-widest">LOADING TRADE HISTORY...</p>
-              <p className="text-[11px] mt-1 opacity-60">Fetching from TastyTrade</p>
-            </div>
-          )}
-
-          {!loading && error && (
-            <div className="p-4 bg-red-500/10 border border-red-500/40 rounded-xl">
-              <p className="text-sm text-red-400">{error}</p>
-            </div>
-          )}
-
-          {!loading && !error && trades.length === 0 && (
+          {closed.length === 0 ? (
             <div className={`text-center py-16 ${th.textFaint}`}>
               <p className="text-3xl mb-3">📊</p>
-              <p className="text-sm">No closed option spread trades found.</p>
-              <p className="text-[11px] mt-1 opacity-60">Closed BPS, BCS, and IC spreads will appear here automatically.</p>
+              <p className="text-sm">No closed trades in audit log yet.</p>
+              <p className="text-[11px] mt-1 opacity-60">Trades appear here after you submit Take Profit, Cut Losses, or Close/Roll orders.</p>
             </div>
-          )}
-
-          {!loading && !error && trades.length > 0 && (
+          ) : (
             <>
               {/* KPI strip */}
               <div className="grid grid-cols-4 gap-3">
@@ -5455,8 +5139,30 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
                 ))}
               </div>
 
-              {/* Monthly chart */}
-              {months.length > 0 && <MonthlyChart byMonth={byMonth} months={months} th={th} />}
+              {/* Monthly bar chart */}
+              {months.length > 0 && (
+                <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
+                  <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-4`}>Monthly P&L</p>
+                  <div className="flex items-end gap-2" style={{ height: '120px' }}>
+                    {months.slice(-12).map(m => {
+                      const d = byMonth[m];
+                      const pct = Math.abs(d.pnl) / maxBarPnl;
+                      const h = Math.max(pct * 90, 4);
+                      return (
+                        <div key={m} className="flex-1 flex flex-col items-center justify-end gap-1" style={{ height: '120px' }}>
+                          <p className={`text-[8px] ${th.textFaint} text-center`}>{d.pnl >= 0 ? '+' : ''}${d.pnl.toFixed(0)}</p>
+                          <div
+                            className={`w-full rounded-t transition-all ${d.pnl >= 0 ? 'bg-emerald-500/60 hover:bg-emerald-500/80' : 'bg-red-500/60 hover:bg-red-500/80'}`}
+                            style={{ height: `${h}px` }}
+                            title={`${m}: ${d.trades} trades, ${d.wins} wins`}
+                          />
+                          <p className={`text-[8px] ${th.textFaint} text-center`}>{m.slice(5)}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* By Symbol */}
               {symbolRows.length > 0 && (
@@ -5488,28 +5194,27 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
               {/* Trade log */}
               <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
                 <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>Trade History</p>
-                <div className="space-y-1.5">
-                  {trades.map(t => (
-                    <div key={t.id} className={`flex items-center justify-between py-1.5 border-b ${th.borderLight} last:border-0`}>
-                      <span className={`text-[10px] ${th.textFaint} w-24 shrink-0`}>{t.closeDate}</span>
-                      <span className={`text-[10px] font-bold ${th.text} w-16 shrink-0`}>{t.symbol}</span>
-                      <span className={`text-[9px] ${th.textFaint} w-10 shrink-0`}>{t.strategy}</span>
-                      <span className={`text-[9px] w-20 shrink-0 ${t.pnl > 0 ? 'text-emerald-400' : 'text-red-400'} font-bold`}>
-                        {t.pnl > 0 ? 'TAKE PROFIT' : 'CUT LOSSES'}
-                      </span>
-                      <span className={`text-[9px] ${th.textFaint} flex-1 text-center`}>
-                        ${t.credit.toFixed(2)} cr → ${t.debit.toFixed(2)} db × {t.qty}
-                      </span>
-                      <span className={`text-[10px] font-bold w-16 text-right shrink-0 ${t.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                        {t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(0)}
+                <div className="space-y-0 max-h-64 overflow-y-auto">
+                  {[...closed].reverse().map(e => (
+                    <div key={e.id} className={`flex items-center gap-3 py-2 border-b ${th.borderLight} last:border-0`}>
+                      <span className={`text-[9px] ${th.textFaint} w-20 shrink-0`}>{e.timestamp.slice(0, 10)}</span>
+                      <span className={`text-[10px] font-bold ${th.text} w-14 shrink-0`}>{e.symbol}</span>
+                      <span className={`text-[9px] ${th.textFaint} w-10 shrink-0`}>{e.strategy}</span>
+                      <span className={`text-[9px] w-24 shrink-0 ${
+                        e.action === 'TAKE_PROFIT' ? 'text-emerald-400' :
+                        e.action === 'CUT_LOSSES'  ? 'text-red-400'     : 'text-blue-400'
+                      }`}>{e.action.replace(/_/g, ' ')}</span>
+                      <span className={`text-[10px] font-bold ml-auto ${(e.estPnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                        {(e.estPnl ?? 0) >= 0 ? '+' : ''}${(e.estPnl ?? 0).toFixed(0)}
                       </span>
                     </div>
                   ))}
                 </div>
-                <p className={`text-[9px] ${th.textFaint} mt-3 text-center`}>
-                  Live from TastyTrade · P&L calculated from actual fill prices
-                </p>
               </div>
+
+              <p className={`text-[9px] ${th.textFaint} text-center pb-2`}>
+                ⚠ P&L figures are estimates from order submission. Actual fills may differ. Reconcile with TastyTrade for accurate accounting.
+              </p>
             </>
           )}
         </div>
@@ -5527,6 +5232,8 @@ function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEM
           <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
         </div>
         <div className="flex-1 overflow-y-auto p-6 space-y-6 text-[11px]">
+
+          {/* Action Buttons */}
           <div>
             <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>Action Buttons</p>
             <div className="space-y-2">
@@ -5535,7 +5242,7 @@ function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEM
                 { label: '↻ Close/Roll', color: 'border-purple-600 text-purple-400', desc: 'Close current position and re-enter next expiry. Use at 21 DTE or when rolling a winner.' },
                 { label: '✓ Take Profit', color: 'border-emerald-600 text-emerald-400', desc: 'Close for profit now. Appears when position hits your profit target.' },
                 { label: '⏱ Place GTC', color: 'border-blue-600 text-blue-400', desc: 'Set a GTC limit order at your profit target. Always do this at entry.' },
-                { label: '↑ Extend Profit', color: 'border-slate-600 text-slate-400', desc: 'Move GTC target higher to capture more premium.' },
+                { label: '↑ Extend Profit', color: 'border-slate-600 text-slate-400', desc: 'Move GTC target higher to capture more premium. Color indicates conditions: green=favorable, yellow=marginal, red=unfavorable.' },
                 { label: '✎ Stop / ⚠ Update Stop', color: 'border-orange-600 text-orange-400', desc: 'Set or update stop loss. Creates an OCO order paired with your GTC profit target.' },
               ].map(b => (
                 <div key={b.label} className="flex items-start gap-3">
@@ -5545,12 +5252,14 @@ function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEM
               ))}
             </div>
           </div>
+
+          {/* GTC & Stop Status */}
           <div>
             <p className={`text-[9px] text-amber-400 uppercase tracking-widest mb-3 font-bold`}>GTC & Stop Loss Status</p>
             <div className="space-y-1.5">
               {[
                 { label: '✓ Live', color: 'text-emerald-400', desc: 'Active GTC or stop order working in TastyTrade.' },
-                { label: '⚠ Loose', color: 'text-yellow-400', desc: 'Stop exists but is set above 2× credit — too loose.' },
+                { label: '⚠ Loose', color: 'text-yellow-400', desc: 'Stop exists but is set above 2× credit — too loose to provide real protection.' },
                 { label: '✕ None', color: 'text-red-400', desc: 'No GTC or stop order. Position is unprotected.' },
               ].map(s => (
                 <div key={s.label} className="flex items-center gap-3">
@@ -5560,8 +5269,33 @@ function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEM
               ))}
             </div>
           </div>
+
+          {/* Greeks */}
+          <div>
+            <p className={`text-[9px] text-purple-400 uppercase tracking-widest mb-3 font-bold`}>Greeks — Color Tints</p>
+            <p className={`${th.textFaint} mb-2`}>Background tint shows how favorable each Greek is for a short premium position.</p>
+            <div className="space-y-1.5">
+              {[
+                { greek: 'Theta', green: 'High positive — strong daily decay collecting', red: 'Negative — time working against you' },
+                { greek: 'Delta', green: 'Near zero — position is directionally neutral', red: 'High absolute value — large directional exposure' },
+                { greek: 'Gamma', green: 'Near zero — low gamma risk', red: 'High magnitude — gamma risk building (especially near expiry)' },
+                { greek: 'Vega', green: 'Negative — short vega working for you (IV decay)', red: 'Positive or near zero — IV exposure is a risk' },
+              ].map(g => (
+                <div key={g.greek} className="flex items-start gap-3">
+                  <span className={`text-[10px] font-bold w-12 shrink-0 text-purple-400`}>{g.greek}</span>
+                  <div>
+                    <span className="text-emerald-400">🟢 {g.green}</span>
+                    <span className={`ml-3 text-red-400`}>🔴 {g.red}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Buffer */}
           <div>
             <p className={`text-[9px] text-sky-400 uppercase tracking-widest mb-3 font-bold`}>% Buffer — DTE Aware Coloring</p>
+            <p className={`${th.textFaint} mb-2`}>Same buffer % is safer with less time remaining. Hover the buffer value on any card to see the full reference table.</p>
             <div className="grid grid-cols-2 gap-2">
               {[
                 { color: 'text-emerald-400', label: 'Green', desc: 'Healthy buffer for current DTE' },
@@ -5576,6 +5310,25 @@ function HelpLegendModal({ onClose, th }: { onClose: () => void; th: typeof THEM
               ))}
             </div>
           </div>
+
+          {/* Extend Profit button colors */}
+          <div>
+            <p className={`text-[9px] text-blue-400 uppercase tracking-widest mb-3 font-bold`}>↑ Extend Profit Button Colors</p>
+            <div className="space-y-1.5">
+              {[
+                { color: 'text-emerald-400', label: 'Green border', desc: 'Conditions favor extension — good profit, healthy DTE, strong IVR' },
+                { color: 'text-slate-400', label: 'Grey border', desc: 'Neutral — proceed carefully, no strong signal either way' },
+                { color: 'text-yellow-400', label: 'Yellow border', desc: 'Marginal — one or more conditions are weak' },
+                { color: 'text-red-400', label: 'Red border', desc: 'Unfavorable — position at loss, thin DTE, or low IVR' },
+              ].map(b => (
+                <div key={b.label} className="flex items-start gap-2">
+                  <span className={`font-bold shrink-0 ${b.color}`}>{b.label}</span>
+                  <span className={th.textFaint}>{b.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
@@ -5594,14 +5347,6 @@ export default function PortfolioPage() {
   const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
-
-  // Auto-open performance panel if navigated with #performance hash
-  useEffect(() => {
-    if (typeof window !== 'undefined' && window.location.hash === '#performance') {
-      setShowPerformance(true);
-      window.history.replaceState(null, '', '/portfolio');
-    }
-  }, []);
   const [showMemory, setShowMemory] = useState(false);
   const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
@@ -5630,59 +5375,6 @@ export default function PortfolioPage() {
     setLoading(true); setError(''); setChecked(new Set());
     try {
       const data = await loadPositions();
-
-      // ── Detect GTC auto-fills: positions in snapshot that are no longer live ──
-      try {
-        const raw = localStorage.getItem(LS_POSITION_SNAPSHOT);
-        if (raw) {
-          const snapshot: Position[] = JSON.parse(raw);
-          const liveKeys = new Set(data.map((p: Position) => p.key));
-          const closed = snapshot.filter(p => !liveKeys.has(p.key));
-          for (const p of closed) {
-            // Skip if already in audit log (same symbol + expDate)
-            const existing = readAuditLog();
-            const alreadyLogged = existing.some(e =>
-              e.symbol === p.symbol &&
-              e.timestamp.slice(0, 10) >= (p.entryDate ?? '2000-01-01')
-            );
-            if (alreadyLogged) continue;
-            // Determine P&L: if position had a GTC and hit target, assume profit target was captured
-            // Use currentValue if known, otherwise estimate at profitTarget
-            const qty = p.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
-            const creditTotal = p.creditReceived * qty;
-            // Best estimate: if it hit target use targetPrice, else use last known currentValue
-            const closeValue = p.hitTarget
-              ? p.targetPrice * qty * 100
-              : p.currentValue != null
-              ? p.currentValue * qty * 100
-              : null;
-            const estPnl = closeValue != null ? creditTotal - closeValue : null;
-            const action: ActionType = p.hitTarget ? 'TAKE_PROFIT'
-              : p.needsClose ? 'CLOSE_ROLL'
-              : 'TAKE_PROFIT';
-            writeAuditEntry({
-              id: crypto.randomUUID(),
-              timestamp: new Date().toISOString(),
-              symbol: p.symbol,
-              strategy: p.strategy,
-              action,
-              orderType: 'GTC Auto-Fill',
-              limitPrice: p.targetPrice,
-              quantity: qty,
-              orderId: p.gtcOrderId ?? 'auto',
-              status: 'submitted',
-              estPnl: estPnl ?? undefined,
-              closeProfitPct: estPnl != null && creditTotal > 0
-                ? Math.round((estPnl / creditTotal) * 100)
-                : undefined,
-            });
-          }
-        }
-      } catch { /* snapshot comparison is best-effort */ }
-
-      // Save new snapshot
-      try { localStorage.setItem(LS_POSITION_SNAPSHOT, JSON.stringify(data)); } catch {}
-
       setPositions(data);
       setLastRefresh(new Date());
     } catch (e: any) {
