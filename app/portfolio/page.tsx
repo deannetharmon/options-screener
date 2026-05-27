@@ -1860,6 +1860,8 @@ function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =
   );
 }
 
+type BatchStatus = 'enriching' | 'ready' | 'submitting' | 'done' | 'error';
+
 // ── Batch Confirm Modal ─────────────────────────────────────────────────────
 function BatchConfirmModal({
   items: initialItems,
