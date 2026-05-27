@@ -4970,12 +4970,73 @@ function BulkActionBar({ selectedKeys, positions, onExecute, onClear, th }: {
 
 // ── Performance Panel ──────────────────────────────────────────────────────
 function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
+  const [ttOrders, setTtOrders] = useState<AuditEntry[]>([]);
+  const [ttLoading, setTtLoading] = useState(false);
+  const [ttError, setTtError] = useState('');
+
   const auditLog: AuditEntry[] = (() => {
     try { return JSON.parse(localStorage.getItem('prosper-audit-log') ?? '[]'); } catch { return []; }
   })();
 
-  const closed = auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
-    (e.action === 'TAKE_PROFIT' || e.action === 'CUT_LOSSES' || e.action === 'CLOSE_ROLL'));
+  // Fetch filled closing orders from TastyTrade to catch GTC auto-fills
+  useEffect(() => {
+    (async () => {
+      setTtLoading(true);
+      try {
+        const token = await getAccessToken();
+        const accountsData = await ttFetch('/customers/me/accounts', token);
+        const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+        if (!accountNumber) return;
+        // Fetch transaction history — this includes all filled orders
+        const data = await ttFetch(`/accounts/${accountNumber}/transactions?per-page=250`, token);
+        const items: any[] = data?.data?.items ?? [];
+        // Filter: closing option transactions (Buy to Close = profit/loss realized)
+        const closes = items.filter((t: any) =>
+          (t.transaction_type === 'Trade' || t['transaction-type'] === 'Trade') &&
+          (t.action === 'Buy to Close' || t['action'] === 'Buy to Close')
+        );
+        // Build synthetic AuditEntry objects from TT transactions
+        // Only include if not already in audit log (match by symbol + date)
+        const auditKeys = new Set(auditLog.map(e => `${e.symbol}::${e.timestamp.slice(0, 10)}`));
+        const synthetic: AuditEntry[] = closes
+          .map((t: any) => {
+            const sym = t['underlying-symbol'] ?? t.symbol?.split(' ')[0] ?? '';
+            const date = (t['transaction-date'] ?? t['executed-at'] ?? '').slice(0, 10);
+            const key = `${sym}::${date}`;
+            if (auditKeys.has(key)) return null; // already in audit log
+            const price = parseFloat(t.price ?? t['net-value'] ?? '0');
+            return {
+              id: t.id ?? crypto.randomUUID(),
+              timestamp: t['transaction-date'] ?? t['executed-at'] ?? new Date().toISOString(),
+              symbol: sym,
+              strategy: '—',
+              action: 'TAKE_PROFIT' as ActionType,
+              orderType: 'GTC Fill',
+              limitPrice: price,
+              quantity: parseInt(t.quantity ?? '1', 10),
+              orderId: String(t['order-id'] ?? t.id ?? ''),
+              status: 'submitted' as const,
+              estPnl: price > 0 ? -(price * parseInt(t.quantity ?? '1', 10) * 100) : undefined,
+            };
+          })
+          .filter(Boolean) as AuditEntry[];
+        setTtOrders(synthetic);
+      } catch (e: any) {
+        setTtError(e.message);
+      } finally {
+        setTtLoading(false);
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Merge audit log + TT order history
+  const allClosed = [
+    ...auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
+      (e.action === 'TAKE_PROFIT' || e.action === 'CUT_LOSSES' || e.action === 'CLOSE_ROLL')),
+    ...ttOrders.filter(e => e.estPnl != null),
+  ];
+  const closed = allClosed;
 
   const winners = closed.filter(e => (e.estPnl ?? 0) > 0);
   const losers  = closed.filter(e => (e.estPnl ?? 0) <= 0);
@@ -5034,7 +5095,12 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
         <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
           <div>
             <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>PERFORMANCE</h2>
-            <p className={`text-[10px] ${th.textFaint}`}>{closed.length} closed trades · estimated P&L from audit log</p>
+            <p className={`text-[10px] ${th.textFaint}`}>
+              {closed.length} closed trades · audit log + TastyTrade history
+              {ttLoading && <span className="ml-2 text-blue-400">⟳ fetching TT orders...</span>}
+              {ttError && <span className="ml-2 text-yellow-400">⚠ TT fetch failed</span>}
+              {ttOrders.length > 0 && <span className="ml-2 text-emerald-400">+{ttOrders.length} from TastyTrade</span>}
+            </p>
           </div>
           <button onClick={onClose} className={`${th.textFaint} hover:text-white text-lg leading-none`}>✕</button>
         </div>
@@ -5043,7 +5109,7 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
           {closed.length === 0 ? (
             <div className={`text-center py-16 ${th.textFaint}`}>
               <p className="text-3xl mb-3">📊</p>
-              <p className="text-sm">No closed trades in audit log yet.</p>
+              <p className="text-sm">No closed trades found in audit log or TastyTrade history.</p>
               <p className="text-[11px] mt-1 opacity-60">Trades appear here after you submit Take Profit, Cut Losses, or Close/Roll orders.</p>
             </div>
           ) : (
@@ -5280,6 +5346,14 @@ export default function PortfolioPage() {
   const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
+
+  // Auto-open performance panel if navigated with #performance hash
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.hash === '#performance') {
+      setShowPerformance(true);
+      window.history.replaceState(null, '', '/portfolio');
+    }
+  }, []);
   const [showMemory, setShowMemory] = useState(false);
   const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
