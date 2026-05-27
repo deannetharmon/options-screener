@@ -2733,12 +2733,13 @@ function PortfolioAnalysisPanel({ analysis, positions, onClose, th }: {
             </div>
           </div>
 
+          {/* 
           <ChatThread
             initialContext={chatContext}
             systemPrompt={TRADING_CHAT_PROMPT}
             placeholder='Ask anything — e.g. "Which position should I close first if I need cash?" or "Am I too long tech?"'
-            th={th}
           />
+          */}
         </div>
 
         <div className={`px-6 py-4 border-t ${th.border} shrink-0`}>
