@@ -1392,6 +1392,22 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
 }
 
+// Separate function so getRecommendation stays clean — called in PositionCard render
+function getExtendSignal(pos: Position): string | null {
+  if (!pos.hasGtc) return null;
+  const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
+  // Only suggest extension when: profit > 50%, DTE > 25, IVR >= 35, buffer > 5%
+  if (
+    pnlPct >= 50 &&
+    pos.dte >= 25 &&
+    (pos.ivr == null || pos.ivr >= 35) &&
+    (pos.buffer == null || pos.buffer >= 5)
+  ) {
+    return `↑ Consider extending — ${pnlPct.toFixed(0)}% profit with ${pos.dte}d left`;
+  }
+  return null;
+}
+
 // ── AI Analysis ───────────────────────────────────────────────────────────
 const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
 
@@ -3400,6 +3416,73 @@ function ActionVerdictBadge({ verdict, compact = false, th }: {
 }
 
 // ── Extend Profit Button ───────────────────────────────────────────────────
+// ── Extend Profit State Assessment ───────────────────────────────────────
+// Evaluates whether conditions favor or warn against extending profit target
+function assessExtendConditions(pos: Position): {
+  signal: 'favorable' | 'neutral' | 'warning' | 'bad';
+  reasons: string[];
+  warnings: string[];
+} {
+  const reasons: string[] = [];
+  const warnings: string[] = [];
+  let score = 0;
+
+  // P&L check — most important
+  const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
+  if (pnlPct < 0) {
+    warnings.push(`Position is at a loss (${pnlPct.toFixed(0)}%) — extending a losing position is rarely right`);
+    score -= 3;
+  } else if (pnlPct < 30) {
+    warnings.push(`Only ${pnlPct.toFixed(0)}% profit captured — haven't hit standard target yet`);
+    score -= 1;
+  } else if (pnlPct >= 50) {
+    reasons.push(`${pnlPct.toFixed(0)}% profit already captured — solid base to extend from`);
+    score += 2;
+  }
+
+  // DTE check
+  if (pos.dte < 21) {
+    warnings.push(`${pos.dte} DTE — gamma risk is elevated, holding longer is dangerous`);
+    score -= 3;
+  } else if (pos.dte < 28) {
+    warnings.push(`${pos.dte} DTE — getting close to gamma zone, extend only if trend is strong`);
+    score -= 1;
+  } else if (pos.dte >= 30) {
+    reasons.push(`${pos.dte} DTE — plenty of time, gamma risk is low`);
+    score += 1;
+  }
+
+  // IVR check
+  if (pos.ivr != null && pos.ivr < 30) {
+    warnings.push(`IVR ${pos.ivr} — below minimum threshold, edge is thin`);
+    score -= 2;
+  } else if (pos.ivr != null && pos.ivr >= 40) {
+    reasons.push(`IVR ${pos.ivr} — elevated volatility means more premium to capture`);
+    score += 1;
+  }
+
+  // Buffer check
+  if (pos.buffer != null && pos.buffer < 5 && pos.dte > 14) {
+    warnings.push(`Buffer only ${pos.buffer.toFixed(1)}% — thin cushion makes holding longer risky`);
+    score -= 2;
+  } else if (pos.buffer != null && pos.buffer >= 10) {
+    reasons.push(`${pos.buffer.toFixed(1)}% buffer — strong cushion supports holding longer`);
+    score += 1;
+  }
+
+  // Theta check
+  if (pos.theta != null && pos.theta < 0.02) {
+    warnings.push(`Theta only $${(pos.theta * 100).toFixed(2)}/day — slow decay, extra holding time has low reward`);
+    score -= 1;
+  } else if (pos.theta != null && pos.theta >= 0.05) {
+    reasons.push(`Theta $${(pos.theta * 100).toFixed(2)}/day — strong decay working in your favor`);
+    score += 1;
+  }
+
+  const signal = score >= 3 ? 'favorable' : score >= 0 ? 'neutral' : score >= -2 ? 'warning' : 'bad';
+  return { signal, reasons, warnings };
+}
+
 function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -3481,6 +3564,12 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
     }
   };
 
+  const extendAssessment = assessExtendConditions(pos);
+  const assessColor = extendAssessment.signal === 'favorable' ? 'border-emerald-600 text-emerald-400' :
+                      extendAssessment.signal === 'neutral'   ? 'border-slate-600 text-slate-400' :
+                      extendAssessment.signal === 'warning'   ? 'border-yellow-600 text-yellow-400' :
+                                                                'border-red-700 text-red-400';
+
   return (
     <div className="relative">
       <button
@@ -3489,7 +3578,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
           result === 'success' ? 'border-emerald-600 text-emerald-400' :
           result === 'error'   ? 'border-red-600 text-red-400' :
           open ? 'border-blue-500 text-blue-400 bg-blue-500/10' :
-          'border-slate-600 text-slate-400 hover:border-blue-500 hover:text-blue-400'
+          assessColor
         }`}>
         {result === 'success' ? '✓ Extended' : result === 'error' ? '✕ Failed' : '↑ Extend Profit'}
       </button>
@@ -3497,9 +3586,34 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
       {open && (
         <div className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-80`}
           onClick={e => e.stopPropagation()}>
-          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3`}>
+          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>
             Extend target — current: {currentTargetPct}%
           </p>
+
+          {/* State assessment banner */}
+          <div className={`mb-3 p-2.5 rounded-lg border text-[9px] leading-relaxed ${
+            extendAssessment.signal === 'favorable' ? 'border-emerald-600/40 bg-emerald-500/5' :
+            extendAssessment.signal === 'neutral'   ? 'border-slate-600/40 bg-slate-500/5' :
+            extendAssessment.signal === 'warning'   ? 'border-yellow-600/40 bg-yellow-500/5' :
+                                                      'border-red-600/40 bg-red-500/5'
+          }`}>
+            <p className={`font-bold mb-1 ${
+              extendAssessment.signal === 'favorable' ? 'text-emerald-400' :
+              extendAssessment.signal === 'neutral'   ? 'text-slate-400' :
+              extendAssessment.signal === 'warning'   ? 'text-yellow-400' : 'text-red-400'
+            }`}>
+              {extendAssessment.signal === 'favorable' ? '✓ Conditions favor extension' :
+               extendAssessment.signal === 'neutral'   ? '◦ Neutral — proceed with caution' :
+               extendAssessment.signal === 'warning'   ? '⚠ Conditions are marginal' :
+               '✕ Conditions do not favor extension'}
+            </p>
+            {extendAssessment.warnings.map((w, i) => (
+              <p key={i} className="text-red-300/80 mt-0.5">▸ {w}</p>
+            ))}
+            {extendAssessment.reasons.map((r, i) => (
+              <p key={i} className="text-emerald-300/80 mt-0.5">▸ {r}</p>
+            ))}
+          </div>
 
           {/* Verdict */}
           {verdictLoading && (
@@ -4690,6 +4804,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-[9px] ${th.textFaint}`}>Suggested</p>
               <span className={`text-[10px] font-bold ${ACTION_META[rec.action].color}`}>{ACTION_META[rec.action].label}</span>
               <p className={`text-[9px] ${th.textFaint} mt-0.5 leading-tight`}>{rec.detail}</p>
+              {(() => { const sig = getExtendSignal(pos); return sig ? <p className="text-[9px] text-blue-400 mt-0.5 leading-tight">{sig}</p> : null; })()}
             </div>
           </div>
         </div>
