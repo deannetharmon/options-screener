@@ -4014,7 +4014,7 @@ export default function Home() {
                   <div className="space-y-2">{results.map((r, i) => (
                     <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
                     </div>
                   ))}</div>
                 </div>
