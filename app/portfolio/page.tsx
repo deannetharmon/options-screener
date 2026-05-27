@@ -4708,7 +4708,7 @@ export default function PortfolioPage() {
 
       {positions.length > 0 && (
         <>
-          <SummaryBar positions={positions} th={th} />
+          {/* <SummaryBar positions={positions} th={th} /> */}
           <div className="overflow-x-auto">
             <div className="p-6 space-y-8" style={{ minWidth: '1200px' }}>
 
