@@ -1894,7 +1894,7 @@ function BatchConfirmModal({
 
   const marketStatus = getMarketStatus();
 
-  // Enrich logic (unchanged)
+  // Enrich logic
   useEffect(() => {
     let cancelled = false;
     async function enrich() {
@@ -2049,13 +2049,13 @@ function BatchConfirmModal({
         try {
           let orderId: string;
 
-          // If this position has an existing GTC and user confirmed override → cancel it first
+          // AUTO CANCEL EXISTING GTC IF USER CONFIRMED
           if (!dryRun && item.pos.hasGtc && gtcConfirmed.has(item.pos.key) && item.pos.gtcOrderId) {
             try {
               await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token);
-              console.log(`Cancelled existing GTC ${item.pos.gtcOrderId} for ${item.pos.symbol}`);
-            } catch (cancelErr: any) {
-              console.warn(`Failed to cancel GTC for ${item.pos.symbol}:`, cancelErr.message);
+              console.log(`Cancelled old GTC ${item.pos.gtcOrderId} for ${item.pos.symbol}`);
+            } catch (cancelErr) {
+              console.warn(`Failed to cancel GTC for ${item.pos.symbol}`, cancelErr);
             }
           }
 
@@ -2070,7 +2070,7 @@ function BatchConfirmModal({
                 if (item.action === 'PLACE_GTC' && item.limitPrice >= livePerContract) {
                   throw new Error(`GTC limit $${item.limitPrice.toFixed(2)} ≥ live spread $${livePerContract.toFixed(2)}`);
                 }
-                if ((item.action === 'TAKE_PROFIT' || item.action === 'CUT_LOSSES' || item.action === 'CLOSE_ROLL')) {
+                if (item.action === 'TAKE_PROFIT' || item.action === 'CUT_LOSSES' || item.action === 'CLOSE_ROLL') {
                   const pctFromLive = Math.abs(item.limitPrice - livePerContract) / livePerContract;
                   if (pctFromLive > 0.30) {
                     const freshLimit = item.action === 'TAKE_PROFIT'
@@ -2101,17 +2101,85 @@ function BatchConfirmModal({
             orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
           }
 
-          // ... (the rest of your existing submitAll logic for roll, audit, memory, etc. remains unchanged)
-
-          // [I kept your full roll logic, audit entry, memory recording, etc. exactly as you had it]
-
           if (item.action === 'CLOSE_ROLL' && rollMode[item.pos.key] === 'roll') {
-            // your full roll code here (same as before)
+            const ri = rollInputs[item.pos.key];
+            if (ri?.expiry && ri.shortStrike && ri.longStrike && ri.credit) {
+              const _ed = new Date(ri.expiry); const _td = new Date(); _td.setHours(0,0,0,0);
+              if (isNaN(_ed.getTime())) throw new Error('Roll expiry is not a valid date.');
+              if (_ed <= _td) throw new Error('Roll expiry is in the past. Enter a future date.');
+              const optType: 'P' | 'C' = item.pos.strategy === 'BCS' ? 'C' : 'P';
+              const suggestion = rollSuggestions[item.pos.key];
+              const qty = item.pos.legs[0]?.quantity ?? 1;
+
+              const inputCredit = parseFloat(ri.credit);
+              const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
+              if (inputWidth > 0 && inputCredit < inputWidth / 3) {
+                throw new Error(`Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). This roll doesn't meet the Prosper credit rule.`);
+              }
+
+              let finalCredit = inputCredit;
+              if (!dryRun && suggestion) {
+                try {
+                  const liveChain = await ttFetch(`/option-chains/${encodeURIComponent(item.pos.symbol)}/nested?expiration-date=${ri.expiry}`, token);
+                  const liveStrikes: any[] = liveChain?.data?.items?.[0]?.strikes ?? [];
+                  let shortLive: any = null;
+                  let longLive: any = null;
+                  for (const s of liveStrikes) {
+                    if (s['strike-price'] === parseFloat(ri.shortStrike)) shortLive = s[optType === 'P' ? 'put' : 'call'];
+                    if (s['strike-price'] === parseFloat(ri.longStrike)) longLive = s[optType === 'P' ? 'put' : 'call'];
+                  }
+                  if (shortLive && longLive) {
+                    const shortMid = (parseFloat(shortLive.bid ?? '0') + parseFloat(shortLive.ask ?? '0')) / 2;
+                    const longMid = (parseFloat(longLive.bid ?? '0') + parseFloat(longLive.ask ?? '0')) / 2;
+                    const liveCreditMid = shortMid - longMid;
+                    const liveCredit85 = parseFloat((liveCreditMid * 0.85).toFixed(2));
+                    if (liveCreditMid > 0 && Math.abs(liveCreditMid - inputCredit) / inputCredit > 0.20) {
+                      finalCredit = liveCredit85;
+                    }
+                    if (inputWidth > 0 && liveCreditMid < inputWidth / 3) {
+                      throw new Error(`Roll credit dropped to $${liveCreditMid.toFixed(2)} — no longer meets 1/3 rule.`);
+                    }
+                  }
+                } catch (creditCheckErr: any) {
+                  if (String(creditCheckErr.message).includes('1/3 rule') || String(creditCheckErr.message).includes('credit rule')) {
+                    throw creditCheckErr;
+                  }
+                  console.warn(`Roll credit re-fetch failed for ${item.pos.symbol}:`, creditCheckErr.message);
+                }
+              }
+
+              const openBody = buildOpenSpreadOrder(
+                item.pos.symbol, ri.expiry, optType,
+                parseFloat(ri.shortStrike), parseFloat(ri.longStrike),
+                qty, finalCredit,
+                suggestion?.shortSymbol, suggestion?.longSymbol
+              );
+
+              let openId: string;
+              if (dryRun) {
+                await new Promise(r => setTimeout(r, 200));
+                openId = `DRY-${Date.now().toString(36).toUpperCase()}-OPEN`;
+              } else {
+                const openRes = await ttPost(`/accounts/${item.pos.accountNumber}/orders`, token, openBody);
+                openId = String(openRes?.data?.order?.id ?? openRes?.data?.id ?? 'submitted');
+              }
+
+              writeAuditEntry({
+                id: crypto.randomUUID(), timestamp: new Date().toISOString(),
+                symbol: item.pos.symbol, strategy: item.pos.strategy, action: 'CLOSE_ROLL',
+                orderType: 'Sell to Open (Roll)', limitPrice: finalCredit,
+                quantity: qty, orderId: openId,
+                status: dryRun ? 'dry-run' : 'submitted',
+              });
+
+              results.push({ symbol: item.pos.symbol, action: item.action, orderId: `Close #${orderId} · Open #${openId}`, status: 'working', limitPrice: item.limitPrice, estPnl: item.estPnl });
+            } else {
+              results.push({ symbol: item.pos.symbol, action: item.action, orderId, status: 'working', limitPrice: item.limitPrice, estPnl: item.estPnl });
+            }
           } else {
             results.push({ symbol: item.pos.symbol, action: item.action, orderId, status: 'working', limitPrice: item.limitPrice, estPnl: item.estPnl });
           }
 
-          // audit + memory logging (unchanged)
           const _auditQty = item.pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
           const _creditPc = item.pos.creditReceived / (_auditQty * 100);
           const _closeProfitPct = (item.action === 'TAKE_PROFIT' && _creditPc > 0 && item.estPnl != null)
@@ -2162,6 +2230,7 @@ function BatchConfirmModal({
   return (
     <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
+
         {dryRun && (
           <div className="bg-amber-500/15 border-b border-amber-500/40 px-6 py-2 flex items-center gap-2 shrink-0">
             <span className="text-amber-400 font-bold text-sm">⚗</span>
@@ -2215,11 +2284,11 @@ function BatchConfirmModal({
                   </div>
                 );
               })}
-              <p className="text-[10px] text-yellow-300 mt-2">You are hitting the 21 DTE window. Confirming will cancel the old GTC and place the new close order.</p>
+              <p className="text-[10px] text-yellow-300 mt-2">Confirming will cancel the old GTC and place the new close order.</p>
             </div>
           )}
 
-          {/* Enriching, submitting, done, error, ready states — all your original UI */}
+          {/* Enriching spinner */}
           {status === 'enriching' && (
             <div className="flex flex-col items-center justify-center py-12 gap-3">
               <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -2227,6 +2296,7 @@ function BatchConfirmModal({
             </div>
           )}
 
+          {/* Submitting progress */}
           {status === 'submitting' && (
             <div className="flex flex-col items-center justify-center py-12 gap-4">
               <div className="w-full max-w-xs">
@@ -2238,9 +2308,38 @@ function BatchConfirmModal({
             </div>
           )}
 
+          {/* Order results */}
           {status === 'done' && (
             <div className="p-6 space-y-4">
-              {/* your order results UI */}
+              <div className="flex gap-4">
+                {filledCount > 0 && <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500" /><span className="text-xs text-emerald-400 font-bold">{filledCount} submitted</span></div>}
+                {rejectedCount > 0 && <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-red-500" /><span className="text-xs text-red-400 font-bold">{rejectedCount} rejected</span></div>}
+              </div>
+              <div className="space-y-2">
+                {orderResults.map((r, i) => (
+                  <div key={i} className={`p-3 rounded-lg border ${r.status === 'error' || r.status === 'rejected' ? 'border-red-500/40 bg-red-500/5' : 'border-emerald-500/20 bg-emerald-500/5'}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.symbol}</span>
+                        <span className={`text-[10px] ${ACTION_META[r.action].color}`}>{ACTION_META[r.action].label}</span>
+                        {(r.status === 'error' || r.status === 'rejected') && <span className="text-[9px] text-red-400 font-bold">REJECTED</span>}
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-[10px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>{r.orderId}</p>
+                        {r.estPnl != null && <p className={`text-[10px] font-bold ${r.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{r.estPnl >= 0 ? '+' : ''}${r.estPnl.toFixed(2)}</p>}
+                      </div>
+                    </div>
+                    {r.error && (
+                      <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
+                        <p className="text-[10px] text-red-300 leading-relaxed">{r.error}</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className={`text-[10px} ${th.textFaint} text-center`}>
+                {dryRun ? 'Dry run complete' : 'Verify working orders in TastyTrade. Positions will refresh on close.'}
+              </p>
             </div>
           )}
 
@@ -2256,7 +2355,206 @@ function BatchConfirmModal({
 
           {status === 'ready' && (
             <div className="space-y-2">
-              {/* your full order table UI with price errors, warnings, etc. */}
+              {priceErrorCount > 0 && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/40">
+                  <span className="text-red-400 font-bold">✕</span>
+                  <p className="text-xs text-red-400 font-bold">{priceErrorCount} position{priceErrorCount !== 1 ? 's have' : ' has'} price errors — uncheck or fix before submitting.</p>
+                </div>
+              )}
+              {warningCount > 0 && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+                  <span className="text-yellow-400">⚠</span>
+                  <p className="text-xs text-yellow-400">{warningCount} position{warningCount !== 1 ? 's have' : ' has'} warnings. Review before submitting.</p>
+                </div>
+              )}
+
+              {batchItems.map(item => {
+                const isExcluded = excluded.has(item.pos.key);
+                const ri = rollInputs[item.pos.key];
+                const suggestion = rollSuggestions[item.pos.key];
+                const verdict = verdicts[item.pos.key];
+                const isStopHigh = verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH';
+                const isOverridden = overrides.has(item.pos.key);
+                return (
+                  <div key={item.pos.key} className={`rounded-lg border transition-all ${
+                    isExcluded ? 'opacity-40 border-dashed' :
+                    item.priceError != null && !isExcluded ? 'border-red-500/70' :
+                    isStopHigh && !isOverridden ? 'border-red-500/60' :
+                    verdict?.verdict === 'CAUTION' ? 'border-yellow-500/40' :
+                    item.stalePriceWarning || item.duplicateGtcWarning ? 'border-yellow-500/50' :
+                    th.border
+                  }`}>
+                    <div className="flex items-center gap-3 px-4 py-3">
+                      <input type="checkbox" checked={!isExcluded}
+                        onChange={() => setExcluded(prev => { const n = new Set(prev); isExcluded ? n.delete(item.pos.key) : n.add(item.pos.key); return n; })}
+                        className="w-4 h-4 accent-blue-500 cursor-pointer shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.pos.symbol}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(item.pos.strategy)}`}>{item.pos.strategy}</span>
+                          <span className={`text-[10px] font-bold ${ACTION_META[item.action].color}`}>{ACTION_META[item.action].label}</span>
+                          {verdict && <ActionVerdictBadge verdict={verdict} compact th={th} />}
+                        </div>
+                        <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                          <span className={`text-[10px] ${th.textFaint}`}>{item.pos.expDate} · {item.pos.dte}d</span>
+                          {item.stalePriceWarning && <span className="text-[10px] text-yellow-400 font-bold">⚠ Price moved since load</span>}
+                          {item.duplicateGtcWarning && <span className="text-[10px] text-yellow-400 font-bold">⚠ GTC already working</span>}
+                        </div>
+                        {item.priceError != null && !isExcluded && (
+                          <div className="mt-1.5 flex items-start gap-1.5">
+                            <span className="text-red-400 text-[9px] mt-0.5 shrink-0">✕</span>
+                            <p className="text-[9px] text-red-400 leading-relaxed">{item.priceError}</p>
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-right shrink-0 space-y-1 min-w-[140px]">
+                        <div className="flex items-center justify-end gap-1">
+                          <span className={`text-[9px} ${th.textFaint}`}>Limit $</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            value={limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2)}
+                            onChange={e => setLimitOverrides(prev => ({ ...prev, [item.pos.key]: e.target.value }))}
+                            onBlur={e => {
+                              const v = parseFloat(e.target.value);
+                              if (isNaN(v) || v <= 0) setLimitOverrides(prev => { const n = { ...prev }; delete n[item.pos.key]; return n; });
+                              else setLimitOverrides(prev => ({ ...prev, [item.pos.key]: v.toFixed(2) }));
+                            }}
+                            className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${item.priceError != null ? 'border-red-500/60 text-red-400' : 'border-blue-500/40 text-blue-400'} bg-transparent outline-none focus:border-blue-400`}
+                            style={{ fontFamily: "'DM Mono', monospace" }}
+                          />
+                        </div>
+                        {item.estPnl != null && (
+                          <p className={`text-[10px} font-bold ${item.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {item.estPnl >= 0 ? '+' : ''}${item.estPnl.toFixed(2)}
+                          </p>
+                        )}
+                        <p className={`text-[10px} ${th.textFaint}`}>{item.orderBody['time-in-force']}</p>
+                      </div>
+                    </div>
+
+                    {item.action === 'CLOSE_ROLL' && !isExcluded && (
+                      <div className={`px-4 pb-3 border-t ${th.borderLight}`}>
+                        <div className="flex items-center gap-2 pt-2 pb-2">
+                          <span className={`text-[9px} ${th.textFaint} uppercase`}>Action:</span>
+                          <button onClick={() => setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'close'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${(rollMode[item.pos.key] ?? 'close') === 'close' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : th.border + ' ' + th.textFaint}`}>Close Only</button>
+                          <button onClick={() => setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'roll'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${rollMode[item.pos.key] === 'roll' ? 'border-purple-500 text-purple-400 bg-purple-500/10' : th.border + ' ' + th.textFaint}`}>Close + Roll</button>
+                          <span className={`text-[9px} ${th.textFaint}`}>{rollMode[item.pos.key] === 'roll' ? 'Closes and opens new spread.' : 'Closes position only.'}</span>
+                        </div>
+                        <div className="pt-2 space-y-3" style={{display: rollMode[item.pos.key] === 'roll' ? undefined : 'none'}}>
+                          {suggestion && (
+                            <div className={`rounded-lg border p-3 space-y-2 ${
+                              rollIsBlocking(suggestion) ? 'border-red-500/50 bg-red-500/5' :
+                              suggestion.ruleViolations.length > 0 ? 'border-yellow-500/40 bg-yellow-500/5' :
+                              'border-blue-500/30 bg-blue-500/5'
+                            }`}>
+                              <div className="flex items-center justify-between flex-wrap gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">Suggested Roll</span>
+                                  <span className="text-[10px] text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+                                    {suggestion.expiry} ({suggestion.dte}d) · {suggestion.shortStrike}/{suggestion.longStrike} · δ{suggestion.delta.toFixed(2)}
+                                  </span>
+                                </div>
+                                <button onClick={() => setRollInputs(prev => ({
+                                  ...prev,
+                                  [item.pos.key]: { expiry: suggestion.expiry, shortStrike: String(suggestion.shortStrike), longStrike: String(suggestion.longStrike), credit: String(suggestion.credit) }
+                                }))} className="text-[9px] px-2 py-0.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/20 transition-colors">
+                                  Use this
+                                </button>
+                              </div>
+                              <div className="grid grid-cols-4 gap-2">
+                                <div>
+                                  <p className={`text-[9px} ${th.textFaint}`}>Credit (mid)</p>
+                                  <p className={`text-[10px} font-bold ${suggestion.meetsMinCredit ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                    ${suggestion.creditMid.toFixed(2)}
+                                  </p>
+                                  <p className={`text-[9px} ${th.textFaint}`}>{(suggestion.creditRatio * 100).toFixed(0)}% of width</p>
+                                </div>
+                                <div>
+                                  <p className={`text-[9px} ${th.textFaint}`}>Limit order</p>
+                                  <p className={`text-[10px} font-bold text-blue-400`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                    ${suggestion.credit.toFixed(2)}
+                                  </p>
+                                  <p className={`text-[9px} ${th.textFaint}`}>85% of mid</p>
+                                </div>
+                                <div>
+                                  <p className={`text-[9px} ${th.textFaint}`}>OI (short/long)</p>
+                                  <p className={`text-[10px} font-bold ${suggestion.meetsOi ? 'text-emerald-400' : 'text-yellow-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                    {suggestion.shortOi ?? '?'} / {suggestion.longOi ?? '?'}
+                                  </p>
+                                  <p className={`text-[9px} ${th.textFaint}`}>need ≥500</p>
+                                </div>
+                                <div>
+                                  <p className={`text-[9px} ${th.textFaint}`}>Bid-ask (sh/lg)</p>
+                                  <p className={`text-[10px} font-bold ${suggestion.meetsBidAsk ? 'text-emerald-400' : 'text-yellow-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                    ${suggestion.shortBidAsk?.toFixed(2) ?? '?'} / ${suggestion.longBidAsk?.toFixed(2) ?? '?'}
+                                  </p>
+                                  <p className={`text-[9px} ${th.textFaint}`}>need ≤$0.10</p>
+                                </div>
+                              </div>
+                              {suggestion.ruleViolations.length > 0 && (
+                                <div className="space-y-1">
+                                  {suggestion.ruleViolations.map((v, i) => (
+                                    <div key={i} className="flex items-start gap-1.5">
+                                      <span className={`text-[9px} shrink-0 mt-0.5 ${rollIsBlocking(suggestion) ? 'text-red-400' : 'text-yellow-400'}`}>
+                                        {rollIsBlocking(suggestion) ? '✕' : '⚠'}
+                                      </span>
+                                      <p className={`text-[9px} leading-relaxed ${rollIsBlocking(suggestion) ? 'text-red-300' : 'text-yellow-300'}`}>{v}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-4 gap-2">
+                            {[
+                              { label: 'New Expiry', key: 'expiry', placeholder: (() => { const d = new Date(); d.setDate(d.getDate() + 45); return d.toISOString().slice(0, 10); })() },
+                              { label: 'Short Strike', key: 'shortStrike', placeholder: '490' },
+                              { label: 'Long Strike', key: 'longStrike', placeholder: '485' },
+                              { label: 'Credit ($)', key: 'credit', placeholder: '1.50' },
+                            ].map(f => (
+                              <div key={f.key}>
+                                <p className={`text-[9px} ${th.textFaint} mb-1`}>{f.label}</p>
+                                <input
+                                  value={ri?.[f.key as keyof typeof ri] ?? ''}
+                                  onChange={e => setRollInputs(prev => ({ ...prev, [item.pos.key]: { ...prev[item.pos.key], [f.key]: e.target.value } }))}
+                                  placeholder={f.placeholder}
+                                  className={`w-full text-[10px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-purple-500`}
+                                  style={{ fontFamily: "'DM Mono', monospace" }}
+                                />
+                              </div>
+                            ))}
+                          </div>
+
+                          {ri?.credit && ri?.shortStrike && ri?.longStrike && (() => {
+                            const inputCredit = parseFloat(ri.credit);
+                            const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
+                            const inputRatio  = inputWidth > 0 ? inputCredit / inputWidth : 0;
+                            const minCredit   = inputWidth / 3;
+                            if (inputCredit > 0 && inputRatio < 1/3) {
+                              return (
+                                <p className="text-[9px} text-red-400">
+                                  ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Prosper credit rule
+                                </p>
+                              );
+                            }
+                            if (inputCredit > 0) {
+                              return (
+                                <p className="text-[9px} text-emerald-400">
+                                  ✓ Credit ratio {(inputRatio * 100).toFixed(0)}% of spread width — meets 1/3 rule
+                                </p>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -2264,7 +2562,24 @@ function BatchConfirmModal({
         <div className={`px-6 py-4 border-t ${th.border} shrink-0`}>
           {status === 'ready' && (
             <div className="space-y-3">
-              {/* totals */}
+              <div className={`flex items-center justify-between p-3 rounded-lg ${th.card}`}>
+                <div className="flex gap-6">
+                  <div>
+                    <p className={`text-[9px} ${th.textFaint} uppercase tracking-widest`}>Orders</p>
+                    <p className={`text-sm font-bold ${th.text}`}>{activeItems.length}</p>
+                  </div>
+                  <div>
+                    <p className={`text-[9px} ${th.textFaint} uppercase tracking-widest`}>Total Debit</p>
+                    <p className="text-sm font-bold text-blue-400" style={{ fontFamily: "'DM Mono', monospace" }}>${totalDebit.toFixed(2)}</p>
+                  </div>
+                  <div>
+                    <p className={`text-[9px} ${th.textFaint} uppercase tracking-widest`}>Est. P&L</p>
+                    <p className={`text-sm font-bold ${totalEstPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                      {totalEstPnl >= 0 ? '+' : ''}${totalEstPnl.toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+              </div>
               <div className="flex gap-3">
                 {needsGtcConfirmation.length > 0 && !allGtcConfirmed ? (
                   <button disabled className="flex-1 py-3 bg-slate-700 text-slate-400 rounded-xl text-xs font-bold tracking-widest cursor-not-allowed">
@@ -2282,437 +2597,25 @@ function BatchConfirmModal({
               </div>
             </div>
           )}
-          {/* other status footers */}
-        </div>
-      </div>
-    </div>
-  );
-}
-// ── Summary Bar ────────────────────────────────────────────────────────────
-// ── Memory Panel ───────────────────────────────────────────────────────────
-function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
-  const [mem, setMem] = useState<TradingMemory>(readMemory);
-  const [summarizing, setSummarizing] = useState(false);
-
-  const handleSummarizeAll = async () => {
-    setSummarizing(true);
-    try {
-      const m = readMemory();
-      // Summarize all symbols with enough data
-      for (const sym of Object.keys(m.symbolProfiles)) {
-        if (m.symbolProfiles[sym].recentTrades.length > MEMORY_RAW_TRADES_PER_SYMBOL) {
-          await summarizeSymbolHistory(sym);
-        }
-      }
-      // Force behavior summarization regardless of time interval
-      const m2 = readMemory();
-      m2.lastSummarized = null; // reset so summarize runs
-      writeMemory(m2);
-      await summarizeBehaviorProfile();
-      setMem(readMemory());
-    } finally { setSummarizing(false); }
-  };
-
-  const symbols = Object.values(mem.symbolProfiles).sort((a, b) => b.tradeCount - a.tradeCount);
-  const bp = mem.behaviorProfile;
-
-  return (
-    <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col`}>
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${th.border} shrink-0`}>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-purple-400 text-sm">◆</span>
-              <h2 className={`text-sm font-bold ${th.text} tracking-wider`}>TRADING MEMORY</h2>
+          {status === 'done' && (
+            <div className="flex gap-3">
+              <button onClick={() => { onSuccess(); onClose(); }} className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'}`}>
+                {dryRun ? 'DRY RUN DONE — Close' : 'DONE — REFRESH POSITIONS'}
+              </button>
             </div>
-            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>
-              {bp.totalTrades} trades recorded · {symbols.length} symbols tracked
-              {mem.lastSummarized ? ` · Last summarized ${Math.round((Date.now() - new Date(mem.lastSummarized).getTime()) / 86400000)}d ago` : ''}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={handleSummarizeAll} disabled={summarizing}
-              className={`text-[10px] px-3 py-1.5 border border-purple-700 text-purple-400 rounded hover:border-purple-500 hover:bg-purple-500/10 transition-colors disabled:opacity-50`}>
-              {summarizing ? '◈ Summarizing...' : '◈ Summarize Now'}
+          )}
+          {status === 'error' && (
+            <button onClick={onClose} className={`w-full py-3 border ${th.border} ${th.textFaint} rounded-xl text-xs font-medium hover:border-white/30 transition-colors`}>
+              Close
             </button>
-            <button onClick={() => { clearMemory(); setMem(emptyMemory()); }}
-              className={`text-[10px] px-3 py-1.5 border ${th.border} ${th.textFaint} rounded hover:border-red-500 hover:text-red-400 transition-colors`}>
-              Clear
+          )}
+          {(status === 'enriching' || status === 'submitting') && (
+            <button disabled className="w-full py-3 bg-slate-700 text-slate-500 rounded-xl text-xs font-bold tracking-widest">
+              {status === 'enriching' ? 'FETCHING DATA...' : 'SUBMITTING...'}
             </button>
-            <button onClick={onClose} className={`text-xl ${th.textFaint} hover:${th.text}`}>✕</button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {bp.totalTrades === 0 && (
-            <div className="flex flex-col items-center justify-center h-40 gap-2">
-              <p className={`text-sm ${th.textFaint}`}>No trades recorded yet</p>
-              <p className={`text-[10px] ${th.textFaint} text-center max-w-xs`}>
-                Memory builds automatically as you execute trades through Prosper. Each trade teaches the verdict engine your patterns.
-              </p>
-            </div>
-          )}
-
-          {/* Behavioral profile */}
-          {bp.totalTrades > 0 && (
-            <div className={`p-4 rounded-xl border border-purple-700/40 bg-purple-500/5`}>
-              <p className="text-[9px] text-purple-400 uppercase tracking-widest mb-3 font-bold">Your Trading Profile</p>
-              <div className="grid grid-cols-3 gap-4 mb-3">
-                <div>
-                  <p className={`text-[9px] ${th.textFaint}`}>Total trades</p>
-                  <p className={`text-sm font-bold ${th.text}`}>{bp.totalTrades}</p>
-                </div>
-                <div>
-                  <p className={`text-[9px] ${th.textFaint}`}>AI overrides</p>
-                  <p className={`text-sm font-bold ${bp.overrideCount > 0 ? 'text-yellow-400' : th.textFaint}`}>
-                    {bp.overrideCount}
-                    {bp.overrideCount > 0 && <span className={`text-[10px] ml-1 ${th.textFaint}`}>({Math.round((bp.overrideWins / bp.overrideCount) * 100)}% right)</span>}
-                  </p>
-                </div>
-                <div>
-                  <p className={`text-[9px] ${th.textFaint}`}>Symbols tracked</p>
-                  <p className={`text-sm font-bold ${th.text}`}>{symbols.length}</p>
-                </div>
-              </div>
-              {bp.summary && <p className={`text-[11px] ${th.textFaint} leading-relaxed mb-2`}>{bp.summary}</p>}
-              <div className="grid grid-cols-2 gap-3">
-                {bp.strengths.length > 0 && (
-                  <div>
-                    <p className="text-[9px] text-emerald-400 font-bold mb-1">Strengths</p>
-                    {bp.strengths.map((s, i) => <p key={i} className="text-[10px] text-emerald-300">▸ {s}</p>)}
-                  </div>
-                )}
-                {bp.weaknesses.length > 0 && (
-                  <div>
-                    <p className="text-[9px] text-red-400 font-bold mb-1">Watch out for</p>
-                    {bp.weaknesses.map((w, i) => <p key={i} className="text-[10px] text-red-300">▸ {w}</p>)}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Symbol profiles */}
-          {symbols.length > 0 && (
-            <div>
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-3 font-bold`}>Symbol History</p>
-              <div className="space-y-3">
-                {symbols.map(profile => (
-                  <div key={profile.symbol} className={`p-4 rounded-lg border ${th.border}`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-3">
-                        <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{profile.symbol}</span>
-                        <span className={`text-[10px] ${th.textFaint}`}>{profile.tradeCount} trades</span>
-                        <span className={`text-[10px] font-bold ${profile.winRate >= 0.6 ? 'text-emerald-400' : profile.winRate >= 0.4 ? 'text-yellow-400' : 'text-red-400'}`}>
-                          {Math.round(profile.winRate * 100)}% win rate
-                        </span>
-                        <span className={`text-[10px] font-bold ${profile.avgPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          avg {profile.avgPnlPct.toFixed(1)}% P&L
-                        </span>
-                      </div>
-                    </div>
-                    {profile.historySummary && (
-                      <p className={`text-[10px] ${th.textFaint} leading-relaxed mb-2`}>{profile.historySummary}</p>
-                    )}
-                    {profile.recentTrades.slice(0, 3).map((t, i) => {
-                      const ago = Math.round((Date.now() - new Date(t.timestamp).getTime()) / 86400000);
-                      return (
-                        <div key={i} className={`flex items-center gap-3 text-[9px] py-1 border-t ${th.borderLight} first:border-t-0`}>
-                          <span className={`${th.textFaint} w-12 shrink-0`}>{ago}d ago</span>
-                          <span className={`${th.text} w-16 shrink-0`} style={{ fontFamily: "'DM Mono', monospace" }}>{t.strategy}</span>
-                          <span className={`${th.textFaint} flex-1`}>{t.action} @ {t.dte}d DTE</span>
-                          <span className={`font-bold ${t.outcome === 'WIN' ? 'text-emerald-400' : t.outcome === 'LOSS' ? 'text-red-400' : 'text-slate-400'}`}>
-                            {t.pnlPct >= 0 ? '+' : ''}{t.pnlPct.toFixed(1)}%
-                          </span>
-                          {t.aiVerdict && (
-                            <span className={`${t.aiVerdict === 'STOP' ? 'text-red-400' : t.aiVerdict === 'CAUTION' ? 'text-yellow-400' : 'text-emerald-400'}`}>
-                              AI:{t.aiVerdict}{t.aiOverridden ? '⚡' : ''}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
-  const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
-  const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
-  const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
-  const totalAtRisk = positions.reduce((s, p) => {
-    const shorts = p.legs.filter(l => l.direction === 'Short');
-    const longs  = p.legs.filter(l => l.direction === 'Long' && l.optionType === shorts[0]?.optionType);
-    if (shorts[0] && longs[0]) {
-      const width = Math.abs(shorts[0].strikePrice - longs[0].strikePrice);
-      return s + Math.max(0, (width * 100 * shorts[0].quantity) - p.creditReceived);
-    }
-    return s;
-  }, 0);
-  const totalTheta = positions.reduce((s, p) => {
-    if (p.currentValue != null && p.dte > 0) return s + p.currentValue / p.dte;
-    if (p.dte > 0) return s + p.creditReceived / p.dte;
-    return s;
-  }, 0);
-
-  return (
-    <div className={`grid grid-cols-5 border-b ${th.border}`}>
-      {[
-        { label: 'Open Positions', value: String(positions.length), sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`, color: th.text },
-        { label: 'Captured', value: `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, sub: `of $${totalCredit.toFixed(0)} · ${capturedPct.toFixed(0)}%`, color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: '50% Target', value: `$${Math.round(totalCredit * 0.5)}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / (totalCredit * 0.5)) * 100) : 0}% of target`, color: 'text-yellow-400' },
-        { label: 'At Risk', value: `$${totalAtRisk.toFixed(0)}`, sub: 'max loss if expired', color: th.textMuted },
-        { label: 'Est. Theta/Day', value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—', sub: 'daily decay', color: 'text-blue-400' },
-      ].map((item, i, arr) => (
-        <div key={item.label} className={`p-5 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
-          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>{item.label}</p>
-          <p className={`text-3xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
-          <p className={`text-[10px] ${th.textFaint} mt-1`}>{item.sub}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── Position Card ──────────────────────────────────────────────────────────
-// ── Analysis Panel ─────────────────────────────────────────────────────────
-const CONFIDENCE_COLOR: Record<string, string> = {
-  HIGH: 'text-emerald-400', MEDIUM: 'text-yellow-400', LOW: 'text-orange-400',
-};
-const REC_COLOR: Record<string, string> = {
-  HOLD: 'text-slate-400', WATCH: 'text-yellow-400', MANAGE: 'text-orange-400',
-  TAKE_PROFIT: 'text-emerald-400', CUT_LOSSES: 'text-red-400',
-  CLOSE: 'text-red-400', ROLL: 'text-purple-400',
-};
-
-// ── Chat Thread ────────────────────────────────────────────────────────────
-// Reusable multi-turn chat component. Receives initial context as the first
-// assistant message so the AI already "knows" the position or portfolio.
-
-function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
-  initialContext: string;   // the analysis text shown as the first assistant message
-  systemPrompt?: string;    // optional override — defaults to TRADING_SYSTEM_PROMPT
-  placeholder?: string;
-  th: typeof THEMES[Theme];
-}) {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'assistant', content: initialContext },
-  ]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const send = async () => {
-    const text = input.trim();
-    if (!text || loading) return;
-    setInput('');
-    setError(null);
-    const next: ChatMessage[] = [...messages, { role: 'user', content: text }];
-    setMessages(next);
-    setLoading(true);
-    try {
-      const reply = await callAIWithHistory(next, systemPrompt);
-      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-    } catch (e: any) {
-      setError(e.message ?? 'Failed');
-    } finally {
-      setLoading(false);
-      // Re-focus input after reply
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
-  };
-
-  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-  };
-
-  // Suggested follow-up prompts shown below the initial analysis
-  const suggestions = [
-    'What would make this go wrong fast?',
-    'If I roll, what strikes should I target?',
-    'Should I close early given current conditions?',
-    'What\'s my max pain scenario here?',
-  ];
-
-  return (
-    <div className={`border-t ${th.border} flex flex-col`} style={{ background: 'rgba(99,102,241,0.03)' }}>
-      {/* Message history — skip the first assistant message, it's already shown above */}
-      {messages.length > 1 && (
-        <div className="px-4 py-3 space-y-3 max-h-80 overflow-y-auto">
-          {messages.slice(1).map((m, i) => (
-            <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              {m.role === 'assistant' && (
-                <span className="text-indigo-400 text-[10px] mt-1 shrink-0 font-bold">◈</span>
-              )}
-              <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[11px] leading-relaxed ${
-                m.role === 'user'
-                  ? 'bg-blue-600/20 border border-blue-600/30 text-blue-100 ml-auto'
-                  : `${th.card} border ${th.border} ${th.textMuted}`
-              }`}>
-                {m.content}
-              </div>
-            </div>
-          ))}
-          {loading && (
-            <div className="flex gap-3 justify-start">
-              <span className="text-indigo-400 text-[10px] mt-1 shrink-0 font-bold">◈</span>
-              <div className={`${th.card} border ${th.border} rounded-xl px-3 py-2`}>
-                <div className="flex gap-1 items-center h-4">
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-              </div>
-            </div>
-          )}
-          {error && (
-            <p className="text-[10px] text-red-400 px-1">Error: {error} —
-              <button onClick={() => { setError(null); send(); }} className="underline ml-1">retry</button>
-            </p>
-          )}
-          <div ref={bottomRef} />
-        </div>
-      )}
-
-      {/* Suggestions — only shown before any user message */}
-      {messages.length === 1 && (
-        <div className="px-4 pt-3 pb-1 flex flex-wrap gap-1.5">
-          {suggestions.map((s, i) => (
-            <button key={i} onClick={() => { setInput(s); setTimeout(() => inputRef.current?.focus(), 50); }}
-              className={`text-[10px] px-2.5 py-1 rounded-full border ${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400 transition-colors`}>
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Input */}
-      <div className={`flex items-end gap-2 px-4 py-3`}>
-        <textarea
-          ref={inputRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          placeholder={placeholder ?? 'Ask a follow-up question... (Enter to send, Shift+Enter for newline)'}
-          rows={1}
-          disabled={loading}
-          className={`flex-1 resize-none text-[11px] px-3 py-2 rounded-xl border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-indigo-500 transition-colors placeholder:${th.textFaint} disabled:opacity-50`}
-          style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minHeight: '36px', maxHeight: '120px' }}
-          onInput={e => {
-            const el = e.currentTarget;
-            el.style.height = 'auto';
-            el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-          }}
-        />
-        <button onClick={send} disabled={loading || !input.trim()}
-          className="shrink-0 w-8 h-8 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-colors text-sm">
-          ↑
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function AnalysisPanel({ analysis, pos, th }: { analysis: PositionAnalysis; pos: Position; th: typeof THEMES[Theme] }) {
-  // Build a rich initial context string for the chat thread
-  const chatContext = [
-    `I've analyzed your ${analysis.symbol} ${pos.strategy} position (${pos.expDate}, ${pos.dte} DTE).`,
-    ``,
-    `**Recommendation: ${analysis.recommendation.replace('_', ' ')}** (${analysis.confidence} confidence)`,
-    ``,
-    analysis.summary,
-    ``,
-    analysis.reasoning,
-    analysis.deviatesFromRules && analysis.deviationNote ? `\n**Note:** ${analysis.deviationNote}` : '',
-    analysis.risks.length > 0 ? `\n**Key risks:** ${analysis.risks.join(' · ')}` : '',
-    analysis.catalysts.length > 0 ? `\n**In your favor:** ${analysis.catalysts.join(' · ')}` : '',
-  ].filter(Boolean).join('\n');
-
-  return (
-    <div className={`border-t ${th.border}`} style={{ background: 'rgba(99,102,241,0.04)' }}>
-      <div className="px-4 py-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-[9px] text-indigo-400 tracking-widest font-bold uppercase">AI Analysis</span>
-            <span className={`text-[10px] font-bold ${REC_COLOR[analysis.recommendation] ?? 'text-white'}`}>
-              → {analysis.recommendation.replace('_', ' ')}
-            </span>
-            <span className={`text-[9px] font-bold ${CONFIDENCE_COLOR[analysis.confidence] ?? 'text-slate-400'}`}>
-              {analysis.confidence} confidence
-            </span>
-            {analysis.deviatesFromRules && (
-              <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/50 text-yellow-400 font-bold">
-                ⚡ Outside rules
-              </span>
-            )}
-          </div>
-          <span className={`text-[9px] ${th.textFaint}`}>{new Date(analysis.generatedAt).toLocaleTimeString()}</span>
-        </div>
-
-        <p className={`text-xs ${th.textMuted} leading-relaxed`}>{analysis.summary}</p>
-        <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>{analysis.reasoning}</p>
-
-        {analysis.deviatesFromRules && analysis.deviationNote && (
-          <div className="flex items-start gap-2 p-2 rounded border border-yellow-600/30 bg-yellow-500/5">
-            <span className="text-yellow-400 shrink-0 text-[10px] mt-0.5">⚡</span>
-            <p className="text-[10px] text-yellow-300 leading-relaxed">{analysis.deviationNote}</p>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-3">
-          {analysis.risks.length > 0 && (
-            <div>
-              <p className="text-[9px] text-red-400 uppercase tracking-widest mb-1.5 font-bold">Risks</p>
-              <div className="space-y-1">
-                {analysis.risks.map((r, i) => (
-                  <div key={i} className="flex items-start gap-1.5">
-                    <span className="text-red-400 text-[9px] mt-0.5 shrink-0">▸</span>
-                    <p className="text-[10px] text-red-300 leading-snug">{r}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {analysis.catalysts.length > 0 && (
-            <div>
-              <p className="text-[9px] text-emerald-400 uppercase tracking-widest mb-1.5 font-bold">In your favor</p>
-              <div className="space-y-1">
-                {analysis.catalysts.map((c, i) => (
-                  <div key={i} className="flex items-start gap-1.5">
-                    <span className="text-emerald-400 text-[9px] mt-0.5 shrink-0">▸</span>
-                    <p className="text-[10px] text-emerald-300 leading-snug">{c}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className={`flex items-center gap-2 pt-1`}>
-          <span className="text-[9px] text-indigo-400 font-bold tracking-widest uppercase">◈ Ask a follow-up</span>
-          <div className={`flex-1 h-px ${th.borderLight} border-t`} />
-        </div>
-      </div>
-
-      <ChatThread
-        initialContext={chatContext}
-        systemPrompt={TRADING_CHAT_PROMPT}
-        placeholder={`Ask about ${analysis.symbol}... e.g. "Should I roll to next month?"`}
-        th={th}
-      />
     </div>
   );
 }
