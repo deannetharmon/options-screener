@@ -778,52 +778,6 @@ async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
   return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
 }
-// ── Stop Loss / GTC Order Check ────────────────────────────────────────────
-type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
-
-interface GtcOrderLeg {
-  symbol: string;
-  action: string;
-}
-interface GtcOrder {
-  id: string;
-  price: string;
-  legs: GtcOrderLeg[];
-}
-
-async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
-  try {
-    const data = await ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=200`, token);
-    return (data?.data?.items ?? [])
-      .filter((o: any) => o['time-in-force'] === 'GTC' && o['order-type'] === 'Limit')
-      .map((o: any) => ({
-        id: o.id,
-        price: o.price,
-        legs: (o.legs ?? []).map((l: any) => ({ symbol: l.symbol, action: l.action })),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function classifyStopLoss(
-  candidate: SpreadCandidate,
-  gtcOrders: GtcOrder[]
-): { status: StopStatus; price: number | null } {
-  if (!candidate.shortOccSymbol) return { status: 'unknown', price: null };
-  const credit = candidate.totalCredit ?? candidate.credit;
-  const stopThreshold = parseFloat((credit * 2).toFixed(2));
-  const match = gtcOrders.find(order =>
-    order.legs.some(
-      leg => leg.symbol === candidate.shortOccSymbol && leg.action === 'Buy to Close'
-    )
-  );
-  if (!match) return { status: 'none', price: null };
-  const orderPrice = parseFloat(match.price);
-  if (isNaN(orderPrice)) return { status: 'unknown', price: null };
-  if (orderPrice <= stopThreshold + 0.01) return { status: 'live', price: orderPrice };
-  return { status: 'loose', price: orderPrice };
-}
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
     const data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
@@ -1957,14 +1911,13 @@ function TradeModal({ result, th, onClose }: {
   );
 }
 
-function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrders, cachedEntry }: {
+function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cachedEntry }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
   screenMode?: 'filter' | 'rank';
   rankConfig?: RankConfig;
   onTrade?: (result: ScreenResult) => void;
-  gtcOrders?: GtcOrder[];
   cachedEntry?: RawScanEntry;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -3520,7 +3473,6 @@ export default function Home() {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
   });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
-  const [gtcOrders, setGtcOrders] = useState<GtcOrder[]>([]);
   useEffect(() => {
     try {
       setBpsTickers(localStorage.getItem(LS_BPS) || '');
@@ -3616,11 +3568,6 @@ export default function Home() {
       const token = await getAccessToken();
 
       const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic]));
-
-      setStatus('Fetching GTC orders...');
-      const accountNumberForGtc = await getAccountNumber();
-      const liveGtcOrders = await fetchGtcOrders(accountNumberForGtc, token);
-      setGtcOrders(liveGtcOrders);
 
       setStatus('Fetching market metrics...');
       const metricsArray = await getMarketMetrics(allSymbols, token);
@@ -3998,13 +3945,13 @@ export default function Home() {
                   {qualified.length > 0 && (
                     <div>
                       <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
                     </div>
                   )}
                   {disqualified.length > 0 && (
                     <div>
                       <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
                     </div>
                   )}
                 </>
@@ -4014,7 +3961,7 @@ export default function Home() {
                   <div className="space-y-2">{results.map((r, i) => (
                     <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
                     </div>
                   ))}</div>
                 </div>
