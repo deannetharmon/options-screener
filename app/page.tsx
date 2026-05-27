@@ -2072,24 +2072,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
             <div className="text-xs shrink-0 w-20"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
             <div className="text-xs shrink-0 w-16"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
             <div className="text-xs shrink-0 w-16"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
-            <div className="text-xs shrink-0 w-12"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
-            {(() => {
-              const stop = classifyStopLoss(c, gtcOrders ?? []);
-              const sl =
-                stop.status === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-500' } :
-                stop.status === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
-                stop.status === 'none'  ? { icon: '✗', label: 'None',  cls: 'text-red-500'     } :
-                                          { icon: '—', label: '?',     cls: 'text-slate-400'   };
-              return (
-                <div className="text-xs shrink-0 w-28">
-                  <span className={th.label}>Stop </span>
-                  <span className={`font-medium ${sl.cls}`}>{sl.icon} {sl.label}</span>
-                  {stop.price != null && (
-                    <span className={`ml-1 ${th.textFaint} text-[10px]`}>${stop.price.toFixed(2)}</span>
-                  )}
-                </div>
-              );
-            })()}
+            <div className="text-xs shrink-0 w-20"><span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
             {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
             {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
