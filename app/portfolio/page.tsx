@@ -6,9 +6,9 @@ import Link from 'next/link';
 
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
-  if (!document.getElementById('prosper-font')) {
+  if (!document.getElementById('hunter-font')) {
     const link = document.createElement('link');
-    link.id = 'prosper-font';
+    link.id = 'hunter-font';
     link.rel = 'stylesheet';
     link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=DM+Mono:wght@400;500&display=swap';
     document.head.appendChild(link);
@@ -17,11 +17,11 @@ if (typeof document !== 'undefined') {
 
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-const LS_PROFIT_TARGETS = 'prosper-profit-targets';
-const LS_AUDIT_LOG = 'prosper-audit-log';
-const LS_THEME = 'prosper-theme';
-const LS_MEMORY = 'prosper-trading-memory';
-const LS_DRY_RUN = 'prosper-dry-run';
+const LS_PROFIT_TARGETS = 'hunter-profit-targets';
+const LS_AUDIT_LOG = 'hunter-audit-log';
+const LS_THEME = 'hunter-theme';
+const LS_MEMORY = 'hunter-trading-memory';
+const LS_DRY_RUN = 'hunter-dry-run';
 const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
 const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
 const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
@@ -222,7 +222,7 @@ interface RollSuggestion {
   longOi: number | null;
   shortBidAsk: number | null;   // ask - bid on short leg
   longBidAsk: number | null;    // ask - bid on long leg
-  // Prosper rule checks
+  // hunter rule checks
   ruleViolations: string[];     // empty = all clear, strings = specific violations
   meetsMinCredit: boolean;      // credit >= 1/3 spread width
   meetsDte: boolean;            // 30-45 DTE
@@ -291,7 +291,7 @@ function exportAuditCsv() {
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `prosper-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.href = url; a.download = `hunter-audit-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click(); URL.revokeObjectURL(url);
 }
 
@@ -733,7 +733,7 @@ async function fetchFreshPositionPrice(pos: Position, token: string): Promise<nu
 async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSuggestion | null> {
   try {
     const optType = pos.strategy === 'BCS' ? 'C' : 'P';
-    // Delta targets per Prosper rules: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
+    // Delta targets per Hunter rules: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
     const targetDelta = pos.strategy === 'BCS' ? 0.25 : -0.25;
     const deltaMin = pos.strategy === 'BCS' ?  0.20 : -0.30;
     const deltaMax = pos.strategy === 'BCS' ?  0.30 : -0.20;
@@ -824,7 +824,7 @@ async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSu
     const shortBidAsk = parseFloat((best.ask - best.bid).toFixed(2));
     const longBidAsk  = longLegData ? parseFloat((longLegData.ask - longLegData.bid).toFixed(2)) : null;
 
-    // Step 8: Prosper rule validation
+    // Step 8: Hunter rule validation
     const ruleViolations: string[] = [];
     const meetsMinCredit = creditRatio >= (1/3);
     const meetsDte       = dte >= 30 && dte <= 45;
@@ -1428,7 +1428,7 @@ function getExtendSignal(pos: Position): string | null {
 }
 
 // ── AI Analysis ───────────────────────────────────────────────────────────
-const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
+const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Hunter Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
 
 You are in a live conversation about a specific position or portfolio. The trader has already seen a structured analysis. They are now asking follow-up questions to dig deeper.
 
@@ -1442,7 +1442,7 @@ You know the methodology deeply:
 
 Keep responses focused and concise — 3-6 sentences unless the question genuinely requires more. If the trader asks about rolling, give specific guidance on strikes and expiry. If they ask about risk, quantify it. If they're thinking about something wrong, say so directly.`;
 
-const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
+const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Hunter Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
 
 CORE METHODOLOGY (know it deeply, apply it intelligently):
 - Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound
@@ -2116,7 +2116,7 @@ function BatchConfirmModal({
               const inputCredit = parseFloat(ri.credit);
               const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
               if (inputWidth > 0 && inputCredit < inputWidth / 3) {
-                throw new Error(`Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). This roll doesn't meet the Prosper credit rule.`);
+                throw new Error(`Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). This roll doesn't meet the Hunter credit rule.`);
               }
 
               let finalCredit = inputCredit;
@@ -2538,7 +2538,7 @@ function BatchConfirmModal({
                             if (inputCredit > 0 && inputRatio < 1/3) {
                               return (
                                 <p className="text-[9px} text-red-400">
-                                  ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Prosper credit rule
+                                  ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Hunter credit rule
                                 </p>
                               );
                             }
@@ -2759,7 +2759,7 @@ function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[T
             <div className="flex flex-col items-center justify-center h-40 gap-2">
               <p className={`text-sm ${th.textFaint}`}>No trades recorded yet</p>
               <p className={`text-[10px] ${th.textFaint} text-center max-w-xs`}>
-                Memory builds automatically as you execute trades through Prosper. Each trade teaches the verdict engine your patterns.
+                Memory builds automatically as you execute trades through Hunter. Each trade teaches the verdict engine your patterns.
               </p>
             </div>
           )}
@@ -4860,7 +4860,7 @@ function BulkActionBar({ selectedKeys, positions, onExecute, onClear, th }: {
 // ── Performance Panel ──────────────────────────────────────────────────────
 function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
   const auditLog: AuditEntry[] = (() => {
-    try { return JSON.parse(localStorage.getItem('prosper-audit-log') ?? '[]'); } catch { return []; }
+    try { return JSON.parse(localStorage.getItem('hunter-audit-log') ?? '[]'); } catch { return []; }
   })();
 
   const closed = auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
