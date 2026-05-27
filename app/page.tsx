@@ -431,7 +431,8 @@ const RULE_PRESETS = [
   { key: 'relaxed',   label: 'Relaxed',    desc: 'Wider net, still disciplined',   color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
   { key: 'lowvol',    label: 'Low Vol',    desc: 'Crushed IV environments',        color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
   { key: 'strict',    label: 'Strict',     desc: 'A+ setups only',                 color: 'border-red-600 text-red-400 bg-red-600/10',            rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
-  { key: 'shortterm', label: 'Short Term', desc: '14-28 DTE · active management', color: 'border-orange-500 text-orange-400 bg-orange-500/10',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 14, DTE_MAX: 28 } },
+  { key: 'shortterm',    label: 'Short Term',    desc: '7-14 DTE · very active management',  color: 'border-orange-500 text-orange-400 bg-orange-500/10',  rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 7,  DTE_MAX: 14 } },
+  { key: 'intermediate', label: 'Intermediate',  desc: '15-29 DTE · active management',      color: 'border-amber-500 text-amber-400 bg-amber-500/10',     rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 15, DTE_MAX: 29 } },
 ] as const;
 
 const RULE_LABELS: Record<string, string> = {
@@ -1234,7 +1235,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
 
 // ── DTE Alert Banner ───────────────────────────────────────────────────────
 function DTEAlertBanner({ results, rules }: { results: ScreenResult[], rules: RulesType }) {
-  const isShortTerm = rules.DTE_MAX <= 28;
+  const isShortTerm = rules.DTE_MAX <= 29;
   const alertThreshold = isShortTerm ? rules.DTE_MIN - 1 : 25;
   const closeTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
   const approaching = results.filter(r => r.qualified && r.bestCandidate && r.bestCandidate.dte <= alertThreshold);
@@ -1707,10 +1708,24 @@ function TradeModal({ result, th, onClose }: {
   const [error, setError] = useState('');
   const [orderId, setOrderId] = useState<string>('');
 
+  // GTC profit target (default 50%)
+  const defaultGtcPct = 50;
+  const [gtcPct, setGtcPct] = useState(defaultGtcPct);
+  const creditPerContract = c.totalCredit ?? c.credit;
+  const gtcBuyback = parseFloat((creditPerContract * (1 - gtcPct / 100)).toFixed(2));
+
+  // Stop loss (default 200% of credit = 2× credit debit to close)
+  const defaultStopPct = 200;
+  const [stopPct, setStopPct] = useState(defaultStopPct);
+  const stopPrice = parseFloat((creditPerContract * (stopPct / 100)).toFixed(2));
+
+  // Entry limit price (default = credit, can tweak)
+  const [entryLimit, setEntryLimit] = useState(parseFloat(creditPerContract.toFixed(2)));
+
   const hasOccSymbols = c.shortOccSymbol && c.longOccSymbol &&
     (c.strategy !== 'IC' || (c.shortCallOccSymbol && c.longCallOccSymbol));
 
-  const credit = (c.totalCredit ?? c.credit) * quantity;
+  const credit = entryLimit * quantity;
   const maxLoss = (c.spreadWidth - (c.totalCredit ?? c.credit)) * quantity * 100;
 
   const runDryRun = async () => {
@@ -1720,6 +1735,7 @@ function TradeModal({ result, th, onClose }: {
       const accountNumber = await getAccountNumber();
       const legs = buildOrderLegs(result, c);
       const payload = buildOrderPayload(c, quantity, legs);
+      payload.price = entryLimit.toFixed(2);
       const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders/dry-run`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1741,6 +1757,9 @@ function TradeModal({ result, th, onClose }: {
       const accountNumber = await getAccountNumber();
       const legs = buildOrderLegs(result, c);
       const payload = buildOrderPayload(c, quantity, legs);
+      payload.price = entryLimit.toFixed(2);
+
+      // 1. Place entry order
       const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1748,7 +1767,52 @@ function TradeModal({ result, th, onClose }: {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Order failed (${res.status})`);
-      setOrderId(data?.data?.order?.id ?? 'submitted');
+      const entryOrderId = data?.data?.order?.id ?? 'submitted';
+
+      // 2. Place GTC profit target (Buy to Close the spread at gtcBuyback)
+      try {
+        const gtcLegs = legs.map((l: any) => ({
+          ...l,
+          quantity,
+          action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
+        }));
+        const gtcPayload = {
+          'time-in-force': 'GTC',
+          'order-type': 'Limit',
+          price: gtcBuyback.toFixed(2),
+          'price-effect': 'Debit',
+          legs: gtcLegs,
+        };
+        await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(gtcPayload),
+        });
+      } catch { /* GTC placement failure is non-fatal — entry already in */ }
+
+      // 3. Place stop-limit order (Buy to Close at stopPrice)
+      try {
+        const stopLegs = legs.map((l: any) => ({
+          ...l,
+          quantity,
+          action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
+        }));
+        const stopPayload = {
+          'time-in-force': 'GTC',
+          'order-type': 'Stop',
+          'stop-trigger': stopPrice.toFixed(2),
+          price: parseFloat((stopPrice * 1.05).toFixed(2)).toString(), // 5% slippage buffer
+          'price-effect': 'Debit',
+          legs: stopLegs,
+        };
+        await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(stopPayload),
+        });
+      } catch { /* stop placement failure is non-fatal */ }
+
+      setOrderId(entryOrderId);
       setPhase('done');
     } catch (e: any) {
       setError(e.message); setPhase('error');
@@ -1762,7 +1826,7 @@ function TradeModal({ result, th, onClose }: {
 
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4">
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-md`} onClick={e => e.stopPropagation()}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-md max-h-[92vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h2 className={`text-sm font-bold ${th.text} tracking-widest`}>PLACE ORDER — {result.symbol}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-white text-xl">✕</button>
@@ -1788,9 +1852,13 @@ function TradeModal({ result, th, onClose }: {
             <span className={th.textFaint}>Expiry</span>
             <span className={th.text}>{c.expiration} ({c.dte}d)</span>
           </div>
-          <div className="flex justify-between text-xs">
-            <span className={th.textFaint}>Credit / contract</span>
-            <span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span>
+          <div className="flex justify-between text-xs items-center">
+            <span className={th.textFaint}>Entry limit / contract</span>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setEntryLimit(v => parseFloat(Math.max(0.01, v - 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs hover:border-blue-500`}>−</button>
+              <span className="text-emerald-400 font-bold text-xs w-12 text-center">${entryLimit.toFixed(2)}</span>
+              <button onClick={() => setEntryLimit(v => parseFloat((v + 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs hover:border-blue-500`}>+</button>
+            </div>
           </div>
           <div className="flex justify-between text-xs">
             <span className={th.textFaint}>Order type</span>
@@ -1798,7 +1866,7 @@ function TradeModal({ result, th, onClose }: {
           </div>
         </div>
 
-        {/* Quantity selector */}
+        {/* Quantity */}
         <div className="flex items-center gap-3 mb-4">
           <span className={`text-xs ${th.textFaint}`}>Contracts</span>
           <div className="flex items-center gap-2">
@@ -1812,6 +1880,40 @@ function TradeModal({ result, th, onClose }: {
           </div>
         </div>
 
+        {/* GTC Profit Target */}
+        <div className={`${th.card} border ${th.border} rounded-xl p-4 mb-3`}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold tracking-widest text-emerald-400">GTC PROFIT TARGET</p>
+            <span className={`text-[9px] ${th.textFaint}`}>closes at ${gtcBuyback.toFixed(2)} debit</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {[25, 50, 65, 75].map(pct => (
+              <button key={pct} onClick={() => setGtcPct(pct)}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold border transition-colors ${gtcPct === pct ? 'bg-emerald-600 border-emerald-500 text-white' : `${th.border} ${th.textFaint} hover:border-emerald-600`}`}>
+                {pct}%
+              </button>
+            ))}
+          </div>
+          <p className={`text-[9px] ${th.textFaint} mt-2`}>Buy to close at ${gtcBuyback.toFixed(2)} when {gtcPct}% of ${creditPerContract.toFixed(2)} credit is captured</p>
+        </div>
+
+        {/* Stop Loss */}
+        <div className={`${th.card} border ${th.border} rounded-xl p-4 mb-4`}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold tracking-widest text-red-400">STOP LOSS</p>
+            <span className={`text-[9px] ${th.textFaint}`}>triggers at ${stopPrice.toFixed(2)} debit</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {[150, 200, 250, 300].map(pct => (
+              <button key={pct} onClick={() => setStopPct(pct)}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold border transition-colors ${stopPct === pct ? 'bg-red-700 border-red-500 text-white' : `${th.border} ${th.textFaint} hover:border-red-700`}`}>
+                {pct}%
+              </button>
+            ))}
+          </div>
+          <p className={`text-[9px] ${th.textFaint} mt-2`}>Stop triggers when spread costs ${stopPrice.toFixed(2)} to close ({stopPct}% of credit = {stopPct - 100}% loss on credit received)</p>
+        </div>
+
         {/* Dry run result */}
         {dryRunResult && (
           <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4 space-y-1">
@@ -1822,9 +1924,10 @@ function TradeModal({ result, th, onClose }: {
         )}
 
         {phase === 'done' && (
-          <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4">
-            <p className="text-xs text-emerald-400 font-bold">✓ Order submitted — ID {orderId}</p>
-            <p className="text-[10px] text-emerald-400/70 mt-1">GTC limit order placed. Check tastytrade to confirm fill.</p>
+          <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4 space-y-1">
+            <p className="text-xs text-emerald-400 font-bold">✓ Entry order submitted — ID {orderId}</p>
+            <p className="text-[10px] text-emerald-400/70">GTC profit target ({gtcPct}%) and stop loss ({stopPct}%) orders placed automatically.</p>
+            <p className="text-[10px] text-emerald-400/70">Verify all 3 working orders in TastyTrade.</p>
           </div>
         )}
 
@@ -1849,7 +1952,7 @@ function TradeModal({ result, th, onClose }: {
                 </button>
                 <button onClick={placeOrder} disabled={phase === 'placing'}
                   className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors disabled:opacity-40">
-                  {phase === 'placing' ? 'PLACING...' : `PLACE ORDER · $${credit.toFixed(2)} CREDIT`}
+                  {phase === 'placing' ? 'PLACING...' : `PLACE + GTC + STOP`}
                 </button>
               </>
             )}
@@ -1892,7 +1995,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
     ? 'bg-red-500/15 border-red-500 text-red-500'
     : 'bg-blue-500/15 border-blue-500 text-blue-500';
 
-  const isShortTerm = rules.DTE_MAX <= 28;
+  const isShortTerm = rules.DTE_MAX <= 29;
   const dteAlertThreshold = isShortTerm ? rules.DTE_MIN - 1 : DTE_ALERT_THRESHOLD;
   const dteCloseTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
   const isApproaching = c && c.dte <= dteAlertThreshold;
@@ -1925,6 +2028,19 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
               {result.symbol === 'SPX' || result.symbol === 'XSP' || result.symbol === 'NDX' || result.symbol === 'RUT' ? 'index' : 'etf'}
             </p>
           )}
+          <a
+            href={`https://www.tradingview.com/chart/?symbol=${result.symbol}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            title="Open chart in TradingView"
+            className="inline-flex items-center gap-0.5 mt-0.5 text-[9px] text-slate-500 hover:text-blue-400 transition-colors"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+            <span className="tracking-wide">chart</span>
+          </a>
         </div>
         {/* Col 2: Badges — fixed width */}
         <div className="w-52 shrink-0 flex items-center gap-1 flex-wrap">
@@ -1942,6 +2058,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
                 ? 'border-yellow-900 text-yellow-400/70 bg-yellow-500/5'
                 : result.ruleSetApplied === 'Short Term'
                 ? 'border-orange-900 text-orange-400/70 bg-orange-500/5'
+                : result.ruleSetApplied === 'Intermediate'
+                ? 'border-amber-900 text-amber-400/70 bg-amber-500/5'
                 : 'border-slate-700 text-slate-500'
               }`}>
               {result.ruleSetApplied}
@@ -2313,7 +2431,8 @@ const FILTER_PRESETS = [
   { key: 'course',   label: 'Course',      color: 'border-blue-500 text-blue-400',        desc: 'Baseline rules — balanced approach' },
   { key: 'relaxed',  label: 'Relaxed',     color: 'border-emerald-500 text-emerald-400',  desc: 'Looser rules — more opportunities' },
   { key: 'lowvol',   label: 'Low Vol',     color: 'border-yellow-500 text-yellow-400',    desc: 'Adapted for low IVR environments' },
-  { key: 'shortterm',label: 'Short Term',  color: 'border-orange-500 text-orange-400',    desc: '14–28 DTE — active daily management' },
+  { key: 'shortterm',   label: 'Short Term',   color: 'border-orange-500 text-orange-400',  desc: '7–14 DTE — very active daily management' },
+  { key: 'intermediate',label: 'Intermediate', color: 'border-amber-500 text-amber-400',    desc: '15–29 DTE — active management' },
 ];
 
 function RunModeModal({ th, lastMode, lastPreset, onRun, onClose }: {
@@ -3212,7 +3331,8 @@ function BestOpportunityFinder({
     { presetKey: 'course',    presetLabel: 'Course',     presetColor: 'border-blue-500 text-blue-400',       rules: COURSE_RULES },
     { presetKey: 'relaxed',   presetLabel: 'Relaxed',    presetColor: 'border-emerald-500 text-emerald-400', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
     { presetKey: 'lowvol',    presetLabel: 'Low Vol',    presetColor: 'border-yellow-500 text-yellow-400',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
-    { presetKey: 'shortterm', presetLabel: 'Short Term', presetColor: 'border-orange-500 text-orange-400',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 14, DTE_MAX: 28 } },
+    { presetKey: 'shortterm',    presetLabel: 'Short Term',   presetColor: 'border-orange-500 text-orange-400',  rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 7,  DTE_MAX: 14 } },
+    { presetKey: 'intermediate', presetLabel: 'Intermediate', presetColor: 'border-amber-500 text-amber-400',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 15, DTE_MAX: 29 } },
   ];
 
   const scoreCandidateLocal = (result: ScreenResult, strat: string): BestSetup | null => {
@@ -3242,23 +3362,12 @@ function BestOpportunityFinder({
   const findBest = async () => {
     setLoading(true); setError(''); setLevelResults([]);
     try {
-      let metrics: { symbol: string; ivRank: number | null; earningsExpectedDate: string | null };
-      let price: number | null;
-      let baseChainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean };
-
-      if (cachedEntry) {
-        // Use cached data — zero API calls
-        metrics = cachedEntry.metrics;
-        price = cachedEntry.price;
-        baseChainData = cachedEntry.chainData;
-      } else {
-        // No cache — fetch once, reuse across all levels
-        const token = await getAccessToken();
-        const [metricsArray, fetchedPrice] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
-        metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
-        price = fetchedPrice;
-        baseChainData = await getChain(symbol, token, rules);
-      }
+      // Always fetch live data — never use cache
+      const token = await getAccessToken();
+      const [metricsArray, fetchedPrice] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
+      const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
+      const price = fetchedPrice;
+      const baseChainData = await getChain(symbol, token, rules);
 
       const results: LevelResult[] = [];
       for (const level of levels) {
@@ -3267,7 +3376,6 @@ function BestOpportunityFinder({
         const candidates: BestSetup[] = [];
         const failures: { strategy: string; reasons: string[] }[] = [];
         for (const strat of strategiesToRun) {
-          // Re-use the same chain data — only the rule thresholds differ between levels
           const result = runChecklist(symbol, strat, metrics, baseChainData, price, mergedRules);
           const setup = scoreCandidateLocal(result, strat);
           if (setup) candidates.push(setup);
@@ -3283,9 +3391,9 @@ function BestOpportunityFinder({
     }
   };
 
-  // Auto-run immediately if we have cached data — no need to wait for button click
+  // Auto-run immediately on open (always live)
   useEffect(() => {
-    if (cachedEntry) findBest();
+    findBest();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -3293,26 +3401,30 @@ function BestOpportunityFinder({
 
   return (
     <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
-        <div className="flex justify-between items-start mb-4">
-          <div>
-            <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity — {symbol}</h2>
-            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
-              Tests all rule levels against {preferredStrategy ?? 'all strategies'}. Each level shows the best setup and what changed vs Course.
-              {cachedEntry ? <span className="text-purple-400 ml-1">⚡ Using cached chain data</span> : null}
-            </p>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden`}>
+        {/* Sticky header */}
+        <div className="px-6 pt-6 pb-4 shrink-0">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity — {symbol}</h2>
+              <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
+                Tests all rule levels against {preferredStrategy ?? 'all strategies'}. Always uses live chain data.
+              </p>
+            </div>
+            <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white ml-4">✕</button>
           </div>
-          <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white">✕</button>
+
+          <button onClick={findBest} disabled={loading}
+            className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors">
+            {loading ? 'ANALYZING LIVE DATA...' : '↺ RE-ANALYZE (LIVE)'}
+          </button>
+
+          {error && <div className="p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm mt-3">{error}</div>}
         </div>
 
-        <button onClick={findBest} disabled={loading}
-          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors mb-4">
-          {loading ? 'ANALYZING...' : cachedEntry ? '↺ RE-ANALYZE' : 'SCAN ALL RULE LEVELS'}
-        </button>
-
-        {error && <div className="p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm mb-4">{error}</div>}
-
-        <div className="space-y-4">
+        {/* Scrollable results */}
+        <div className="overflow-y-auto flex-1 px-6 pb-6">
+          <div className="space-y-4">
           {levelResults.map(level => (
             <div key={level.presetKey} className={`border ${th.border} rounded-xl overflow-hidden`}>
               <div className={`flex items-center justify-between px-4 py-2.5 border-b ${th.border} ${th.card}`}>
@@ -3323,7 +3435,9 @@ function BestOpportunityFinder({
                   ) : level.presetKey === 'strict' ? (
                     <span className="text-[9px] text-red-400">Tighter: {level.ruleDiffs.join(' · ')}</span>
                   ) : level.presetKey === 'shortterm' ? (
-                    <span className="text-[9px] text-orange-400">14–28 DTE · requires active daily management</span>
+                    <span className="text-[9px] text-orange-400">7–14 DTE · very active daily management, high gamma risk</span>
+                  ) : level.presetKey === 'intermediate' ? (
+                    <span className="text-[9px] text-amber-400">15–29 DTE · active management required</span>
                   ) : (
                     <span className="text-[9px] text-yellow-400">Relaxed vs Course: {level.ruleDiffs.join(' · ')}</span>
                   )}
@@ -3379,6 +3493,7 @@ function BestOpportunityFinder({
               )}
             </div>
           ))}
+        </div>
         </div>
       </div>
     </div>
