@@ -1,6 +1,6 @@
 // path: app/trade-log/page.tsx
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
 if (typeof document !== 'undefined') {
@@ -13,17 +13,14 @@ if (typeof document !== 'undefined') {
   }
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────
-const BASE        = 'https://api.tastytrade.com';
-const CLIENT_ID   = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-const LS_THEME    = 'hunter-theme';
-const LS_DEVICE   = 'hunter-device-id';
-const LS_TL_3M    = 'hunter-tradelog-3m';
-const LS_TL_6M    = 'hunter-tradelog-6m';
-const LS_TL_12M   = 'hunter-tradelog-12m';
-const SCRATCH_PCT = 5; // ±5% of credit = scratch
+const BASE       = 'https://api.tastytrade.com';
+const CLIENT_ID  = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
+const LS_THEME   = 'hunter-theme';
+const LS_DEVICE  = 'hunter-device-id';
+const LS_TL_3M   = 'hunter-tradelog-3m';
+const LS_TL_6M   = 'hunter-tradelog-6m';
+const LS_TL_12M  = 'hunter-tradelog-12m';
 
-// ── Theme ─────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
 const THEMES = {
   dark:   { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#0f0f0f]', card: 'bg-[#171717]', border: 'border-[#2c2c2c]', borderLight: 'border-[#202020]', header: 'bg-[#0f0f0f]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#808080]', input: 'bg-[#141414]', inputBorder: 'border-[#353535]', tag: 'bg-[#222222]', label: 'text-[#aaaaaa]' },
@@ -34,49 +31,41 @@ function getSavedTheme(): Theme {
   try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────
 type TimeRange = '3m' | '6m' | '12m';
 type Outcome = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
 type SortField = 'closeDate' | 'openDate' | 'symbol' | 'strategy' | 'pnl' | 'pnlPct' | 'holdDays';
 type SortDir = 'asc' | 'desc';
 
 interface ClosedTrade {
-  id: string;           // synthetic: symbol+openDate+expiry
+  id: string;
   symbol: string;
   strategy: 'BPS' | 'BCS' | 'IC' | 'SPREAD' | 'OTHER';
   openDate: string;
   closeDate: string;
+  openTime: string;   // HH:MM local
+  openDow: number;    // 0=Sun..6=Sat
   expiry: string;
   holdDays: number;
   strikes: string;
-  creditReceived: number;   // per spread (not per contract)
-  closePrice: number;       // what we paid to close
-  pnl: number;              // creditReceived - closePrice (positive = profit)
-  pnlPct: number;           // pnl / creditReceived * 100
+  creditReceived: number;
+  closePrice: number;
+  pnl: number;
+  pnlPct: number;
   outcome: Outcome;
   quantity: number;
   fees: number;
 }
 
-interface CacheEntry {
-  trades: ClosedTrade[];
-  fetchedAt: number;
-  deviceId: string;
-  range: TimeRange;
-}
+interface CacheEntry { trades: ClosedTrade[]; fetchedAt: number; deviceId: string; range: TimeRange; }
+interface ChatMessage { role: 'user' | 'assistant'; content: string; }
 
-// ── Auth ──────────────────────────────────────────────────────────────────
 async function getAccessToken(): Promise<string> {
   const cached = sessionStorage.getItem('tt_access_token');
   if (cached) return cached;
   const refreshToken = localStorage.getItem('tt_refresh_token');
   const clientSecret = localStorage.getItem('tt_client_secret') ?? '';
   if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
-  const res = await fetch(`${BASE}/oauth/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: CLIENT_ID, client_secret: clientSecret }),
-  });
+  const res = await fetch(`${BASE}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: CLIENT_ID, client_secret: clientSecret }) });
   if (!res.ok) { sessionStorage.removeItem('tt_access_token'); localStorage.removeItem('tt_refresh_token'); window.location.href = '/login'; throw new Error('Session expired'); }
   const data = await res.json();
   const token = data.access_token;
@@ -85,45 +74,23 @@ async function getAccessToken(): Promise<string> {
   if (data.refresh_token && data.refresh_token !== refreshToken) localStorage.setItem('tt_refresh_token', data.refresh_token);
   return token;
 }
-
 async function ttFetch(path: string, token: string) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    cache: 'no-store',
-  });
+  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, cache: 'no-store' });
   if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
   if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 120)}`); }
   return res.json();
 }
-
-// ── Device ID ─────────────────────────────────────────────────────────────
 function getDeviceId(): string {
-  try {
-    let id = localStorage.getItem(LS_DEVICE);
-    if (!id) { id = crypto.randomUUID(); localStorage.setItem(LS_DEVICE, id); }
-    return id;
-  } catch { return 'unknown'; }
+  try { let id = localStorage.getItem(LS_DEVICE); if (!id) { id = crypto.randomUUID(); localStorage.setItem(LS_DEVICE, id); } return id; } catch { return 'unknown'; }
 }
-
-// ── Cache helpers ─────────────────────────────────────────────────────────
 const LS_KEY: Record<TimeRange, string> = { '3m': LS_TL_3M, '6m': LS_TL_6M, '12m': LS_TL_12M };
-
 function readCache(range: TimeRange): CacheEntry | null {
-  try {
-    const raw = localStorage.getItem(LS_KEY[range]);
-    if (!raw) return null;
-    return JSON.parse(raw) as CacheEntry;
-  } catch { return null; }
+  try { const raw = localStorage.getItem(LS_KEY[range]); return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
-
 function writeCache(range: TimeRange, trades: ClosedTrade[]) {
-  try {
-    const entry: CacheEntry = { trades, fetchedAt: Date.now(), deviceId: getDeviceId(), range };
-    localStorage.setItem(LS_KEY[range], JSON.stringify(entry));
-  } catch {}
+  try { localStorage.setItem(LS_KEY[range], JSON.stringify({ trades, fetchedAt: Date.now(), deviceId: getDeviceId(), range })); } catch {}
 }
 
-// ── Transaction parsing ───────────────────────────────────────────────────
 function parseOccSymbol(occ: string): { symbol: string; expiry: string; optionType: 'P' | 'C' | null; strike: number } {
   const cleaned = occ.replace(/\s+/g, '');
   const m = cleaned.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
@@ -131,7 +98,6 @@ function parseOccSymbol(occ: string): { symbol: string; expiry: string; optionTy
   const y = '20' + m[2].slice(0, 2), mo = m[2].slice(2, 4), d = m[2].slice(4, 6);
   return { symbol: m[1], expiry: `${y}-${mo}-${d}`, optionType: m[3] as 'P' | 'C', strike: parseInt(m[4], 10) / 1000 };
 }
-
 function rangeStartDate(range: TimeRange): string {
   const d = new Date();
   if (range === '3m') d.setMonth(d.getMonth() - 3);
@@ -140,234 +106,230 @@ function rangeStartDate(range: TimeRange): string {
   return d.toISOString().split('T')[0];
 }
 
-interface RawTx {
-  id: string;
-  'transaction-type': string;
-  'transaction-sub-type': string;
-  'action': string;
-  'symbol': string;
-  'underlying-symbol': string;
-  'executed-at': string;
-  'quantity': string;
-  'price': string;
-  'value': string;
-  'regulatory-fees': string;
-  'clearing-fees': string;
-  'commission': string;
-  'net-value': string;
-}
-
 async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[]> {
   const token = await getAccessToken();
   const accountsData = await ttFetch('/customers/me/accounts', token);
   const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
   if (!accountNumber) throw new Error('No account found');
-
   const startDate = rangeStartDate(range);
-
-  // Paginate transactions — TastyTrade returns max 250 per page
-  let allTx: RawTx[] = [];
+  let allTx: any[] = [];
   let page = 1;
   while (true) {
-    const data = await ttFetch(
-      `/accounts/${accountNumber}/transactions?start-date=${startDate}&per-page=250&page-offset=${(page - 1) * 250}`,
-      token
-    );
-    const items: RawTx[] = data?.data?.items ?? [];
+    const data = await ttFetch(`/accounts/${accountNumber}/transactions?start-date=${startDate}&per-page=250&page-offset=${(page - 1) * 250}`, token);
+    const items: any[] = data?.data?.items ?? [];
     allTx = [...allTx, ...items];
-    const pagination = data?.pagination;
-    if (!pagination || items.length < 250) break;
-    if (allTx.length >= pagination['total-items']) break;
+    if (!data?.pagination || items.length < 250 || allTx.length >= data.pagination['total-items']) break;
     page++;
   }
-
-  // Filter to option trades only
-  const optionTx = allTx.filter(tx =>
-    tx['transaction-type'] === 'Trade' &&
-    tx.symbol &&
-    parseOccSymbol(tx.symbol).optionType !== null
-  );
-
-  // Group by underlying + expiry to reconstruct spreads
-  // Key: underlyingSymbol::expiry::openDate(YYYY-MM-DD)
-  // We match opening legs (Sell to Open / Buy to Open) with
-  // closing legs (Buy to Close / Sell to Close) by symbol
-
-  // Build a map of symbol → list of transactions
-  const byOptionSymbol: Record<string, RawTx[]> = {};
+  const optionTx = allTx.filter(tx => tx['transaction-type'] === 'Trade' && tx.symbol && parseOccSymbol(tx.symbol).optionType !== null);
+  const byOptionSymbol: Record<string, any[]> = {};
   for (const tx of optionTx) {
     const sym = tx.symbol.replace(/\s+/g, '');
     if (!byOptionSymbol[sym]) byOptionSymbol[sym] = [];
     byOptionSymbol[sym].push(tx);
   }
-
-  // For each option symbol, pair opens with closes
-  interface LegPair {
-    symbol: string;
-    underlying: string;
-    expiry: string;
-    optionType: 'P' | 'C';
-    strike: number;
-    openTx: RawTx;
-    closeTx: RawTx;
-    qty: number;
-    openPrice: number;   // per share
-    closePrice: number;  // per share
-    fees: number;
-  }
-
-  const legPairs: LegPair[] = [];
-
+  const legPairs: any[] = [];
   for (const [sym, txList] of Object.entries(byOptionSymbol)) {
     const parsed = parseOccSymbol(sym);
     if (!parsed.optionType) continue;
-
-    const opens  = txList.filter(tx => tx.action === 'Sell to Open' || tx.action === 'Buy to Open');
-    const closes = txList.filter(tx => tx.action === 'Buy to Close' || tx.action === 'Sell to Close');
-
-    // Simple FIFO matching: match each open with a close
-    const openQueue = [...opens].sort((a, b) => a['executed-at'].localeCompare(b['executed-at']));
+    const opens  = txList.filter((tx: any) => tx.action === 'Sell to Open' || tx.action === 'Buy to Open');
+    const closes = txList.filter((tx: any) => tx.action === 'Buy to Close' || tx.action === 'Sell to Close');
+    const openQueue  = [...opens].sort((a, b) => a['executed-at'].localeCompare(b['executed-at']));
     const closeQueue = [...closes].sort((a, b) => a['executed-at'].localeCompare(b['executed-at']));
-
     for (const openTx of openQueue) {
       const openQty = Math.abs(parseFloat(openTx.quantity ?? '1'));
-      const matchIdx = closeQueue.findIndex(c => {
-        const closeQty = Math.abs(parseFloat(c.quantity ?? '1'));
-        return closeQty === openQty && c['executed-at'] > openTx['executed-at'];
-      });
-      if (matchIdx === -1) continue; // still open
+      const matchIdx = closeQueue.findIndex((c: any) => Math.abs(parseFloat(c.quantity ?? '1')) === openQty && c['executed-at'] > openTx['executed-at']);
+      if (matchIdx === -1) continue;
       const closeTx = closeQueue.splice(matchIdx, 1)[0];
-      const openPrice  = Math.abs(parseFloat(openTx.price ?? '0'));
-      const closePrice = Math.abs(parseFloat(closeTx.price ?? '0'));
-      const fees = Math.abs(parseFloat(openTx['regulatory-fees'] ?? '0'))
-                 + Math.abs(parseFloat(openTx['clearing-fees'] ?? '0'))
-                 + Math.abs(parseFloat(openTx.commission ?? '0'))
-                 + Math.abs(parseFloat(closeTx['regulatory-fees'] ?? '0'))
-                 + Math.abs(parseFloat(closeTx['clearing-fees'] ?? '0'))
-                 + Math.abs(parseFloat(closeTx.commission ?? '0'));
-
-      legPairs.push({
-        symbol: sym,
-        underlying: openTx['underlying-symbol'],
-        expiry: parsed.expiry,
-        optionType: parsed.optionType,
-        strike: parsed.strike,
-        openTx,
-        closeTx,
-        qty: openQty,
-        openPrice,
-        closePrice,
-        fees,
-      });
+      const fees = ['regulatory-fees','clearing-fees','commission'].reduce((s: number, k: string) => s + Math.abs(parseFloat(openTx[k] ?? '0')) + Math.abs(parseFloat(closeTx[k] ?? '0')), 0);
+      legPairs.push({ sym, underlying: openTx['underlying-symbol'], expiry: parsed.expiry, optionType: parsed.optionType, strike: parsed.strike, openTx, closeTx, qty: openQty, openPrice: Math.abs(parseFloat(openTx.price ?? '0')), closePrice: Math.abs(parseFloat(closeTx.price ?? '0')), fees });
     }
   }
-
-  // Group leg pairs into spreads by: underlying + expiry + same open date (within same day)
-  const spreadMap: Record<string, LegPair[]> = {};
+  const spreadMap: Record<string, any[]> = {};
   for (const pair of legPairs) {
-    const openDay = pair.openTx['executed-at'].slice(0, 10);
-    const key = `${pair.underlying}::${pair.expiry}::${openDay}`;
+    const key = `${pair.underlying}::${pair.expiry}::${pair.openTx['executed-at'].slice(0, 10)}`;
     if (!spreadMap[key]) spreadMap[key] = [];
     spreadMap[key].push(pair);
   }
-
   const trades: ClosedTrade[] = [];
-
   for (const [key, pairs] of Object.entries(spreadMap)) {
     const [underlying, expiry, openDay] = key.split('::');
-    const putPairs  = pairs.filter(p => p.optionType === 'P');
-    const callPairs = pairs.filter(p => p.optionType === 'C');
-
+    const putPairs  = pairs.filter((p: any) => p.optionType === 'P');
+    const callPairs = pairs.filter((p: any) => p.optionType === 'C');
     let strategy: ClosedTrade['strategy'] = 'SPREAD';
     if (putPairs.length >= 2 && callPairs.length === 0) strategy = 'BPS';
     else if (callPairs.length >= 2 && putPairs.length === 0) strategy = 'BCS';
     else if (putPairs.length >= 2 && callPairs.length >= 2) strategy = 'IC';
     else if (pairs.length > 0) strategy = 'OTHER';
-
-    // Strikes string
-    const sortedPuts  = putPairs.map(p => p.strike).sort((a, b) => b - a);
-    const sortedCalls = callPairs.map(p => p.strike).sort((a, b) => a - b);
+    const sortedPuts  = putPairs.map((p: any) => p.strike).sort((a: number, b: number) => b - a);
+    const sortedCalls = callPairs.map((p: any) => p.strike).sort((a: number, b: number) => a - b);
     let strikes = '';
-    if (strategy === 'BPS' && sortedPuts.length >= 2)
-      strikes = `${sortedPuts[0]}P / ${sortedPuts[1]}P`;
-    else if (strategy === 'BCS' && sortedCalls.length >= 2)
-      strikes = `${sortedCalls[0]}C / ${sortedCalls[1]}C`;
-    else if (strategy === 'IC' && sortedPuts.length >= 2 && sortedCalls.length >= 2)
-      strikes = `${sortedPuts[0]}P/${sortedPuts[1]}P · ${sortedCalls[0]}C/${sortedCalls[1]}C`;
-    else
-      strikes = pairs.map(p => `${p.strike}${p.optionType}`).join(' / ');
-
-    // Quantity = number of spreads (pairs of legs / 2 for IC)
-    const qty = strategy === 'IC'
-      ? Math.min(putPairs.length, callPairs.length)
-      : Math.max(putPairs.length, callPairs.length, 1);
-
-    // P&L: for short spreads (BPS/BCS/IC), we sold to open and bought to close
-    // credit = sum of STO prices * 100 * qty
-    // debit  = sum of BTC prices * 100 * qty
-    // pnl    = (credit - debit) per spread * qty * 100 - fees
-    let totalOpenValue = 0;
-    let totalCloseValue = 0;
-    let totalFees = 0;
-
+    if (strategy === 'BPS' && sortedPuts.length >= 2) strikes = `${sortedPuts[0]}P/${sortedPuts[1]}P`;
+    else if (strategy === 'BCS' && sortedCalls.length >= 2) strikes = `${sortedCalls[0]}C/${sortedCalls[1]}C`;
+    else if (strategy === 'IC' && sortedPuts.length >= 2 && sortedCalls.length >= 2) strikes = `${sortedPuts[0]}P/${sortedPuts[1]}P · ${sortedCalls[0]}C/${sortedCalls[1]}C`;
+    else strikes = pairs.map((p: any) => `${p.strike}${p.optionType}`).join('/');
+    let totalOpenValue = 0, totalCloseValue = 0, totalFees = 0;
     for (const p of pairs) {
-      const multiplier = 100;
-      const isShortLeg = p.openTx.action === 'Sell to Open';
-      const openVal  = p.openPrice  * p.qty * multiplier * (isShortLeg ?  1 : -1);
-      const closeVal = p.closePrice * p.qty * multiplier * (isShortLeg ? -1 :  1);
-      totalOpenValue  += openVal;
-      totalCloseValue += closeVal;
+      const isShort = p.openTx.action === 'Sell to Open';
+      totalOpenValue  += p.openPrice  * p.qty * 100 * (isShort ?  1 : -1);
+      totalCloseValue += p.closePrice * p.qty * 100 * (isShort ? -1 :  1);
       totalFees += p.fees;
     }
-
-    const creditReceived = totalOpenValue;   // net credit when spread was opened
-    const closePrice     = -totalCloseValue; // net debit to close (positive cost)
-    const pnl = creditReceived + totalCloseValue - totalFees;
-    const pnlPct = creditReceived !== 0 ? (pnl / Math.abs(creditReceived)) * 100 : 0;
-
-    // Close date = latest close transaction date across all legs
-    const closeDate = pairs
-      .map(p => p.closeTx['executed-at'].slice(0, 10))
-      .sort()
-      .reverse()[0];
-
-    const openDate = openDay;
-    const holdDays = Math.round(
-      (new Date(closeDate).getTime() - new Date(openDate).getTime()) / 86400000
-    );
-
-    // Outcome
-    const pnlPctAbs = Math.abs(pnlPct);
-    let outcome: Outcome;
-    if (pnlPctAbs <= SCRATCH_PCT) outcome = 'SCRATCH';
-    else if (pnl > 0) outcome = 'WIN';
-    else outcome = 'LOSS';
-
-    trades.push({
-      id: `${underlying}-${openDate}-${expiry}`,
-      symbol: underlying,
-      strategy,
-      openDate,
-      closeDate,
-      expiry,
-      holdDays,
-      strikes,
-      creditReceived,
-      closePrice,
-      pnl,
-      pnlPct,
-      outcome,
-      quantity: qty,
-      fees: totalFees,
-    });
+    const creditReceived = totalOpenValue;
+    const closePrice     = -totalCloseValue;
+    const pnl     = creditReceived + totalCloseValue - totalFees;
+    const pnlPct  = creditReceived !== 0 ? (pnl / Math.abs(creditReceived)) * 100 : 0;
+    const closeDate = pairs.map((p: any) => p.closeTx['executed-at'].slice(0, 10)).sort().reverse()[0];
+    const holdDays  = Math.round((new Date(closeDate).getTime() - new Date(openDay).getTime()) / 86400000);
+    const outcome: Outcome = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'SCRATCH';
+    // Entry time metadata — use the earliest open leg timestamp
+    const earliestOpen = pairs.map((p: any) => p.openTx['executed-at']).sort()[0] ?? '';
+    const openDt = earliestOpen ? new Date(earliestOpen) : null;
+    const openTime = openDt ? `${String(openDt.getHours()).padStart(2,'0')}:${String(openDt.getMinutes()).padStart(2,'0')}` : '';
+    const openDow  = openDt ? openDt.getDay() : -1;
+    trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, openDate: openDay, closeDate, openTime, openDow, expiry, holdDays, strikes, creditReceived, closePrice, pnl, pnlPct, outcome, quantity: strategy === 'IC' ? Math.min(putPairs.length, callPairs.length) : Math.max(putPairs.length, callPairs.length, 1), fees: totalFees });
   }
-
-  // Sort by close date descending
   trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
   return trades;
 }
 
-// ── Formatting helpers ────────────────────────────────────────────────────
+// ── AI ────────────────────────────────────────────────────────────────────
+const AI_SYSTEM_PROMPT = `You are a brutally honest options trading coach reviewing a trader's actual closed trade history. Your job is to find real patterns, call out mistakes without softening them, and give specific actionable advice.
+
+Do not hedge. Do not add disclaimers. If the data shows a clear problem, say so directly. If a pattern is costing money, name it explicitly. Be direct like a mentor who respects the trader enough to tell them the truth.
+
+Respond in clear conversational prose. No JSON. No markdown headers. Use short paragraphs. When you cite a stat, be specific with numbers.`;
+
+function buildTradeAnalysisPrompt(trades: ClosedTrade[], range: TimeRange): string {
+  const total = trades.length;
+  if (total === 0) return 'No closed trades found in this period.';
+
+  const wins    = trades.filter(t => t.outcome === 'WIN');
+  const losses  = trades.filter(t => t.outcome === 'LOSS');
+  const winRate = Math.round((wins.length / total) * 100);
+  const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const avgWin  = wins.length   > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const avgHold = Math.round(trades.reduce((s, t) => s + t.holdDays, 0) / total);
+
+  // By strategy
+  const strategies = ['BPS','BCS','IC','SPREAD','OTHER'] as const;
+  const byStrategy = strategies.map(s => {
+    const g = trades.filter(t => t.strategy === s);
+    if (g.length === 0) return null;
+    const w = g.filter(t => t.outcome === 'WIN').length;
+    const pnl = g.reduce((sum, t) => sum + t.pnl, 0);
+    return { strategy: s, count: g.length, winRate: Math.round((w / g.length) * 100), pnl: pnl.toFixed(0), avgPnlPct: (g.reduce((sum, t) => sum + t.pnlPct, 0) / g.length).toFixed(1) };
+  }).filter(Boolean);
+
+  // By symbol
+  const symMap: Record<string, { count: number; wins: number; pnl: number }> = {};
+  for (const t of trades) {
+    if (!symMap[t.symbol]) symMap[t.symbol] = { count: 0, wins: 0, pnl: 0 };
+    symMap[t.symbol].count++;
+    if (t.outcome === 'WIN') symMap[t.symbol].wins++;
+    symMap[t.symbol].pnl += t.pnl;
+  }
+  const bySymbol = Object.entries(symMap).sort((a, b) => b[1].pnl - a[1].pnl)
+    .map(([sym, v]) => `${sym}: ${v.count} trades, ${Math.round(v.wins/v.count*100)}% win, $${v.pnl.toFixed(0)} P&L`);
+
+  // By day of week
+  const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const dowMap: Record<number, { count: number; wins: number; pnl: number }> = {};
+  for (const t of trades) {
+    if (t.openDow < 0) continue;
+    if (!dowMap[t.openDow]) dowMap[t.openDow] = { count: 0, wins: 0, pnl: 0 };
+    dowMap[t.openDow].count++;
+    if (t.outcome === 'WIN') dowMap[t.openDow].wins++;
+    dowMap[t.openDow].pnl += t.pnl;
+  }
+  const byDow = Object.entries(dowMap).sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map(([d, v]) => `${DOW[Number(d)]}: ${v.count} trades, ${Math.round(v.wins/v.count*100)}% win, $${v.pnl.toFixed(0)}`);
+
+  // By time of day bucket
+  const timeBuckets = [
+    { label: 'Open (9:30–10:30)', min: 570, max: 630 },
+    { label: 'Morning (10:30–12:00)', min: 630, max: 720 },
+    { label: 'Midday (12:00–14:00)', min: 720, max: 840 },
+    { label: 'Afternoon (14:00–15:00)', min: 840, max: 900 },
+    { label: 'Close (15:00–16:00)', min: 900, max: 960 },
+  ];
+  const byTime = timeBuckets.map(b => {
+    const g = trades.filter(t => {
+      if (!t.openTime) return false;
+      const [h, m] = t.openTime.split(':').map(Number);
+      const mins = h * 60 + m;
+      return mins >= b.min && mins < b.max;
+    });
+    if (g.length === 0) return null;
+    const w = g.filter(t => t.outcome === 'WIN').length;
+    const pnl = g.reduce((s, t) => s + t.pnl, 0);
+    return `${b.label}: ${g.length} trades, ${Math.round(w/g.length*100)}% win, $${pnl.toFixed(0)}`;
+  }).filter(Boolean);
+
+  // Hold time analysis
+  const holdBuckets = [
+    { label: '0–7 days', min: 0, max: 7 },
+    { label: '8–14 days', min: 8, max: 14 },
+    { label: '15–21 days', min: 15, max: 21 },
+    { label: '22–30 days', min: 22, max: 30 },
+    { label: '31+ days', min: 31, max: 999 },
+  ];
+  const byHold = holdBuckets.map(b => {
+    const g = trades.filter(t => t.holdDays >= b.min && t.holdDays <= b.max);
+    if (g.length === 0) return null;
+    const w = g.filter(t => t.outcome === 'WIN').length;
+    return `${b.label}: ${g.length} trades, ${Math.round(w/g.length*100)}% win`;
+  }).filter(Boolean);
+
+  // Behavioral flags
+  const sorted = [...trades].sort((a, b) => a.closeDate.localeCompare(b.closeDate));
+  let revengeTrades = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i-1].outcome === 'LOSS' && sorted[i].outcome === 'LOSS') {
+      const daysBetween = Math.round((new Date(sorted[i].openDate).getTime() - new Date(sorted[i-1].closeDate).getTime()) / 86400000);
+      if (daysBetween <= 2) revengeTrades++;
+    }
+  }
+
+  return `Analyze this trader's closed options trade history from the last ${range === '3m' ? '3 months' : range === '6m' ? '6 months' : '12 months'} and give brutally honest coaching feedback.
+
+OVERALL (${total} closed trades):
+Win rate: ${winRate}%  |  Total P&L: $${totalPnl.toFixed(0)}  |  Avg win: $${avgWin.toFixed(0)}  |  Avg loss: $${avgLoss.toFixed(0)}  |  Avg hold: ${avgHold} days
+
+BY STRATEGY:
+${byStrategy.map(s => `${s!.strategy}: ${s!.count} trades, ${s!.winRate}% win, $${s!.pnl} total, avg ${s!.avgPnlPct}%`).join('\n')}
+
+BY SYMBOL (best to worst P&L):
+${bySymbol.join('\n')}
+
+ENTRY DAY OF WEEK:
+${byDow.join('\n')}
+
+ENTRY TIME OF DAY:
+${byTime.length > 0 ? byTime.join('\n') : 'Insufficient time data'}
+
+HOLD TIME vs WIN RATE:
+${byHold.join('\n')}
+
+BEHAVIORAL FLAGS:
+Potential revenge trades (loss followed by another entry within 2 days that also lost): ${revengeTrades}
+
+Provide honest coaching. Cover: what's working, what's clearly not working, the most damaging pattern you see, specific execution mistakes visible in the data, and 3 concrete things to change immediately. Start with the most important finding.`;
+}
+
+async function callAIWithHistory(messages: ChatMessage[], system: string): Promise<string> {
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1800, system, messages }),
+  });
+  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err?.error ?? `API error: ${res.status}`); }
+  const data = await res.json();
+  return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+}
+
+// ── Formatting ────────────────────────────────────────────────────────────
 function fmtDate(d: string) {
   if (!d) return '—';
   const [y, m, day] = d.split('-');
@@ -382,8 +344,8 @@ function fmtAge(ms: number): string {
   return `${Math.round(hrs / 24)}d ago`;
 }
 function outcomeColor(o: Outcome) {
-  if (o === 'WIN')    return 'text-emerald-400 border-emerald-600 bg-emerald-500/10';
-  if (o === 'LOSS')   return 'text-red-400 border-red-600 bg-red-500/10';
+  if (o === 'WIN')     return 'text-emerald-400 border-emerald-600 bg-emerald-500/10';
+  if (o === 'LOSS')    return 'text-red-400 border-red-600 bg-red-500/10';
   if (o === 'SCRATCH') return 'text-yellow-400 border-yellow-600 bg-yellow-500/10';
   return 'text-slate-400 border-slate-600 bg-slate-500/10';
 }
@@ -394,81 +356,206 @@ function stratColor(s: string) {
   return 'text-slate-400 border-slate-600';
 }
 
-// ── Main Component ────────────────────────────────────────────────────────
+// ── AI Chat Panel ─────────────────────────────────────────────────────────
+function AIChatPanel({ trades, range, th, onClose }: {
+  trades: ClosedTrade[];
+  range: TimeRange;
+  th: typeof THEMES[Theme];
+  onClose: () => void;
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput]       = useState('');
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
+  const [initializing, setInitializing] = useState(true);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef  = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Auto-run initial analysis on open
+  useEffect(() => {
+    const runInitial = async () => {
+      setInitializing(true);
+      const prompt = buildTradeAnalysisPrompt(trades, range);
+      const initMessages: ChatMessage[] = [{ role: 'user', content: prompt }];
+      try {
+        const reply = await callAIWithHistory(initMessages, AI_SYSTEM_PROMPT);
+        setMessages([{ role: 'assistant', content: reply }]);
+      } catch (e: any) {
+        setError(e.message);
+      } finally {
+        setInitializing(false);
+        setTimeout(() => inputRef.current?.focus(), 100);
+      }
+    };
+    runInitial();
+  }, []);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput('');
+    setError('');
+    const next: ChatMessage[] = [...messages, { role: 'user', content: text }];
+    setMessages(next);
+    setLoading(true);
+    try {
+      const reply = await callAIWithHistory(next, AI_SYSTEM_PROMPT);
+      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  };
+
+  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+
+  const suggestions = [
+    'Which symbol should I stop trading?',
+    'Is my risk/reward ratio sustainable?',
+    'What time of day gives me the best entries?',
+    'Am I cutting winners too early?',
+    'What should I focus on for the next month?',
+  ];
+
+  return (
+    <div className={`fixed top-0 right-0 h-full w-[480px] max-w-[95vw] ${th.sidebar} border-l ${th.border} flex flex-col z-50 shadow-2xl`}
+         style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      {/* Header */}
+      <div className={`flex items-center justify-between px-5 py-4 border-b ${th.border} shrink-0`}>
+        <div>
+          <p className={`text-sm font-bold ${th.text} tracking-wider`}>◈ AI COACHING</p>
+          <p className={`text-[10px] ${th.textFaint} mt-0.5`}>
+            {trades.length} trades · {range === '3m' ? '3 months' : range === '6m' ? '6 months' : '12 months'}
+          </p>
+        </div>
+        <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-xl leading-none`}>✕</button>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        {initializing && (
+          <div className="flex items-center gap-3 py-8 justify-center">
+            <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <p className={`text-xs ${th.textFaint}`}>Analyzing your trade history...</p>
+          </div>
+        )}
+
+        {messages.map((m, i) => (
+          <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            {m.role === 'assistant' && <span className="text-indigo-400 text-[11px] mt-1 shrink-0 font-bold">◈</span>}
+            <div className={`rounded-2xl px-4 py-3 text-[12px] leading-relaxed whitespace-pre-wrap max-w-[92%] ${
+              m.role === 'user'
+                ? 'bg-blue-600/20 border border-blue-600/30 text-blue-100 ml-auto'
+                : `${th.card} border ${th.border} ${th.textMuted}`
+            }`}>
+              {m.content}
+            </div>
+          </div>
+        ))}
+
+        {loading && (
+          <div className="flex gap-3 justify-start">
+            <span className="text-indigo-400 text-[11px] mt-1 shrink-0 font-bold">◈</span>
+            <div className={`${th.card} border ${th.border} rounded-2xl px-4 py-3`}>
+              <div className="flex gap-1 items-center h-4">
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {error && <p className="text-[10px] text-red-400 px-1">{error} — <button onClick={send} className="underline">retry</button></p>}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Suggestions — shown before user sends first message */}
+      {messages.length === 1 && !initializing && (
+        <div className="px-5 pb-3 flex flex-wrap gap-1.5 shrink-0">
+          {suggestions.map((s, i) => (
+            <button key={i} onClick={() => { setInput(s); setTimeout(() => inputRef.current?.focus(), 50); }}
+              className={`text-[10px] px-2.5 py-1 rounded-full border ${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400 transition-colors`}>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Input */}
+      <div className={`px-5 py-4 border-t ${th.border} shrink-0`}>
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="Ask a follow-up question..."
+            rows={2}
+            className={`flex-1 resize-none text-xs px-3 py-2.5 border ${th.inputBorder} ${th.input} ${th.text} rounded-xl placeholder:${th.textFaint} focus:outline-none focus:border-indigo-500`}
+          />
+          <button onClick={send} disabled={loading || !input.trim()}
+            className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-xl text-xs font-bold tracking-wider transition-colors shrink-0">
+            Send
+          </button>
+        </div>
+        <p className={`text-[9px] ${th.textFaint} mt-1.5`}>Enter to send · Shift+Enter for new line</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────
 export default function TradeLogPage() {
-  const [theme, setTheme] = useState<Theme>(getSavedTheme);
+  const [theme, setTheme]       = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
-
-  const [trades, setTrades]       = useState<ClosedTrade[]>([]);
-  const [loading, setLoading]     = useState(false);
-  const [error, setError]         = useState('');
-  const [status, setStatus]       = useState('');
-  const [range, setRange]         = useState<TimeRange>('3m');
-  const [cachedAt, setCachedAt]   = useState<number | null>(null);
+  const [trades, setTrades]     = useState<ClosedTrade[]>([]);
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
+  const [status, setStatus]     = useState('');
+  const [range, setRange]       = useState<TimeRange>('3m');
+  const [cachedAt, setCachedAt] = useState<number | null>(null);
   const [isNewDevice, setIsNewDevice] = useState(false);
+  const [showAI, setShowAI]     = useState(false);
 
-  // Filter state
-  const [filterStrategy, setFilterStrategy] = useState<string>('ALL');
-  const [filterOutcome,  setFilterOutcome]  = useState<string>('ALL');
+  const [filterStrategy, setFilterStrategy] = useState('ALL');
+  const [filterOutcome,  setFilterOutcome]  = useState('ALL');
   const [filterSymbol,   setFilterSymbol]   = useState('');
-
-  // Sort state
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDir,   setSortDir]   = useState<SortDir>('desc');
 
   const loadTrades = useCallback(async (r: TimeRange, forceRefresh = false) => {
     const deviceId = getDeviceId();
-
-    // Check cache first
     if (!forceRefresh) {
       const cached = readCache(r);
       if (cached) {
         const sameDevice = cached.deviceId === deviceId;
-        const fresh = Date.now() - cached.fetchedAt < 4 * 60 * 60 * 1000; // 4h
-        if (sameDevice && fresh) {
-          setTrades(cached.trades);
-          setCachedAt(cached.fetchedAt);
-          setIsNewDevice(false);
-          return;
-        }
-        if (!sameDevice) {
-          setIsNewDevice(true);
-          setStatus('New device detected — loading full history from TastyTrade...');
-        } else {
-          setStatus('Cache stale — refreshing from TastyTrade...');
-        }
-      } else {
-        setStatus('Loading trade history from TastyTrade...');
-      }
-    } else {
-      setStatus('Refreshing from TastyTrade...');
-    }
-
-    setLoading(true);
-    setError('');
+        const fresh = Date.now() - cached.fetchedAt < 4 * 60 * 60 * 1000;
+        if (sameDevice && fresh) { setTrades(cached.trades); setCachedAt(cached.fetchedAt); setIsNewDevice(false); return; }
+        if (!sameDevice) { setIsNewDevice(true); setStatus('New device detected — loading from TastyTrade...'); }
+        else setStatus('Cache stale — refreshing...');
+      } else { setStatus('Loading trade history from TastyTrade...'); }
+    } else { setStatus('Refreshing from TastyTrade...'); }
+    setLoading(true); setError('');
     try {
       const fetched = await fetchAndReconstructTrades(r);
-      setTrades(fetched);
-      writeCache(r, fetched);
-      setCachedAt(Date.now());
-      setIsNewDevice(false);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-      setStatus('');
-    }
+      setTrades(fetched); writeCache(r, fetched); setCachedAt(Date.now()); setIsNewDevice(false);
+    } catch (e: any) { setError(e.message); }
+    finally { setLoading(false); setStatus(''); }
   }, []);
 
-  // On mount: load 3m from cache or TastyTrade
   useEffect(() => { loadTrades('3m'); }, [loadTrades]);
 
-  const handleRangeChange = (r: TimeRange) => {
-    setRange(r);
-    loadTrades(r);
-  };
+  const handleRangeChange = (r: TimeRange) => { setRange(r); loadTrades(r); };
 
-  // ── Filtering + sorting ──────────────────────────────────────────────────
   const filtered = trades.filter(t => {
     if (filterStrategy !== 'ALL' && t.strategy !== filterStrategy) return false;
     if (filterOutcome  !== 'ALL' && t.outcome   !== filterOutcome)  return false;
@@ -497,23 +584,21 @@ export default function TradeLogPage() {
   const sortIcon = (field: SortField) =>
     sortField !== field ? <span className="text-[8px] opacity-30">↕</span>
     : sortDir === 'desc' ? <span className="text-[9px] text-blue-400">↓</span>
-    :                      <span className="text-[9px] text-blue-400">↑</span>;
+    : <span className="text-[9px] text-blue-400">↑</span>;
 
-  // ── Summary strip ────────────────────────────────────────────────────────
-  const wins     = filtered.filter(t => t.outcome === 'WIN').length;
-  const losses   = filtered.filter(t => t.outcome === 'LOSS').length;
+  const wins      = filtered.filter(t => t.outcome === 'WIN').length;
+  const losses    = filtered.filter(t => t.outcome === 'LOSS').length;
   const scratches = filtered.filter(t => t.outcome === 'SCRATCH').length;
-  const total    = filtered.length;
-  const winRate  = total > 0 ? Math.round((wins / total) * 100) : 0;
-  const totalPnl = filtered.reduce((s, t) => s + t.pnl, 0);
+  const total     = filtered.length;
+  const winRate   = total > 0 ? Math.round((wins / total) * 100) : 0;
+  const totalPnl  = filtered.reduce((s, t) => s + t.pnl, 0);
   const avgPnlPct = total > 0 ? filtered.reduce((s, t) => s + t.pnlPct, 0) / total : 0;
 
-  const thCol = `text-[9px] ${th.textFaint} uppercase tracking-widest font-medium cursor-pointer hover:${th.text} select-none whitespace-nowrap`;
+  const thCol = `text-[9px] text-[#808080] uppercase tracking-widest font-medium cursor-pointer hover:text-white select-none whitespace-nowrap`;
 
   return (
     <div className={`min-h-screen ${th.bg} pb-24 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
 
-      {/* Header */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
         <div className="flex items-center gap-6">
           <div>
@@ -528,7 +613,6 @@ export default function TradeLogPage() {
           </nav>
         </div>
         <div className="flex items-center gap-3">
-          {/* Theme toggle */}
           {(['dark','medium','light'] as Theme[]).map(t => (
             <button key={t} onClick={() => { setTheme(t); try { localStorage.setItem(LS_THEME, t); } catch {} }}
               className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'border-blue-500 text-blue-400' : `${th.border} ${th.textFaint} hover:border-blue-700`}`}>
@@ -538,60 +622,47 @@ export default function TradeLogPage() {
         </div>
       </div>
 
-      <div className="px-6 py-6 max-w-[1600px] mx-auto space-y-4">
+      <div className={`px-6 py-6 max-w-[1600px] mx-auto space-y-4 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
 
-        {/* New device / stale notice */}
         {isNewDevice && !loading && (
           <div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/30 bg-blue-500/8">
-            <span className="text-blue-400 text-sm">↺</span>
-            <p className="text-xs text-blue-300">Different device detected — trade history was loaded fresh from TastyTrade and cached for next time.</p>
+            <span className="text-blue-400">↺</span>
+            <p className="text-xs text-blue-300">Different device detected — trade history loaded fresh from TastyTrade.</p>
           </div>
         )}
 
-        {/* Controls row */}
         <div className="flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-2">
-            {/* Range selector */}
+          <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-1">
               {(['3m','6m','12m'] as TimeRange[]).map(r => (
-                <button key={r} onClick={() => handleRangeChange(r)}
-                  disabled={loading}
-                  className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${
-                    range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700 hover:text-blue-400`
-                  }`}>
+                <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
+                  className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700 hover:text-blue-400`}`}>
                   {r === '3m' ? '3 MO' : r === '6m' ? '6 MO' : '12 MO'}
                 </button>
               ))}
             </div>
-
-            {/* Filters */}
             <select value={filterStrategy} onChange={e => setFilterStrategy(e.target.value)}
               className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded`}>
               <option value="ALL">All Strategies</option>
-              <option value="BPS">BPS</option>
-              <option value="BCS">BCS</option>
-              <option value="IC">IC</option>
-              <option value="OTHER">Other</option>
+              <option value="BPS">BPS</option><option value="BCS">BCS</option>
+              <option value="IC">IC</option><option value="OTHER">Other</option>
             </select>
-
             <select value={filterOutcome} onChange={e => setFilterOutcome(e.target.value)}
               className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded`}>
               <option value="ALL">All Outcomes</option>
-              <option value="WIN">Wins</option>
-              <option value="LOSS">Losses</option>
-              <option value="SCRATCH">Scratches</option>
+              <option value="WIN">Wins</option><option value="LOSS">Losses</option><option value="SCRATCH">Scratches</option>
             </select>
-
             <input value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}
               placeholder="Filter symbol..."
-              className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded w-28 placeholder:${th.textFaint}`} />
+              className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded w-28`} />
           </div>
-
           <div className="flex items-center gap-3">
-            {cachedAt && (
-              <span className={`text-[9px] ${th.textFaint}`}>
-                Last synced {fmtAge(Date.now() - cachedAt)}
-              </span>
+            {cachedAt && <span className={`text-[9px] ${th.textFaint}`}>Synced {fmtAge(Date.now() - cachedAt)}</span>}
+            {trades.length > 0 && (
+              <button onClick={() => setShowAI(v => !v)}
+                className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors ${showAI ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10' : 'border-indigo-700 text-indigo-400 hover:border-indigo-500 hover:bg-indigo-500/10'}`}>
+                ◈ AI Analysis
+              </button>
             )}
             <button onClick={() => loadTrades(range, true)} disabled={loading}
               className={`text-[10px] px-3 py-1.5 border ${th.border} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-50 tracking-wider`}>
@@ -600,29 +671,22 @@ export default function TradeLogPage() {
           </div>
         </div>
 
-        {/* Status / loading message */}
         {(loading || status) && (
           <div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5">
             {loading && <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />}
             <p className={`text-xs ${loading ? 'text-blue-400' : th.textFaint}`}>{status || 'Loading...'}</p>
           </div>
         )}
+        {error && <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/8"><p className="text-xs text-red-400 font-medium">{error}</p></div>}
 
-        {error && (
-          <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/8">
-            <p className="text-xs text-red-400 font-medium">{error}</p>
-          </div>
-        )}
-
-        {/* Summary strip */}
         {!loading && total > 0 && (
-          <div className={`${th.card} border ${th.border} rounded-xl grid grid-cols-2 md:grid-cols-5 divide-x ${th.border}`}>
+          <div className={`${th.card} border ${th.border} rounded-xl grid grid-cols-2 md:grid-cols-5 divide-x divide-y ${th.border}`}>
             {[
-              { label: 'Trades', value: String(total), color: th.text },
-              { label: 'Win Rate', value: `${winRate}%`, color: winRate >= 60 ? 'text-emerald-400' : winRate >= 45 ? 'text-yellow-400' : 'text-red-400' },
-              { label: 'W / L / S', value: `${wins} / ${losses} / ${scratches}`, color: th.textMuted },
-              { label: 'Total P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`, color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-              { label: 'Avg P&L %', value: `${avgPnlPct >= 0 ? '+' : ''}${avgPnlPct.toFixed(1)}%`, color: avgPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400' },
+              { label: 'Trades',    value: String(total),                                         color: th.text },
+              { label: 'Win Rate',  value: `${winRate}%`,                                         color: winRate >= 60 ? 'text-emerald-400' : winRate >= 45 ? 'text-yellow-400' : 'text-red-400' },
+              { label: 'W / L / S', value: `${wins} / ${losses} / ${scratches}`,                  color: th.textMuted },
+              { label: 'Total P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,  color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
+              { label: 'Avg P&L %', value: `${avgPnlPct >= 0 ? '+' : ''}${avgPnlPct.toFixed(1)}%`,color: avgPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400' },
             ].map((s, i) => (
               <div key={i} className="px-4 py-3 flex flex-col items-center text-center">
                 <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>{s.label}</p>
@@ -632,7 +696,6 @@ export default function TradeLogPage() {
           </div>
         )}
 
-        {/* Trade table */}
         {!loading && sorted.length > 0 && (
           <div className={`${th.card} border ${th.border} rounded-xl overflow-hidden`}>
             <div className="overflow-x-auto">
@@ -644,6 +707,7 @@ export default function TradeLogPage() {
                       { label: 'Strategy',   field: 'strategy'  as SortField },
                       { label: 'Strikes',    field: null },
                       { label: 'Opened',     field: 'openDate'  as SortField },
+                      { label: 'Entry Time', field: null },
                       { label: 'Closed',     field: 'closeDate' as SortField },
                       { label: 'Days Held',  field: 'holdDays'  as SortField },
                       { label: 'Credit',     field: null },
@@ -652,8 +716,7 @@ export default function TradeLogPage() {
                       { label: 'P&L %',      field: 'pnlPct'    as SortField },
                       { label: 'Outcome',    field: null },
                     ].map(col => (
-                      <th key={col.label}
-                        className={`px-3 py-2.5 text-left ${thCol} ${col.field ? 'hover:opacity-80' : ''}`}
+                      <th key={col.label} className={`px-3 py-2.5 text-left ${thCol}`}
                         onClick={() => col.field && handleSort(col.field)}>
                         <span className="flex items-center gap-1">{col.label}{col.field && sortIcon(col.field)}</span>
                       </th>
@@ -661,34 +724,20 @@ export default function TradeLogPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sorted.map((trade, i) => (
-                    <tr key={trade.id}
-                      className={`border-b ${th.borderLight} hover:${th.card === 'bg-white' ? 'bg-gray-50' : 'bg-white/5'} transition-colors`}>
+                  {sorted.map(trade => (
+                    <tr key={trade.id} className={`border-b ${th.borderLight} hover:bg-white/5 transition-colors`}>
                       <td className={`px-3 py-2.5 font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.symbol}</td>
-                      <td className="px-3 py-2.5">
-                        <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${stratColor(trade.strategy)}`}>{trade.strategy}</span>
-                      </td>
+                      <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${stratColor(trade.strategy)}`}>{trade.strategy}</span></td>
                       <td className={`px-3 py-2.5 ${th.textFaint} text-[10px]`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.strikes}</td>
                       <td className={`px-3 py-2.5 ${th.textMuted}`}>{fmtDate(trade.openDate)}</td>
+                      <td className={`px-3 py-2.5 ${th.textFaint} text-[10px]`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.openTime || '—'}</td>
                       <td className={`px-3 py-2.5 ${th.textMuted}`}>{fmtDate(trade.closeDate)}</td>
                       <td className={`px-3 py-2.5 ${th.textFaint} text-center`}>{trade.holdDays}d</td>
-                      <td className={`px-3 py-2.5 text-emerald-400 font-medium`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                        ${trade.creditReceived.toFixed(2)}
-                      </td>
-                      <td className={`px-3 py-2.5 text-red-400/80`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                        ${trade.closePrice.toFixed(2)}
-                      </td>
-                      <td className={`px-3 py-2.5 font-bold ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                        {trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}
-                      </td>
-                      <td className={`px-3 py-2.5 font-bold ${trade.pnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                        {trade.pnlPct >= 0 ? '+' : ''}{trade.pnlPct.toFixed(1)}%
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${outcomeColor(trade.outcome)}`}>
-                          {trade.outcome}
-                        </span>
-                      </td>
+                      <td className="px-3 py-2.5 text-emerald-400 font-medium" style={{ fontFamily: "'DM Mono', monospace" }}>${trade.creditReceived.toFixed(2)}</td>
+                      <td className="px-3 py-2.5 text-red-400/80" style={{ fontFamily: "'DM Mono', monospace" }}>${trade.closePrice.toFixed(2)}</td>
+                      <td className={`px-3 py-2.5 font-bold ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}</td>
+                      <td className={`px-3 py-2.5 font-bold ${trade.pnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.pnlPct >= 0 ? '+' : ''}{trade.pnlPct.toFixed(1)}%</td>
+                      <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${outcomeColor(trade.outcome)}`}>{trade.outcome}</span></td>
                     </tr>
                   ))}
                 </tbody>
@@ -698,19 +747,19 @@ export default function TradeLogPage() {
         )}
 
         {!loading && !error && total === 0 && trades.length > 0 && (
-          <div className={`text-center py-12 ${th.textFaint}`}>
-            <p className="text-sm">No trades match your filters.</p>
-          </div>
+          <div className={`text-center py-12 ${th.textFaint}`}><p className="text-sm">No trades match your filters.</p></div>
         )}
-
         {!loading && !error && trades.length === 0 && (
           <div className={`text-center py-16 ${th.textFaint}`}>
             <div className="text-4xl mb-3 opacity-20">◈</div>
             <p className="text-sm">No closed trades found in this period.</p>
-            <p className="text-[10px] mt-2 opacity-60">Try extending the time range or check that you are authenticated with TastyTrade.</p>
           </div>
         )}
       </div>
+
+      {showAI && (
+        <AIChatPanel trades={filtered.length > 0 ? filtered : trades} range={range} th={th} onClose={() => setShowAI(false)} />
+      )}
     </div>
   );
 }
