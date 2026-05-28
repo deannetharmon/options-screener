@@ -17,9 +17,13 @@ const BASE       = 'https://api.tastytrade.com';
 const CLIENT_ID  = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 const LS_THEME   = 'hunter-theme';
 const LS_DEVICE  = 'hunter-device-id';
+const LS_TL_1W   = 'hunter-tradelog-1w';
+const LS_TL_2W   = 'hunter-tradelog-2w';
+const LS_TL_1M   = 'hunter-tradelog-1m';
 const LS_TL_3M   = 'hunter-tradelog-3m';
 const LS_TL_6M   = 'hunter-tradelog-6m';
 const LS_TL_12M  = 'hunter-tradelog-12m';
+const CACHE_VERSION = 'v3'; // bump to invalidate stale caches
 
 type Theme = 'dark' | 'medium' | 'light';
 const THEMES = {
@@ -31,7 +35,7 @@ function getSavedTheme(): Theme {
   try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
 }
 
-type TimeRange = '3m' | '6m' | '12m';
+type TimeRange = '1w' | '2w' | '1m' | '3m' | '6m' | '12m';
 type Outcome  = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
 type ExitType = 'TARGET_HIT' | 'FAST_CUT' | 'TIME_STOP' | 'MAX_LOSS' | 'HELD_TO_EXPIRY' | 'EARLY_WIN' | 'UNKNOWN';
 type SortField = 'closeDate' | 'openDate' | 'symbol' | 'strategy' | 'pnl' | 'pnlPct' | 'holdDays';
@@ -55,6 +59,7 @@ interface ClosedTrade {
   outcome: Outcome;
   quantity: number;
   fees: number;
+  excluded?: boolean;  // user-toggled: excluded from reporting
   dteAtClose: number;    // days remaining to expiry when closed
   dteAtEntry: number;    // estimated DTE when trade was opened
   exitType: ExitType;
@@ -87,12 +92,18 @@ async function ttFetch(path: string, token: string) {
 function getDeviceId(): string {
   try { let id = localStorage.getItem(LS_DEVICE); if (!id) { id = crypto.randomUUID(); localStorage.setItem(LS_DEVICE, id); } return id; } catch { return 'unknown'; }
 }
-const LS_KEY: Record<TimeRange, string> = { '3m': LS_TL_3M, '6m': LS_TL_6M, '12m': LS_TL_12M };
+const LS_KEY: Record<TimeRange, string> = { '1w': LS_TL_1W, '2w': LS_TL_2W, '1m': LS_TL_1M, '3m': LS_TL_3M, '6m': LS_TL_6M, '12m': LS_TL_12M };
 function readCache(range: TimeRange): CacheEntry | null {
-  try { const raw = localStorage.getItem(LS_KEY[range]); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  try {
+    const raw = localStorage.getItem(LS_KEY[range]);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CacheEntry & { version?: string };
+    if (parsed.version !== CACHE_VERSION) return null; // stale schema
+    return parsed;
+  } catch { return null; }
 }
 function writeCache(range: TimeRange, trades: ClosedTrade[]) {
-  try { localStorage.setItem(LS_KEY[range], JSON.stringify({ trades, fetchedAt: Date.now(), deviceId: getDeviceId(), range })); } catch {}
+  try { localStorage.setItem(LS_KEY[range], JSON.stringify({ trades, fetchedAt: Date.now(), deviceId: getDeviceId(), range, version: CACHE_VERSION })); } catch {}
 }
 
 function parseOccSymbol(occ: string): { symbol: string; expiry: string; optionType: 'P' | 'C' | null; strike: number } {
@@ -104,9 +115,12 @@ function parseOccSymbol(occ: string): { symbol: string; expiry: string; optionTy
 }
 function rangeStartDate(range: TimeRange): string {
   const d = new Date();
-  if (range === '3m') d.setMonth(d.getMonth() - 3);
-  else if (range === '6m') d.setMonth(d.getMonth() - 6);
-  else d.setFullYear(d.getFullYear() - 1);
+  if      (range === '1w')  d.setDate(d.getDate() - 7);
+  else if (range === '2w')  d.setDate(d.getDate() - 14);
+  else if (range === '1m')  d.setMonth(d.getMonth() - 1);
+  else if (range === '3m')  d.setMonth(d.getMonth() - 3);
+  else if (range === '6m')  d.setMonth(d.getMonth() - 6);
+  else                      d.setFullYear(d.getFullYear() - 1);
   return d.toISOString().split('T')[0];
 }
 
@@ -119,21 +133,21 @@ function classifyExit(
   dteAtClose: number,
   dteAtEntry: number,
 ): ExitType {
-  const pnlPct = creditReceived !== 0 ? (pnl / Math.abs(creditReceived)) * 100 : 0;
+  if (creditReceived === 0) return 'UNKNOWN';
+  const pnlPct = (pnl / Math.abs(creditReceived)) * 100;
   const pctOfDteUsed = dteAtEntry > 0 ? holdDays / dteAtEntry : 0;
 
-  if (pnl > 0) {
-    // Winning trade — how did they exit?
-    if (pnlPct >= 40 && pnlPct <= 65) return 'TARGET_HIT';        // clean 50% target exit
-    if (pnlPct > 65 && pctOfDteUsed >= 0.8) return 'HELD_TO_EXPIRY'; // held too long even though it worked
-    if (pnlPct > 0 && holdDays <= 3) return 'EARLY_WIN';           // closed very fast for a small win
+  if (pnl >= 0) {
+    if (holdDays <= 3 && pnlPct < 30) return 'EARLY_WIN';           // very fast, small win
+    if (pnlPct >= 30 && pnlPct <= 70) return 'TARGET_HIT';          // clean ~50% target
+    if (pnlPct > 70 || pctOfDteUsed >= 0.75) return 'HELD_TO_EXPIRY'; // let it ride
     return 'TARGET_HIT';
   } else {
-    // Losing trade — what kind of loss?
-    if (holdDays <= 2) return 'FAST_CUT';                          // cut within 1-2 days — quick defensive exit
-    if (dteAtClose <= 21 && dteAtClose >= 0) return 'TIME_STOP';   // hit 21-DTE rule
-    if (pnlPct < -150) return 'MAX_LOSS';                          // held way too long, loss > 1.5x credit
-    return 'FAST_CUT';                                              // default loss categorization
+    if (pnlPct < -100) return 'MAX_LOSS';                            // loss > full credit — held too long
+    if (holdDays <= 2) return 'FAST_CUT';                            // quick defensive exit
+    if (dteAtClose > 0 && dteAtClose <= 21) return 'TIME_STOP';      // hit 21-DTE rule
+    if (holdDays >= 14) return 'MAX_LOSS';                            // held long time with a loss
+    return 'FAST_CUT';
   }
 }
 
@@ -163,13 +177,14 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
   for (const [sym, txList] of Object.entries(byOptionSymbol)) {
     const parsed = parseOccSymbol(sym);
     if (!parsed.optionType) continue;
+    const getTimestamp = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at'] ?? '';
     const opens  = txList.filter((tx: any) => tx.action === 'Sell to Open' || tx.action === 'Buy to Open');
     const closes = txList.filter((tx: any) => tx.action === 'Buy to Close' || tx.action === 'Sell to Close');
-    const openQueue  = [...opens].sort((a, b) => a['executed-at'].localeCompare(b['executed-at']));
-    const closeQueue = [...closes].sort((a, b) => a['executed-at'].localeCompare(b['executed-at']));
+    const openQueue  = [...opens].sort((a, b) => getTimestamp(a).localeCompare(getTimestamp(b)));
+    const closeQueue = [...closes].sort((a, b) => getTimestamp(a).localeCompare(getTimestamp(b)));
     for (const openTx of openQueue) {
       const openQty = Math.abs(parseFloat(openTx.quantity ?? '1'));
-      const matchIdx = closeQueue.findIndex((c: any) => Math.abs(parseFloat(c.quantity ?? '1')) === openQty && c['executed-at'] > openTx['executed-at']);
+      const matchIdx = closeQueue.findIndex((c: any) => Math.abs(parseFloat(c.quantity ?? '1')) === openQty && getTimestamp(c) > getTimestamp(openTx));
       if (matchIdx === -1) continue;
       const closeTx = closeQueue.splice(matchIdx, 1)[0];
       const fees = ['regulatory-fees','clearing-fees','commission'].reduce((s: number, k: string) => s + Math.abs(parseFloat(openTx[k] ?? '0')) + Math.abs(parseFloat(closeTx[k] ?? '0')), 0);
@@ -178,7 +193,9 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
   }
   const spreadMap: Record<string, any[]> = {};
   for (const pair of legPairs) {
-    const key = `${pair.underlying}::${pair.expiry}::${pair.openTx['executed-at'].slice(0, 10)}`;
+    const getTs2 = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at'] ?? '';
+    const openTs = getTs2(pair.openTx);
+    const key = `${pair.underlying}::${pair.expiry}::${openTs.slice(0, 10)}`;
     if (!spreadMap[key]) spreadMap[key] = [];
     spreadMap[key].push(pair);
   }
@@ -210,11 +227,14 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     const closePrice     = -totalCloseValue;
     const pnl     = creditReceived + totalCloseValue - totalFees;
     const pnlPct  = creditReceived !== 0 ? (pnl / Math.abs(creditReceived)) * 100 : 0;
-    const closeDate = pairs.map((p: any) => p.closeTx['executed-at'].slice(0, 10)).sort().reverse()[0];
+    const getTxTs = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at'] ?? '';
+    const closeDate = pairs.map((p: any) => getTxTs(p.closeTx).slice(0, 10)).filter(Boolean).sort().reverse()[0] ?? openDay;
     const holdDays  = Math.round((new Date(closeDate).getTime() - new Date(openDay).getTime()) / 86400000);
     const outcome: Outcome = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'SCRATCH';
     // Entry time metadata — use the earliest open leg timestamp
-    const earliestOpen = pairs.map((p: any) => p.openTx['executed-at']).sort()[0] ?? '';
+    // TastyTrade uses 'executed-at'; fall back to other timestamp fields if missing
+    const getTs = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at'] ?? '';
+    const earliestOpen = pairs.map((p: any) => getTs(p.openTx)).filter(Boolean).sort()[0] ?? '';
     let openTime = '';
     let openDow  = -1;
     if (earliestOpen) {
@@ -231,7 +251,8 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
       }
     }
     // DTE calculations
-    const dteAtClose = Math.max(0, Math.round((new Date(expiry).getTime() - new Date(closeDate).getTime()) / 86400000));
+    // Add T12:00:00Z to force UTC noon — prevents timezone day-shift on date-only strings
+    const dteAtClose = Math.max(0, Math.round((new Date(expiry + 'T12:00:00Z').getTime() - new Date(closeDate + 'T12:00:00Z').getTime()) / 86400000));
     const dteAtEntry = holdDays + dteAtClose;
     const exitType   = classifyExit(pnl, creditReceived, holdDays, dteAtClose, dteAtEntry);
     trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, openDate: openDay, closeDate, openTime, openDow, expiry, holdDays, dteAtClose, dteAtEntry, exitType, strikes, creditReceived, closePrice, pnl, pnlPct, outcome, quantity: strategy === 'IC' ? Math.min(putPairs.length, callPairs.length) : Math.max(putPairs.length, callPairs.length, 1), fees: totalFees });
@@ -622,6 +643,18 @@ export default function TradeLogPage() {
   const [filterOutcome,  setFilterOutcome]  = useState('ALL');
   const [filterExitType, setFilterExitType] = useState('ALL');
   const [filterSymbol,   setFilterSymbol]   = useState('');
+  const [showExcluded,   setShowExcluded]   = useState(false);
+  const [excludedIds,    setExcludedIds]    = useState<Set<string>>(() => {
+    try { const s = localStorage.getItem('hunter-tradelog-excluded'); return s ? new Set(JSON.parse(s)) : new Set(); } catch { return new Set(); }
+  });
+  const toggleExclude = (id: string) => {
+    setExcludedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      try { localStorage.setItem('hunter-tradelog-excluded', JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDir,   setSortDir]   = useState<SortDir>('desc');
 
@@ -680,13 +713,14 @@ export default function TradeLogPage() {
     : sortDir === 'desc' ? <span className="text-[9px] text-blue-400">↓</span>
     : <span className="text-[9px] text-blue-400">↑</span>;
 
-  const wins      = filtered.filter(t => t.outcome === 'WIN').length;
-  const losses    = filtered.filter(t => t.outcome === 'LOSS').length;
-  const scratches = filtered.filter(t => t.outcome === 'SCRATCH').length;
-  const total     = filtered.length;
+  const wins      = reportingTrades.filter(t => t.outcome === 'WIN').length;
+  const losses    = reportingTrades.filter(t => t.outcome === 'LOSS').length;
+  const scratches = reportingTrades.filter(t => t.outcome === 'SCRATCH').length;
+  const total     = reportingTrades.length;
+  const excluded  = excludedIds.size;
   const winRate   = total > 0 ? Math.round((wins / total) * 100) : 0;
-  const totalPnl  = filtered.reduce((s, t) => s + t.pnl, 0);
-  const avgPnlPct = total > 0 ? filtered.reduce((s, t) => s + t.pnlPct, 0) / total : 0;
+  const totalPnl  = reportingTrades.reduce((s, t) => s + t.pnl, 0);
+  const avgPnlPct = total > 0 ? reportingTrades.reduce((s, t) => s + t.pnlPct, 0) / total : 0;
 
   const thCol = `text-[9px] text-[#808080] uppercase tracking-widest font-medium cursor-pointer hover:text-white select-none whitespace-nowrap`;
 
@@ -728,10 +762,10 @@ export default function TradeLogPage() {
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-1">
-              {(['3m','6m','12m'] as TimeRange[]).map(r => (
+              {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
                 <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
-                  className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700 hover:text-blue-400`}`}>
-                  {r === '3m' ? '3 MO' : r === '6m' ? '6 MO' : '12 MO'}
+                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700 hover:text-blue-400`}`}>
+                  {label}
                 </button>
               ))}
             </div>
@@ -762,10 +796,16 @@ export default function TradeLogPage() {
           </div>
           <div className="flex items-center gap-3">
             {cachedAt && <span className={`text-[9px] ${th.textFaint}`}>Synced {fmtAge(Date.now() - cachedAt)}</span>}
+            {excluded > 0 && (
+              <button onClick={() => setShowExcluded(v => !v)}
+                className={`text-[10px] px-3 py-1.5 border rounded tracking-wider transition-colors ${showExcluded ? 'border-orange-500 text-orange-400 bg-orange-500/10' : `${th.border} ${th.textFaint} hover:border-orange-500 hover:text-orange-300`}`}>
+                {showExcluded ? `⊘ Hide ${excluded} excluded` : `⊘ Show ${excluded} excluded`}
+              </button>
+            )}
             {trades.length > 0 && (
               <button onClick={() => setShowAI(v => !v)}
                 className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors ${showAI ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10' : 'border-indigo-700 text-indigo-400 hover:border-indigo-500 hover:bg-indigo-500/10'}`}>
-                ◈ AI Analysis
+                ◈ AI Analysis {excluded > 0 ? `(${total} trades)` : ''}
               </button>
             )}
             <button onClick={() => loadTrades(range, true)} disabled={loading}
@@ -784,13 +824,14 @@ export default function TradeLogPage() {
         {error && <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/8"><p className="text-xs text-red-400 font-medium">{error}</p></div>}
 
         {!loading && total > 0 && (
-          <div className={`${th.card} border ${th.border} rounded-xl grid grid-cols-2 md:grid-cols-5 divide-x divide-y ${th.border}`}>
+          <div className={`${th.card} border ${th.border} rounded-xl grid grid-cols-2 md:grid-cols-5`}>
             {[
               { label: 'Trades',    value: String(total),                                         color: th.text },
               { label: 'Win Rate',  value: `${winRate}%`,                                         color: winRate >= 60 ? 'text-emerald-400' : winRate >= 45 ? 'text-yellow-400' : 'text-red-400' },
               { label: 'W / L / S', value: `${wins} / ${losses} / ${scratches}`,                  color: th.textMuted },
               { label: 'Total P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,  color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
               { label: 'Avg P&L %', value: `${avgPnlPct >= 0 ? '+' : ''}${avgPnlPct.toFixed(1)}%`,color: avgPnlPct >= 0 ? 'text-emerald-400' : 'text-red-400' },
+              ...(excluded > 0 ? [{ label: 'Excluded', value: String(excluded), color: 'text-orange-400' }] : []),
             ].map((s, i) => (
               <div key={i} className="px-4 py-3 flex flex-col items-center text-center">
                 <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>{s.label}</p>
@@ -821,6 +862,7 @@ export default function TradeLogPage() {
                       { label: 'DTE Left',   field: null },
                       { label: 'Exit Type',  field: null },
                       { label: 'Outcome',    field: null },
+                      { label: '',           field: null },  // exclude toggle
                     ].map(col => (
                       <th key={col.label} className={`px-3 py-2.5 text-left ${thCol}`}
                         onClick={() => col.field && handleSort(col.field)}>
@@ -831,7 +873,7 @@ export default function TradeLogPage() {
                 </thead>
                 <tbody>
                   {sorted.map(trade => (
-                    <tr key={trade.id} className={`border-b ${th.borderLight} hover:bg-white/5 transition-colors`}>
+                    <tr key={trade.id} className={`border-b ${th.borderLight} hover:bg-white/5 transition-colors ${excludedIds.has(trade.id) ? 'opacity-40' : ''}`}>
                       <td className={`px-3 py-2.5 font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.symbol}</td>
                       <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${stratColor(trade.strategy)}`}>{trade.strategy}</span></td>
                       <td className={`px-3 py-2.5 ${th.textFaint} text-[10px]`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.strikes}</td>
@@ -846,6 +888,18 @@ export default function TradeLogPage() {
                       <td className={`px-3 py-2.5 text-center ${th.textFaint} text-[10px]`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.dteAtClose}d</td>
                       <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${exitTypeColor(trade.exitType)}`}>{exitTypeLabel(trade.exitType)}</span></td>
                       <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${outcomeColor(trade.outcome)}`}>{trade.outcome}</span></td>
+                      <td className="px-3 py-2.5">
+                        <button
+                          onClick={e => { e.stopPropagation(); toggleExclude(trade.id); }}
+                          title={excludedIds.has(trade.id) ? 'Include in reporting' : 'Exclude from reporting'}
+                          className={`text-[9px] px-1.5 py-0.5 border rounded transition-colors ${
+                            excludedIds.has(trade.id)
+                              ? 'border-orange-600 text-orange-400 bg-orange-500/10 hover:bg-orange-500/20'
+                              : `${th.border} ${th.textFaint} hover:border-orange-500 hover:text-orange-400`
+                          }`}>
+                          {excludedIds.has(trade.id) ? '⊘ excl.' : '⊘'}
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -866,7 +920,7 @@ export default function TradeLogPage() {
       </div>
 
       {showAI && (
-        <AIChatPanel trades={filtered.length > 0 ? filtered : trades} range={range} th={th} onClose={() => setShowAI(false)} />
+        <AIChatPanel trades={reportingTrades.length > 0 ? reportingTrades : trades} range={range} th={th} onClose={() => setShowAI(false)} />
       )}
     </div>
   );
