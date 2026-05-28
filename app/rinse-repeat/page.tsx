@@ -57,6 +57,10 @@ interface WinningProfile {
   trades: ClosedTrade[];     // all trades on this symbol
 }
 
+interface ExistingPosition {
+  symbol: string; strategy: string; expDate: string; strikes: string; qty: number;
+}
+
 interface SpreadCandidate {
   strategy: string; expiration: string; dte: number;
   shortStrike: number; longStrike: number; shortDelta: number;
@@ -66,6 +70,149 @@ interface SpreadCandidate {
   callCredit?: number; callWidth?: number; totalCredit?: number;
   shortOccSymbol?: string; longOccSymbol?: string;
   shortCallOccSymbol?: string; longCallOccSymbol?: string;
+}
+
+// ── Sector map ────────────────────────────────────────────────────────────
+const SECTOR_MAP: Record<string, string> = {
+  // Technology
+  AAPL:'Technology', MSFT:'Technology', NVDA:'Technology', AMD:'Technology', INTC:'Technology',
+  GOOGL:'Technology', GOOG:'Technology', META:'Technology', TSLA:'Technology', AVGO:'Technology',
+  QCOM:'Technology', TXN:'Technology', MU:'Technology', AMAT:'Technology', LRCX:'Technology',
+  KLAC:'Technology', MRVL:'Technology', ADBE:'Technology', CRM:'Technology', NOW:'Technology',
+  ORCL:'Technology', IBM:'Technology', HPE:'Technology', DELL:'Technology', SNOW:'Technology',
+  PLTR:'Technology', CRWD:'Technology', ZS:'Technology', PANW:'Technology', FTNT:'Technology',
+  NET:'Technology', DDOG:'Technology', MDB:'Technology', TEAM:'Technology', SHOP:'Technology',
+  // Financials
+  JPM:'Financials', BAC:'Financials', GS:'Financials', MS:'Financials', WFC:'Financials',
+  C:'Financials', BLK:'Financials', AXP:'Financials', V:'Financials', MA:'Financials',
+  // Healthcare
+  JNJ:'Healthcare', UNH:'Healthcare', PFE:'Healthcare', ABBV:'Healthcare', MRK:'Healthcare',
+  LLY:'Healthcare', BMY:'Healthcare', AMGN:'Healthcare', GILD:'Healthcare', CVS:'Healthcare',
+  // Consumer
+  AMZN:'Consumer', WMT:'Consumer', HD:'Consumer', TGT:'Consumer', COST:'Consumer',
+  NKE:'Consumer', MCD:'Consumer', SBUX:'Consumer', DIS:'Consumer', NFLX:'Consumer',
+  // Energy
+  XOM:'Energy', CVX:'Energy', COP:'Energy', OXY:'Energy', SLB:'Energy',
+  // Industrials
+  BA:'Industrials', CAT:'Industrials', GE:'Industrials', HON:'Industrials', UPS:'Industrials',
+  // ETFs / Indexes (no sector concentration concern)
+  SPY:'Index', QQQ:'Index', IWM:'Index', DIA:'Index', SMH:'Technology', SOXX:'Technology',
+  XLF:'Financials', XLK:'Technology', XLE:'Energy', XLV:'Healthcare', XLI:'Industrials',
+  XLP:'Consumer', XLY:'Consumer', GLD:'Commodity', SLV:'Commodity', TLT:'Bonds',
+};
+
+async function getSector(symbol: string): Promise<string> {
+  if (SECTOR_MAP[symbol]) return SECTOR_MAP[symbol];
+  try {
+    const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`);
+    const data = await res.json();
+    const sector = data?.chart?.result?.[0]?.meta?.sector;
+    return sector ?? 'Unknown';
+  } catch { return 'Unknown'; }
+}
+
+// ── Portfolio risk types ───────────────────────────────────────────────────
+type RiskLevel = 'clear' | 'same_symbol' | 'same_strikes' | 'synthetic_ic' | 'sector_concentration';
+
+interface PortfolioRisk {
+  level: RiskLevel;
+  warnings: string[];           // specific factual flags
+  recommendation: string;       // AI-style actionable guidance
+  sectorName: string;
+  sectorCount: number;          // how many open positions in same sector
+}
+
+function parseStrikesFromString(strikes: string): { puts: number[]; calls: number[] } {
+  const puts: number[] = [], calls: number[] = [];
+  const parts = strikes.replace(/·/g, '/').split('/');
+  for (const p of parts) {
+    const m = p.trim().match(/^(\d+(?:\.\d+)?)(P|C)$/i);
+    if (!m) continue;
+    const n = parseFloat(m[1]);
+    if (m[2].toUpperCase() === 'P') puts.push(n);
+    else calls.push(n);
+  }
+  return { puts, calls };
+}
+
+function checkPortfolioRisk(
+  symbol: string,
+  candidate: SpreadCandidate | null,
+  existingPositions: ExistingPosition[],
+  sectorName: string,
+  allSectorCounts: Record<string, number>,
+): PortfolioRisk {
+  const warnings: string[] = [];
+  let level: RiskLevel = 'clear';
+  let recommendation = '';
+
+  const sameSymbolPositions = existingPositions.filter(p => p.symbol === symbol);
+  const sectorCount = allSectorCounts[sectorName] ?? 0;
+
+  // ── Same strikes check ──────────────────────────────────────────────────
+  if (candidate && sameSymbolPositions.length > 0) {
+    for (const pos of sameSymbolPositions) {
+      const existing = parseStrikesFromString(pos.strikes);
+      const newPuts  = candidate.strategy === 'BPS' || candidate.strategy === 'IC'
+        ? [candidate.shortStrike, candidate.longStrike] : [];
+      const newCalls = candidate.strategy === 'BCS' || candidate.strategy === 'IC'
+        ? [candidate.shortCallStrike ?? candidate.shortStrike, candidate.longCallStrike ?? candidate.longStrike] : [];
+
+      const putOverlap  = newPuts.some(s  => existing.puts.some(e  => Math.abs(e - s)  < 1));
+      const callOverlap = newCalls.some(s => existing.calls.some(e => Math.abs(e - s) < 1));
+      const exactMatch  = putOverlap && (newCalls.length === 0 || callOverlap);
+
+      if (exactMatch) {
+        level = 'same_strikes';
+        warnings.push(`Duplicate strikes: you already hold ${pos.strikes} on ${symbol} (exp ${pos.expDate})`);
+        recommendation = `This is nearly identical to your existing ${pos.symbol} ${pos.strategy} position. Adding it doubles your notional risk on this ticker without diversification benefit. Only consider this if you intentionally want to scale up your position size — and only if your account can absorb a full loss on both spreads simultaneously.`;
+        break;
+      }
+    }
+  }
+
+  // ── Same symbol, different strikes ─────────────────────────────────────
+  if (level === 'clear' && sameSymbolPositions.length > 0 && candidate) {
+    const existingStrategy = sameSymbolPositions[0].strategy;
+    const newStrategy = candidate.strategy;
+
+    // Check if adding this creates a synthetic IC
+    const hasPuts  = sameSymbolPositions.some(p => p.strategy === 'BPS');
+    const hasCalls = sameSymbolPositions.some(p => p.strategy === 'BCS');
+    const addingCalls = newStrategy === 'BCS';
+    const addingPuts  = newStrategy === 'BPS';
+
+    if ((hasPuts && addingCalls) || (hasCalls && addingPuts)) {
+      level = 'synthetic_ic';
+      warnings.push(`Adding this ${newStrategy} would create a synthetic Iron Condor on ${symbol}`);
+      recommendation = `You already have a ${existingStrategy} on ${symbol}. Adding this ${newStrategy} effectively builds an IC — which can be a valid strategy, but evaluate whether the combined structure has sufficient buffer on both sides and fits your current market view on ${symbol}. If you intended to enter an IC, it may be cleaner to close both and re-enter as a single IC order.`;
+    } else {
+      level = 'same_symbol';
+      warnings.push(`You already have ${sameSymbolPositions.length} open position${sameSymbolPositions.length > 1 ? 's' : ''} on ${symbol}: ${sameSymbolPositions.map(p => p.strikes).join(', ')}`);
+      const totalQty = sameSymbolPositions.reduce((s, p) => s + p.qty, 0);
+      recommendation = `Adding this increases your ${symbol} exposure to ${totalQty + (candidate ? 1 : 0)} spread${totalQty > 0 ? 's' : ''}. This concentrates risk on a single name. Only add if your conviction on ${symbol} is high and the combined risk fits your position-sizing rules.`;
+    }
+  }
+
+  // ── Sector concentration ────────────────────────────────────────────────
+  const SECTOR_LIMIT = 3;
+  if (sectorName !== 'Index' && sectorName !== 'Unknown' && sectorCount >= SECTOR_LIMIT) {
+    const sectorWarning = `Sector concentration: you already have ${sectorCount} open position${sectorCount !== 1 ? 's' : ''} in ${sectorName}`;
+    warnings.push(sectorWarning);
+    if (level === 'clear') {
+      level = 'sector_concentration';
+      recommendation = `You have ${sectorCount} positions already in ${sectorName}. Adding another increases sector risk — a sector-wide event (regulatory, macro, earnings miss from a major player) could hit multiple positions simultaneously. Consider whether your portfolio has sufficient exposure to other sectors before adding this.`;
+    } else {
+      // Append sector note to existing recommendation
+      recommendation += ` Additionally, you already have ${sectorCount} ${sectorName} positions open — sector concentration amplifies the risk here.`;
+    }
+  }
+
+  if (level === 'clear') {
+    recommendation = 'No portfolio conflicts detected. Evaluate on its own merits.';
+  }
+
+  return { level, warnings, recommendation, sectorName, sectorCount };
 }
 
 interface RRResult {
@@ -383,7 +530,7 @@ function scoreColor(s: number) {
 
 
 // ── Stock Research Component ──────────────────────────────────────────────
-async function fetchStockResearch(symbol: string): Promise<string> {
+async function fetchStockResearch(symbol: string, riskContext?: string): Promise<string> {
   // Step 1: fetch recent news headlines from Yahoo Finance
   let headlines = '';
   try {
@@ -410,6 +557,7 @@ Give a concise 4-sentence trading analysis covering:
 2. Any near-term risks (earnings, macro, sector headwinds)
 3. Analyst/market sentiment
 4. Whether conditions currently favor selling premium (credit spreads) on this stock
+${riskContext ? `\n5. Given this portfolio risk context, is adding this trade advisable: ${riskContext}` : ''}
 
 Be direct and specific. No disclaimers. If the news is thin, say so.`;
 
@@ -428,7 +576,7 @@ Be direct and specific. No disclaimers. If the news is thin, say so.`;
   return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
 }
 
-function StockResearch({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] }) {
+function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof THEMES[Theme]; riskContext?: string }) {
   const [open, setOpen]         = useState(false);
   const [loading, setLoading]   = useState(false);
   const [result, setResult]     = useState<string | null>(null);
@@ -441,7 +589,7 @@ function StockResearch({ symbol, th }: { symbol: string; th: typeof THEMES[Theme
     if (result) return; // already fetched — just re-open
     setLoading(true); setError('');
     try {
-      const text = await fetchStockResearch(symbol);
+      const text = await fetchStockResearch(symbol, riskContext);
       setResult(text);
     } catch (err: any) {
       setError(err.message ?? 'Research failed');
@@ -488,12 +636,29 @@ function StockResearch({ symbol, th }: { symbol: string; th: typeof THEMES[Theme
 }
 
 // ── Result Card ───────────────────────────────────────────────────────────
-function RRCard({ result, th, onAddToHunter }: {
+function RRCard({ result, th, onAddToHunter, existingPositions }: {
   result: RRResult;
   th: typeof THEMES[Theme];
   onAddToHunter: (symbol: string, strategy: string) => void;
+  existingPositions?: ExistingPosition[];
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [portfolioRisk, setPortfolioRisk] = useState<PortfolioRisk | null>(null);
+
+  useEffect(() => {
+    if (!existingPositions || existingPositions.length === 0) return;
+    const sectorCounts: Record<string, number> = {};
+    Promise.all(existingPositions.map((p: ExistingPosition) => getSector(p.symbol))).then(sectors => {
+      sectors.forEach(s => { if (s !== 'Index' && s !== 'Unknown') sectorCounts[s] = (sectorCounts[s] ?? 0) + 1; });
+      getSector(result.profile.symbol).then(sector => {
+        const adjCounts = { ...sectorCounts };
+        existingPositions.filter((p: ExistingPosition) => p.symbol === result.profile.symbol).forEach(() => {
+          if (adjCounts[sector] > 0) adjCounts[sector]--;
+        });
+        setPortfolioRisk(checkPortfolioRisk(result.profile.symbol, result.candidate, existingPositions, sector, adjCounts));
+      });
+    });
+  }, [existingPositions, result.profile.symbol, result.candidate]);
   const { profile, candidate: c, currentIvr, currentPrice, rrScore, qualified } = result;
   const sc = scoreColor(rrScore);
   const wins = profile.trades.filter(t => t.outcome === 'WIN');
@@ -513,7 +678,7 @@ function RRCard({ result, th, onAddToHunter }: {
           <a href={`https://www.tradingview.com/chart/?symbol=${profile.symbol}`} target="_blank" rel="noopener noreferrer"
             onClick={e => e.stopPropagation()}
             className={`text-[9px] ${th.textFaint} hover:text-blue-400 transition-colors`}>chart ↗</a>
-          <StockResearch symbol={profile.symbol} th={th} />
+          <StockResearch symbol={profile.symbol} th={th} riskContext={portfolioRisk && portfolioRisk.level !== 'clear' ? portfolioRisk.recommendation : undefined} />
         </div>
 
         {/* Strategy + RR score */}
@@ -589,6 +754,26 @@ function RRCard({ result, th, onAddToHunter }: {
         </div>
       </div>
 
+      {/* Portfolio risk banner */}
+      {portfolioRisk && portfolioRisk.level !== 'clear' && (
+        <div className={`border-t px-4 py-2.5 ${
+          portfolioRisk.level === 'same_strikes' ? 'border-red-500/40 bg-red-500/8'
+          : portfolioRisk.level === 'synthetic_ic' ? 'border-purple-500/30 bg-purple-500/8'
+          : portfolioRisk.level === 'sector_concentration' ? 'border-orange-500/30 bg-orange-500/8'
+          : 'border-amber-500/30 bg-amber-500/8'
+        }`} onClick={e => e.stopPropagation()}>
+          <div className="flex items-start gap-2 mb-1">
+            <span className={`text-sm shrink-0 ${portfolioRisk.level === 'same_strikes' ? 'text-red-400' : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-400' : portfolioRisk.level === 'sector_concentration' ? 'text-orange-400' : 'text-amber-400'}`}>⚠</span>
+            <div>
+              {portfolioRisk.warnings.map((w, i) => (
+                <p key={i} className={`text-[10px] font-bold ${portfolioRisk.level === 'same_strikes' ? 'text-red-300' : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-300' : portfolioRisk.level === 'sector_concentration' ? 'text-orange-300' : 'text-amber-300'}`}>{w}</p>
+              ))}
+              <p className={`text-[10px] mt-1 leading-relaxed ${portfolioRisk.level === 'same_strikes' ? 'text-red-400/80' : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-400/80' : portfolioRisk.level === 'sector_concentration' ? 'text-orange-400/80' : 'text-amber-400/80'}`}>{portfolioRisk.recommendation}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Expanded: trade history + setup details */}
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
@@ -655,8 +840,59 @@ export default function RinseRepeatPage() {
   const [status, setStatus]   = useState('');
   const [error, setError]     = useState('');
   const [minWins, setMinWins] = useState(1);
+  const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
   const [hunterQueue, setHunterQueue] = useState<{ symbol: string; strategy: string }[]>([]);
   const [addedToHunter, setAddedToHunter] = useState(false);
+
+  // Load existing portfolio positions on mount
+  useEffect(() => {
+    // Reuse the same loadExistingPositions logic inline
+    (async () => {
+      try {
+        const token = await getAccessToken();
+        const accountsData = await ttFetch('/customers/me/accounts', token);
+        const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+        if (!accountNumber) return;
+        const posData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
+        const rawPositions: any[] = posData?.data?.items ?? [];
+        const optionLegs = rawPositions.filter((p: any) =>
+          (p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option')
+          && parseFloat(p['quantity'] ?? '0') > 0
+        );
+        const groups: Record<string, any[]> = {};
+        for (const leg of optionLegs) {
+          const sym = leg['underlying-symbol'];
+          const exp = (leg['expires-at'] ?? leg['expiration-date'] ?? 'unknown').slice(0, 10);
+          const key = `${sym}::${exp}`;
+          if (!groups[key]) groups[key] = [];
+          groups[key].push(leg);
+        }
+        const positions: ExistingPosition[] = [];
+        for (const [key, legs] of Object.entries(groups)) {
+          const [symbol, expDate] = key.split('::');
+          const shortLeg = legs.find((l: any) => l['quantity-direction'] === 'Short');
+          const qty = shortLeg ? parseInt(shortLeg['quantity'] ?? '1', 10) : 1;
+          const getOT = (occ: string) => { const m = occ.replace(/\s+/g,'').match(/^[A-Z]+\d{6}([CP])\d{8}$/); return m?.[1] ?? null; };
+          const getStrike = (occ: string) => { const m = occ.replace(/\s+/g,'').match(/\d{8}$/); return m ? parseInt(m[0],10)/1000 : 0; };
+          const putLegs  = legs.filter((l: any) => getOT(l.symbol) === 'P');
+          const callLegs = legs.filter((l: any) => getOT(l.symbol) === 'C');
+          let strategy = 'SPREAD';
+          if (putLegs.length >= 2 && callLegs.length === 0) strategy = 'BPS';
+          else if (callLegs.length >= 2 && putLegs.length === 0) strategy = 'BCS';
+          else if (putLegs.length >= 2 && callLegs.length >= 2) strategy = 'IC';
+          const sp = putLegs.map((l: any) => getStrike(l.symbol)).sort((a: number,b: number) => b-a);
+          const sc = callLegs.map((l: any) => getStrike(l.symbol)).sort((a: number,b: number) => a-b);
+          let strikes = '';
+          if (strategy === 'BPS' && sp.length >= 2) strikes = `${sp[0]}P/${sp[1]}P`;
+          else if (strategy === 'BCS' && sc.length >= 2) strikes = `${sc[0]}C/${sc[1]}C`;
+          else if (strategy === 'IC' && sp.length >= 2 && sc.length >= 2) strikes = `${sp[0]}P/${sp[1]}P · ${sc[0]}C/${sc[1]}C`;
+          else strikes = legs.map((l: any) => `${getStrike(l.symbol)}${getOT(l.symbol)}`).join('/');
+          positions.push({ symbol, strategy, expDate, strikes, qty });
+        }
+        setExistingPositions(positions);
+      } catch {}
+    })();
+  }, []);
 
   // Load profiles from cache on mount/range change
   useEffect(() => {
@@ -868,7 +1104,7 @@ export default function RinseRepeatPage() {
             {qualified.length > 0 && (
               <div className="space-y-2">
                 {qualified.map(r => (
-                  <RRCard key={r.profile.symbol} result={r} th={th} onAddToHunter={handleAddToHunter} />
+                  <RRCard key={r.profile.symbol} result={r} th={th} onAddToHunter={handleAddToHunter} existingPositions={existingPositions} />
                 ))}
               </div>
             )}
@@ -878,7 +1114,7 @@ export default function RinseRepeatPage() {
                 <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>NO QUALIFYING SETUP TODAY</p>
                 <div className="space-y-2">
                   {unqualified.map(r => (
-                    <RRCard key={r.profile.symbol} result={r} th={th} onAddToHunter={handleAddToHunter} />
+                    <RRCard key={r.profile.symbol} result={r} th={th} onAddToHunter={handleAddToHunter} existingPositions={existingPositions} />
                   ))}
                 </div>
               </div>
