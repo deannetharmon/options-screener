@@ -1,4 +1,5 @@
 // path: app/performance/page.tsx
+
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
@@ -1019,7 +1020,6 @@ export default function PerformancePage() {
           </div>
         )}
       </div>
-    </div>
 
       {showAI && (
         <AIChatPanel trades={trades} range={range} th={th} onClose={() => setShowAI(false)} />
