@@ -645,13 +645,13 @@ export default function TradeLogPage() {
   const [filterSymbol,   setFilterSymbol]   = useState('');
   const [showExcluded,   setShowExcluded]   = useState(false);
   const [excludedIds,    setExcludedIds]    = useState<Set<string>>(() => {
-    try { const s = localStorage.getItem('hunter-tradelog-excluded'); return s ? new Set(JSON.parse(s)) : new Set(); } catch { return new Set(); }
+    try { const s = localStorage.getItem('hunter-tradelog-excluded'); return s ? new Set<string>(JSON.parse(s)) : new Set<string>(); } catch { return new Set<string>(); }
   });
   const toggleExclude = (id: string) => {
     setExcludedIds(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
-      try { localStorage.setItem('hunter-tradelog-excluded', JSON.stringify([...next])); } catch {}
+      try { localStorage.setItem('hunter-tradelog-excluded', JSON.stringify(Array.from(next))); } catch {}
       return next;
     });
   };
