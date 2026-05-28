@@ -590,7 +590,7 @@ export default function RinseRepeatPage() {
           const validExps = chainData.expirations.filter(exp => { const d = daysUntil(exp); return d >= rules.DTE_MIN && d <= rules.DTE_MAX; });
 
           for (const exp of validExps) {
-            const chain = chainData.chains[exp] ?? [];
+            const chain = (chainData.chains as Record<string, any[]>)[exp] ?? [];
             candidate = profile.preferredStrategy === 'IC'
               ? findBestIC(chain, exp, price, rules)
               : findBestSpread(chain, profile.preferredStrategy, exp, price, rules);
