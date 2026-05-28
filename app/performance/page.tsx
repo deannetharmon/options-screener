@@ -1,5 +1,4 @@
 // path: app/performance/page.tsx
-
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
@@ -38,7 +37,8 @@ function getSavedTheme(): Theme {
 
 // ── Types (shared with trade-log) ─────────────────────────────────────────
 type TimeRange = '3m' | '6m' | '12m';
-type Outcome = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
+type Outcome  = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
+type ExitType = 'TARGET_HIT' | 'FAST_CUT' | 'TIME_STOP' | 'MAX_LOSS' | 'HELD_TO_EXPIRY' | 'EARLY_WIN' | 'UNKNOWN';
 
 interface ClosedTrade {
   id: string;
@@ -58,6 +58,9 @@ interface ClosedTrade {
   fees: number;
   openTime?: string;
   openDow?: number;
+  dteAtClose: number;
+  dteAtEntry: number;
+  exitType: ExitType;
 }
 
 interface ChatMessage { role: 'user' | 'assistant'; content: string; }
@@ -78,7 +81,8 @@ type WidgetId =
   | 'hold_time'
   | 'best_worst'
   | 'streak'
-  | 'dte_analysis';
+  | 'dte_analysis'
+  | 'exit_analysis';
 
 interface WidgetConfig {
   id: WidgetId;
@@ -95,7 +99,8 @@ const DEFAULT_WIDGETS: WidgetConfig[] = [
   { id: 'hold_time',   label: 'Hold Time Analysis',  enabled: true,  order: 4 },
   { id: 'best_worst',  label: 'Best & Worst Trades', enabled: true,  order: 5 },
   { id: 'streak',      label: 'Win/Loss Streak',     enabled: false, order: 6 },
-  { id: 'dte_analysis',label: 'DTE at Entry',        enabled: false, order: 7 },
+  { id: 'dte_analysis',   label: 'DTE at Entry',        enabled: false, order: 7 },
+  { id: 'exit_analysis',  label: 'Exit Analysis',       enabled: true,  order: 8 },
 ];
 
 function getSavedWidgets(): WidgetConfig[] {
@@ -250,7 +255,33 @@ ${byTime.length > 0 ? byTime.join('\n') : 'No time data available'}
 BEHAVIORAL FLAGS:
 Potential revenge trades: ${revengeTrades}
 
-Cover: what is genuinely working, what is clearly not working, the single most damaging pattern, specific execution mistakes visible in the data, and 3 concrete changes to make immediately. Be direct. Start with the most important finding.`;
+EXIT TYPE BREAKDOWN:
+${(() => {
+  const exitLabels: Record<string, string> = {
+    TARGET_HIT:     'Target hit (40–65% profit)',
+    FAST_CUT:       'Fast cut (exit ≤2 days, loss)',
+    TIME_STOP:      'Time stop (closed at ≤21 DTE)',
+    MAX_LOSS:       'Max loss (held too long, >150% loss)',
+    HELD_TO_EXPIRY: 'Held to expiry (win but risky)',
+    EARLY_WIN:      'Early win (closed fast, small gain)',
+  };
+  const types = ['TARGET_HIT','FAST_CUT','TIME_STOP','MAX_LOSS','HELD_TO_EXPIRY','EARLY_WIN'];
+  return types.map(et => {
+    const g = trades.filter(t => t.exitType === et);
+    if (g.length === 0) return null;
+    const w = g.filter(t => t.outcome === 'WIN').length;
+    const pnl = g.reduce((s, t) => s + t.pnl, 0);
+    const avgH = Math.round(g.reduce((s, t) => s + t.holdDays, 0) / g.length);
+    return `${exitLabels[et]}: ${g.length} trades, ${Math.round(w/g.length*100)}% win, $${pnl.toFixed(0)} total, avg ${avgH}d hold`;
+  }).filter(Boolean).join('\n');
+})()}
+
+LOSS DETAIL (each losing trade with context):
+${trades.filter(t => t.outcome === 'LOSS').map(t =>
+  `${t.symbol} ${t.strategy}: held ${t.holdDays}d, ${t.dteAtClose}DTE remaining at close, loss ${t.pnlPct.toFixed(0)}% of credit [${t.exitType}]`
+).join('\n') || 'No losses in this period'}
+
+Lead with exit behavior — were fast cuts disciplined or panic? Which losses came from holding too long? Which were unavoidable? Then cover strategy patterns, entry timing, and finish with 3 concrete changes to make immediately. Be direct. Start with the most important finding.`;
 }
 
 async function callAIWithHistory(messages: ChatMessage[], system: string): Promise<string> {
@@ -307,11 +338,11 @@ function AIChatPanel({ trades, range, th, onClose }: {
   };
 
   const suggestions = [
-    'Which strategy should I drop entirely?',
-    'What does my win/loss ratio say about my edge?',
-    'Am I entering at the wrong time of day?',
-    'What is my biggest execution mistake?',
-    'What should I focus on to improve most?',
+    'Were my fast cuts the right call?',
+    'Which losses were avoidable?',
+    'Am I holding losers too long?',
+    'Which strategy should I drop?',
+    'What should I change immediately?',
   ];
 
   return (
@@ -397,6 +428,23 @@ function rangeStartDate(range: TimeRange): string {
   return d.toISOString().split('T')[0];
 }
 
+
+function classifyExit(pnl: number, creditReceived: number, holdDays: number, dteAtClose: number, dteAtEntry: number): ExitType {
+  const pnlPct = creditReceived !== 0 ? (pnl / Math.abs(creditReceived)) * 100 : 0;
+  const pctOfDteUsed = dteAtEntry > 0 ? holdDays / dteAtEntry : 0;
+  if (pnl > 0) {
+    if (pnlPct >= 40 && pnlPct <= 65) return 'TARGET_HIT';
+    if (pnlPct > 65 && pctOfDteUsed >= 0.8) return 'HELD_TO_EXPIRY';
+    if (holdDays <= 3) return 'EARLY_WIN';
+    return 'TARGET_HIT';
+  } else {
+    if (holdDays <= 2) return 'FAST_CUT';
+    if (dteAtClose <= 21 && dteAtClose >= 0) return 'TIME_STOP';
+    if (pnlPct < -150) return 'MAX_LOSS';
+    return 'FAST_CUT';
+  }
+}
+
 async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[]> {
   const token = await getAccessToken();
   const accountsData = await ttFetch('/customers/me/accounts', token);
@@ -473,7 +521,26 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     const closeDate = pairs.map((p: any) => p.closeTx['executed-at'].slice(0, 10)).sort().reverse()[0];
     const holdDays  = Math.round((new Date(closeDate).getTime() - new Date(openDay).getTime()) / 86400000);
     const outcome: Outcome = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'SCRATCH';
-    trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, openDate: openDay, closeDate, expiry, holdDays, strikes, creditReceived, closePrice, pnl, pnlPct, outcome, quantity: strategy === 'IC' ? Math.min(putPairs.length, callPairs.length) : Math.max(putPairs.length, callPairs.length, 1), fees: totalFees });
+    const dteAtClose = Math.max(0, Math.round((new Date(expiry).getTime() - new Date(closeDate).getTime()) / 86400000));
+    const dteAtEntry = holdDays + dteAtClose;
+    const exitType   = classifyExit(pnl, creditReceived, holdDays, dteAtClose, dteAtEntry);
+    // Entry time — parse as ET so time-of-day buckets align with market hours
+    let openTime = '';
+    let openDow  = -1;
+    const earliestOpen = pairs.map((p: any) => p.openTx['executed-at']).sort()[0] ?? '';
+    if (earliestOpen) {
+      try {
+        const etStr = new Date(earliestOpen).toLocaleString('en-US', { timeZone: 'America/New_York' });
+        const etDt  = new Date(etStr);
+        openTime = `${String(etDt.getHours()).padStart(2,'0')}:${String(etDt.getMinutes()).padStart(2,'0')}`;
+        openDow  = etDt.getDay();
+      } catch {
+        const fb = new Date(earliestOpen);
+        openTime = `${String(fb.getHours()).padStart(2,'0')}:${String(fb.getMinutes()).padStart(2,'0')}`;
+        openDow  = fb.getDay();
+      }
+    }
+    trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, openDate: openDay, closeDate, expiry, holdDays, dteAtClose, dteAtEntry, exitType, strikes, creditReceived, closePrice, pnl, pnlPct, outcome, quantity: strategy === 'IC' ? Math.min(putPairs.length, callPairs.length) : Math.max(putPairs.length, callPairs.length, 1), fees: totalFees, openTime, openDow });
   }
   trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
   return trades;
@@ -796,6 +863,68 @@ function DteAnalysisWidget({ trades, th }: { trades: ClosedTrade[]; th: typeof T
   );
 }
 
+// ── Exit Analysis Widget ──────────────────────────────────────────────────
+function ExitAnalysisWidget({ trades, th }: { trades: ClosedTrade[]; th: typeof THEMES[Theme] }) {
+  const exitDefs: { type: ExitType; label: string; desc: string; goodOrBad: 'good' | 'bad' | 'neutral' }[] = [
+    { type: 'TARGET_HIT',     label: 'Target Hit',      desc: 'Closed at 40–65% profit — disciplined',        goodOrBad: 'good' },
+    { type: 'EARLY_WIN',      label: 'Early Win',       desc: 'Closed fast for small gain — left $ on table', goodOrBad: 'neutral' },
+    { type: 'HELD_TO_EXPIRY', label: 'Held to Expiry',  desc: 'Won but held > 80% of duration — got lucky',   goodOrBad: 'neutral' },
+    { type: 'FAST_CUT',       label: 'Fast Cut',        desc: 'Loss, exited within 2 days — quick defense',   goodOrBad: 'neutral' },
+    { type: 'TIME_STOP',      label: 'Time Stop',       desc: 'Closed at ≤21 DTE — rule followed',            goodOrBad: 'neutral' },
+    { type: 'MAX_LOSS',       label: 'Max Loss',        desc: 'Loss > 150% of credit — held way too long',    goodOrBad: 'bad' },
+  ];
+
+  const rows = exitDefs.map(d => {
+    const g = trades.filter(t => t.exitType === d.type);
+    if (g.length === 0) return null;
+    const wins = g.filter(t => t.outcome === 'WIN').length;
+    const pnl  = g.reduce((s, t) => s + t.pnl, 0);
+    const avgH = Math.round(g.reduce((s, t) => s + t.holdDays, 0) / g.length);
+    const winRate = g.length > 0 ? wins / g.length : 0;
+    return { ...d, count: g.length, winRate, pnl, avgH };
+  }).filter(Boolean);
+
+  if (rows.length === 0) return <p className={`text-xs ${th.textFaint} text-center py-4`}>No data</p>;
+
+  return (
+    <div className="space-y-3">
+      {rows.map(r => (
+        <div key={r!.type} className={`p-3 rounded-lg border ${
+          r!.goodOrBad === 'good'    ? 'border-emerald-500/20 bg-emerald-500/5'
+          : r!.goodOrBad === 'bad'  ? 'border-red-500/20 bg-red-500/5'
+          : `${th.borderLight} bg-white/2`
+        }`}>
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2">
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 border rounded ${
+                r!.goodOrBad === 'good' ? 'border-emerald-600 text-emerald-400'
+                : r!.goodOrBad === 'bad' ? 'border-red-600 text-red-400'
+                : `${th.border} ${th.textFaint}`
+              }`}>{r!.label}</span>
+              <span className={`text-[10px] ${th.textFaint}`}>{r!.count} trade{r!.count !== 1 ? 's' : ''} · avg {r!.avgH}d hold</span>
+            </div>
+            <span className={`text-[10px] font-bold ${r!.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              {r!.pnl >= 0 ? '+' : ''}${r!.pnl.toFixed(0)}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <p className={`text-[9px] ${th.textFaint} flex-1`}>{r!.desc}</p>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="w-20 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full ${r!.winRate >= 0.6 ? 'bg-emerald-500/60' : r!.winRate >= 0.4 ? 'bg-yellow-500/60' : 'bg-red-500/60'}`}
+                  style={{ width: `${r!.winRate * 100}%` }} />
+              </div>
+              <span className={`text-[9px] font-bold w-8 ${r!.winRate >= 0.6 ? 'text-emerald-400' : r!.winRate >= 0.4 ? 'text-yellow-400' : 'text-red-400'}`}>
+                {Math.round(r!.winRate * 100)}%
+              </span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Widget shell ──────────────────────────────────────────────────────────
 function Widget({ config, trades, th, onToggle, onMoveUp, onMoveDown, isFirst, isLast }: {
   config: WidgetConfig;
@@ -808,14 +937,15 @@ function Widget({ config, trades, th, onToggle, onMoveUp, onMoveDown, isFirst, i
   isLast: boolean;
 }) {
   const WIDGET_CONTENT: Record<WidgetId, React.ReactNode> = {
-    overview:     <OverviewWidget   trades={trades} th={th} />,
-    monthly_pnl:  <MonthlyPnlChart  trades={trades} th={th} />,
-    by_strategy:  <ByStrategyWidget trades={trades} th={th} />,
-    by_symbol:    <BySymbolWidget   trades={trades} th={th} />,
-    hold_time:    <HoldTimeWidget   trades={trades} th={th} />,
-    best_worst:   <BestWorstWidget  trades={trades} th={th} />,
-    streak:       <StreakWidget     trades={trades} th={th} />,
-    dte_analysis: <DteAnalysisWidget trades={trades} th={th} />,
+    overview:      <OverviewWidget     trades={trades} th={th} />,
+    monthly_pnl:   <MonthlyPnlChart    trades={trades} th={th} />,
+    by_strategy:   <ByStrategyWidget   trades={trades} th={th} />,
+    by_symbol:     <BySymbolWidget     trades={trades} th={th} />,
+    hold_time:     <HoldTimeWidget     trades={trades} th={th} />,
+    best_worst:    <BestWorstWidget    trades={trades} th={th} />,
+    streak:        <StreakWidget       trades={trades} th={th} />,
+    dte_analysis:  <DteAnalysisWidget  trades={trades} th={th} />,
+    exit_analysis: <ExitAnalysisWidget trades={trades} th={th} />,
   };
 
   return (
