@@ -18,6 +18,9 @@ const BASE       = 'https://api.tastytrade.com';
 const CLIENT_ID  = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 const LS_THEME   = 'hunter-theme';
 const LS_DEVICE  = 'hunter-device-id';
+const LS_TL_1W   = 'hunter-tradelog-1w';
+const LS_TL_2W   = 'hunter-tradelog-2w';
+const LS_TL_1M   = 'hunter-tradelog-1m';
 const LS_TL_3M   = 'hunter-tradelog-3m';
 const LS_TL_6M   = 'hunter-tradelog-6m';
 const LS_TL_12M  = 'hunter-tradelog-12m';
@@ -36,7 +39,7 @@ function getSavedTheme(): Theme {
 }
 
 // ── Types (shared with trade-log) ─────────────────────────────────────────
-type TimeRange = '3m' | '6m' | '12m';
+type TimeRange = '1w' | '2w' | '1m' | '3m' | '6m' | '12m';
 type Outcome  = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
 type ExitType = 'TARGET_HIT' | 'FAST_CUT' | 'TIME_STOP' | 'MAX_LOSS' | 'HELD_TO_EXPIRY' | 'EARLY_WIN' | 'UNKNOWN';
 
@@ -156,7 +159,7 @@ function getDeviceId(): string {
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────
-const LS_KEY: Record<TimeRange, string> = { '3m': LS_TL_3M, '6m': LS_TL_6M, '12m': LS_TL_12M };
+const LS_KEY: Record<TimeRange, string> = { '1w': LS_TL_1W, '2w': LS_TL_2W, '1m': LS_TL_1M, '3m': LS_TL_3M, '6m': LS_TL_6M, '12m': LS_TL_12M };
 
 function readCache(range: TimeRange): CacheEntry | null {
   try { const raw = localStorage.getItem(LS_KEY[range]); return raw ? JSON.parse(raw) : null; } catch { return null; }
@@ -422,9 +425,12 @@ function parseOccSymbol(occ: string): { symbol: string; expiry: string; optionTy
 
 function rangeStartDate(range: TimeRange): string {
   const d = new Date();
-  if (range === '3m') d.setMonth(d.getMonth() - 3);
-  else if (range === '6m') d.setMonth(d.getMonth() - 6);
-  else d.setFullYear(d.getFullYear() - 1);
+  if      (range === '1w')  d.setDate(d.getDate() - 7);
+  else if (range === '2w')  d.setDate(d.getDate() - 14);
+  else if (range === '1m')  d.setMonth(d.getMonth() - 1);
+  else if (range === '3m')  d.setMonth(d.getMonth() - 3);
+  else if (range === '6m')  d.setMonth(d.getMonth() - 6);
+  else                      d.setFullYear(d.getFullYear() - 1);
   return d.toISOString().split('T')[0];
 }
 
@@ -1145,6 +1151,7 @@ export default function PerformancePage() {
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <Link href="/"            className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
             <Link href="/portfolio"   className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
+            <Link href="/rinse-repeat"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</Link>
             <Link href="/trade-log"   className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</Link>
             <span                     className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">PERFORMANCE</span>
           </nav>
@@ -1159,19 +1166,24 @@ export default function PerformancePage() {
         </div>
       </div>
 
-      <div className="px-6 py-6 max-w-[1400px] mx-auto space-y-4">
-
-        {/* Controls */}
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-2">
-            {(['3m','6m','12m'] as TimeRange[]).map(r => (
+      {/* Sticky controls bar */}
+      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[57px] z-40 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-1">
+            {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
               <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
-                className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${
+                className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${
                   range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700 hover:text-blue-400`
                 }`}>
-                {r === '3m' ? '3 MO' : r === '6m' ? '6 MO' : '12 MO'}
+                {label}
               </button>
             ))}
+            {!loading && trades.length > 0 && (
+              <span className={`ml-2 text-[9px] ${th.textFaint}`}>
+                {({'1w':'last 7 days','2w':'last 14 days','1m':'last 30 days','3m':'last 3 months','6m':'last 6 months','12m':'last 12 months'} as Record<string,string>)[range]}
+                {' · '}{trades.length} trades
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3">
             {cachedAt && <span className={`text-[9px] ${th.textFaint}`}>Last synced {fmtAge(Date.now() - cachedAt)}</span>}
@@ -1191,15 +1203,9 @@ export default function PerformancePage() {
             </button>
           </div>
         </div>
+      </div>{/* end sticky controls */}
 
-        {/* Active range label */}
-        {!loading && trades.length > 0 && (
-          <p className={`text-[10px] ${th.textFaint}`}>
-            Showing <span className={`font-bold ${th.textMuted}`}>
-              {({'1w':'last 7 days','2w':'last 14 days','1m':'last 30 days','3m':'last 3 months','6m':'last 6 months','12m':'last 12 months'} as Record<string,string>)[range]}
-            </span> · {trades.length} closed trades
-          </p>
-        )}
+      <div className={`px-6 py-4 max-w-[1400px] mx-auto space-y-4 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
 
         {/* Widget configurator panel */}
         {showConfig && (
