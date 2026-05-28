@@ -4148,7 +4148,7 @@ export default function Home() {
   return (
     <div className={`min-h-screen ${th.bg} text-slate-100 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       {/* Header */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
+      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
         <div className="flex items-center gap-4">
           <div>
             <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
