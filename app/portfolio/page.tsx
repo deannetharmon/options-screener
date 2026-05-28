@@ -1052,8 +1052,7 @@ async function loadPositions(): Promise<Position[]> {
   const positionsData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
   const rawPositions = positionsData?.data?.items ?? [];
   const optionPositions = rawPositions.filter((p: any) =>
-    (p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option')
-    && parseFloat(p['quantity'] ?? '0') > 0
+    p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
   );
 
   const groups: Record<string, any[]> = {};
@@ -2899,7 +2898,7 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
       {[
         { label: 'Open Positions', value: String(positions.length), sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`, color: th.text },
         { label: 'Captured', value: `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, sub: `of $${totalCredit.toFixed(0)} · ${capturedPct.toFixed(0)}%`, color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: '50% Target', value: `$${Math.round(totalCredit * 0.5)}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / (totalCredit * 0.5)) * 100) : 0}% of target`, color: 'text-yellow-400' },
+        { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
         { label: 'At Risk', value: `$${totalAtRisk.toFixed(0)}`, sub: 'max loss if expired', color: th.textMuted },
         { label: 'Est. Theta/Day', value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—', sub: 'daily decay', color: 'text-blue-400' },
       ].map((item, i, arr) => (
@@ -4711,6 +4710,11 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
               <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
+                {pos.plOpen != null && pos.creditReceived !== 0 && (
+                  <span className={`ml-1 font-normal text-[10px]`}>
+                    ({pos.plOpen >= 0 ? '+' : ''}{(pos.plOpen / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
+                  </span>
+                )}
               </p>
             </div>
 
@@ -5220,7 +5224,7 @@ export default function PortfolioPage() {
     <div className={`min-h-screen ${th.bg} pb-24 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
 
       {/* Header */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
+      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
         <div className="flex items-center gap-6">
           <div>
             <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
