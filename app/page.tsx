@@ -1,4 +1,4 @@
-// File location: app/page.tsx
+// path: app/page.tsx
 
 'use client';
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -7,9 +7,9 @@ import { createPortal } from 'react-dom';
 
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
-  if (!document.getElementById('prosper-font')) {
+  if (!document.getElementById('hunter-font')) {
     const link = document.createElement('link');
-    link.id = 'prosper-font';
+    link.id = 'hunter-font';
     link.rel = 'stylesheet';
     link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=DM+Mono:wght@400;500&display=swap';
     document.head.appendChild(link);
@@ -18,7 +18,7 @@ if (typeof document !== 'undefined') {
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
-const LS_THEME = 'prosper-theme';
+const LS_THEME = 'hunter-theme';
 
 const THEMES: Record<Theme, {
   bg: string; sidebar: string; card: string; cardQualified: string;
@@ -43,6 +43,10 @@ interface SpreadCandidate {
   callCredit?: number; callWidth?: number; totalCredit?: number; optimized?: boolean;
   shortOccSymbol?: string; longOccSymbol?: string;
   shortCallOccSymbol?: string; longCallOccSymbol?: string;
+  // PMCC-specific
+  longExpiration?: string; longDte?: number; longDelta?: number;
+  longCost?: number; netDebit?: number; maxProfit?: number; extrinsicCapture?: number;
+  longOccSymbolPMCC?: string; shortOccSymbolPMCC?: string;
 }
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
@@ -433,7 +437,8 @@ const RULE_PRESETS = [
   { key: 'relaxed',   label: 'Relaxed',    desc: 'Wider net, still disciplined',   color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
   { key: 'lowvol',    label: 'Low Vol',    desc: 'Crushed IV environments',        color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
   { key: 'strict',    label: 'Strict',     desc: 'A+ setups only',                 color: 'border-red-600 text-red-400 bg-red-600/10',            rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
-  { key: 'shortterm', label: 'Short Term', desc: '14-28 DTE · active management', color: 'border-orange-500 text-orange-400 bg-orange-500/10',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 14, DTE_MAX: 28 } },
+  { key: 'shortterm',    label: 'Short Term',    desc: '7-14 DTE · very active management',  color: 'border-orange-500 text-orange-400 bg-orange-500/10',  rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 7,  DTE_MAX: 14 } },
+  { key: 'intermediate', label: 'Intermediate',  desc: '15-29 DTE · active management',      color: 'border-amber-500 text-amber-400 bg-amber-500/10',     rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 15, DTE_MAX: 29 } },
 ] as const;
 
 const RULE_LABELS: Record<string, string> = {
@@ -454,12 +459,12 @@ const RULE_LABELS: Record<string, string> = {
   POP_MIN: 'Min POP % (Probability of Profit)',
 };
 
-const LS_RULES = 'prosper-rules';
-const LS_RULES_ETF = 'prosper-rules-etf';
-const LS_RULES_PRESET = 'prosper-rules-preset';
-const LS_ACTIVE_PRESET = 'prosper-active-preset';
-const LS_ACTIVE_PRESET_ETF = 'prosper-active-preset-etf';
-const LS_RULES_VERSION = 'prosper-rules-v3'; // bump this when defaults change
+const LS_RULES = 'hunter-rules';
+const LS_RULES_ETF = 'hunter-rules-etf';
+const LS_RULES_PRESET = 'hunter-rules-preset';
+const LS_ACTIVE_PRESET = 'hunter-active-preset';
+const LS_ACTIVE_PRESET_ETF = 'hunter-active-preset-etf';
+const LS_RULES_VERSION = 'hunter-rules-v3'; // bump this when defaults change
 
 const DEFAULT_ETF_RULES: RulesType = {
   IVR_MIN: 15, IVR_IC_MAX: 70, OI_MIN: 100, BID_ASK_MAX: 0.25,
@@ -495,19 +500,20 @@ function saveEtfRulesToStorage(rules: RulesType) {
   try { localStorage.setItem(LS_RULES_ETF, JSON.stringify(rules)); } catch {}
 }
 const TREND_DETECTION_CONCURRENCY = 8;
-const LS_BPS = 'prosper-tickers-bps';
-const LS_BCS = 'prosper-tickers-bcs';
-const LS_IC = 'prosper-tickers-ic';
-const LS_BROKEN = 'prosper-tickers-broken';
-const LS_CAL = 'prosper-cal-scheduled';
-const LS_CAL_ENTRY = 'prosper-cal-entry';
+const LS_BPS = 'hunter-tickers-bps';
+const LS_BCS = 'hunter-tickers-bcs';
+const LS_IC = 'hunter-tickers-ic';
+const LS_PMCC = 'hunter-tickers-pmcc';
+const LS_BROKEN = 'hunter-tickers-broken';
+const LS_CAL = 'hunter-cal-scheduled';
+const LS_CAL_ENTRY = 'hunter-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
 const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
-const LS_SAVED_FILTERS = 'prosper-saved-filters';
-const LS_GLOBAL_SESSIONS = 'prosper-global-sessions';
-const LS_SCREEN_MODE = 'prosper-screen-mode';
-const LS_RANK_CONFIG = 'prosper-rank-config';
-const LS_SESSION_LOADED_AT = 'prosper-session-loaded-at';
+const LS_SAVED_FILTERS = 'hunter-saved-filters';
+const LS_GLOBAL_SESSIONS = 'hunter-global-sessions';
+const LS_SCREEN_MODE = 'hunter-screen-mode';
+const LS_RANK_CONFIG = 'hunter-rank-config';
+const LS_SESSION_LOADED_AT = 'hunter-session-loaded-at';
 
 // ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
@@ -777,52 +783,6 @@ async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
   return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
 }
-// ── Stop Loss / GTC Order Check ────────────────────────────────────────────
-type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
-
-interface GtcOrderLeg {
-  symbol: string;
-  action: string;
-}
-interface GtcOrder {
-  id: string;
-  price: string;
-  legs: GtcOrderLeg[];
-}
-
-async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
-  try {
-    const data = await ttFetch(`/accounts/${accountNumber}/orders?status=Open&per-page=200`, token);
-    return (data?.data?.items ?? [])
-      .filter((o: any) => o['time-in-force'] === 'GTC' && o['order-type'] === 'Limit')
-      .map((o: any) => ({
-        id: o.id,
-        price: o.price,
-        legs: (o.legs ?? []).map((l: any) => ({ symbol: l.symbol, action: l.action })),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-function classifyStopLoss(
-  candidate: SpreadCandidate,
-  gtcOrders: GtcOrder[]
-): { status: StopStatus; price: number | null } {
-  if (!candidate.shortOccSymbol) return { status: 'unknown', price: null };
-  const credit = candidate.totalCredit ?? candidate.credit;
-  const stopThreshold = parseFloat((credit * 2).toFixed(2));
-  const match = gtcOrders.find(order =>
-    order.legs.some(
-      leg => leg.symbol === candidate.shortOccSymbol && leg.action === 'Buy to Close'
-    )
-  );
-  if (!match) return { status: 'none', price: null };
-  const orderPrice = parseFloat(match.price);
-  if (isNaN(orderPrice)) return { status: 'unknown', price: null };
-  if (orderPrice <= stopThreshold + 0.01) return { status: 'live', price: orderPrice };
-  return { status: 'loose', price: orderPrice };
-}
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
     const data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
@@ -868,6 +828,47 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
     }
   }
   expirations.sort(); return { expirations, chains, isEtfOrIndex };
+}
+
+// PMCC needs two DTE windows: long LEAPS (70-180 DTE) and short near-term (21-50 DTE)
+async function getPMCCChain(symbol: string, token: string): Promise<{ shortExpirations: string[]; longExpirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean }> {
+  const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
+  const instrumentType: string = nested?.data?.items?.[0]?.['instrument-type'] ?? '';
+  const isEtfOrIndex = ['ETF', 'Index', 'Future'].some(t => instrumentType.toLowerCase().includes(t.toLowerCase()))
+    || INDEX_TICKERS.has(symbol.toUpperCase());
+  const shortExpirations: string[] = [], longExpirations: string[] = [], chains: Record<string, any[]> = {}, allOCCSymbols: string[] = [];
+  const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
+  for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
+    const expDate: string = expGroup['expiration-date']; if (!expDate) continue;
+    const dte = daysUntil(expDate);
+    const isShortWindow = dte >= 16 && dte <= 55;
+    const isLongWindow = dte >= 60 && dte <= 185;
+    if (!isShortWindow && !isLongWindow) continue;
+    for (const strike of expGroup.strikes ?? []) {
+      const strikePrice = parseFloat(strike['strike-price'] ?? '0');
+      const callSym: string = strike['call'];
+      if (callSym) { allOCCSymbols.push(callSym); symbolMeta[callSym] = { expDate, strike: strikePrice, optionType: 'C' }; }
+    }
+    if (isShortWindow) shortExpirations.push(expDate);
+    else longExpirations.push(expDate);
+  }
+  if (allOCCSymbols.length === 0) return { shortExpirations, longExpirations, chains, isEtfOrIndex };
+  for (let i = 0; i < allOCCSymbols.length; i += 100) {
+    const chunk = allOCCSymbols.slice(i, i + 100);
+    const qs = chunk.map(s => `equity-option=${encodeURIComponent(s)}`).join('&');
+    let greeksData: any;
+    try { greeksData = await ttFetch(`/market-data/by-type?${qs}`, token); } catch { continue; }
+    for (const item of greeksData?.data?.items ?? []) {
+      const meta = symbolMeta[item.symbol]; if (!meta) continue;
+      const bid = parseFloat(item.bid ?? '0'), ask = parseFloat(item.ask ?? '0');
+      const delta = item.delta != null ? parseFloat(item.delta) : null;
+      const oi = parseInt(item['open-interest'] ?? '0', 10);
+      if (!chains[meta.expDate]) chains[meta.expDate] = [];
+      chains[meta.expDate].push({ strikePrice: meta.strike, expirationDate: meta.expDate, optionType: 'C', delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2, occSymbol: item.symbol });
+    }
+  }
+  shortExpirations.sort(); longExpirations.sort();
+  return { shortExpirations, longExpirations, chains, isEtfOrIndex };
 }
 
 // ── HUNTER Logic ─────────────────────────────────────────────────────────
@@ -994,6 +995,164 @@ function findBestICUnfiltered(chain: any[], expDate: string, price: number | nul
   const maxLoss = Math.max(putSpread.spreadWidth - putSpread.credit, callSpread.spreadWidth - callSpread.credit);
   const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0;
   return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: putSpread.shortStrike, longStrike: putSpread.longStrike, shortDelta: putSpread.shortDelta, shortOI: putSpread.shortOI, longOI: putSpread.longOI, credit: putSpread.credit, spreadWidth: putSpread.spreadWidth, creditRatio: putSpread.creditRatio, roc, pop: (1 - putSpread.shortDelta - callSpread.shortDelta) * 100, shortCallStrike: callSpread.shortStrike, longCallStrike: callSpread.longStrike, callCredit: callSpread.credit, callWidth: callSpread.spreadWidth, totalCredit, optimized: false };
+}
+
+// ── PMCC — Poor Man's Covered Call ────────────────────────────────────────
+// Long a deep ITM call (LEAPS, 70-180 DTE, delta 0.70-0.85)
+// Short a near-term OTM call (21-50 DTE, delta 0.20-0.35)
+// Net debit trade: maximize extrinsic value capture on the short leg relative to long cost.
+// Key rule: short strike must be ABOVE the long strike.
+// Ideal conditions: bullish/neutral trend, low-moderate IVR (30-50), high-priced underlying.
+
+function findBestPMCC(
+  pmccChainData: { shortExpirations: string[]; longExpirations: string[]; chains: Record<string, any[]> },
+  price: number | null
+): SpreadCandidate | null {
+  // 1. Find best long LEAPS leg: deep ITM call, delta 0.70-0.85, lowest extrinsic value (least theta waste)
+  let bestLong: { strike: number; expDate: string; dte: number; delta: number; cost: number; extrinsic: number; oi: number; occSymbol: string } | null = null;
+
+  for (const expDate of pmccChainData.longExpirations) {
+    const calls = (pmccChainData.chains[expDate] ?? []).filter(o => o.optionType === 'C');
+    for (const leg of calls) {
+      const delta = leg.delta != null ? Math.abs(leg.delta) : null;
+      if (delta == null || delta < 0.68 || delta > 0.88) continue;
+      if (leg.openInterest < 10) continue;
+      const cost = leg.mid;
+      if (cost <= 0) continue;
+      // Intrinsic = max(price - strike, 0); extrinsic = cost - intrinsic
+      const intrinsic = price != null ? Math.max(price - leg.strikePrice, 0) : 0;
+      const extrinsic = Math.max(cost - intrinsic, 0);
+      const dte = daysUntil(expDate);
+      // Prefer: high delta (deep ITM), low extrinsic, adequate DTE
+      if (!bestLong || extrinsic < bestLong.extrinsic || (Math.abs(extrinsic - bestLong.extrinsic) < 0.10 && delta > bestLong.delta)) {
+        bestLong = { strike: leg.strikePrice, expDate, dte, delta, cost, extrinsic, oi: leg.openInterest, occSymbol: leg.occSymbol };
+      }
+    }
+  }
+  if (!bestLong) return null;
+
+  // 2. Find best short near-term OTM call: strike > long strike, delta 0.20-0.35, maximise credit/extrinsic ratio
+  let bestShort: { strike: number; expDate: string; dte: number; delta: number; credit: number; oi: number; occSymbol: string } | null = null;
+
+  for (const expDate of pmccChainData.shortExpirations) {
+    const calls = (pmccChainData.chains[expDate] ?? []).filter(o => o.optionType === 'C');
+    for (const leg of calls) {
+      const delta = leg.delta != null ? Math.abs(leg.delta) : null;
+      if (delta == null || delta < 0.18 || delta > 0.38) continue;
+      if (leg.strikePrice <= bestLong!.strike) continue; // must be above long strike
+      if (leg.openInterest < 50) continue;
+      const credit = leg.mid; if (credit <= 0) continue;
+      if (!bestShort || credit > bestShort.credit) {
+        bestShort = { strike: leg.strikePrice, expDate, dte: daysUntil(expDate), delta, credit, oi: leg.openInterest, occSymbol: leg.occSymbol };
+      }
+    }
+  }
+  if (!bestShort) return null;
+
+  const netDebit = parseFloat((bestLong.cost - bestShort.credit).toFixed(2));
+  // Max profit = (short strike - long strike) - net debit (if stock runs to/above short strike)
+  const maxProfit = parseFloat((bestShort.strike - bestLong.strike - netDebit).toFixed(2));
+  if (maxProfit <= 0) return null; // no upside — skip
+  // ROC as % of net debit (what % can you make on your capital at risk)
+  const roc = netDebit > 0 ? (bestShort.credit / netDebit) * 100 : 0;
+  // Extrinsic capture: short leg credit as % of long leg extrinsic (how much of the waste you're recouping)
+  const extrinsicCapture = bestLong.extrinsic > 0 ? (bestShort.credit / bestLong.extrinsic) * 100 : 0;
+
+  return {
+    strategy: 'PMCC',
+    // Short leg is "the expiration" shown in UI (near-term short call)
+    expiration: bestShort.expDate, dte: bestShort.dte,
+    // longStrike = LEAPS long, shortStrike = near-term short
+    shortStrike: bestShort.strike, longStrike: bestLong.strike,
+    shortDelta: bestShort.delta, longDelta: bestLong.delta,
+    credit: bestShort.credit,        // short call premium collected
+    longCost: bestLong.cost,          // cost of the LEAPS leg
+    netDebit,
+    spreadWidth: parseFloat((bestShort.strike - bestLong.strike).toFixed(2)),
+    creditRatio: bestShort.credit / bestLong.cost,
+    roc: parseFloat(roc.toFixed(1)),
+    pop: (1 - bestShort.delta) * 100,
+    shortOI: bestShort.oi, longOI: bestLong.oi,
+    maxProfit: maxProfit > 0 ? maxProfit : 0,
+    extrinsicCapture: parseFloat(extrinsicCapture.toFixed(1)),
+    longExpiration: bestLong.expDate, longDte: bestLong.dte,
+    longOccSymbolPMCC: bestLong.occSymbol,
+    shortOccSymbolPMCC: bestShort.occSymbol,
+    optimized: true,
+  };
+}
+
+function runPMCCChecklist(
+  symbol: string,
+  pmccChainData: { shortExpirations: string[]; longExpirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean },
+  price: number | null,
+  metrics: any,
+  trendResult?: TrendResult
+): ScreenResult {
+  const failReasons: string[] = [];
+  const ivrValue = metrics.ivRank;
+  const earningsDate = metrics.earningsExpectedDate;
+
+  // IVR: PMCC works best in moderate IV (not too high — expensive LEAPS; not too low — thin short premium)
+  const ivrCheck: CheckResult = ivrValue == null
+    ? { status: 'warn', value: 'N/A', reason: 'Not available' }
+    : ivrValue < 20
+      ? (() => { failReasons.push(`IVR ${ivrValue.toFixed(1)}% — too low, LEAPS overpriced relative to short premium`); return { status: 'fail' as const, value: `${ivrValue.toFixed(1)}%`, reason: 'Below 20% — short call premium too thin' }; })()
+      : ivrValue > 70
+        ? { status: 'warn', value: `${ivrValue.toFixed(1)}%`, reason: 'High IVR — LEAPS cost elevated, size down' }
+        : { status: 'pass', value: `${ivrValue.toFixed(1)}%`, reason: 'Moderate IV — good PMCC environment' };
+
+  const earningsCheck: CheckResult = !earningsDate
+    ? { status: 'pass', value: 'None found', reason: 'Safe to trade' }
+    : (() => {
+        const d = daysUntil(earningsDate);
+        if (d < 0) return { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
+        if (d < 35) { failReasons.push(`Earnings in ${d}d — avoid PMCC near binary event`); return { status: 'fail' as const, value: `${d}d (${earningsDate})`, reason: 'Within 35d — binary risk threatens LEAPS' }; }
+        return { status: 'pass', value: `${d}d (${earningsDate})`, reason: 'Outside earnings window' };
+      })();
+
+  const bestCandidate = earningsCheck.status !== 'fail' ? findBestPMCC(pmccChainData, price) : null;
+  if (!bestCandidate && !failReasons.length) failReasons.push('No qualifying PMCC structure found');
+
+  const oiCheck: CheckResult = !bestCandidate
+    ? { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' }
+    : bestCandidate.shortOI >= 50 && bestCandidate.longOI >= 10
+      ? { status: 'pass', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: 'Adequate OI on both legs' }
+      : { status: 'warn', value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: 'Low OI — fills may be difficult' };
+
+  const deltaCheck: CheckResult = bestCandidate
+    ? { status: 'pass', value: `Long Δ${bestCandidate.longDelta?.toFixed(2) ?? '?'} / Short Δ${bestCandidate.shortDelta.toFixed(2)}`, reason: 'LEAPS deep ITM + near-term OTM' }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  const creditCheck: CheckResult = bestCandidate
+    ? { status: 'pass', value: `Credit $${bestCandidate.credit.toFixed(2)} / Debit $${bestCandidate.netDebit?.toFixed(2) ?? '?'}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of LEAPS cost recouped` }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  const rocCheck: CheckResult = bestCandidate
+    ? { status: bestCandidate.roc >= 5 ? 'pass' : 'warn', value: `${bestCandidate.roc.toFixed(1)}%`, reason: 'Credit / net debit' }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  const popCheck: CheckResult = bestCandidate
+    ? { status: (bestCandidate.pop ?? 0) >= 65 ? 'pass' : 'warn', value: `${bestCandidate.pop?.toFixed(0) ?? '—'}%`, reason: 'POP on short call leg' }
+    : { status: 'pending', value: '—', reason: 'No candidate' };
+
+  if (bestCandidate && (bestCandidate.roc < 5)) failReasons.push(`ROC ${bestCandidate.roc.toFixed(1)}% — short premium thin`);
+
+  const trendOk = !trendResult || trendResult.trend !== 'downtrend';
+  if (!trendOk) failReasons.push('Downtrend — PMCC requires bullish/neutral bias');
+
+  const qualified = ivrCheck.status === 'pass'
+    && earningsCheck.status === 'pass'
+    && oiCheck.status !== 'fail'
+    && bestCandidate !== null
+    && (bestCandidate.roc >= 5)
+    && trendOk;
+
+  return {
+    symbol, strategy: 'PMCC', price, ivr: ivrValue, qualified, bestCandidate, failReasons,
+    earningsDate, trendResult, isEtf: false, ruleSetApplied: 'PMCC',
+    checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck },
+  };
 }
 
 function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, STOCK_RULES: RulesType, trendResult?: TrendResult, stockPresetLabel?: string, ETF_RULES_PARAM?: RulesType, etfPresetLabel?: string): ScreenResult {
@@ -1236,7 +1395,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
 
 // ── DTE Alert Banner ───────────────────────────────────────────────────────
 function DTEAlertBanner({ results, rules }: { results: ScreenResult[], rules: RulesType }) {
-  const isShortTerm = rules.DTE_MAX <= 28;
+  const isShortTerm = rules.DTE_MAX <= 29;
   const alertThreshold = isShortTerm ? rules.DTE_MIN - 1 : 25;
   const closeTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
   const approaching = results.filter(r => r.qualified && r.bestCandidate && r.bestCandidate.dte <= alertThreshold);
@@ -1655,6 +1814,15 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
 // ── Result Card ────────────────────────────────────────────────────────────
 function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme] }) {
   const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>·${w}·</span>;
+  if (c.strategy === 'PMCC') {
+    return (
+      <div className="text-xs shrink-0">
+        <span className={th.label}>Long </span><span className={th.text}>{c.longStrike}C</span>
+        <span className={`${th.textFaint} mx-1`}>→</span>
+        <span className={th.label}>Short </span><span className={th.text}>{c.shortStrike}C</span>
+      </div>
+    );
+  }
   if (c.strategy === 'IC' && c.shortCallStrike != null && c.longCallStrike != null) {
     return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={th.text}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}<span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>{widthTag(c.callWidth ?? c.spreadWidth)}</div>;
   }
@@ -1709,11 +1877,58 @@ function TradeModal({ result, th, onClose }: {
   const [error, setError] = useState('');
   const [orderId, setOrderId] = useState<string>('');
 
+  // GTC profit target (default 50%)
+  const [gtcPct, setGtcPct] = useState(50);
+  const creditPerContract = c.totalCredit ?? c.credit;
+  const gtcBuyback = parseFloat((creditPerContract * (1 - gtcPct / 100)).toFixed(2));
+
+  // Stop loss (default 200% of credit = 2× credit debit to close)
+  const [stopPct, setStopPct] = useState(200);
+  const stopPrice = parseFloat((creditPerContract * (stopPct / 100)).toFixed(2));
+
+  // Entry limit price (default = credit, can tweak)
+  const [entryLimit, setEntryLimit] = useState(parseFloat(creditPerContract.toFixed(2)));
+
   const hasOccSymbols = c.shortOccSymbol && c.longOccSymbol &&
     (c.strategy !== 'IC' || (c.shortCallOccSymbol && c.longCallOccSymbol));
 
-  const credit = (c.totalCredit ?? c.credit) * quantity;
+  const credit = entryLimit * quantity;
   const maxLoss = (c.spreadWidth - (c.totalCredit ?? c.credit)) * quantity * 100;
+
+  const buildOtocoPayload = (qty: number) => {
+    const legs = buildOrderLegs(result, c);
+    const closingLegs = legs.map((l: any) => ({
+      ...l,
+      quantity: qty,
+      action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
+    }));
+    return {
+      type: 'OTOCO',
+      'trigger-order': {
+        'time-in-force': 'GTC',
+        'order-type': 'Limit',
+        price: entryLimit.toFixed(2),
+        'price-effect': 'Credit',
+        legs: legs.map((l: any) => ({ ...l, quantity: qty })),
+      },
+      orders: [
+        {
+          'time-in-force': 'GTC',
+          'order-type': 'Limit',
+          price: gtcBuyback.toFixed(2),
+          'price-effect': 'Debit',
+          legs: closingLegs,
+        },
+        {
+          'time-in-force': 'GTC',
+          'order-type': 'Stop',
+          'stop-trigger': stopPrice.toFixed(2),
+          'price-effect': 'Debit',
+          legs: closingLegs,
+        },
+      ],
+    };
+  };
 
   const runDryRun = async () => {
     setPhase('dryrun'); setError('');
@@ -1722,6 +1937,8 @@ function TradeModal({ result, th, onClose }: {
       const accountNumber = await getAccountNumber();
       const legs = buildOrderLegs(result, c);
       const payload = buildOrderPayload(c, quantity, legs);
+      payload.price = entryLimit.toFixed(2);
+      // Dry run on the entry leg only (TT doesn't support complex order dry-run)
       const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders/dry-run`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1741,16 +1958,16 @@ function TradeModal({ result, th, onClose }: {
     try {
       const token = await getAccessToken();
       const accountNumber = await getAccountNumber();
-      const legs = buildOrderLegs(result, c);
-      const payload = buildOrderPayload(c, quantity, legs);
-      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/orders`, {
+      // Single OTOCO complex order: entry → OCO (GTC profit target + stop loss)
+      const payload = buildOtocoPayload(quantity);
+      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/complex-orders`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Order failed (${res.status})`);
-      setOrderId(data?.data?.order?.id ?? 'submitted');
+      setOrderId(data?.data?.['complex-order']?.id ?? data?.data?.order?.id ?? 'submitted');
       setPhase('done');
     } catch (e: any) {
       setError(e.message); setPhase('error');
@@ -1764,7 +1981,7 @@ function TradeModal({ result, th, onClose }: {
 
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4">
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-md`} onClick={e => e.stopPropagation()}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-md max-h-[92vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h2 className={`text-sm font-bold ${th.text} tracking-widest`}>PLACE ORDER — {result.symbol}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-white text-xl">✕</button>
@@ -1790,9 +2007,13 @@ function TradeModal({ result, th, onClose }: {
             <span className={th.textFaint}>Expiry</span>
             <span className={th.text}>{c.expiration} ({c.dte}d)</span>
           </div>
-          <div className="flex justify-between text-xs">
-            <span className={th.textFaint}>Credit / contract</span>
-            <span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span>
+          <div className="flex justify-between text-xs items-center">
+            <span className={th.textFaint}>Entry limit / contract</span>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setEntryLimit(v => parseFloat(Math.max(0.01, v - 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs hover:border-blue-500`}>−</button>
+              <span className="text-emerald-400 font-bold text-xs w-12 text-center">${entryLimit.toFixed(2)}</span>
+              <button onClick={() => setEntryLimit(v => parseFloat((v + 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs hover:border-blue-500`}>+</button>
+            </div>
           </div>
           <div className="flex justify-between text-xs">
             <span className={th.textFaint}>Order type</span>
@@ -1800,7 +2021,7 @@ function TradeModal({ result, th, onClose }: {
           </div>
         </div>
 
-        {/* Quantity selector */}
+        {/* Quantity */}
         <div className="flex items-center gap-3 mb-4">
           <span className={`text-xs ${th.textFaint}`}>Contracts</span>
           <div className="flex items-center gap-2">
@@ -1814,6 +2035,40 @@ function TradeModal({ result, th, onClose }: {
           </div>
         </div>
 
+        {/* GTC Profit Target */}
+        <div className={`${th.card} border ${th.border} rounded-xl p-4 mb-3`}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold tracking-widest text-emerald-400">GTC PROFIT TARGET</p>
+            <span className={`text-[9px] ${th.textFaint}`}>closes at ${gtcBuyback.toFixed(2)} debit</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {[25, 50, 65, 75].map(pct => (
+              <button key={pct} onClick={() => setGtcPct(pct)}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold border transition-colors ${gtcPct === pct ? 'bg-emerald-600 border-emerald-500 text-white' : `${th.border} ${th.textFaint} hover:border-emerald-600`}`}>
+                {pct}%
+              </button>
+            ))}
+          </div>
+          <p className={`text-[9px] ${th.textFaint} mt-2`}>Buy to close at ${gtcBuyback.toFixed(2)} when {gtcPct}% of ${creditPerContract.toFixed(2)} credit is captured</p>
+        </div>
+
+        {/* Stop Loss */}
+        <div className={`${th.card} border ${th.border} rounded-xl p-4 mb-4`}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold tracking-widest text-red-400">STOP LOSS</p>
+            <span className={`text-[9px] ${th.textFaint}`}>triggers at ${stopPrice.toFixed(2)} debit</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {[150, 200, 250, 300].map(pct => (
+              <button key={pct} onClick={() => setStopPct(pct)}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold border transition-colors ${stopPct === pct ? 'bg-red-700 border-red-500 text-white' : `${th.border} ${th.textFaint} hover:border-red-700`}`}>
+                {pct}%
+              </button>
+            ))}
+          </div>
+          <p className={`text-[9px] ${th.textFaint} mt-2`}>Stop triggers when spread costs ${stopPrice.toFixed(2)} to close ({stopPct}% of credit = {stopPct - 100}% loss on credit received)</p>
+        </div>
+
         {/* Dry run result */}
         {dryRunResult && (
           <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4 space-y-1">
@@ -1824,9 +2079,10 @@ function TradeModal({ result, th, onClose }: {
         )}
 
         {phase === 'done' && (
-          <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4">
-            <p className="text-xs text-emerald-400 font-bold">✓ Order submitted — ID {orderId}</p>
-            <p className="text-[10px] text-emerald-400/70 mt-1">GTC limit order placed. Check tastytrade to confirm fill.</p>
+          <div className="p-3 bg-emerald-500/10 border border-emerald-600 rounded-lg mb-4 space-y-1">
+            <p className="text-xs text-emerald-400 font-bold">✓ OTOCO order submitted — ID {orderId}</p>
+            <p className="text-[10px] text-emerald-400/70">Entry + GTC profit target ({gtcPct}%) + stop loss ({stopPct}%) submitted as a single bracket order. Once entry fills, the OCO activates automatically.</p>
+            <p className="text-[10px] text-emerald-400/70">Verify the complex order in TastyTrade.</p>
           </div>
         )}
 
@@ -1851,7 +2107,7 @@ function TradeModal({ result, th, onClose }: {
                 </button>
                 <button onClick={placeOrder} disabled={phase === 'placing'}
                   className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold tracking-widest transition-colors disabled:opacity-40">
-                  {phase === 'placing' ? 'PLACING...' : `PLACE ORDER · $${credit.toFixed(2)} CREDIT`}
+                  {phase === 'placing' ? 'PLACING...' : `PLACE + GTC + STOP`}
                 </button>
               </>
             )}
@@ -1868,14 +2124,13 @@ function TradeModal({ result, th, onClose }: {
   );
 }
 
-function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrders, cachedEntry }: {
+function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cachedEntry }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
   screenMode?: 'filter' | 'rank';
   rankConfig?: RankConfig;
   onTrade?: (result: ScreenResult) => void;
-  gtcOrders?: GtcOrder[];
   cachedEntry?: RawScanEntry;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1892,9 +2147,11 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
     ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500'
     : result.strategy === 'BCS'
     ? 'bg-red-500/15 border-red-500 text-red-500'
+    : result.strategy === 'PMCC'
+    ? 'bg-purple-500/15 border-purple-500 text-purple-400'
     : 'bg-blue-500/15 border-blue-500 text-blue-500';
 
-  const isShortTerm = rules.DTE_MAX <= 28;
+  const isShortTerm = rules.DTE_MAX <= 29;
   const dteAlertThreshold = isShortTerm ? rules.DTE_MIN - 1 : DTE_ALERT_THRESHOLD;
   const dteCloseTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
   const isApproaching = c && c.dte <= dteAlertThreshold;
@@ -1927,6 +2184,19 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
               {result.symbol === 'SPX' || result.symbol === 'XSP' || result.symbol === 'NDX' || result.symbol === 'RUT' ? 'index' : 'etf'}
             </p>
           )}
+          <a
+            href={`https://www.tradingview.com/chart/?symbol=${result.symbol}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            title="Open chart in TradingView"
+            className="inline-flex items-center gap-0.5 mt-0.5 text-[9px] text-slate-500 hover:text-blue-400 transition-colors"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+            <span className="tracking-wide">chart</span>
+          </a>
         </div>
         {/* Col 2: Badges — fixed width */}
         <div className="w-52 shrink-0 flex items-center gap-1 flex-wrap">
@@ -1944,6 +2214,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
                 ? 'border-yellow-900 text-yellow-400/70 bg-yellow-500/5'
                 : result.ruleSetApplied === 'Short Term'
                 ? 'border-orange-900 text-orange-400/70 bg-orange-500/5'
+                : result.ruleSetApplied === 'Intermediate'
+                ? 'border-amber-900 text-amber-400/70 bg-amber-500/5'
                 : 'border-slate-700 text-slate-500'
               }`}>
               {result.ruleSetApplied}
@@ -1965,27 +2237,18 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
           {c && <>
             <div className="text-xs shrink-0 w-36"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= dteCloseTarget ? 'text-red-500' : c.dte <= dteAlertThreshold ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
             <div className="w-28 shrink-0"><StrikesDisplay c={c} th={th} /></div>
-            <div className="text-xs shrink-0 w-20"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-            <div className="text-xs shrink-0 w-16"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
-            <div className="text-xs shrink-0 w-16"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
-            <div className="text-xs shrink-0 w-12"><span className={th.label}>δ </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
-            {(() => {
-              const stop = classifyStopLoss(c, gtcOrders ?? []);
-              const sl =
-                stop.status === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-500' } :
-                stop.status === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
-                stop.status === 'none'  ? { icon: '✗', label: 'None',  cls: 'text-red-500'     } :
-                                          { icon: '—', label: '?',     cls: 'text-slate-400'   };
-              return (
-                <div className="text-xs shrink-0 w-28">
-                  <span className={th.label}>Stop </span>
-                  <span className={`font-medium ${sl.cls}`}>{sl.icon} {sl.label}</span>
-                  {stop.price != null && (
-                    <span className={`ml-1 ${th.textFaint} text-[10px]`}>${stop.price.toFixed(2)}</span>
-                  )}
-                </div>
-              );
-            })()}
+            {c.strategy === 'PMCC' ? <>
+              <div className="text-xs shrink-0 w-24"><span className={th.label}>Net Debit </span><span className="text-red-400 font-bold">${c.netDebit?.toFixed(2) ?? '—'}</span></div>
+              <div className="text-xs shrink-0 w-24"><span className={th.label}>Short Credit </span><span className="text-emerald-500 font-bold">${c.credit.toFixed(2)}</span></div>
+              <div className="text-xs shrink-0 w-20"><span className={th.label}>Extrin. </span><span className={`${th.text} font-medium`}>{c.extrinsicCapture?.toFixed(0) ?? '—'}%</span></div>
+              <div className="text-xs shrink-0 w-20"><span className={th.label}>Max P </span><span className="text-emerald-400 font-bold">${c.maxProfit?.toFixed(2) ?? '—'}</span></div>
+              <div className="text-xs shrink-0 w-20"><span className={th.label}>LEAPS </span><span className={`${th.text} font-medium`}>{c.longDte}d</span></div>
+            </> : <>
+              <div className="text-xs shrink-0 w-20"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+              <div className="text-xs shrink-0 w-16"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
+              <div className="text-xs shrink-0 w-16"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
+              <div className="text-xs shrink-0 w-20"><span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+            </>}
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
             {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
             {isApproaching && <span className="text-[9px] text-yellow-500 border border-yellow-600 rounded px-1 py-0.5 shrink-0 font-medium">⚠ DTE</span>}
@@ -2058,6 +2321,21 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, gtcOrd
           {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
             <div className={`pt-2 border-t ${th.border}`}>
               <p className={`text-[10px] ${th.textMuted}`}>Asymmetric widths — Put: ${c.spreadWidth} · Call: ${c.callWidth}</p>
+            </div>
+          )}
+
+          {c && c.strategy === 'PMCC' && (
+            <div className={`pt-2 border-t ${th.border} space-y-1.5`}>
+              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest font-medium`}>PMCC Structure</p>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div><span className={th.label}>LEAPS long call: </span><span className={th.text}>{c.longStrike}C exp {c.longExpiration} ({c.longDte}d) · cost ${c.longCost?.toFixed(2)} · Δ{c.longDelta?.toFixed(2)}</span></div>
+                <div><span className={th.label}>Short call: </span><span className={th.text}>{c.shortStrike}C exp {c.expiration} ({c.dte}d) · credit ${c.credit.toFixed(2)} · Δ{c.shortDelta.toFixed(2)}</span></div>
+                <div><span className={th.label}>Net debit: </span><span className="text-red-400 font-bold">${c.netDebit?.toFixed(2)}</span><span className={`${th.textFaint} ml-1 text-[10px]`}>(capital at risk)</span></div>
+                <div><span className={th.label}>Max profit: </span><span className="text-emerald-400 font-bold">${c.maxProfit?.toFixed(2)}</span><span className={`${th.textFaint} ml-1 text-[10px]`}>(if stock reaches short strike)</span></div>
+                <div><span className={th.label}>Extrinsic capture: </span><span className={th.text}>{c.extrinsicCapture?.toFixed(0)}%</span><span className={`${th.textFaint} ml-1 text-[10px]`}>(short credit / LEAPS extrinsic)</span></div>
+                <div><span className={th.label}>ROC: </span><span className={th.text}>{c.roc.toFixed(1)}%</span><span className={`${th.textFaint} ml-1 text-[10px]`}>(short credit / net debit)</span></div>
+              </div>
+              <p className={`text-[9px] text-purple-400/80 pt-1`}>Roll the short call at 21 DTE or 50% profit. Never let the short call go deep ITM. Exit the LEAPS when the thesis changes.</p>
             </div>
           )}
 
@@ -2315,7 +2593,8 @@ const FILTER_PRESETS = [
   { key: 'course',   label: 'Course',      color: 'border-blue-500 text-blue-400',        desc: 'Baseline rules — balanced approach' },
   { key: 'relaxed',  label: 'Relaxed',     color: 'border-emerald-500 text-emerald-400',  desc: 'Looser rules — more opportunities' },
   { key: 'lowvol',   label: 'Low Vol',     color: 'border-yellow-500 text-yellow-400',    desc: 'Adapted for low IVR environments' },
-  { key: 'shortterm',label: 'Short Term',  color: 'border-orange-500 text-orange-400',    desc: '14–28 DTE — active daily management' },
+  { key: 'shortterm',   label: 'Short Term',   color: 'border-orange-500 text-orange-400',  desc: '7–14 DTE — very active daily management' },
+  { key: 'intermediate',label: 'Intermediate', color: 'border-amber-500 text-amber-400',    desc: '15–29 DTE — active management' },
 ];
 
 function RunModeModal({ th, lastMode, lastPreset, onRun, onClose }: {
@@ -3198,7 +3477,7 @@ function getRuleDiffs(base: RulesType, relaxed: Partial<RulesType>): string[] {
 }
 
 function BestOpportunityFinder({
-  symbol, onClose, th, rules, preferredStrategy, cachedEntry,
+  symbol, onClose, th, rules, preferredStrategy,
 }: {
   symbol: string; onClose: () => void; th: typeof THEMES[Theme];
   rules: RulesType; preferredStrategy?: 'BPS' | 'BCS' | 'IC';
@@ -3214,7 +3493,8 @@ function BestOpportunityFinder({
     { presetKey: 'course',    presetLabel: 'Course',     presetColor: 'border-blue-500 text-blue-400',       rules: COURSE_RULES },
     { presetKey: 'relaxed',   presetLabel: 'Relaxed',    presetColor: 'border-emerald-500 text-emerald-400', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
     { presetKey: 'lowvol',    presetLabel: 'Low Vol',    presetColor: 'border-yellow-500 text-yellow-400',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
-    { presetKey: 'shortterm', presetLabel: 'Short Term', presetColor: 'border-orange-500 text-orange-400',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 14, DTE_MAX: 28 } },
+    { presetKey: 'shortterm',    presetLabel: 'Short Term',   presetColor: 'border-orange-500 text-orange-400',  rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 7,  DTE_MAX: 14 } },
+    { presetKey: 'intermediate', presetLabel: 'Intermediate', presetColor: 'border-amber-500 text-amber-400',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 15, DTE_MAX: 29 } },
   ];
 
   const scoreCandidateLocal = (result: ScreenResult, strat: string): BestSetup | null => {
@@ -3244,23 +3524,12 @@ function BestOpportunityFinder({
   const findBest = async () => {
     setLoading(true); setError(''); setLevelResults([]);
     try {
-      let metrics: { symbol: string; ivRank: number | null; earningsExpectedDate: string | null };
-      let price: number | null;
-      let baseChainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean };
-
-      if (cachedEntry) {
-        // Use cached data — zero API calls
-        metrics = cachedEntry.metrics;
-        price = cachedEntry.price;
-        baseChainData = cachedEntry.chainData;
-      } else {
-        // No cache — fetch once, reuse across all levels
-        const token = await getAccessToken();
-        const [metricsArray, fetchedPrice] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
-        metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
-        price = fetchedPrice;
-        baseChainData = await getChain(symbol, token, rules);
-      }
+      // Always fetch live data — never use cache
+      const token = await getAccessToken();
+      const [metricsArray, fetchedPrice] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
+      const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
+      const price = fetchedPrice;
+      const baseChainData = await getChain(symbol, token, rules);
 
       const results: LevelResult[] = [];
       for (const level of levels) {
@@ -3269,7 +3538,6 @@ function BestOpportunityFinder({
         const candidates: BestSetup[] = [];
         const failures: { strategy: string; reasons: string[] }[] = [];
         for (const strat of strategiesToRun) {
-          // Re-use the same chain data — only the rule thresholds differ between levels
           const result = runChecklist(symbol, strat, metrics, baseChainData, price, mergedRules);
           const setup = scoreCandidateLocal(result, strat);
           if (setup) candidates.push(setup);
@@ -3285,9 +3553,9 @@ function BestOpportunityFinder({
     }
   };
 
-  // Auto-run immediately if we have cached data — no need to wait for button click
+  // Auto-run immediately on open (always live)
   useEffect(() => {
-    if (cachedEntry) findBest();
+    findBest();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -3295,26 +3563,30 @@ function BestOpportunityFinder({
 
   return (
     <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
-      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto`}>
-        <div className="flex justify-between items-start mb-4">
-          <div>
-            <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity — {symbol}</h2>
-            <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
-              Tests all rule levels against {preferredStrategy ?? 'all strategies'}. Each level shows the best setup and what changed vs Course.
-              {cachedEntry ? <span className="text-purple-400 ml-1">⚡ Using cached chain data</span> : null}
-            </p>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden`}>
+        {/* Sticky header */}
+        <div className="px-6 pt-6 pb-4 shrink-0">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h2 className={`text-lg font-bold ${th.text}`}>Best Opportunity — {symbol}</h2>
+              <p className={`text-[9px] ${th.textFaint} mt-0.5`}>
+                Tests all rule levels against {preferredStrategy ?? 'all strategies'}. Always uses live chain data.
+              </p>
+            </div>
+            <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white ml-4">✕</button>
           </div>
-          <button onClick={onClose} className="text-2xl text-slate-400 hover:text-white">✕</button>
+
+          <button onClick={findBest} disabled={loading}
+            className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors">
+            {loading ? 'ANALYZING LIVE DATA...' : '↺ RE-ANALYZE (LIVE)'}
+          </button>
+
+          {error && <div className="p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm mt-3">{error}</div>}
         </div>
 
-        <button onClick={findBest} disabled={loading}
-          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 rounded-xl font-bold text-sm tracking-widest transition-colors mb-4">
-          {loading ? 'ANALYZING...' : cachedEntry ? '↺ RE-ANALYZE' : 'SCAN ALL RULE LEVELS'}
-        </button>
-
-        {error && <div className="p-4 bg-red-500/10 border border-red-500 rounded-xl text-red-400 text-sm mb-4">{error}</div>}
-
-        <div className="space-y-4">
+        {/* Scrollable results */}
+        <div className="overflow-y-auto flex-1 px-6 pb-6">
+          <div className="space-y-4">
           {levelResults.map(level => (
             <div key={level.presetKey} className={`border ${th.border} rounded-xl overflow-hidden`}>
               <div className={`flex items-center justify-between px-4 py-2.5 border-b ${th.border} ${th.card}`}>
@@ -3325,7 +3597,9 @@ function BestOpportunityFinder({
                   ) : level.presetKey === 'strict' ? (
                     <span className="text-[9px] text-red-400">Tighter: {level.ruleDiffs.join(' · ')}</span>
                   ) : level.presetKey === 'shortterm' ? (
-                    <span className="text-[9px] text-orange-400">14–28 DTE · requires active daily management</span>
+                    <span className="text-[9px] text-orange-400">7–14 DTE · very active daily management, high gamma risk</span>
+                  ) : level.presetKey === 'intermediate' ? (
+                    <span className="text-[9px] text-amber-400">15–29 DTE · active management required</span>
                   ) : (
                     <span className="text-[9px] text-yellow-400">Relaxed vs Course: {level.ruleDiffs.join(' · ')}</span>
                   )}
@@ -3350,20 +3624,38 @@ function BestOpportunityFinder({
                           <span className={`text-[9px] ${th.textFaint}`}>score {setup.score.toFixed(1)}</span>
                         </div>
                         <button
-                          onClick={() => { alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${setup.setup.shortStrike}/${setup.setup.longStrike}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`); }}
+                          onClick={() => {
+                            const strikesStr = setup.strategy === 'IC' && setup.setup.shortCallStrike != null
+                              ? `Puts: ${setup.setup.shortStrike}/${setup.setup.longStrike} · Calls: ${setup.setup.shortCallStrike}/${setup.setup.longCallStrike}`
+                              : `${setup.setup.shortStrike}/${setup.setup.longStrike}`;
+                            alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${strikesStr}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`);
+                          }}
                           className="text-[9px] px-2 py-1 border border-emerald-600 text-emerald-400 rounded hover:bg-emerald-600/10 transition-colors font-medium tracking-wider"
                         >TRADE →</button>
                       </div>
                       <div className="grid grid-cols-4 gap-3 mb-2">
                         <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.expiration} <span className="text-slate-500">({setup.setup.dte}d)</span></p></div>
-                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortStrike}/{setup.setup.longStrike}</p></div>
+                        <div>
+                          <p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Strikes</p>
+                          {setup.strategy === 'IC' && setup.setup.shortCallStrike != null ? (
+                            <p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortStrike}/{setup.setup.longStrike} · {setup.setup.shortCallStrike}/{setup.setup.longCallStrike}</p>
+                          ) : (
+                            <p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortStrike}/{setup.setup.longStrike}</p>
+                          )}
+                        </div>
                         <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit</p><p className="text-xs font-bold text-emerald-400">${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}</p></div>
                         <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>ROC / POP</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.roc.toFixed(0)}% / {setup.setup.pop?.toFixed(0) ?? '—'}%</p></div>
                       </div>
                       <div className="grid grid-cols-3 gap-3 mb-2">
                         <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>50% Target</p><p className="text-xs font-bold text-emerald-400">${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}</p></div>
                         <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Credit Ratio</p><p className={`text-xs font-bold ${th.text}`}>{(setup.setup.creditRatio * 100).toFixed(0)}% of width</p></div>
-                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI Short/Long</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortOI} / {setup.setup.longOI}</p></div>
+                        <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>OI Short/Long</p>
+                          {setup.strategy === 'IC' && setup.setup.shortCallStrike != null ? (
+                            <p className={`text-xs font-bold ${th.text}`}>Put: {setup.setup.shortOI}/{setup.setup.longOI} · Call: {setup.setup.shortOI}/{setup.setup.longOI}</p>
+                          ) : (
+                            <p className={`text-xs font-bold ${th.text}`}>{setup.setup.shortOI} / {setup.setup.longOI}</p>
+                          )}
+                        </div>
                       </div>
                       <p className={`text-[9px] ${th.textFaint}`}>{setup.notes[0]}</p>
                     </div>
@@ -3381,6 +3673,7 @@ function BestOpportunityFinder({
               )}
             </div>
           ))}
+        </div>
         </div>
       </div>
     </div>
@@ -3410,6 +3703,7 @@ export default function Home() {
   const [bcsTickers, setBcsTickers] = useState('');
   const [icTickers, setIcTickers] = useState('');
   const [brokenTickers, setBrokenTickers] = useState('');
+  const [pmccTickers, setPmccTickers] = useState('');
   const [results, setResults] = useState<ScreenResult[]>([]);
   const [rawScanCache, setRawScanCache] = useState<RawScanEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -3435,13 +3729,13 @@ export default function Home() {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
   });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
-  const [gtcOrders, setGtcOrders] = useState<GtcOrder[]>([]);
   useEffect(() => {
     try {
       setBpsTickers(localStorage.getItem(LS_BPS) || '');
       setBcsTickers(localStorage.getItem(LS_BCS) || '');
       setIcTickers(localStorage.getItem(LS_IC) || '');
       setBrokenTickers(localStorage.getItem(LS_BROKEN) || '');
+      setPmccTickers(localStorage.getItem(LS_PMCC) || '');
     } catch {}
   }, []);
 
@@ -3449,6 +3743,7 @@ export default function Home() {
   const handleBcsChange = (v: string) => { setBcsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BCS, v); } catch {} };
   const handleIcChange = (v: string) => { setIcTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
+  const handlePmccChange = (v: string) => { setPmccTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_PMCC, v); } catch {} };
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); if (!newBps && !newBcs && !newIc && !newBroken) { setResults([]); setAutoTrendEntries([]); } };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
@@ -3459,7 +3754,7 @@ export default function Home() {
     const headers = ['Symbol','Strategy','Trend','Trend Subtype','Trend Confidence','Qualified','Price','IVR','Expiration','DTE','Short Put Strike','Long Put Strike','Put Width','Short Call Strike','Long Call Strike','Call Width','Short Delta','Credit','ROC%','POP%','Short OI','Long OI','Total Credit','Earnings Date','Fail Reasons'];
     const rows = results.map(r => { const c = r.bestCandidate; return [r.symbol,r.strategy,r.trendResult?.trend||'',r.trendResult?.subtype||'',r.trendResult?.confidence!=null?r.trendResult.confidence.toFixed(0)+'%':'',r.qualified?'YES':'NO',r.price?.toFixed(2)||'',r.ivr?.toFixed(1)||'',c?.expiration||'',c?.dte||'',c?.shortStrike||'',c?.longStrike||'',c?.spreadWidth||'',c?.shortCallStrike||'',c?.longCallStrike||'',c?.callWidth||'',c?.shortDelta?.toFixed(2)||'',c?.credit?.toFixed(2)||'',c?.roc?.toFixed(0)||'',c?.pop?.toFixed(0)||'',c?.shortOI||'',c?.longOI||'',c?.totalCredit?.toFixed(2)||'',r.earningsDate||'',r.failReasons.join('; ')].map(v=>`"${v}"`).join(','); });
     const blob = new Blob([[headers.join(','),...rows].join('\n')], { type: 'text/csv' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `prosper-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `hunter-screen-${new Date().toISOString().split('T')[0]}.csv`; a.click();
   };
 
   const runTrendDetectionWrapper = () => {
@@ -3516,8 +3811,9 @@ export default function Home() {
     const bps = parseTickers(bpsTickers);
     const bcs = parseTickers(bcsTickers);
     const ic = parseTickers(icTickers);
+    const pmcc = parseTickers(pmccTickers);
 
-    if (!autoList.length && !bps.length && !bcs.length && !ic.length) {
+    if (!autoList.length && !bps.length && !bcs.length && !ic.length && !pmcc.length) {
       setError('Enter at least one ticker.');
       return;
     }
@@ -3530,12 +3826,7 @@ export default function Home() {
       setStatus('Getting access token...');
       const token = await getAccessToken();
 
-      const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic]));
-
-      setStatus('Fetching GTC orders...');
-      const accountNumberForGtc = await getAccountNumber();
-      const liveGtcOrders = await fetchGtcOrders(accountNumberForGtc, token);
-      setGtcOrders(liveGtcOrders);
+      const allSymbols = Array.from(new Set([...autoList, ...bps, ...bcs, ...ic, ...pmcc]));
 
       setStatus('Fetching market metrics...');
       const metricsArray = await getMarketMetrics(allSymbols, token);
@@ -3595,6 +3886,20 @@ export default function Home() {
         }
       }
 
+      // Scan PMCC tickers — uses dedicated chain fetcher (LEAPS + near-term)
+      for (const symbol of pmcc) {
+        setStatus(`Scanning PMCC ${symbol}...`);
+        try {
+          const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
+          const [pmccChain, price] = await Promise.all([getPMCCChain(symbol, token), getQuote(symbol, token)]);
+          let trendResult: TrendResult | undefined;
+          try { trendResult = await getTrend(symbol); } catch {}
+          screenResults.push(runPMCCChecklist(symbol, pmccChain, price, metrics, trendResult));
+        } catch (e: any) {
+          screenResults.push(errResult(symbol, 'PMCC', e.message));
+        }
+      }
+
       // Store raw cache for instant re-filtering
       setRawScanCache(scanCache);
 
@@ -3642,6 +3947,7 @@ export default function Home() {
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
             <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
+            <a href="/portfolio#performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
           </nav>
         </div>
         
@@ -3742,6 +4048,7 @@ export default function Home() {
             <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox label="PMCC" badge="BULLISH+" badgeColor="bg-purple-500/15 text-purple-400 border-purple-500" borderFocus="focus:border-purple-500" value={pmccTickers} onChange={handlePmccChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox
               label="Broken (Review)"
               badge="REVIEW"
@@ -3912,13 +4219,13 @@ export default function Home() {
                   {qualified.length > 0 && (
                     <div>
                       <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
                     </div>
                   )}
                   {disqualified.length > 0 && (
                     <div>
                       <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
                     </div>
                   )}
                 </>
@@ -3928,7 +4235,7 @@ export default function Home() {
                   <div className="space-y-2">{results.map((r, i) => (
                     <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} gtcOrders={gtcOrders} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
                     </div>
                   ))}</div>
                 </div>
