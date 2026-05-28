@@ -381,6 +381,112 @@ function scoreColor(s: number) {
   return           { text: 'text-red-400',    border: 'border-red-600',    bg: 'bg-red-500/10',    label: 'Poor' };
 }
 
+
+// ── Stock Research Component ──────────────────────────────────────────────
+async function fetchStockResearch(symbol: string): Promise<string> {
+  // Step 1: fetch recent news headlines from Yahoo Finance
+  let headlines = '';
+  try {
+    const newsRes = await fetch(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=8&quotesCount=0`,
+      { cache: 'no-store' }
+    );
+    const newsData = await newsRes.json();
+    const articles = newsData?.news ?? [];
+    headlines = articles
+      .slice(0, 6)
+      .map((a: any) => `- ${a.title}`)
+      .join('\n');
+  } catch { headlines = 'News unavailable'; }
+
+  // Step 2: send to GPT-4o for trading-focused summary
+  const prompt = `You are a professional options trader analyzing ${symbol} before placing a trade.
+
+Recent news headlines:
+${headlines}
+
+Give a concise 4-sentence trading analysis covering:
+1. What is driving price action right now
+2. Any near-term risks (earnings, macro, sector headwinds)
+3. Analyst/market sentiment
+4. Whether conditions currently favor selling premium (credit spreads) on this stock
+
+Be direct and specific. No disclaimers. If the news is thin, say so.`;
+
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      max_tokens: 400,
+      system: 'You are a concise, direct options trading analyst. No hedging. No disclaimers. Plain prose only.',
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!res.ok) throw new Error(`Research failed (${res.status})`);
+  const data = await res.json();
+  return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+}
+
+function StockResearch({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] }) {
+  const [open, setOpen]         = useState(false);
+  const [loading, setLoading]   = useState(false);
+  const [result, setResult]     = useState<string | null>(null);
+  const [error, setError]       = useState('');
+
+  const handleClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (result) return; // already fetched — just re-open
+    setLoading(true); setError('');
+    try {
+      const text = await fetchStockResearch(symbol);
+      setResult(text);
+    } catch (err: any) {
+      setError(err.message ?? 'Research failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div onClick={e => e.stopPropagation()}>
+      <button
+        onClick={handleClick}
+        className={`inline-flex items-center gap-1 text-[9px] px-2 py-0.5 border rounded transition-colors ${
+          open
+            ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10'
+            : `${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400`
+        }`}>
+        <span className="text-[8px]">◎</span> Research
+      </button>
+
+      {open && (
+        <div className={`mt-2 p-3 rounded-lg border ${th.borderLight} bg-indigo-500/5 text-[11px] leading-relaxed ${th.textMuted}`}>
+          {loading && (
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+              <span className={`text-[10px] ${th.textFaint}`}>Researching {symbol}...</span>
+            </div>
+          )}
+          {error && <p className="text-red-400 text-[10px]">{error}</p>}
+          {result && (
+            <>
+              <p className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest mb-1.5">◎ {symbol} Research</p>
+              <p className="whitespace-pre-wrap">{result}</p>
+              <button onClick={() => { setResult(null); setOpen(false); }}
+                className={`mt-2 text-[9px] ${th.textFaint} hover:text-red-400 transition-colors`}>
+                ✕ Dismiss
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Result Card ───────────────────────────────────────────────────────────
 function RRCard({ result, th, onAddToHunter }: {
   result: RRResult;
@@ -407,6 +513,7 @@ function RRCard({ result, th, onAddToHunter }: {
           <a href={`https://www.tradingview.com/chart/?symbol=${profile.symbol}`} target="_blank" rel="noopener noreferrer"
             onClick={e => e.stopPropagation()}
             className={`text-[9px] ${th.textFaint} hover:text-blue-400 transition-colors`}>chart ↗</a>
+          <StockResearch symbol={profile.symbol} th={th} />
         </div>
 
         {/* Strategy + RR score */}
