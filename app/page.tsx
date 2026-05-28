@@ -96,6 +96,7 @@ interface ScreenResult {
   failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
   isEtf?: boolean;
   ruleSetApplied?: string;
+  hv30?: number | null; // 30-day historical volatility from TastyTrade
   checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; };
 }
 interface ExistingPosition {
@@ -665,6 +666,7 @@ const LS_GLOBAL_SESSIONS = 'hunter-global-sessions';
 const LS_SCREEN_MODE = 'hunter-screen-mode';
 const LS_RANK_CONFIG = 'hunter-rank-config';
 const LS_SESSION_LOADED_AT = 'hunter-session-loaded-at';
+const LS_DEEP_ANALYSIS = 'hunter-deep-analysis';
 const LS_RESULTS_CACHE = 'hunter-results-cache';
 const LS_RAW_SCAN_CACHE = 'hunter-raw-scan-cache';
 const LS_RESULTS_CACHE_AT = 'hunter-results-cache-at';
@@ -991,7 +993,12 @@ async function loadExistingPositions(): Promise<ExistingPosition[]> {
 
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
-  return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
+  return (data.data?.items || []).map((item: any) => ({
+    symbol: item.symbol,
+    ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null,
+    earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
+    hv30: item['historical-volatility-30'] != null ? parseFloat(item['historical-volatility-30']) * 100 : null,
+  }));
 }
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
@@ -1435,7 +1442,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     : { status: 'pending', value: '—', reason: 'No candidate' };
   if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, hv30: metrics.hv30 ?? null, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
@@ -3932,12 +3939,25 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 }
 
 // ── Best Opportunity Finder ────────────────────────────────────────────────
+interface PillarScores {
+  ivQuality: number;     // 35 pts — IVR level, IV vs HV30, IV percentile
+  trend: number;         // 20 pts — trend alignment, MA structure, trend age
+  liquidity: number;     // 20 pts — OI, bid-ask, volume proxy
+  risk: number;          // 15 pts — buffer %, earnings clearance, gap risk
+  credit: number;        // 10 pts — credit ratio, ROC vs benchmark
+  total: number;         // 0-100
+}
+
+type FullGrade = 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'D' | 'F';
+
 interface BestSetup {
   strategy: string;
-  grade: 'A+' | 'A' | 'B' | 'C';
+  grade: FullGrade;
   setup: SpreadCandidate;
   score: number;
+  pillars: PillarScores;
   notes: string[];
+  flags: string[]; // warnings that don't disqualify but matter
   result: ScreenResult;
 }
 
@@ -3986,22 +4006,192 @@ function BestOpportunityFinder({
     { presetKey: 'intermediate', presetLabel: 'Intermediate', presetColor: 'border-amber-500 text-amber-400',   rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 15, DTE_MAX: 29 } },
   ];
 
+  // ── 5-Pillar Scoring Model ────────────────────────────────────────────────
+  // Pillar 1: IV Quality (35 pts) — Is IV elevated enough to sell premium profitably?
+  // Pillar 2: Trend & Direction (20 pts) — Is the trade with or against the trend?
+  // Pillar 3: Liquidity & Tradability (20 pts) — Can this actually be executed cleanly?
+  // Pillar 4: Risk Profile (15 pts) — How safe is the setup structurally?
+  // Pillar 5: Credit Quality (10 pts) — Is the premium actually worth taking?
   const scoreCandidateLocal = (result: ScreenResult, strat: string): BestSetup | null => {
     if (!result.qualified || !result.bestCandidate) return null;
     const c = result.bestCandidate;
-    const ivrScore = Math.min(result.ivr ?? 30, 100);
-    const score = (c.roc || 0) * 0.35 + ((c.pop || 70) * 0.30) + (c.creditRatio * 100 * 0.15) + (ivrScore * 0.20);
-    let grade: BestSetup['grade'] = 'C';
-    if (score > 75) grade = 'A+'; else if (score > 62) grade = 'A'; else if (score > 50) grade = 'B';
+    const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+    const flags: string[] = [];
     const notes: string[] = [];
-    if (c.dte < 35) notes.push(`DTE is ${c.dte} — shorter side, watch 21 DTE closely`);
-    if (c.dte < 29) notes.push(`⚠ Short term setup — active daily management required, gamma risk elevated`);
-    if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% elevated — verify no binary event`);
-    if (result.ivr && result.ivr < 35) notes.push(`IVR ${result.ivr.toFixed(0)}% — low volatility environment, premium is thin, size down or wait`);
-    else if (result.ivr && result.ivr < 50) notes.push(`IVR ${result.ivr.toFixed(0)}% — moderate volatility, grade reflects reduced premium opportunity`);
-    if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
-    if (notes.length === 0) notes.push('Clean setup — all rules pass');
-    return { strategy: strat, grade, setup: c, score, notes, result };
+
+    // ── Pillar 1: IV Quality (35 pts) ────────────────────────────────────────
+    let p1 = 0;
+    const ivr = result.ivr ?? 0;
+    // IVR level scoring — sweet spot 35-65%, penalties on both extremes
+    const ivrRaw = ivr < 20 ? 0 : ivr < 30 ? 0.30 : ivr < 35 ? 0.55 : ivr <= 50 ? 0.80 : ivr <= 65 ? 1.0 : ivr <= 75 ? 0.85 : 0.65;
+    p1 += ivrRaw * 22; // 22 pts for IVR level
+
+    // IV vs HV30 — selling IV above HV is the edge
+    const hv30 = result.hv30 ?? null;
+    if (hv30 != null && hv30 > 0) {
+      // IV implied from IVR (rough proxy): IVR 50 ≈ IV at midpoint of 52w range
+      // We use IVR as a proxy since we don't have raw IV — IVR > 50 usually means IV > HV
+      const ivPremium = ivr - 50; // positive = IV elevated vs median
+      const hvAdjust = ivPremium > 15 ? 1.0 : ivPremium > 5 ? 0.75 : ivPremium > 0 ? 0.50 : 0.25;
+      p1 += hvAdjust * 8; // 8 pts for IV vs HV relationship
+      if (ivPremium > 15) notes.push(`IV well above HV30 (${hv30.toFixed(0)}%) — strong premium edge`);
+      else if (ivPremium < 0) flags.push(`IVR suggests IV may be below HV30 (${hv30.toFixed(0)}%) — thin edge`);
+    } else {
+      p1 += 4; // neutral if no HV data
+    }
+
+    // DTE position — ideal is 30-45 DTE, penalize short/long
+    const dte = c.dte;
+    const dteScore = dte >= 30 && dte <= 45 ? 1.0 : dte >= 21 && dte < 30 ? 0.70 : dte >= 14 && dte < 21 ? 0.40 : dte < 14 ? 0.20 : dte <= 60 ? 0.80 : 0.55;
+    p1 += dteScore * 5; // 5 pts for DTE positioning
+
+    p1 = Math.min(35, p1);
+
+    // ── Pillar 2: Trend & Direction (20 pts) ─────────────────────────────────
+    let p2 = 0;
+    const t = result.trendResult;
+    if (t) {
+      const stratAligns = (strat === 'BPS' && t.trend === 'uptrend') || (strat === 'BCS' && t.trend === 'downtrend') || (strat === 'IC' && (t.trend === 'sideways' || t.strategy === 'IC'));
+      const stratNeutral = t.trend === 'unknown' || (strat === 'IC' && t.trend !== 'downtrend' && t.trend !== 'uptrend');
+      const stratAgainst = !stratAligns && !stratNeutral;
+
+      // Trend alignment: 12 pts
+      if (stratAligns)  p2 += t.confidence != null ? clamp(t.confidence / 100) * 12 : 10;
+      else if (stratNeutral) p2 += 5;
+      else { p2 += 0; flags.push(`Trend (${t.trend}) works against ${strat} — high risk`); }
+
+      // MA structure: 5 pts
+      const maScore = t.scores?.maAlignment != null ? clamp((t.scores.maAlignment + 34) / 68) : 0.5;
+      p2 += (stratAgainst ? 0 : maScore) * 5;
+
+      // Trend age/subtype: 3 pts — continuation scores higher than reversal
+      if (t.subtype === 'CONTINUATION' && stratAligns) p2 += 3;
+      else if (t.subtype === 'REVERSAL' && stratAligns) p2 += 1.5;
+      else if (!stratAgainst) p2 += 1;
+
+      if (stratAligns && t.confidence != null && t.confidence >= 70) notes.push(`Strong ${t.trend} trend (${t.confidence}% confidence) confirms ${strat} thesis`);
+    } else {
+      p2 += 8; // no trend data — neutral
+      flags.push('No trend data available — evaluate chart manually');
+    }
+    p2 = Math.min(20, p2);
+
+    // ── Pillar 3: Liquidity & Tradability (20 pts) ───────────────────────────
+    let p3 = 0;
+    // OI scoring — 500 per leg is the course minimum and scores full (8 pts)
+    const minOI = Math.min(c.shortOI, c.longOI);
+    const oiScore = minOI <= 0 ? 0 : minOI < 100 ? 0.10 : minOI < 200 ? 0.35 : minOI < 300 ? 0.55 : minOI < 500 ? 0.80 : 1.0;
+    p3 += oiScore * 8;
+    if (minOI < 200) flags.push(`Low OI (${minOI}) — fills may be difficult, consider 1 contract only`);
+    else if (minOI < 500) flags.push(`OI (${minOI}) below 500 course minimum — fills manageable but not ideal`);
+    else if (minOI >= 500) notes.push(`OI (${minOI}) meets course minimum — liquid enough for clean fills`);
+
+    // Bid-ask score (6 pts) — use credit ratio as proxy (tighter chains = better ratio)
+    const creditRatioScore = clamp((c.creditRatio - 0.15) / 0.35);
+    p3 += creditRatioScore * 6;
+
+    // Volume proxy via OI (higher OI = more active) (6 pts) — 500 scores full
+    const volScore = minOI >= 500 ? 1.0 : minOI >= 300 ? 0.75 : minOI >= 200 ? 0.50 : minOI >= 100 ? 0.25 : 0.05;
+    p3 += volScore * 6;
+
+    p3 = Math.min(20, p3);
+
+    // ── Pillar 4: Risk Profile (15 pts) ──────────────────────────────────────
+    let p4 = 0;
+
+    // Buffer % to short strike (5 pts)
+    // We estimate buffer from price and strike
+    const price = result.price;
+    if (price != null && price > 0) {
+      const shortStrike = c.shortStrike;
+      const bufferPct = strat === 'BPS'
+        ? ((price - shortStrike) / price) * 100
+        : ((shortStrike - price) / price) * 100;
+      const bufferScore = bufferPct >= 8 ? 1.0 : bufferPct >= 5 ? 0.80 : bufferPct >= 3 ? 0.55 : bufferPct >= 1.5 ? 0.30 : 0.05;
+      p4 += bufferScore * 5;
+      if (bufferPct < 2) flags.push(`Thin buffer ${bufferPct.toFixed(1)}% — position near short strike`);
+      else if (bufferPct >= 8) notes.push(`Strong ${bufferPct.toFixed(1)}% buffer — good structural safety`);
+    } else {
+      p4 += 2.5; // neutral
+    }
+
+    // Earnings clearance (5 pts)
+    // What matters: does earnings fall BEFORE the expiration date?
+    // If earnings is after expiry, it doesn't threaten this trade at all.
+    const earningsDate = result.earningsDate;
+    if (!earningsDate || result.isEtf) {
+      p4 += 5; // no earnings risk
+    } else {
+      const daysToEarnings = daysUntil(earningsDate);
+      const expirationDate = c.expiration; // e.g. "2026-06-20"
+      const earningsBeforeExpiry = expirationDate
+        ? new Date(earningsDate) <= new Date(expirationDate)
+        : daysToEarnings <= c.dte;
+
+      if (daysToEarnings < 0) {
+        p4 += 5; // already reported — no risk
+      } else if (!earningsBeforeExpiry) {
+        p4 += 5; // earnings after expiry — this trade is clear, full points
+        if (daysToEarnings <= c.dte + 7) notes.push(`Earnings ${daysToEarnings}d out — just after expiry, trade is clear`);
+      } else {
+        // Earnings falls within the trade window — how close?
+        const daysBuffer = daysToEarnings; // days until earnings hits
+        if (daysBuffer >= 21) { p4 += 2.5; flags.push(`Earnings in ${daysBuffer}d — falls within expiry, consider shorter expiry`); }
+        else if (daysBuffer >= 14) { p4 += 1.0; flags.push(`Earnings in ${daysBuffer}d — within trade window, binary risk is real`); }
+        else { p4 += 0; flags.push(`Earnings in ${daysBuffer}d — falls before expiry, high binary risk, skip or size down to 1 contract`); }
+      }
+    }
+
+    // Gap risk from Yahoo bars (5 pts) — detect any gap >5% in last 60 days
+    const bars = t?.metrics;
+    let gapPenalty = 0;
+    if (bars != null) {
+      // Use momentum extremes as gap proxy
+      const maxMom10 = Math.abs(bars.momentum10 ?? 0);
+      if (maxMom10 > 0.12) { gapPenalty = 3; flags.push(`Recent sharp move >12% in 10 days — gap risk elevated`); }
+      else if (maxMom10 > 0.07) { gapPenalty = 1.5; flags.push(`Moderate recent volatility — watch for gaps`); }
+    }
+    p4 += Math.max(0, 5 - gapPenalty);
+
+    p4 = Math.min(15, p4);
+
+    // ── Pillar 5: Credit Quality (10 pts) ────────────────────────────────────
+    let p5 = 0;
+
+    // Credit as % of spread width (6 pts)
+    const crScore = c.creditRatio >= 0.40 ? 1.0 : c.creditRatio >= 0.33 ? 0.85 : c.creditRatio >= 0.28 ? 0.60 : c.creditRatio >= 0.22 ? 0.35 : 0.10;
+    p5 += crScore * 6;
+    if (c.creditRatio >= 0.40) notes.push(`Excellent credit ratio ${(c.creditRatio * 100).toFixed(0)}% of width`);
+    else if (c.creditRatio < 0.25) flags.push(`Thin credit ratio ${(c.creditRatio * 100).toFixed(0)}% — marginal risk/reward`);
+
+    // ROC vs benchmark (4 pts) — 20% ROC = course minimum, 35%+ = excellent
+    const rocScore = c.roc >= 35 ? 1.0 : c.roc >= 25 ? 0.80 : c.roc >= 20 ? 0.60 : c.roc >= 15 ? 0.35 : 0.10;
+    p5 += rocScore * 4;
+    if (c.roc >= 35) notes.push(`Strong ROC ${c.roc.toFixed(0)}% — good return on capital at risk`);
+
+    p5 = Math.min(10, p5);
+
+    // ── Total & Grade ─────────────────────────────────────────────────────────
+    const pillars: PillarScores = {
+      ivQuality: Math.round(p1),
+      trend: Math.round(p2),
+      liquidity: Math.round(p3),
+      risk: Math.round(p4),
+      credit: Math.round(p5),
+      total: Math.round(p1 + p2 + p3 + p4 + p5),
+    };
+    const total = Math.min(100, pillars.total);
+
+    const grade: FullGrade =
+      total >= 90 ? 'A+' : total >= 85 ? 'A' : total >= 80 ? 'A-' :
+      total >= 75 ? 'B+' : total >= 70 ? 'B' : total >= 65 ? 'B-' :
+      total >= 60 ? 'C+' : total >= 50 ? 'C' : total >= 40 ? 'D' : 'F';
+
+    // Auto-generate summary note if none
+    if (notes.length === 0 && flags.length === 0) notes.push('Clean setup — all pillars pass');
+    if (flags.length > 0 && notes.length === 0) notes.push(`${flags.length} concern${flags.length !== 1 ? 's' : ''} to review before entering`);
+
+    return { strategy: strat, grade, setup: c, score: total, pillars, notes, flags, result };
   };
 
   // Only run the preferred strategy. If none specified, run all three.
@@ -4048,7 +4238,11 @@ function BestOpportunityFinder({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
+  const gradeColor = (g: string) =>
+    g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-400' : g === 'A-' ? 'text-emerald-500' :
+    g === 'B+' ? 'text-yellow-300' : g === 'B' ? 'text-yellow-400' : g === 'B-' ? 'text-yellow-500' :
+    g === 'C+' ? 'text-orange-300' : g === 'C' ? 'text-orange-400' :
+    g === 'D' ? 'text-red-400' : 'text-red-600';
 
   return (
     <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
@@ -4102,26 +4296,49 @@ function BestOpportunityFinder({
                 <div className="divide-y divide-[inherit]" style={{ borderColor: 'inherit' }}>
                   {level.ranked.map((setup, idx) => (
                     <div key={setup.strategy} className={`p-4 ${idx === 0 ? '' : 'opacity-80'}`}>
+                      {/* Header row */}
                       <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className={`text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border ${idx === 0 ? 'border-emerald-500 text-emerald-400' : idx === 1 ? 'border-slate-500 text-slate-400' : 'border-slate-700 text-slate-500'}`}>{idx + 1}</span>
                           <span className={`text-xs font-bold px-2 py-0.5 border rounded ${setup.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : setup.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{setup.strategy}</span>
                           {preferredStrategy && setup.strategy !== preferredStrategy && (
                             <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/60 bg-yellow-500/10 text-yellow-400 font-bold">⚠ contradicts {preferredStrategy} box</span>
                           )}
-                          <span className={`text-xs font-bold ${gradeColor(setup.grade)}`}>Grade {setup.grade}</span>
-                          <span className={`text-[9px] ${th.textFaint}`}>score {setup.score.toFixed(1)}</span>
+                          {/* Grade + Score badge */}
+                          <span className={`text-sm font-black ${gradeColor(setup.grade)}`}>{setup.grade}</span>
+                          <span className={`text-[10px] font-bold ${th.text}`}>{setup.score}/100</span>
                         </div>
                         <button
                           onClick={() => {
                             const strikesStr = setup.strategy === 'IC' && setup.setup.shortCallStrike != null
                               ? `Puts: ${setup.setup.shortStrike}/${setup.setup.longStrike} · Calls: ${setup.setup.shortCallStrike}/${setup.setup.longCallStrike}`
                               : `${setup.setup.shortStrike}/${setup.setup.longStrike}`;
-                            alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${strikesStr}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`);
+                            alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nGrade ${setup.grade} · ${setup.score}/100\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${strikesStr}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`);
                           }}
                           className="text-[9px] px-2 py-1 border border-emerald-600 text-emerald-400 rounded hover:bg-emerald-600/10 transition-colors font-medium tracking-wider"
                         >TRADE →</button>
                       </div>
+
+                      {/* 5-Pillar score bars */}
+                      <div className="grid grid-cols-5 gap-1.5 mb-3">
+                        {[
+                          { label: 'IV Quality', val: setup.pillars.ivQuality, max: 35, color: 'bg-blue-500' },
+                          { label: 'Trend',      val: setup.pillars.trend,     max: 20, color: 'bg-emerald-500' },
+                          { label: 'Liquidity',  val: setup.pillars.liquidity, max: 20, color: 'bg-purple-500' },
+                          { label: 'Risk',       val: setup.pillars.risk,      max: 15, color: 'bg-yellow-500' },
+                          { label: 'Credit',     val: setup.pillars.credit,    max: 10, color: 'bg-orange-500' },
+                        ].map(p => (
+                          <div key={p.label} className="text-center">
+                            <p className={`text-[8px] ${th.textFaint} mb-1 truncate`}>{p.label}</p>
+                            <div className="h-1 rounded-full bg-slate-700 mb-0.5">
+                              <div className={`h-full rounded-full ${p.color}`} style={{ width: `${p.max > 0 ? (p.val / p.max) * 100 : 0}%` }} />
+                            </div>
+                            <p className={`text-[9px] font-bold ${th.text}`}>{p.val}<span className={`${th.textFaint} font-normal`}>/{p.max}</span></p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Trade data */}
                       <div className="grid grid-cols-4 gap-3 mb-2">
                         <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.expiration} <span className="text-slate-500">({setup.setup.dte}d)</span></p></div>
                         <div>
@@ -4146,7 +4363,19 @@ function BestOpportunityFinder({
                           )}
                         </div>
                       </div>
-                      <p className={`text-[9px] ${th.textFaint}`}>{setup.notes[0]}</p>
+
+                      {/* Notes */}
+                      {setup.notes.length > 0 && (
+                        <p className={`text-[9px] text-emerald-400/80 mb-1`}>✓ {setup.notes[0]}</p>
+                      )}
+                      {/* Flags */}
+                      {setup.flags.length > 0 && (
+                        <div className="space-y-0.5">
+                          {setup.flags.map((f, i) => (
+                            <p key={i} className="text-[9px] text-yellow-400/80">⚠ {f}</p>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -4208,6 +4437,9 @@ export default function Home() {
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [showRunModal, setShowRunModal] = useState(false);
   const [tradeResult, setTradeResult] = useState<ScreenResult | null>(null);
+  const [deepAnalysis, setDeepAnalysis] = useState<boolean>(() => {
+    try { return localStorage.getItem(LS_DEEP_ANALYSIS) !== 'false'; } catch { return true; }
+  });
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
   const [runtimeEtfRules, setRuntimeEtfRules] = useState<RulesType>(getSavedEtfRules);
@@ -4584,6 +4816,23 @@ export default function Home() {
           </div>
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
+
+          {/* Deep Analysis toggle */}
+          <div className={`flex items-center justify-between px-3 py-2 rounded-lg border ${deepAnalysis ? 'border-blue-700 bg-blue-500/5' : `${th.borderLight} ${th.card}`}`}>
+            <div>
+              <p className={`text-[9px] font-bold tracking-wider ${deepAnalysis ? 'text-blue-400' : th.textFaint}`}>DEEP ANALYSIS</p>
+              <p className={`text-[8px] ${th.textFaint} leading-tight`}>{deepAnalysis ? 'HV30 + gap risk scoring active' : 'Quantitative only — faster'}</p>
+            </div>
+            <button
+              onClick={() => {
+                const next = !deepAnalysis;
+                setDeepAnalysis(next);
+                try { localStorage.setItem(LS_DEEP_ANALYSIS, String(next)); } catch {}
+              }}
+              className={`w-8 h-4 rounded-full transition-all relative ${deepAnalysis ? 'bg-blue-600' : 'bg-slate-700'}`}>
+              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${deepAnalysis ? 'left-4' : 'left-0.5'}`} />
+            </button>
+          </div>
 
           <button onClick={() => setShowRunModal(true)} disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
