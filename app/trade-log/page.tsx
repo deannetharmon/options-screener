@@ -690,9 +690,9 @@ export default function TradeLogPage() {
     if (filterSymbol && !t.symbol.toLowerCase().includes(filterSymbol.toLowerCase())) return false;
     return true;
   });
+  
   const reportingTrades = filtered.filter(t => !excludedIds.has(t.id));
-  const reportingTrades = filtered.filter(t => !excludedIds.has(t.id));
-
+  
   const sorted = [...filtered].sort((a, b) => {
     let cmp = 0;
     switch (sortField) {
