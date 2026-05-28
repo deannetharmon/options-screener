@@ -557,42 +557,136 @@ function fmtAge(ms: number): string {
 
 // ── Chart helpers ─────────────────────────────────────────────────────────
 function MonthlyPnlChart({ trades, th }: { trades: ClosedTrade[]; th: typeof THEMES[Theme] }) {
-  const monthMap: Record<string, number> = {};
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  // Build per-month stats
+  const monthMap: Record<string, { pnl: number; count: number; wins: number }> = {};
   for (const t of trades) {
-    const key = t.closeDate.slice(0, 7); // YYYY-MM
-    monthMap[key] = (monthMap[key] ?? 0) + t.pnl;
+    const key = t.closeDate.slice(0, 7);
+    if (!monthMap[key]) monthMap[key] = { pnl: 0, count: 0, wins: 0 };
+    monthMap[key].pnl += t.pnl;
+    monthMap[key].count++;
+    if (t.outcome === 'WIN') monthMap[key].wins++;
   }
-  const entries = Object.entries(monthMap).sort(([a], [b]) => a.localeCompare(b));
+  const entries = Object.entries(monthMap)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, v]) => ({
+      key,
+      month: MONTHS[parseInt(key.split('-')[1], 10) - 1],
+      year: key.slice(0, 4),
+      ...v,
+      winRate: v.count > 0 ? Math.round((v.wins / v.count) * 100) : 0,
+    }));
+
   if (entries.length === 0) return <p className={`text-xs ${th.textFaint} text-center py-4`}>No data</p>;
 
-  const max = Math.max(...entries.map(([, v]) => Math.abs(v)), 1);
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  if (entries.length === 1) {
+    const e = entries[0];
+    return (
+      <div className={`flex items-center gap-6 p-4 rounded-xl border ${th.border}`}>
+        <div>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-1`}>{e.month} {e.year}</p>
+          <p className={`text-2xl font-bold ${e.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+            {e.pnl >= 0 ? '+' : ''}${e.pnl.toFixed(0)}
+          </p>
+        </div>
+        <div className={`text-center`}>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-1`}>Win Rate</p>
+          <p className={`text-2xl font-bold ${e.winRate >= 60 ? 'text-emerald-400' : e.winRate >= 45 ? 'text-yellow-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>{e.winRate}%</p>
+        </div>
+        <div className="text-center">
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-1`}>Trades</p>
+          <p className={`text-2xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{e.count}</p>
+        </div>
+        <p className={`text-[10px] ${th.textFaint} ml-auto`}>Only 1 month of data — extend range for chart view</p>
+      </div>
+    );
+  }
+
+  const maxAbsPnl = Math.max(...entries.map(e => Math.abs(e.pnl)), 1);
+  const BAR_H = 80; // px — bar chart area height
+  const LINE_H = 32; // px — win rate line area height
 
   return (
-    <div className="flex items-end gap-1 h-36 w-full">
-      {entries.map(([key, val]) => {
-        const [, m] = key.split('-');
-        const pct = (Math.abs(val) / max) * 100;
-        const isPos = val >= 0;
-        return (
-          <div key={key} className="flex-1 flex flex-col items-center gap-1 group relative">
-            {/* Tooltip */}
-            <div className={`absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover:block z-10 ${th.sidebar} border ${th.border} rounded px-2 py-1 whitespace-nowrap text-[9px] ${th.textMuted} shadow-lg`}>
-              <span className="font-bold">{months[parseInt(m,10)-1]} {key.slice(0,4)}</span>
-              <span className={`ml-2 font-bold ${isPos ? 'text-emerald-400' : 'text-red-400'}`}>
-                {isPos ? '+' : ''}${val.toFixed(0)}
-              </span>
-            </div>
-            <div className="w-full flex flex-col justify-end h-28">
-              <div
-                className={`w-full rounded-t-sm transition-all ${isPos ? 'bg-emerald-500/70' : 'bg-red-500/60'}`}
-                style={{ height: `${Math.max(pct, 2)}%` }}
-              />
-            </div>
-            <span className={`text-[8px] ${th.textFaint}`}>{months[parseInt(m,10)-1].slice(0,1)}</span>
+    <div className="space-y-1">
+      {/* Win rate line + P&L bars combined */}
+      <div className="relative w-full" style={{ height: `${BAR_H + LINE_H + 24}px` }}>
+        {/* Win rate sparkline — positioned at top */}
+        <svg
+          className="absolute top-0 left-0 w-full overflow-visible"
+          style={{ height: `${LINE_H}px` }}
+          preserveAspectRatio="none"
+          viewBox={`0 0 ${entries.length * 60} ${LINE_H}`}
+        >
+          {entries.length > 1 && (() => {
+            const pts = entries.map((e, i) => `${i * 60 + 30},${LINE_H - (e.winRate / 100) * LINE_H}`).join(' ');
+            return (
+              <>
+                <polyline points={pts} fill="none" stroke="rgba(99,102,241,0.6)" strokeWidth="1.5" strokeLinejoin="round" />
+                {entries.map((e, i) => (
+                  <circle key={e.key} cx={i * 60 + 30} cy={LINE_H - (e.winRate / 100) * LINE_H} r="2.5"
+                    fill={e.winRate >= 60 ? '#10b981' : e.winRate >= 45 ? '#eab308' : '#ef4444'} />
+                ))}
+              </>
+            );
+          })()}
+        </svg>
+
+        {/* P&L bars — positioned below win rate line */}
+        <div className="absolute left-0 right-0 flex items-end gap-1"
+          style={{ top: `${LINE_H + 4}px`, height: `${BAR_H}px` }}>
+          {entries.map((e) => {
+            const pct = Math.max((Math.abs(e.pnl) / maxAbsPnl) * 100, 3);
+            const isPos = e.pnl >= 0;
+            return (
+              <div key={e.key} className="flex-1 flex flex-col items-center justify-end h-full group relative" style={{ minWidth: '32px' }}>
+                {/* Tooltip */}
+                <div className={`absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col gap-0.5 z-20 ${th.sidebar} border ${th.border} rounded-lg px-3 py-2 shadow-xl`}
+                  style={{ minWidth: '130px' }}>
+                  <p className={`text-[10px] font-bold ${th.text}`}>{e.month} {e.year}</p>
+                  <p className={`text-[10px] ${isPos ? 'text-emerald-400' : 'text-red-400'} font-bold`}>
+                    {isPos ? '+' : ''}${e.pnl.toFixed(0)} P&L
+                  </p>
+                  <p className={`text-[10px] ${e.winRate >= 60 ? 'text-emerald-400' : e.winRate >= 45 ? 'text-yellow-400' : 'text-red-400'}`}>
+                    {e.winRate}% win rate
+                  </p>
+                  <p className={`text-[9px] ${th.textFaint}`}>{e.count} trade{e.count !== 1 ? 's' : ''} · {e.wins}W/{e.count - e.wins}L</p>
+                </div>
+                <div
+                  className={`w-full rounded-t-sm transition-all ${isPos ? 'bg-emerald-500/60 hover:bg-emerald-500/80' : 'bg-red-500/50 hover:bg-red-500/70'}`}
+                  style={{ height: `${pct}%` }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* X-axis labels + trade counts */}
+      <div className="flex gap-1">
+        {entries.map(e => (
+          <div key={e.key} className="flex-1 flex flex-col items-center" style={{ minWidth: '32px' }}>
+            <span className={`text-[8px] ${th.textFaint}`}>{e.month.slice(0,1)}</span>
+            <span className={`text-[8px] text-indigo-400/60`}>{e.count}</span>
           </div>
-        );
-      })}
+        ))}
+      </div>
+
+      {/* Legend */}
+      <div className={`flex items-center gap-4 pt-1 border-t ${th.borderLight}`}>
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-1.5 rounded-full bg-emerald-500/60" />
+          <span className={`text-[9px] ${th.textFaint}`}>P&L</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-0.5 rounded-full bg-indigo-400/60" />
+          <span className={`text-[9px] ${th.textFaint}`}>Win rate</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[9px] text-indigo-400/60`}>3</span>
+          <span className={`text-[9px] ${th.textFaint}`}>Trade count (below label)</span>
+        </div>
+      </div>
     </div>
   );
 }
