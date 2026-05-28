@@ -556,7 +556,7 @@ function fmtAge(ms: number): string {
 }
 
 // ── Chart helpers ─────────────────────────────────────────────────────────
-function MonthlyPnlChart({ trades, th }: { trades: ClosedTrade[]; th: typeof THEMES[Theme] }) {
+function MonthlyPnlChart({ trades, th, range }: { trades: ClosedTrade[]; th: typeof THEMES[Theme]; range?: TimeRange }) {
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   // Build per-month stats
@@ -1020,9 +1020,10 @@ function ExitAnalysisWidget({ trades, th }: { trades: ClosedTrade[]; th: typeof 
 }
 
 // ── Widget shell ──────────────────────────────────────────────────────────
-function Widget({ config, trades, th, onToggle, onMoveUp, onMoveDown, isFirst, isLast }: {
+function Widget({ config, trades, range, th, onToggle, onMoveUp, onMoveDown, isFirst, isLast }: {
   config: WidgetConfig;
   trades: ClosedTrade[];
+  range: TimeRange;
   th: typeof THEMES[Theme];
   onToggle: () => void;
   onMoveUp: () => void;
@@ -1032,7 +1033,7 @@ function Widget({ config, trades, th, onToggle, onMoveUp, onMoveDown, isFirst, i
 }) {
   const WIDGET_CONTENT: Record<WidgetId, React.ReactNode> = {
     overview:      <OverviewWidget     trades={trades} th={th} />,
-    monthly_pnl:   <MonthlyPnlChart    trades={trades} th={th} />,
+    monthly_pnl:   <MonthlyPnlChart    trades={trades} th={th} range={range} />,
     by_strategy:   <ByStrategyWidget   trades={trades} th={th} />,
     by_symbol:     <BySymbolWidget     trades={trades} th={th} />,
     hold_time:     <HoldTimeWidget     trades={trades} th={th} />,
@@ -1045,7 +1046,14 @@ function Widget({ config, trades, th, onToggle, onMoveUp, onMoveDown, isFirst, i
   return (
     <div className={`${th.card} border ${th.border} rounded-xl overflow-hidden`}>
       <div className={`flex items-center justify-between px-4 py-2.5 border-b ${th.borderLight}`}>
-        <p className={`text-[10px] font-bold ${th.textMuted} uppercase tracking-widest`}>{config.label}</p>
+        <p className={`text-[10px] font-bold ${th.textMuted} uppercase tracking-widest`}>
+          {config.label}
+          {config.id === 'monthly_pnl' && (
+            <span className={`ml-2 text-[9px] font-normal ${th.textFaint} normal-case tracking-normal`}>
+              — {({ '1w': 'Last Week', '2w': 'Last 2 Weeks', '1m': 'Last Month', '3m': 'Last 3 Months', '6m': 'Last 6 Months', '12m': 'Last 12 Months' } as Record<string,string>)[range]}
+            </span>
+          )}
+        </p>
         <div className="flex items-center gap-1">
           <button onClick={onMoveUp} disabled={isFirst} className={`text-[10px] px-1.5 py-0.5 ${th.textFaint} hover:${th.text} disabled:opacity-20 transition-opacity`}>↑</button>
           <button onClick={onMoveDown} disabled={isLast} className={`text-[10px] px-1.5 py-0.5 ${th.textFaint} hover:${th.text} disabled:opacity-20 transition-opacity`}>↓</button>
@@ -1128,7 +1136,7 @@ export default function PerformancePage() {
     <div className={`min-h-screen ${th.bg} pb-24 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
 
       {/* Header */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
+      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
         <div className="flex items-center gap-6">
           <div>
             <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
@@ -1184,6 +1192,15 @@ export default function PerformancePage() {
           </div>
         </div>
 
+        {/* Active range label */}
+        {!loading && trades.length > 0 && (
+          <p className={`text-[10px] ${th.textFaint}`}>
+            Showing <span className={`font-bold ${th.textMuted}`}>
+              {({'1w':'last 7 days','2w':'last 14 days','1m':'last 30 days','3m':'last 3 months','6m':'last 6 months','12m':'last 12 months'} as Record<string,string>)[range]}
+            </span> · {trades.length} closed trades
+          </p>
+        )}
+
         {/* Widget configurator panel */}
         {showConfig && (
           <div className={`${th.card} border ${th.border} rounded-xl p-4`}>
@@ -1225,6 +1242,7 @@ export default function PerformancePage() {
                 key={w.id}
                 config={w}
                 trades={trades}
+                range={range}
                 th={th}
                 onToggle={() => toggleWidget(w.id)}
                 onMoveUp={() => moveWidget(w.id, 'up')}
