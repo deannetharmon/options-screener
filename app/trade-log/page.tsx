@@ -683,12 +683,15 @@ export default function TradeLogPage() {
   const handleRangeChange = (r: TimeRange) => { setRange(r); loadTrades(r); };
 
   const filtered = trades.filter(t => {
+    if (!showExcluded && excludedIds.has(t.id)) return false;
     if (filterStrategy !== 'ALL' && t.strategy !== filterStrategy) return false;
     if (filterOutcome  !== 'ALL' && t.outcome   !== filterOutcome)  return false;
     if (filterExitType !== 'ALL' && t.exitType !== filterExitType) return false;
     if (filterSymbol && !t.symbol.toLowerCase().includes(filterSymbol.toLowerCase())) return false;
     return true;
   });
+  const reportingTrades = filtered.filter(t => !excludedIds.has(t.id));
+  const reportingTrades = filtered.filter(t => !excludedIds.has(t.id));
 
   const sorted = [...filtered].sort((a, b) => {
     let cmp = 0;
