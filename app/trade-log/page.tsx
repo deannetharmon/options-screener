@@ -838,6 +838,7 @@ export default function TradeLogPage() {
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <Link href="/"            className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
             <Link href="/portfolio"   className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
+            <Link href="/rinse-repeat"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</Link>
             <span                     className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">TRADE LOG</span>
             <Link href="/performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</Link>
           </nav>
@@ -852,15 +853,8 @@ export default function TradeLogPage() {
         </div>
       </div>
 
-      <div className={`px-6 py-6 max-w-[1600px] mx-auto space-y-4 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
-
-        {isNewDevice && !loading && (
-          <div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/30 bg-blue-500/8">
-            <span className="text-blue-400">↺</span>
-            <p className="text-xs text-blue-300">Different device detected — trade history loaded fresh from TastyTrade.</p>
-          </div>
-        )}
-
+      {/* Sticky controls bar */}
+      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[57px] z-40 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-1">
@@ -933,6 +927,17 @@ export default function TradeLogPage() {
             </button>
           </div>
         </div>
+      </div>{/* end sticky controls */}
+
+      {/* Scrolling content */}
+      <div className={`px-6 py-4 max-w-[1600px] mx-auto space-y-4 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
+
+        {isNewDevice && !loading && (
+          <div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/30 bg-blue-500/8">
+            <span className="text-blue-400">↺</span>
+            <p className="text-xs text-blue-300">Different device detected — trade history loaded fresh from TastyTrade.</p>
+          </div>
+        )}
 
         {(loading || status) && (
           <div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5">
