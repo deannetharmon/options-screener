@@ -98,6 +98,13 @@ interface ScreenResult {
   ruleSetApplied?: string;
   checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; };
 }
+interface ExistingPosition {
+  symbol: string;
+  strategy: string;
+  expDate: string;
+  strikes: string;   // human-readable e.g. "450P/440P" or "450P/440P · 470C/480C"
+  qty: number;
+}
 interface FilterSuggestion {
   priority: number; rule: keyof RulesType; currentValue: number; suggestedValue: number;
   label: string; rationale: string; tradeoff: string; wouldQualify: number;
@@ -514,6 +521,9 @@ const LS_GLOBAL_SESSIONS = 'hunter-global-sessions';
 const LS_SCREEN_MODE = 'hunter-screen-mode';
 const LS_RANK_CONFIG = 'hunter-rank-config';
 const LS_SESSION_LOADED_AT = 'hunter-session-loaded-at';
+const LS_RESULTS_CACHE = 'hunter-results-cache';
+const LS_RAW_SCAN_CACHE = 'hunter-raw-scan-cache';
+const LS_RESULTS_CACHE_AT = 'hunter-results-cache-at';
 
 // ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
@@ -777,6 +787,62 @@ async function loadPortfolioTickers(): Promise<{ current: string[]; historical: 
   } catch { /* historical optional */ }
 
   return { current, historical };
+}
+
+// Parses an OCC option symbol into components needed for position display
+function parseOccForDisplay(occ: string): { optionType: 'P' | 'C' | null; strike: number } {
+  const cleaned = occ.replace(/\s+/g, '');
+  const m = cleaned.match(/^[A-Z]+(\d{6})([CP])(\d{8})$/);
+  if (!m) return { optionType: null, strike: 0 };
+  return { optionType: m[2] as 'P' | 'C', strike: parseInt(m[3], 10) / 1000 };
+}
+
+async function loadExistingPositions(): Promise<ExistingPosition[]> {
+  try {
+    const token = await getAccessToken();
+    const accountsData = await ttFetch('/customers/me/accounts', token);
+    const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+    if (!accountNumber) return [];
+    const posData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
+    const rawPositions: any[] = posData?.data?.items ?? [];
+    const optionLegs = rawPositions.filter((p: any) =>
+      p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
+    );
+    const groups: Record<string, any[]> = {};
+    for (const leg of optionLegs) {
+      const sym = leg['underlying-symbol'];
+      const exp = (leg['expires-at'] ?? leg['expiration-date'] ?? 'unknown').slice(0, 10);
+      const key = `${sym}::${exp}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(leg);
+    }
+    const positions: ExistingPosition[] = [];
+    for (const [key, legs] of Object.entries(groups)) {
+      const [symbol, expDate] = key.split('::');
+      const shortLeg = legs.find(l => l['quantity-direction'] === 'Short');
+      const qty = shortLeg ? parseInt(shortLeg['quantity'] ?? '1', 10) : 1;
+      const parsed = legs.map(l => ({ ...parseOccForDisplay(l.symbol), dir: l['quantity-direction'] as string }));
+      const putLegs  = parsed.filter(l => l.optionType === 'P');
+      const callLegs = parsed.filter(l => l.optionType === 'C');
+      let strategy = 'SPREAD';
+      if (putLegs.length >= 2 && callLegs.length === 0) strategy = 'BPS';
+      else if (callLegs.length >= 2 && putLegs.length === 0) strategy = 'BCS';
+      else if (putLegs.length >= 2 && callLegs.length >= 2) strategy = 'IC';
+      const sortedPuts  = putLegs.map(l => l.strike).sort((a, b) => b - a);
+      const sortedCalls = callLegs.map(l => l.strike).sort((a, b) => a - b);
+      let strikes = '';
+      if (strategy === 'BPS' && sortedPuts.length >= 2)
+        strikes = `${sortedPuts[0]}P/${sortedPuts[1]}P`;
+      else if (strategy === 'BCS' && sortedCalls.length >= 2)
+        strikes = `${sortedCalls[0]}C/${sortedCalls[1]}C`;
+      else if (strategy === 'IC' && sortedPuts.length >= 2 && sortedCalls.length >= 2)
+        strikes = `${sortedPuts[0]}P/${sortedPuts[1]}P · ${sortedCalls[0]}C/${sortedCalls[1]}C`;
+      else
+        strikes = parsed.map(l => `${l.strike}${l.optionType}`).join('/');
+      positions.push({ symbol, strategy, expDate, strikes, qty });
+    }
+    return positions;
+  } catch { return []; }
 }
 
 async function getMarketMetrics(symbols: string[], token: string) {
@@ -2124,7 +2190,7 @@ function TradeModal({ result, th, onClose }: {
   );
 }
 
-function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cachedEntry }: {
+function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cachedEntry, existingPositions }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
@@ -2132,12 +2198,14 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   rankConfig?: RankConfig;
   onTrade?: (result: ScreenResult) => void;
   cachedEntry?: RawScanEntry;
+  existingPositions?: ExistingPosition[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
 
   const c = result.bestCandidate;
   const t = result.trendResult;
+  const matchingPositions = (existingPositions ?? []).filter(p => p.symbol === result.symbol);
 
   // Ranking
   const scored = rankConfig ? scoreCandidate(result, rankConfig) : null;
@@ -2362,6 +2430,28 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               🔍 FIND BEST
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Existing position banner */}
+      {matchingPositions.length > 0 && (
+        <div className="border-t border-amber-500/30 bg-amber-500/8 px-4 py-2 flex items-center gap-3 flex-wrap rounded-b-lg"
+             onClick={e => e.stopPropagation()}>
+          <span className="text-[9px] font-bold text-amber-400 tracking-widest shrink-0 uppercase">▸ Open Position</span>
+          {matchingPositions.map((p, i) => (
+            <div key={i} className="flex items-center gap-2 text-[10px]" style={{ fontFamily: "'DM Mono', monospace" }}>
+              <span className={`px-1.5 py-0.5 border rounded text-[9px] font-bold ${
+                p.strategy === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
+                : p.strategy === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
+                : p.strategy === 'IC' ? 'border-blue-600 text-blue-400 bg-blue-500/10'
+                : 'border-amber-600 text-amber-400 bg-amber-500/10'
+              }`}>{p.strategy}</span>
+              <span className="text-amber-300/90 font-medium">{p.strikes}</span>
+              <span className="text-amber-500/70">exp {p.expDate}</span>
+              <span className="text-amber-500/70">×{p.qty}</span>
+              {i < matchingPositions.length - 1 && <span className="text-amber-700 mx-1">·</span>}
+            </div>
+          ))}
         </div>
       )}
 
@@ -3704,8 +3794,15 @@ export default function Home() {
   const [icTickers, setIcTickers] = useState('');
   const [brokenTickers, setBrokenTickers] = useState('');
   const [pmccTickers, setPmccTickers] = useState('');
-  const [results, setResults] = useState<ScreenResult[]>([]);
-  const [rawScanCache, setRawScanCache] = useState<RawScanEntry[]>([]);
+  const [results, setResults] = useState<ScreenResult[]>(() => {
+    try { const s = localStorage.getItem(LS_RESULTS_CACHE); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [rawScanCache, setRawScanCache] = useState<RawScanEntry[]>(() => {
+    try { const s = localStorage.getItem(LS_RAW_SCAN_CACHE); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [resultsCachedAt, setResultsCachedAt] = useState<number | null>(() => {
+    try { const s = localStorage.getItem(LS_RESULTS_CACHE_AT); return s ? parseInt(s, 10) : null; } catch { return null; }
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
@@ -3729,6 +3826,10 @@ export default function Home() {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
   });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
+  const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
+  useEffect(() => {
+    loadExistingPositions().then(setExistingPositions).catch(() => {});
+  }, []);
   useEffect(() => {
     try {
       setBpsTickers(localStorage.getItem(LS_BPS) || '');
@@ -3739,11 +3840,15 @@ export default function Home() {
     } catch {}
   }, []);
 
-  const handleBpsChange = (v: string) => { setBpsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BPS, v); } catch {} };
-  const handleBcsChange = (v: string) => { setBcsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BCS, v); } catch {} };
-  const handleIcChange = (v: string) => { setIcTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_IC, v); } catch {} };
+  const clearResultsCache = () => {
+    setResults([]); setRawScanCache([]); setResultsCachedAt(null);
+    try { localStorage.removeItem(LS_RESULTS_CACHE); localStorage.removeItem(LS_RAW_SCAN_CACHE); localStorage.removeItem(LS_RESULTS_CACHE_AT); } catch {}
+  };
+  const handleBpsChange = (v: string) => { setBpsTickers(v); clearResultsCache(); try { localStorage.setItem(LS_BPS, v); } catch {} };
+  const handleBcsChange = (v: string) => { setBcsTickers(v); clearResultsCache(); try { localStorage.setItem(LS_BCS, v); } catch {} };
+  const handleIcChange = (v: string) => { setIcTickers(v); clearResultsCache(); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
-  const handlePmccChange = (v: string) => { setPmccTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_PMCC, v); } catch {} };
+  const handlePmccChange = (v: string) => { setPmccTickers(v); clearResultsCache(); try { localStorage.setItem(LS_PMCC, v); } catch {} };
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); if (!newBps && !newBcs && !newIc && !newBroken) { setResults([]); setAutoTrendEntries([]); } };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
@@ -3800,11 +3905,18 @@ export default function Home() {
     }
 
     setResults(screenResults);
+    const applyTs = Date.now();
+    setResultsCachedAt(applyTs);
+    try {
+      localStorage.setItem(LS_RESULTS_CACHE, JSON.stringify(screenResults));
+      localStorage.setItem(LS_RESULTS_CACHE_AT, String(applyTs));
+    } catch {}
   }, [rawScanCache, screenMode, rankConfig]);
 
   const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
     setError('');
-    setResults([]);
+    setResults([]); setResultsCachedAt(null);
+    try { localStorage.removeItem(LS_RESULTS_CACHE); localStorage.removeItem(LS_RESULTS_CACHE_AT); } catch {}
     setAutoTrendEntries([]);
 
     const autoList = parseTickers(autoTickers);
@@ -3902,6 +4014,7 @@ export default function Home() {
 
       // Store raw cache for instant re-filtering
       setRawScanCache(scanCache);
+      try { localStorage.setItem(LS_RAW_SCAN_CACHE, JSON.stringify(scanCache)); } catch {}
 
       // Remove duplicates and sort
       const uniqueResults = screenResults.filter((r, index, self) =>
@@ -3924,6 +4037,12 @@ export default function Home() {
       }
 
       setResults(uniqueResults);
+      const cacheTs = Date.now();
+      setResultsCachedAt(cacheTs);
+      try {
+        localStorage.setItem(LS_RESULTS_CACHE, JSON.stringify(uniqueResults));
+        localStorage.setItem(LS_RESULTS_CACHE_AT, String(cacheTs));
+      } catch {}
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -4174,8 +4293,11 @@ export default function Home() {
                     </>
                   )}
                   <span className={th.textFaint}>{results.length} SCANNED</span>
-                  {rawScanCache.length > 0 && (
-                    <span className="text-purple-400 border border-purple-700 rounded px-1.5 py-0.5 text-[9px]" title="Filters applied to cached scan — click RUN HUNTER to rescan">⚡ cached</span>
+                  {results.length > 0 && resultsCachedAt && (
+                    <span className="text-purple-400 border border-purple-700 rounded px-1.5 py-0.5 text-[9px]" title="Results restored from last scan — click RUN HUNTER to rescan">
+                      {rawScanCache.length > 0 ? '⚡ cached' : '↺ restored'}{' '}
+                      <span className="text-purple-500/70">{(() => { const mins = Math.round((Date.now() - resultsCachedAt) / 60000); return mins < 60 ? `${mins}m ago` : `${Math.round(mins/60)}h ago`; })()}</span>
+                    </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -4219,13 +4341,13 @@ export default function Home() {
                   {qualified.length > 0 && (
                     <div>
                       <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} />)}</div>
                     </div>
                   )}
                   {disqualified.length > 0 && (
                     <div>
                       <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} />)}</div>
                     </div>
                   )}
                 </>
@@ -4235,7 +4357,7 @@ export default function Home() {
                   <div className="space-y-2">{results.map((r, i) => (
                     <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} /></div>
                     </div>
                   ))}</div>
                 </div>
