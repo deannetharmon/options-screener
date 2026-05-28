@@ -2538,7 +2538,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                       .then(r => r.json())
                       .then(d => {
                         const allBars = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null);
-                        const closes = allBars.slice(-30);
+                        const closes = allBars.slice(-90);
                         setSparkData(closes);
                       })
                       .catch(() => setSparkData([]))
