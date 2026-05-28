@@ -32,7 +32,8 @@ function getSavedTheme(): Theme {
 }
 
 type TimeRange = '3m' | '6m' | '12m';
-type Outcome = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
+type Outcome  = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
+type ExitType = 'TARGET_HIT' | 'FAST_CUT' | 'TIME_STOP' | 'MAX_LOSS' | 'HELD_TO_EXPIRY' | 'EARLY_WIN' | 'UNKNOWN';
 type SortField = 'closeDate' | 'openDate' | 'symbol' | 'strategy' | 'pnl' | 'pnlPct' | 'holdDays';
 type SortDir = 'asc' | 'desc';
 
@@ -54,6 +55,9 @@ interface ClosedTrade {
   outcome: Outcome;
   quantity: number;
   fees: number;
+  dteAtClose: number;    // days remaining to expiry when closed
+  dteAtEntry: number;    // estimated DTE when trade was opened
+  exitType: ExitType;
 }
 
 interface CacheEntry { trades: ClosedTrade[]; fetchedAt: number; deviceId: string; range: TimeRange; }
@@ -104,6 +108,33 @@ function rangeStartDate(range: TimeRange): string {
   else if (range === '6m') d.setMonth(d.getMonth() - 6);
   else d.setFullYear(d.getFullYear() - 1);
   return d.toISOString().split('T')[0];
+}
+
+
+// ── Exit classification ───────────────────────────────────────────────────
+function classifyExit(
+  pnl: number,
+  creditReceived: number,
+  holdDays: number,
+  dteAtClose: number,
+  dteAtEntry: number,
+): ExitType {
+  const pnlPct = creditReceived !== 0 ? (pnl / Math.abs(creditReceived)) * 100 : 0;
+  const pctOfDteUsed = dteAtEntry > 0 ? holdDays / dteAtEntry : 0;
+
+  if (pnl > 0) {
+    // Winning trade — how did they exit?
+    if (pnlPct >= 40 && pnlPct <= 65) return 'TARGET_HIT';        // clean 50% target exit
+    if (pnlPct > 65 && pctOfDteUsed >= 0.8) return 'HELD_TO_EXPIRY'; // held too long even though it worked
+    if (pnlPct > 0 && holdDays <= 3) return 'EARLY_WIN';           // closed very fast for a small win
+    return 'TARGET_HIT';
+  } else {
+    // Losing trade — what kind of loss?
+    if (holdDays <= 2) return 'FAST_CUT';                          // cut within 1-2 days — quick defensive exit
+    if (dteAtClose <= 21 && dteAtClose >= 0) return 'TIME_STOP';   // hit 21-DTE rule
+    if (pnlPct < -150) return 'MAX_LOSS';                          // held way too long, loss > 1.5x credit
+    return 'FAST_CUT';                                              // default loss categorization
+  }
 }
 
 async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[]> {
@@ -184,10 +215,26 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     const outcome: Outcome = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'SCRATCH';
     // Entry time metadata — use the earliest open leg timestamp
     const earliestOpen = pairs.map((p: any) => p.openTx['executed-at']).sort()[0] ?? '';
-    const openDt = earliestOpen ? new Date(earliestOpen) : null;
-    const openTime = openDt ? `${String(openDt.getHours()).padStart(2,'0')}:${String(openDt.getMinutes()).padStart(2,'0')}` : '';
-    const openDow  = openDt ? openDt.getDay() : -1;
-    trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, openDate: openDay, closeDate, openTime, openDow, expiry, holdDays, strikes, creditReceived, closePrice, pnl, pnlPct, outcome, quantity: strategy === 'IC' ? Math.min(putPairs.length, callPairs.length) : Math.max(putPairs.length, callPairs.length, 1), fees: totalFees });
+    let openTime = '';
+    let openDow  = -1;
+    if (earliestOpen) {
+      // Parse as ET — market hours are always Eastern regardless of user's local timezone
+      try {
+        const etStr = new Date(earliestOpen).toLocaleString('en-US', { timeZone: 'America/New_York' });
+        const etDt  = new Date(etStr);
+        openTime = `${String(etDt.getHours()).padStart(2,'0')}:${String(etDt.getMinutes()).padStart(2,'0')}`;
+        openDow  = etDt.getDay();
+      } catch {
+        const fallback = new Date(earliestOpen);
+        openTime = `${String(fallback.getHours()).padStart(2,'0')}:${String(fallback.getMinutes()).padStart(2,'0')}`;
+        openDow  = fallback.getDay();
+      }
+    }
+    // DTE calculations
+    const dteAtClose = Math.max(0, Math.round((new Date(expiry).getTime() - new Date(closeDate).getTime()) / 86400000));
+    const dteAtEntry = holdDays + dteAtClose;
+    const exitType   = classifyExit(pnl, creditReceived, holdDays, dteAtClose, dteAtEntry);
+    trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, openDate: openDay, closeDate, openTime, openDow, expiry, holdDays, dteAtClose, dteAtEntry, exitType, strikes, creditReceived, closePrice, pnl, pnlPct, outcome, quantity: strategy === 'IC' ? Math.min(putPairs.length, callPairs.length) : Math.max(putPairs.length, callPairs.length, 1), fees: totalFees });
   }
   trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
   return trades;
@@ -315,7 +362,33 @@ ${byHold.join('\n')}
 BEHAVIORAL FLAGS:
 Potential revenge trades (loss followed by another entry within 2 days that also lost): ${revengeTrades}
 
-Provide honest coaching. Cover: what's working, what's clearly not working, the most damaging pattern you see, specific execution mistakes visible in the data, and 3 concrete things to change immediately. Start with the most important finding.`;
+EXIT TYPE BREAKDOWN:
+${(() => {
+  const exitLabels: Record<string, string> = {
+    TARGET_HIT:     'Target hit (40–65% profit)',
+    FAST_CUT:       'Fast cut (exit ≤2 days, loss)',
+    TIME_STOP:      'Time stop (closed at ≤21 DTE)',
+    MAX_LOSS:       'Max loss (held too long, >150% loss)',
+    HELD_TO_EXPIRY: 'Held to expiry (win but risky)',
+    EARLY_WIN:      'Early win (closed fast, small gain)',
+  };
+  const types = ['TARGET_HIT','FAST_CUT','TIME_STOP','MAX_LOSS','HELD_TO_EXPIRY','EARLY_WIN'];
+  return types.map(et => {
+    const g = trades.filter(t => t.exitType === et);
+    if (g.length === 0) return null;
+    const w = g.filter(t => t.outcome === 'WIN').length;
+    const pnl = g.reduce((s, t) => s + t.pnl, 0);
+    const avgH = Math.round(g.reduce((s, t) => s + t.holdDays, 0) / g.length);
+    return `${exitLabels[et]}: ${g.length} trades, ${Math.round(w/g.length*100)}% win, $${pnl.toFixed(0)} total, avg ${avgH}d hold`;
+  }).filter(Boolean).join('\n');
+})()}
+
+LOSS DETAIL (each losing trade with context):
+${trades.filter(t => t.outcome === 'LOSS').map(t =>
+  `${t.symbol} ${t.strategy}: held ${t.holdDays}d, ${t.dteAtClose}DTE remaining at close, loss ${t.pnlPct.toFixed(0)}% of credit [${t.exitType}]`
+).join('\n') || 'No losses in this period'}
+
+Provide honest coaching. Lead with exit behavior analysis first — for each loss, was the exit disciplined or a mistake? Were the fast cuts the right call or panic? Which losses came from holding too long? Then cover: strategy patterns, entry timing issues, and finish with 3 concrete things to change immediately.`;
 }
 
 async function callAIWithHistory(messages: ChatMessage[], system: string): Promise<string> {
@@ -343,6 +416,25 @@ function fmtAge(ms: number): string {
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.round(hrs / 24)}d ago`;
 }
+function exitTypeColor(e: ExitType) {
+  if (e === 'TARGET_HIT')     return 'text-emerald-400 border-emerald-700 bg-emerald-500/8';
+  if (e === 'FAST_CUT')       return 'text-blue-400 border-blue-700 bg-blue-500/8';
+  if (e === 'TIME_STOP')      return 'text-yellow-400 border-yellow-700 bg-yellow-500/8';
+  if (e === 'MAX_LOSS')       return 'text-red-400 border-red-700 bg-red-500/8';
+  if (e === 'HELD_TO_EXPIRY') return 'text-orange-400 border-orange-700 bg-orange-500/8';
+  if (e === 'EARLY_WIN')      return 'text-purple-400 border-purple-700 bg-purple-500/8';
+  return 'text-slate-400 border-slate-700';
+}
+function exitTypeLabel(e: ExitType) {
+  if (e === 'TARGET_HIT')     return 'Target Hit';
+  if (e === 'FAST_CUT')       return 'Fast Cut';
+  if (e === 'TIME_STOP')      return 'Time Stop';
+  if (e === 'MAX_LOSS')       return 'Max Loss';
+  if (e === 'HELD_TO_EXPIRY') return 'Held to Expiry';
+  if (e === 'EARLY_WIN')      return 'Early Win';
+  return 'Unknown';
+}
+
 function outcomeColor(o: Outcome) {
   if (o === 'WIN')     return 'text-emerald-400 border-emerald-600 bg-emerald-500/10';
   if (o === 'LOSS')    return 'text-red-400 border-red-600 bg-red-500/10';
@@ -528,6 +620,7 @@ export default function TradeLogPage() {
 
   const [filterStrategy, setFilterStrategy] = useState('ALL');
   const [filterOutcome,  setFilterOutcome]  = useState('ALL');
+  const [filterExitType, setFilterExitType] = useState('ALL');
   const [filterSymbol,   setFilterSymbol]   = useState('');
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDir,   setSortDir]   = useState<SortDir>('desc');
@@ -559,6 +652,7 @@ export default function TradeLogPage() {
   const filtered = trades.filter(t => {
     if (filterStrategy !== 'ALL' && t.strategy !== filterStrategy) return false;
     if (filterOutcome  !== 'ALL' && t.outcome   !== filterOutcome)  return false;
+    if (filterExitType !== 'ALL' && t.exitType !== filterExitType) return false;
     if (filterSymbol && !t.symbol.toLowerCase().includes(filterSymbol.toLowerCase())) return false;
     return true;
   });
@@ -652,6 +746,16 @@ export default function TradeLogPage() {
               <option value="ALL">All Outcomes</option>
               <option value="WIN">Wins</option><option value="LOSS">Losses</option><option value="SCRATCH">Scratches</option>
             </select>
+            <select value={filterExitType} onChange={e => setFilterExitType(e.target.value)}
+              className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded`}>
+              <option value="ALL">All Exit Types</option>
+              <option value="TARGET_HIT">Target Hit</option>
+              <option value="FAST_CUT">Fast Cut</option>
+              <option value="TIME_STOP">Time Stop</option>
+              <option value="MAX_LOSS">Max Loss</option>
+              <option value="HELD_TO_EXPIRY">Held to Expiry</option>
+              <option value="EARLY_WIN">Early Win</option>
+            </select>
             <input value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}
               placeholder="Filter symbol..."
               className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded w-28`} />
@@ -714,6 +818,8 @@ export default function TradeLogPage() {
                       { label: 'Close Cost', field: null },
                       { label: 'P&L $',      field: 'pnl'       as SortField },
                       { label: 'P&L %',      field: 'pnlPct'    as SortField },
+                      { label: 'DTE Left',   field: null },
+                      { label: 'Exit Type',  field: null },
                       { label: 'Outcome',    field: null },
                     ].map(col => (
                       <th key={col.label} className={`px-3 py-2.5 text-left ${thCol}`}
@@ -737,6 +843,8 @@ export default function TradeLogPage() {
                       <td className="px-3 py-2.5 text-red-400/80" style={{ fontFamily: "'DM Mono', monospace" }}>${trade.closePrice.toFixed(2)}</td>
                       <td className={`px-3 py-2.5 font-bold ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}</td>
                       <td className={`px-3 py-2.5 font-bold ${trade.pnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.pnlPct >= 0 ? '+' : ''}{trade.pnlPct.toFixed(1)}%</td>
+                      <td className={`px-3 py-2.5 text-center ${th.textFaint} text-[10px]`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.dteAtClose}d</td>
+                      <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${exitTypeColor(trade.exitType)}`}>{exitTypeLabel(trade.exitType)}</span></td>
                       <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${outcomeColor(trade.outcome)}`}>{trade.outcome}</span></td>
                     </tr>
                   ))}
