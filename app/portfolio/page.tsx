@@ -1387,13 +1387,36 @@ async function loadPositions(): Promise<Position[]> {
 // ── Recommendation Engine ──────────────────────────────────────────────────
 interface Recommendation { action: ActionType; detail: string; }
 
+// Returns true when this was intentionally entered as a short-dated trade
+function isShortDateEntry(pos: Position): boolean {
+  return pos.entryDte <= 21;
+}
+
 function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
   const pnlPct = pos.pnl != null && pos.creditReceived !== 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
   const targetPct = pos.profitTarget * 100;
   const trendAgainst = trend && ((pos.strategy === 'BPS' && trend.trend === 'downtrend') || (pos.strategy === 'BCS' && trend.trend === 'uptrend'));
   const trendAligns = trend && ((pos.strategy === 'BPS' && trend.trend === 'uptrend') || (pos.strategy === 'BCS' && trend.trend === 'downtrend') || (pos.strategy === 'IC' && trend.trend === 'sideways'));
+  const shortDate = isShortDateEntry(pos);
+
+  // needsClose only fires for standard entries (entryDte > 21) — short-dated entries skip this
   if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
   if (pos.needsClose && pnlPct < 0)  return { action: 'CUT_LOSSES', detail: `${pos.dte} DTE — close to prevent further loss` };
+
+  // Short-dated entry: maximize profit, exit fast — urgency scales with DTE
+  if (shortDate) {
+    if (pos.hitTarget) return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target hit — take it, no time to wait` };
+    if (pnlPct >= 30 && pos.dte <= 7)  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit at ${pos.dte} DTE — take profit now, gamma risk rising` };
+    if (pnlPct >= 40)                  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — solid capture for short-dated trade` };
+    if (!pos.hasGtc)                   return { action: 'PLACE_GTC', detail: 'Short-dated trade — place GTC immediately' };
+    if (pnlPct < -25 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend — exit, no time to recover` };
+    if (pnlPct < -25)                  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% on short-dated trade — cut losses` };
+    if (pos.dte <= 3)                  return { action: 'TAKE_PROFIT', detail: `${pos.dte} DTE — expiry imminent, close to avoid pin/assignment risk` };
+    if (trendAgainst)                  return { action: 'MANAGE', detail: `Trend against position with only ${pos.dte} DTE — watch closely` };
+    return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE, short-dated, let theta work` };
+  }
+
+  // Standard entry
   if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
   if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
   if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + trend confirms — exit` };
@@ -1407,6 +1430,8 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
 // Separate function so getRecommendation stays clean — called in PositionCard render
 function getExtendSignal(pos: Position): string | null {
   if (!pos.hasGtc) return null;
+  // Never suggest extending on short-dated entries — the goal is fast profit capture, not riding theta longer
+  if (isShortDateEntry(pos)) return null;
   const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
   // Only suggest extension when: profit > 50%, DTE > 25, IVR >= 35, buffer > 5%
   if (
@@ -1429,7 +1454,7 @@ RESPOND IN PLAIN CONVERSATIONAL PROSE. No JSON. No bullet headers. No structured
 
 You know the methodology deeply:
 - BPS for bullish/neutral, BCS for bearish, IC for range-bound
-- 50% profit target with GTC at entry, hard close at 21 DTE
+- 50% profit target with GTC at entry, hard close at 21 DTE (only for standard entries > 21 DTE; short-dated entries use lower take-profit thresholds and fast exit before expiry)
 - IVR >= 30 for edge, buffer % to short strike is critical, gamma accelerates near expiry
 - When to deviate: high IV exceptions, broken thesis, early close to protect profits
 
@@ -1440,7 +1465,7 @@ const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfol
 CORE METHODOLOGY (know it deeply, apply it intelligently):
 - Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound
 - Entry rules (as guidelines): IVR ≥ 30, DTE 30-45, credit ≥ 1/3 spread width, OI ≥ 500, bid-ask ≤ $0.10
-- Target exits: 50% profit (place GTC at entry), hard close at 21 DTE regardless of P&L
+- Target exits: 50% profit (place GTC at entry), hard close at 21 DTE regardless of P&L — BUT ONLY when entry DTE was > 21. Short-dated entries (entered at ≤ 21 DTE) follow a different framework: maximize profit quickly, lower the take-profit threshold to 30-40%, tighten the loss tolerance, and exit before expiry to avoid pin/assignment risk. The 21 DTE hard-close rule does NOT apply to intentional short-dated trades.
 - Short strike deltas: BPS -0.20 to -0.30, BCS +0.20 to +0.30, IC ±0.16 to ±0.20
 - IC requires sideways price action 2+ weeks, no higher highs/lower lows
 
@@ -1527,7 +1552,8 @@ Suggested strategy: ${trend?.strategy ?? 'unknown'}
 Reason: ${trend?.reason ?? 'none'}
 
 Flags: ${[
-  pos.needsClose ? '⚠ AT 21 DTE — must close or roll' : '',
+  pos.needsClose ? '⚠ AT 21 DTE — must close or roll (entered at standard DTE)' : '',
+  pos.entryDte <= 21 ? `ℹ SHORT-DATED ENTRY — entered at ${pos.entryDte} DTE, now ${pos.dte} DTE. Goal is fast profit capture, NOT the standard 50%/21-DTE framework. Evaluate for early exit at 30-40% or on any sign of adverse movement.` : '',
   pos.hitTarget ? '✓ Profit target hit' : '',
   !pos.hasGtc ? '⚠ No GTC order' : '',
   pos.buffer != null && pos.buffer < 2 ? `⚠ CRITICAL buffer ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE — near breach` : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? `⚠ Tight buffer ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? `ℹ Buffer ${pos.buffer.toFixed(1)}% with ${pos.dte} DTE — watch closely` : '',
@@ -1662,7 +1688,8 @@ GTC working: ${pos.hasGtc ? 'Yes' : 'No'}
 Earnings: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None within expiry'}
 
 Flags: ${[
-    pos.needsClose ? 'AT 21 DTE' : '',
+    pos.needsClose ? 'AT 21 DTE (standard entry — must close/roll)' : '',
+    pos.entryDte <= 21 ? `SHORT-DATED ENTRY (entered at ${pos.entryDte} DTE, now ${pos.dte} DTE — fast profit capture goal, lower thresholds apply)` : '',
     pos.hitTarget ? 'TARGET HIT' : '',
     pos.buffer != null && pos.buffer < 2 ? `CRITICAL BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? `TIGHT BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? `WATCH BUFFER ${pos.buffer.toFixed(1)}% at ${pos.dte} DTE` : '',
     pos.earningsDate ? `EARNINGS ${pos.earningsDate}` : '',
@@ -3772,7 +3799,8 @@ GTC profit-target: ${pos.hasGtc ? 'Yes — at $' + (pos.gtcOrderPrice?.toFixed(2
 Stop loss: ${pos.stopLossStatus}${pos.stopLossPrice ? ' @ $' + pos.stopLossPrice.toFixed(2) + '/contract' : ''}
 
 FLAGS: ${[
-  pos.needsClose ? 'AT 21 DTE — closing soon anyway' : '',
+  pos.needsClose ? 'AT 21 DTE — closing soon anyway (standard entry)' : '',
+  pos.entryDte <= 21 ? `SHORT-DATED ENTRY (entered at ${pos.entryDte} DTE, now ${pos.dte} DTE — set tight stop, lower GTC target to 30-40%)` : '',
   pos.buffer != null && pos.buffer < 2 ? 'CRITICAL buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE — near breach' : pos.buffer != null && pos.buffer < 3 && pos.dte > 14 ? 'TIGHT buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE' : pos.buffer != null && pos.buffer < 5 && pos.dte > 30 ? 'WATCH buffer ' + pos.buffer.toFixed(1) + '% at ' + pos.dte + ' DTE' : '',
   pos.earningsDate ? 'EARNINGS ' + pos.earningsDate : '',
   (pos.ivr ?? 0) < 30 ? 'IVR BELOW 30 — edge thin' : '',
@@ -4547,6 +4575,12 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
           <span className="text-xs text-red-400 font-bold tracking-wider">CLOSE NOW — {pos.dte} DTE</span>
         </div>
       )}
+      {!pos.needsClose && isShortDateEntry(pos) && (
+        <div className="bg-purple-500/10 border-b border-purple-500/30 px-4 py-1.5 flex items-center gap-2">
+          <span className="text-purple-400 text-xs">⚡</span>
+          <span className="text-xs text-purple-300 font-bold tracking-wider">SHORT-DATED ENTRY — {pos.entryDte}d at entry · {pos.dte} DTE left · maximize profit fast</span>
+        </div>
+      )}
       {pos.hitTarget && !pos.needsClose && (
         <div className="bg-emerald-500/10 border-b border-emerald-500/40 px-4 py-1.5 flex items-center gap-2">
           <span className="text-emerald-400 text-xs">✓</span>
@@ -4568,8 +4602,8 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
         </button>
 
         {/* Data columns */}
-        <div className="overflow-x-auto flex-1">
-          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1100px' }}>
+        <div className="overflow-x-auto flex-1" style={{ minWidth: 0 }}>
+          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1464px' }}>
 
             {/* ── POSITION ───────────────────────────── */}
             <div className="border-t-2 border-slate-600/60 pt-1">
@@ -5277,7 +5311,7 @@ export default function PortfolioPage() {
         <>
           {/* <SummaryBar positions={positions} th={th} /> */}
           <div className="overflow-x-auto">
-            <div className="p-6 space-y-8" style={{ minWidth: '1200px' }}>
+            <div className="p-6 space-y-8" style={{ minWidth: '1600px' }}>
 
               {needsClose.length > 0 && (
                 <PositionSection
