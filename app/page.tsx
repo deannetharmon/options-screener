@@ -2534,11 +2534,12 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                   setShowChart(true);
                   if (!sparkData) {
                     setSparkLoading(true);
-                    fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${result.symbol}?interval=1d&range=30d`)
+                    fetch(`/api/chart?symbol=${encodeURIComponent(result.symbol)}`)
                       .then(r => r.json())
                       .then(d => {
-                        const closes = d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
-                        setSparkData(closes.filter((v: any) => v != null));
+                        const allBars = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null);
+                        const closes = allBars.slice(-30);
+                        setSparkData(closes);
                       })
                       .catch(() => setSparkData([]))
                       .finally(() => setSparkLoading(false));
