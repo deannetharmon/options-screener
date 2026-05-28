@@ -4602,8 +4602,8 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
         </button>
 
         {/* Data columns */}
-        <div className="overflow-x-auto flex-1">
-          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1100px' }}>
+        <div className="overflow-x-auto flex-1" style={{ minWidth: 0 }}>
+          <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1464px' }}>
 
             {/* ── POSITION ───────────────────────────── */}
             <div className="border-t-2 border-slate-600/60 pt-1">
@@ -5311,7 +5311,7 @@ export default function PortfolioPage() {
         <>
           {/* <SummaryBar positions={positions} th={th} /> */}
           <div className="overflow-x-auto">
-            <div className="p-6 space-y-8" style={{ minWidth: '1200px' }}>
+            <div className="p-6 space-y-8" style={{ minWidth: '1600px' }}>
 
               {needsClose.length > 0 && (
                 <PositionSection
