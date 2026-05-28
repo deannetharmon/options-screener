@@ -626,6 +626,95 @@ function AIChatPanel({ trades, range, th, onClose }: {
   );
 }
 
+
+// ── Multi-Select Filter ───────────────────────────────────────────────────
+function MultiSelect({ label, options, selected, onChange, th }: {
+  label: string;
+  options: { value: string; label: string }[];
+  selected: string[];  // empty = all selected
+  onChange: (vals: string[]) => void;
+  th: typeof THEMES[Theme];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const allSelected = selected.length === 0;
+  const toggle = (val: string) => {
+    if (val === 'ALL') { onChange([]); return; }
+    const next = selected.includes(val)
+      ? selected.filter(v => v !== val)
+      : [...selected, val];
+    onChange(next.length === options.length ? [] : next);
+  };
+
+  const summaryLabel = allSelected
+    ? `All ${label}`
+    : selected.length === 1
+    ? options.find(o => o.value === selected[0])?.label ?? selected[0]
+    : `${selected.length} ${label}`;
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        className={`text-[10px] px-2.5 py-1.5 border rounded flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+          !allSelected
+            ? 'border-blue-500 text-blue-400 bg-blue-500/8'
+            : `${th.inputBorder} ${th.textFaint} hover:border-blue-500 hover:text-blue-300`
+        }`}>
+        {summaryLabel}
+        <span className="text-[8px] opacity-50">▾</span>
+      </button>
+
+      {open && (
+        <div className={`absolute top-full mt-1 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl py-1.5 min-w-[160px]`}
+          onClick={e => e.stopPropagation()}>
+          {/* All */}
+          <button
+            onClick={() => { onChange([]); setOpen(false); }}
+            className={`w-full flex items-center gap-2 px-3 py-1.5 text-[10px] hover:bg-white/5 transition-colors ${allSelected ? th.text : th.textFaint}`}>
+            <span className={`w-3 h-3 border rounded-sm flex items-center justify-center shrink-0 ${allSelected ? 'border-blue-500 bg-blue-500' : th.border}`}>
+              {allSelected && <span className="text-white text-[8px]">✓</span>}
+            </span>
+            All {label}
+          </button>
+          <div className={`my-1 border-t ${th.borderLight}`} />
+          {options.map(opt => {
+            const checked = !allSelected && selected.includes(opt.value);
+            return (
+              <button key={opt.value}
+                onClick={() => toggle(opt.value)}
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-[10px] hover:bg-white/5 transition-colors ${checked ? th.text : th.textFaint}`}>
+                <span className={`w-3 h-3 border rounded-sm flex items-center justify-center shrink-0 ${checked ? 'border-blue-500 bg-blue-500' : th.border}`}>
+                  {checked && <span className="text-white text-[8px]">✓</span>}
+                </span>
+                {opt.label}
+              </button>
+            );
+          })}
+          {!allSelected && (
+            <>
+              <div className={`my-1 border-t ${th.borderLight}`} />
+              <button onClick={() => { onChange([]); setOpen(false); }}
+                className={`w-full px-3 py-1.5 text-[9px] ${th.textFaint} hover:text-red-400 transition-colors text-left`}>
+                Clear filter
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 export default function TradeLogPage() {
   const [theme, setTheme]       = useState<Theme>(getSavedTheme);
@@ -639,10 +728,21 @@ export default function TradeLogPage() {
   const [isNewDevice, setIsNewDevice] = useState(false);
   const [showAI, setShowAI]     = useState(false);
 
-  const [filterStrategy, setFilterStrategy] = useState('ALL');
-  const [filterOutcome,  setFilterOutcome]  = useState('ALL');
-  const [filterExitType, setFilterExitType] = useState('ALL');
-  const [filterSymbol,   setFilterSymbol]   = useState('');
+  const [filterStrategy, setFilterStrategy] = useState<string[]>(() => {
+    try { const s = localStorage.getItem('hunter-tl-f-strategy'); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [filterOutcome,  setFilterOutcome]  = useState<string[]>(() => {
+    try { const s = localStorage.getItem('hunter-tl-f-outcome');  return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [filterExitType, setFilterExitType] = useState<string[]>(() => {
+    try { const s = localStorage.getItem('hunter-tl-f-exit');     return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [filterSymbol,   setFilterSymbol]   = useState(() => {
+    try { return localStorage.getItem('hunter-tl-f-symbol') ?? ''; } catch { return ''; }
+  });
+  const saveFilter = (key: string, val: string[] | string) => {
+    try { localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val)); } catch {}
+  };
   const [showExcluded,   setShowExcluded]   = useState(false);
   const [excludedIds,    setExcludedIds]    = useState<Set<string>>(() => {
     try { const s = localStorage.getItem('hunter-tradelog-excluded'); return s ? new Set<string>(JSON.parse(s)) : new Set<string>(); } catch { return new Set<string>(); }
@@ -684,9 +784,9 @@ export default function TradeLogPage() {
 
   const filtered = trades.filter(t => {
     if (!showExcluded && excludedIds.has(t.id)) return false;
-    if (filterStrategy !== 'ALL' && t.strategy !== filterStrategy) return false;
-    if (filterOutcome  !== 'ALL' && t.outcome   !== filterOutcome)  return false;
-    if (filterExitType !== 'ALL' && t.exitType !== filterExitType) return false;
+    if (filterStrategy.length > 0 && !filterStrategy.includes(t.strategy)) return false;
+    if (filterOutcome.length  > 0 && !filterOutcome.includes(t.outcome))   return false;
+    if (filterExitType.length > 0 && !filterExitType.includes(t.exitType)) return false;
     if (filterSymbol && !t.symbol.toLowerCase().includes(filterSymbol.toLowerCase())) return false;
     return true;
   });
@@ -771,28 +871,45 @@ export default function TradeLogPage() {
                 </button>
               ))}
             </div>
-            <select value={filterStrategy} onChange={e => setFilterStrategy(e.target.value)}
-              className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded`}>
-              <option value="ALL">All Strategies</option>
-              <option value="BPS">BPS</option><option value="BCS">BCS</option>
-              <option value="IC">IC</option><option value="OTHER">Other</option>
-            </select>
-            <select value={filterOutcome} onChange={e => setFilterOutcome(e.target.value)}
-              className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded`}>
-              <option value="ALL">All Outcomes</option>
-              <option value="WIN">Wins</option><option value="LOSS">Losses</option><option value="SCRATCH">Scratches</option>
-            </select>
-            <select value={filterExitType} onChange={e => setFilterExitType(e.target.value)}
-              className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded`}>
-              <option value="ALL">All Exit Types</option>
-              <option value="TARGET_HIT">Target Hit</option>
-              <option value="FAST_CUT">Fast Cut</option>
-              <option value="TIME_STOP">Time Stop</option>
-              <option value="MAX_LOSS">Max Loss</option>
-              <option value="HELD_TO_EXPIRY">Held to Expiry</option>
-              <option value="EARLY_WIN">Early Win</option>
-            </select>
-            <input value={filterSymbol} onChange={e => setFilterSymbol(e.target.value)}
+            <MultiSelect
+              label="Strategies"
+              options={[
+                { value: 'BPS', label: 'BPS' },
+                { value: 'BCS', label: 'BCS' },
+                { value: 'IC',  label: 'IC' },
+                { value: 'OTHER', label: 'Other' },
+              ]}
+              selected={filterStrategy}
+              onChange={v => { setFilterStrategy(v); saveFilter('hunter-tl-f-strategy', v); }}
+              th={th}
+            />
+            <MultiSelect
+              label="Outcomes"
+              options={[
+                { value: 'WIN',     label: 'Win' },
+                { value: 'LOSS',    label: 'Loss' },
+                { value: 'SCRATCH', label: 'Scratch' },
+              ]}
+              selected={filterOutcome}
+              onChange={v => { setFilterOutcome(v); saveFilter('hunter-tl-f-outcome', v); }}
+              th={th}
+            />
+            <MultiSelect
+              label="Exit Types"
+              options={[
+                { value: 'TARGET_HIT',     label: 'Target Hit' },
+                { value: 'FAST_CUT',       label: 'Fast Cut' },
+                { value: 'TIME_STOP',      label: 'Time Stop' },
+                { value: 'MAX_LOSS',       label: 'Max Loss' },
+                { value: 'HELD_TO_EXPIRY', label: 'Held to Expiry' },
+                { value: 'EARLY_WIN',      label: 'Early Win' },
+              ]}
+              selected={filterExitType}
+              onChange={v => { setFilterExitType(v); saveFilter('hunter-tl-f-exit', v); }}
+              th={th}
+            />
+            <input value={filterSymbol}
+              onChange={e => { setFilterSymbol(e.target.value); saveFilter('hunter-tl-f-symbol', e.target.value); }}
               placeholder="Filter symbol..."
               className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} ${th.text} rounded w-28`} />
           </div>
