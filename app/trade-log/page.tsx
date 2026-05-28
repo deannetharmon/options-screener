@@ -690,9 +690,8 @@ export default function TradeLogPage() {
     if (filterSymbol && !t.symbol.toLowerCase().includes(filterSymbol.toLowerCase())) return false;
     return true;
   });
-  
   const reportingTrades = filtered.filter(t => !excludedIds.has(t.id));
-  
+
   const sorted = [...filtered].sort((a, b) => {
     let cmp = 0;
     switch (sortField) {
@@ -730,7 +729,7 @@ export default function TradeLogPage() {
   return (
     <div className={`min-h-screen ${th.bg} pb-24 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
 
-      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
+      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
         <div className="flex items-center gap-6">
           <div>
             <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
