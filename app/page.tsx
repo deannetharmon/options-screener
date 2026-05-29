@@ -1,7 +1,7 @@
 // path: app/page.tsx
 
 'use client';
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { createPortal } from 'react-dom';
 
@@ -2406,8 +2406,9 @@ function TradeModal({ result, th, onClose }: {
 
 
 // ── Stock Research Component ──────────────────────────────────────────────
-async function fetchStockResearch(symbol: string, riskContext?: string): Promise<string> {
-  // Step 1: fetch recent news headlines from Yahoo Finance
+interface ChatMessage { role: 'user' | 'assistant'; content: string; }
+
+async function fetchStockResearch(symbol: string, tradeContext: string, riskContext?: string): Promise<string> {
   let headlines = '';
   try {
     const newsRes = await fetch(
@@ -2415,35 +2416,31 @@ async function fetchStockResearch(symbol: string, riskContext?: string): Promise
       { cache: 'no-store' }
     );
     const newsData = await newsRes.json();
-    const articles = newsData?.news ?? [];
-    headlines = articles
-      .slice(0, 6)
-      .map((a: any) => `- ${a.title}`)
-      .join('\n');
+    headlines = (newsData?.news ?? []).slice(0, 6).map((a: any) => `- ${a.title}`).join('\n');
   } catch { headlines = 'News unavailable'; }
 
-  // Step 2: send to GPT-4o for trading-focused summary
-  const prompt = `You are a professional options trader analyzing ${symbol} before placing a trade.
+  const prompt = `You are a professional options trader analyzing ${symbol}.
 
-Recent news headlines:
+Trade setup: ${tradeContext}
+Recent news:
 ${headlines}
+${riskContext ? `\nPortfolio risk context: ${riskContext}` : ''}
 
-Give a concise 4-sentence trading analysis covering:
+Give a specific 4-sentence analysis:
 1. What is driving price action right now
-2. Any near-term risks (earnings, macro, sector headwinds)
-3. Analyst/market sentiment
-4. Whether conditions currently favor selling premium (credit spreads) on this stock
-${riskContext ? `\n5. Given this portfolio risk context, is adding this trade advisable: ${riskContext}` : ''}
+2. Near-term risks (earnings, macro, sector headwinds) that affect THIS specific trade setup
+3. Whether the technical setup (strikes, DTE, strategy) makes sense given current conditions
+4. Your overall assessment: take the trade, wait, or avoid — and why
 
-Be direct and specific. No disclaimers. If the news is thin, say so.`;
+Be direct. Reference the specific strikes and strategy. No disclaimers.`;
 
   const res = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'gpt-4o',
-      max_tokens: 400,
-      system: 'You are a concise, direct options trading analyst. No hedging. No disclaimers. Plain prose only.',
+      max_tokens: 500,
+      system: 'You are a concise, direct options trading analyst. Reference specific trade details. No hedging. No disclaimers.',
       messages: [{ role: 'user', content: prompt }],
     }),
   });
@@ -2452,21 +2449,47 @@ Be direct and specific. No disclaimers. If the news is thin, say so.`;
   return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
 }
 
-function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof THEMES[Theme]; riskContext?: string }) {
-  const [open, setOpen]         = useState(false);
-  const [loading, setLoading]   = useState(false);
-  const [result, setResult]     = useState<string | null>(null);
-  const [error, setError]       = useState('');
+async function sendChatMessage(messages: ChatMessage[], symbol: string, tradeContext: string): Promise<string> {
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      max_tokens: 500,
+      system: `You are a professional options trading analyst. The trader is analyzing ${symbol}. Trade context: ${tradeContext}. Be direct, specific, and reference the actual trade setup in your answers.`,
+      messages: messages.map(m => ({ role: m.role, content: m.content })),
+    }),
+  });
+  if (!res.ok) throw new Error(`Chat failed (${res.status})`);
+  const data = await res.json();
+  return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+}
 
-  const handleClick = async (e: React.MouseEvent) => {
+function StockResearch({ symbol, th, riskContext, tradeContext }: {
+  symbol: string; th: typeof THEMES[Theme]; riskContext?: string; tradeContext?: string;
+}) {
+  const [open, setOpen]           = useState(false);
+  const [loading, setLoading]     = useState(false);
+  const [initialResult, setInitialResult] = useState<string | null>(null);
+  const [messages, setMessages]   = useState<ChatMessage[]>([]);
+  const [input, setInput]         = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [error, setError]         = useState('');
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const context = tradeContext ?? `${symbol} options analysis`;
+
+  const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (open) { setOpen(false); return; }
     setOpen(true);
-    if (result) return; // already fetched — just re-open
+    if (initialResult) return;
     setLoading(true); setError('');
     try {
-      const text = await fetchStockResearch(symbol, riskContext);
-      setResult(text);
+      const text = await fetchStockResearch(symbol, context, riskContext);
+      setInitialResult(text);
+      setMessages([{ role: 'assistant', content: text }]);
     } catch (err: any) {
       setError(err.message ?? 'Research failed');
     } finally {
@@ -2474,37 +2497,93 @@ function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof
     }
   };
 
+  const handleSend = async () => {
+    const q = input.trim(); if (!q || chatLoading) return;
+    const newMessages: ChatMessage[] = [...messages, { role: 'user', content: q }];
+    setMessages(newMessages);
+    setInput('');
+    setChatLoading(true);
+    try {
+      const reply = await sendChatMessage(newMessages, symbol, context);
+      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+    } catch (err: any) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+    } finally {
+      setChatLoading(false);
+      setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  };
+
   return (
     <div onClick={e => e.stopPropagation()}>
-      <button
-        onClick={handleClick}
+      <button onClick={handleOpen}
         className={`inline-flex items-center gap-1 text-[9px] px-2 py-0.5 border rounded transition-colors ${
-          open
-            ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10'
-            : `${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400`
+          open ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10'
+               : `${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400`
         }`}>
         <span className="text-[8px]">◎</span> Research
       </button>
 
       {open && (
-        <div className={`mt-2 p-3 rounded-lg border ${th.borderLight} bg-indigo-500/5 text-[11px] leading-relaxed ${th.textMuted}`}>
-          {loading && (
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
-              <span className={`text-[10px] ${th.textFaint}`}>Researching {symbol}...</span>
-            </div>
-          )}
-          {error && <p className="text-red-400 text-[10px]">{error}</p>}
-          {result && (
-            <>
-              <p className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest mb-1.5">◎ {symbol} Research</p>
-              <p className="whitespace-pre-wrap">{result}</p>
-              <button onClick={() => { setResult(null); setOpen(false); }}
-                className={`mt-2 text-[9px] ${th.textFaint} hover:text-red-400 transition-colors`}>
-                ✕ Dismiss
-              </button>
-            </>
-          )}
+        <div className={`mt-2 rounded-xl border border-indigo-500/30 bg-indigo-500/5 overflow-hidden`}
+             style={{ width: '520px', maxWidth: '90vw' }}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-3 py-2 border-b border-indigo-500/20">
+            <p className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest">◎ {symbol} — AI Research</p>
+            <button onClick={() => setOpen(false)} className={`text-[10px] ${th.textFaint} hover:text-red-400`}>✕</button>
+          </div>
+          {/* Chat area */}
+          <div className="px-3 py-2 space-y-3 max-h-64 overflow-y-auto">
+            {loading && (
+              <div className="flex items-center gap-2 py-2">
+                <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                <span className={`text-[10px] ${th.textFaint}`}>Analyzing {symbol} trade setup...</span>
+              </div>
+            )}
+            {error && <p className="text-red-400 text-[10px]">{error}</p>}
+            {messages.map((m, i) => (
+              <div key={i} className={`flex gap-2 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {m.role === 'assistant' && (
+                  <span className="text-[8px] text-indigo-400 mt-1 shrink-0">◎</span>
+                )}
+                <div className={`text-[11px] leading-relaxed rounded-lg px-2.5 py-1.5 max-w-[90%] ${
+                  m.role === 'user'
+                    ? 'bg-indigo-500/15 text-indigo-200 border border-indigo-500/30'
+                    : `${th.card} ${th.textMuted} border ${th.borderLight}`
+                }`}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {chatLoading && (
+              <div className="flex gap-2">
+                <span className="text-[8px] text-indigo-400 mt-1">◎</span>
+                <div className={`text-[11px] ${th.card} border ${th.borderLight} rounded-lg px-2.5 py-1.5`}>
+                  <div className="flex gap-1">
+                    <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={chatBottomRef} />
+          </div>
+          {/* Input */}
+          <div className={`flex gap-2 px-3 py-2 border-t border-indigo-500/20`}>
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              placeholder="Ask about this trade..."
+              className={`flex-1 text-[11px] ${th.input} border ${th.inputBorder} rounded-lg px-2.5 py-1.5 ${th.text} focus:outline-none focus:border-indigo-500 placeholder-slate-500`}
+            />
+            <button onClick={handleSend} disabled={!input.trim() || chatLoading || loading}
+              className="text-[10px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors disabled:opacity-40">
+              Send
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -2554,6 +2633,21 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   // Ranking
   const scored = rankConfig ? scoreCandidate(result, rankConfig) : null;
   const light = scored ? trafficLight(scored.score, rankConfig!) : null;
+  // Compute alternate strategy score for the + IC / + BPS badge
+  const altStrategyScore = useMemo(() => {
+    if (!rankConfig || !cachedEntry) return null;
+    const mainStrat = result.strategy;
+    const altStrat: 'IC' | 'BPS' | 'BCS' | null =
+      (mainStrat === 'BPS' || mainStrat === 'BCS') ? 'IC' : null;
+    if (!altStrat) return null;
+    try {
+      const altResult = runChecklist(cachedEntry.symbol, altStrat, cachedEntry.metrics, cachedEntry.chainData, cachedEntry.price, rules, cachedEntry.trendResult);
+      const s = scoreCandidate(altResult, rankConfig);
+      if (!s) return null;
+      const l = trafficLight(s.score, rankConfig);
+      return { score: s.score, light: l, qualified: altResult.qualified };
+    } catch { return null; }
+  }, [cachedEntry, rankConfig, rules, result.strategy]);
   const isRankMode = screenMode === 'rank';
   const stratBadge = result.strategy === 'BPS'
     ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500'
@@ -2578,8 +2672,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
     : 'border-l-4 border-l-red-500'
     : strategyAccent(result.strategy);
 
-  const cardBorder = isApproaching ? 'border-yellow-500/50' : th.border;
-  const cardBg = result.qualified ? th.cardQualified : `${th.card} opacity-50`;
+  const cardBorder = isApproaching ? 'border-yellow-500/50' : !result.qualified ? 'border-orange-900/40' : th.border;
+  const cardBg = result.qualified ? th.cardQualified : th.card;
 
   return (
     <div className={`border ${cardBorder} ${scoreBorderL} ${cardBg} rounded-lg cursor-pointer transition-all hover:shadow-md`}
@@ -2590,7 +2684,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
         {/* Col 1: Symbol + price — fixed */}
         <div className="w-16 shrink-0">
           <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
-          {result.price && <p className={`text-[10px] ${th.textFaint}`}>${result.price.toFixed(2)}</p>}
+          {result.price && <p className={`text-[10px] font-bold ${th.textMuted}`}>${result.price.toFixed(2)}</p>}
           {result.isEtf && (
             <p className="text-[8px] text-blue-400/70 tracking-wider leading-tight">
               {result.symbol === 'SPX' || result.symbol === 'XSP' || result.symbol === 'NDX' || result.symbol === 'RUT' ? 'index' : 'etf'}
@@ -2698,7 +2792,12 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               </div>
             )}
           </div>
-          <StockResearch symbol={result.symbol} th={th} riskContext={portfolioRisk && portfolioRisk.level !== 'clear' ? portfolioRisk.recommendation : undefined} />
+          <StockResearch
+            symbol={result.symbol}
+            th={th}
+            riskContext={portfolioRisk && portfolioRisk.level !== 'clear' ? portfolioRisk.recommendation : undefined}
+            tradeContext={c ? `${result.strategy} ${c.shortStrike}/${c.longStrike}${c.strategy === 'IC' ? ` · ${c.shortCallStrike}/${c.longCallStrike}` : ''} exp ${c.expiration} (${c.dte}d) · credit $${(c.totalCredit ?? c.credit).toFixed(2)} · ROC ${c.roc.toFixed(0)}% · POP ${c.pop?.toFixed(0)}% · IVR ${result.ivr?.toFixed(1)}%` : `${result.strategy} on ${result.symbol}`}
+          />
         </div>
         {/* Col 2: Badges — fixed width */}
         <div className="w-52 shrink-0 flex items-center gap-1 flex-wrap">
@@ -2728,9 +2827,15 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               {light.emoji} {scored.score} — {light.label}
             </span>
           )}
-          <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
+          <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge} flex items-center gap-1`}>
+            {result.strategy}{scored && <span className="font-bold text-[9px]">{scored.score}</span>}
+          </span>
           {(result.strategy === 'BPS' || result.strategy === 'BCS') && result.ivr != null && result.ivr >= 30 && (
-            <span className="text-[9px] px-1.5 py-0.5 border border-blue-500/50 text-blue-400/80 rounded shrink-0">+ IC</span>
+            <span className={`text-[9px] px-1.5 py-0.5 border rounded shrink-0 flex items-center gap-1 ${
+              altStrategyScore ? `${altStrategyScore.light.border} ${altStrategyScore.light.bg} ${altStrategyScore.light.color}` : 'border-slate-600 text-slate-400'
+            }`}>
+              + IC{altStrategyScore && <span className="font-bold">{altStrategyScore.score}</span>}
+            </span>
           )}
         </div>
         {/* Col 3: Data fields — fixed widths */}
@@ -4540,6 +4645,7 @@ export default function Home() {
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>HUNTER</span>
             <a href="/portfolio"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
+            <a href="/engine" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">ENGINE</a>
             <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</a>
             <a href="/trade-log"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
             <a href="/performance"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
