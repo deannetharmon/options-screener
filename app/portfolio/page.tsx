@@ -1244,7 +1244,11 @@ async function loadPositions(): Promise<Position[]> {
       const qty = parseFloat(item['quantity'] ?? '1');
       const multiplier = parseFloat(item['multiplier'] ?? '100');
       const avgOpen = parseFloat(item['average-open-price'] ?? '0');
-      const mark = parseFloat(item['mark-price'] ?? '0');
+      // mark-price is only present when include-marks=true returns live data;
+      // fall back to close-price (EOD) if mark is missing or zero
+      const markRaw = parseFloat(item['mark-price'] ?? '0');
+      const closeRaw = parseFloat(item['close-price'] ?? '0');
+      const mark = markRaw !== 0 ? markRaw : closeRaw;
       const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
       plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
     }
@@ -2987,10 +2991,15 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Scroll within the chat container only — never move the page
+    const container = scrollContainerRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
   }, [messages]);
 
   const send = async () => {
@@ -3029,7 +3038,7 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
     <div className={`border-t ${th.border} flex flex-col`} style={{ background: 'rgba(99,102,241,0.03)' }}>
       {/* Message history — skip the first assistant message, it's already shown above */}
       {messages.length > 1 && (
-        <div className="px-4 py-3 space-y-3 max-h-80 overflow-y-auto">
+        <div ref={scrollContainerRef} className="px-4 py-3 space-y-3 max-h-80 overflow-y-auto">
           {messages.slice(1).map((m, i) => (
             <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               {m.role === 'assistant' && (
@@ -4746,24 +4755,38 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   <span className="text-[9px] text-blue-400">%</span>
                 </div>
               ) : (
-                <p className={`text-xs cursor-pointer ac-hover-text transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
-                  style={{ fontFamily: "'DM Mono', monospace" }}
-                  onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}>
-                  ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
-                </p>
+                <div className="cursor-pointer" onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}>
+                  <p className={`text-xs ac-hover-text transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
+                    style={{ fontFamily: "'DM Mono', monospace" }}>
+                    {pos.plOpen != null
+                      ? <>{pos.plOpen >= 0 ? '+' : ''}${pos.plOpen.toFixed(0)} <span className={th.textFaint}>/ ${pos.targetPrice.toFixed(2)}</span></>
+                      : <>${pos.targetPrice.toFixed(2)}</>
+                    }{pos.hitTarget && ' ✓'}
+                  </p>
+                </div>
               )}
             </div>
 
             <div className="border-t-2 border-emerald-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
-              <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
-              </p>
-              {pos.plOpen != null && pos.creditReceived !== 0 && (
-                <p className={`font-normal text-[10px] ${pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                  ({pos.plOpen >= 0 ? '+' : ''}{(pos.plOpen / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
-                </p>
-              )}
+              {(() => {
+                // Prefer pnl (live mid from market-data) over plOpen (EOD marks)
+                const displayPnl = pos.pnl ?? pos.plOpen;
+                const isStale = pos.pnl == null && pos.plOpen != null;
+                if (displayPnl == null) return <p className={`text-xs ${th.textFaint}`}>—</p>;
+                return (
+                  <>
+                    <p className={`text-xs font-bold ${displayPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                      {displayPnl >= 0 ? '+' : ''}${displayPnl.toFixed(0)}{isStale && <span className="text-[8px] opacity-50 ml-0.5">~</span>}
+                    </p>
+                    {pos.creditReceived !== 0 && (
+                      <p className={`font-normal text-[10px] ${displayPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                        ({displayPnl >= 0 ? '+' : ''}{(displayPnl / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             {/* ── GREEKS ─────────────────────────────── */}
