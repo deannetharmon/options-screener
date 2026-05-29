@@ -1041,11 +1041,34 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
   try {
     // Use /orders/live only — it returns working + recent 24h orders.
     // ?status=Open and ?per-page=250 are invalid params that return 400.
-    const requests = await Promise.allSettled([
+    const [liveResult, complexResult] = await Promise.allSettled([
       ttFetch(`/accounts/${accountNumber}/orders/live`, token),
       fetchAllComplexOrders(accountNumber, token),
     ]);
+
+    // Build a map from individual order ID → complex order ID
+    // Orders from /orders/live don't have complex-order-id, but we can look them up
+    // by matching their ID against nested orders in the complex orders response
+    const individualToComplexId: Record<string, string> = {};
+    if (complexResult.status === 'fulfilled') {
+      for (const complexOrder of complexResult.value?.data?.items ?? []) {
+        const complexId = String(complexOrder.id);
+        for (const nestedOrder of complexOrder.orders ?? []) {
+          if (nestedOrder.id) {
+            individualToComplexId[String(nestedOrder.id)] = complexId;
+          }
+        }
+      }
+    }
+
+    const requests = [liveResult, complexResult];
     const rawOrders = requests.flatMap(r => r.status === 'fulfilled' ? collectRawOrders(r.value) : []);
+    // Inject complexOrderId for orders that came from /orders/live
+    rawOrders.forEach(o => {
+      if (!o['complex-order-id'] && individualToComplexId[String(o.id)]) {
+        o['complex-order-id'] = individualToComplexId[String(o.id)];
+      }
+    });
     const seen = new Set<string>();
     return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif, o._parentComplexId)).filter(order => {
       const tif = order.timeInForce.toUpperCase();
