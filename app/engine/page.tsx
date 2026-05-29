@@ -507,6 +507,224 @@ Be specific, direct, no disclaimers.`;
   return d?.content?.find((b: any) => b.type === 'text')?.text ?? '';
 }
 
+
+// ── Market Conditions ─────────────────────────────────────────────────────
+// 2026 FOMC meeting dates (announcement days)
+const FOMC_DATES_2026 = [
+  '2026-01-29','2026-03-19','2026-05-07','2026-06-18',
+  '2026-07-30','2026-09-17','2026-11-05','2026-12-17',
+];
+
+interface ConditionFlag {
+  label: string;
+  value: string;
+  status: 'good' | 'warn' | 'bad';
+  detail: string;
+}
+
+interface MarketConditions {
+  score: number;
+  signal: 'TRADE TODAY' | 'MANAGE ONLY' | 'CAUTION' | 'WAIT TODAY';
+  signalDetail: string;
+  flags: {
+    dayOfWeek: ConditionFlag;
+    timeOfDay: ConditionFlag;
+    vix: ConditionFlag;
+    termStructure: ConditionFlag;
+    spxMove: ConditionFlag;
+    fomc: ConditionFlag;
+    expirationWeek: ConditionFlag;
+    earnings: ConditionFlag;
+  };
+  fiftyPctPositions: string[]; // positions at 50%+ profit
+}
+
+async function loadMarketConditions(watchlist: string[], engineData: EngineData | null): Promise<MarketConditions> {
+  const now = new Date();
+  const etOffset = -5; // EST (adjust for DST: -4 in summer)
+  const etHour = (now.getUTCHours() + 24 + etOffset) % 24;
+  const etMinutes = now.getMinutes();
+  const etTimeDecimal = etHour + etMinutes / 60;
+  const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon ... 5=Fri
+  const todayStr = now.toISOString().slice(0, 10);
+
+  let score = 100;
+  const flags: MarketConditions['flags'] = {} as any;
+
+  // ── Day of week ────────────────────────────────────────────────────────
+  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const dayName = dayNames[dayOfWeek];
+  if (dayOfWeek === 1) {
+    score -= 15;
+    flags.dayOfWeek = { label: 'Day of week', value: dayName, status: 'warn', detail: 'Monday gap risk — weekend news can gap fills' };
+  } else if (dayOfWeek === 5) {
+    score -= 12;
+    flags.dayOfWeek = { label: 'Day of week', value: dayName, status: 'warn', detail: 'Friday theta distortion — avoid new entries near close' };
+  } else if (dayOfWeek === 0 || dayOfWeek === 6) {
+    score -= 100;
+    flags.dayOfWeek = { label: 'Day of week', value: dayName, status: 'bad', detail: 'Market closed' };
+  } else {
+    flags.dayOfWeek = { label: 'Day of week', value: dayName, status: 'good', detail: 'Optimal trading day' };
+  }
+
+  // ── Time of day ────────────────────────────────────────────────────────
+  const etTimeStr = `${String(etHour).padStart(2,'0')}:${String(etMinutes).padStart(2,'0')} ET`;
+  if (etTimeDecimal < 9.5 || etTimeDecimal > 16.0) {
+    score -= 100;
+    flags.timeOfDay = { label: 'Market time', value: etTimeStr, status: 'bad', detail: 'Market closed' };
+  } else if (etTimeDecimal < 10.0) {
+    score -= 18;
+    flags.timeOfDay = { label: 'Market time', value: etTimeStr, status: 'warn', detail: 'Opening 30 min — wide bid-ask, erratic pricing' };
+  } else if (etTimeDecimal > 15.5) {
+    score -= 15;
+    flags.timeOfDay = { label: 'Market time', value: etTimeStr, status: 'warn', detail: 'Closing 30 min — liquidity thin, avoid new fills' };
+  } else {
+    flags.timeOfDay = { label: 'Market time', value: etTimeStr, status: 'good', detail: 'Clean trading window (10am–3:30pm ET)' };
+  }
+
+  // ── VIX + term structure ───────────────────────────────────────────────
+  let vixValue = 18;
+  let vix3mValue = 20;
+  let spxChange = 0;
+  try {
+    const [vixRes, vix3mRes, spxRes] = await Promise.allSettled([
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=2d', { cache: 'no-store' }),
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX3M?interval=1d&range=2d', { cache: 'no-store' }),
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=2d', { cache: 'no-store' }),
+    ]);
+    if (vixRes.status === 'fulfilled' && vixRes.value.ok) {
+      const d = await vixRes.value.json();
+      const meta = d?.chart?.result?.[0]?.meta;
+      vixValue = meta?.regularMarketPrice ?? meta?.previousClose ?? 18;
+    }
+    if (vix3mRes.status === 'fulfilled' && vix3mRes.value.ok) {
+      const d = await vix3mRes.value.json();
+      const meta = d?.chart?.result?.[0]?.meta;
+      vix3mValue = meta?.regularMarketPrice ?? meta?.previousClose ?? 20;
+    }
+    if (spxRes.status === 'fulfilled' && spxRes.value.ok) {
+      const d = await spxRes.value.json();
+      const meta = d?.chart?.result?.[0]?.meta;
+      const prev = meta?.chartPreviousClose ?? meta?.previousClose ?? 0;
+      const curr = meta?.regularMarketPrice ?? prev;
+      spxChange = prev > 0 ? ((curr - prev) / prev) * 100 : 0;
+    }
+  } catch {}
+
+  // VIX scoring
+  const vixStr = vixValue.toFixed(1);
+  if (vixValue > 35) {
+    score -= 30;
+    flags.vix = { label: 'VIX', value: vixStr, status: 'bad', detail: 'Extreme fear — wide spreads, avoid new entries' };
+  } else if (vixValue > 28) {
+    score -= 18;
+    flags.vix = { label: 'VIX', value: vixStr, status: 'warn', detail: 'Elevated fear — fills will be wide, size down' };
+  } else if (vixValue < 13) {
+    score -= 15;
+    flags.vix = { label: 'VIX', value: vixStr, status: 'warn', detail: 'Crushed IV — premium too thin to sell efficiently' };
+  } else if (vixValue < 16) {
+    score -= 8;
+    flags.vix = { label: 'VIX', value: vixStr, status: 'warn', detail: 'Low IV — thin premium, prefer managing existing positions' };
+  } else {
+    flags.vix = { label: 'VIX', value: vixStr, status: 'good', detail: `Normal range (${vixStr}) — good premium environment` };
+  }
+
+  // Term structure
+  const inverted = vixValue > vix3mValue;
+  if (inverted) {
+    score -= 20;
+    flags.termStructure = { label: 'VIX term structure', value: `Inverted (${vixValue.toFixed(1)} > ${vix3mValue.toFixed(1)})`, status: 'bad', detail: 'Backwardation — market in panic, IV may spike further' };
+  } else {
+    const spread = (vix3mValue - vixValue).toFixed(1);
+    flags.termStructure = { label: 'VIX term structure', value: `Normal (+${spread} spread)`, status: 'good', detail: `Contango — VIX3M ${vix3mValue.toFixed(1)} > VIX ${vixValue.toFixed(1)}, favorable for selling premium` };
+  }
+
+  // SPX move
+  const spxStr = `${spxChange >= 0 ? '+' : ''}${spxChange.toFixed(2)}%`;
+  if (spxChange < -2.0) {
+    score -= 25;
+    flags.spxMove = { label: 'SPX today', value: spxStr, status: 'bad', detail: 'Sharp drop >2% — avoid BPS entries, selling into falling market' };
+  } else if (spxChange < -1.0) {
+    score -= 12;
+    flags.spxMove = { label: 'SPX today', value: spxStr, status: 'warn', detail: 'Moderate drop — if bullish thesis intact, wait for stabilization' };
+  } else if (spxChange > 2.0) {
+    score -= 5;
+    flags.spxMove = { label: 'SPX today', value: spxStr, status: 'good', detail: 'Strong up day — BPS entries favorable, strikes have more buffer' };
+  } else {
+    flags.spxMove = { label: 'SPX today', value: spxStr, status: 'good', detail: 'Stable — normal conditions for new entries' };
+  }
+
+  // ── FOMC ──────────────────────────────────────────────────────────────
+  const isFomcDay = FOMC_DATES_2026.includes(todayStr);
+  const nextFomc = FOMC_DATES_2026.find(d => d >= todayStr);
+  const daysToFomc = nextFomc ? Math.round((new Date(nextFomc).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 999;
+  const fomcThisWeek = daysToFomc <= 3 && daysToFomc >= 0;
+  if (isFomcDay) {
+    score -= 25;
+    flags.fomc = { label: 'FOMC', value: 'Today · 2:00 PM ET', status: 'bad', detail: 'FOMC announcement day — IV spikes before, collapses after. No new positions.' };
+  } else if (fomcThisWeek) {
+    score -= 12;
+    flags.fomc = { label: 'FOMC', value: `In ${daysToFomc}d (${nextFomc})`, status: 'warn', detail: 'FOMC this week — defer new entries until after announcement' };
+  } else {
+    flags.fomc = { label: 'FOMC', value: nextFomc ? `Next: ${nextFomc}` : 'None scheduled', status: 'good', detail: 'No FOMC risk this week' };
+  }
+
+  // ── Expiration week ────────────────────────────────────────────────────
+  // Monthly expiration = 3rd Friday of month
+  const month = now.getMonth(), year = now.getFullYear();
+  const firstDay = new Date(year, month, 1).getDay();
+  const thirdFriday = new Date(year, month, 1 + ((5 - firstDay + 7) % 7) + 14);
+  const daysToExp = Math.round((thirdFriday.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  const expWeek = daysToExp >= 0 && daysToExp <= 5;
+  const expDay = daysToExp === 0;
+  if (expDay) {
+    score -= 20;
+    flags.expirationWeek = { label: 'Expiration', value: 'Today (monthly)', status: 'bad', detail: 'Monthly expiration day — extreme gamma, avoid all new positions' };
+  } else if (expWeek) {
+    score -= 10;
+    flags.expirationWeek = { label: 'Expiration', value: `Monthly exp in ${daysToExp}d`, status: 'warn', detail: 'Expiration week — gamma elevated, prefer closing over opening' };
+  } else {
+    flags.expirationWeek = { label: 'Expiration', value: `Next monthly: ${daysToExp}d`, status: 'good', detail: 'Not expiration week — normal conditions' };
+  }
+
+  // ── Earnings from engine data ──────────────────────────────────────────
+  const earningsPositions = engineData?.actions.filter(a => a.detail.toLowerCase().includes('earnings')) ?? [];
+  if (earningsPositions.length > 0) {
+    score -= 10;
+    flags.earnings = { label: 'Watchlist earnings', value: `${earningsPositions.map(a => a.symbol).join(', ')} at risk`, status: 'warn', detail: 'Earnings within 7d on active positions — do not add to those names' };
+  } else {
+    flags.earnings = { label: 'Watchlist earnings', value: 'None within 7d', status: 'good', detail: 'No near-term earnings risk on watchlist' };
+  }
+
+  // ── 50% profit positions ───────────────────────────────────────────────
+  const fiftyPct = engineData?.actions.filter(a => a.priority === 'entry' && a.detail.includes('50%')).map(a => a.symbol) ?? [];
+  if (fiftyPct.length > 0 && score >= 55) {
+    score = Math.min(score, 72); // cap at MANAGE ONLY if there are positions to close
+  }
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  let signal: MarketConditions['signal'];
+  let signalDetail: string;
+  if (score >= 75) {
+    signal = 'TRADE TODAY';
+    signalDetail = 'All systems green · optimal window for new entries';
+  } else if (score >= 55) {
+    signal = 'MANAGE ONLY';
+    if (fiftyPct.length > 0) signalDetail = `Close ${fiftyPct.join(', ')} profit targets first · defer new entries`;
+    else if (vixValue < 16) signalDetail = 'Low IV environment · close winners, wait for better premium';
+    else signalDetail = 'Conditions acceptable · manage existing positions, cautious on new entries';
+  } else if (score >= 35) {
+    signal = 'CAUTION';
+    signalDetail = `${Object.values(flags).filter(f => f.status !== 'good').length} flags active · manage urgent positions only`;
+  } else {
+    signal = 'WAIT TODAY';
+    signalDetail = 'High-risk environment · no new positions, only stop-loss closes if needed';
+  }
+
+  return { score, signal, signalDetail, flags, fiftyPctPositions: fiftyPct };
+}
+
 // ── UI Components ──────────────────────────────────────────────────────────
 function CapitalBar({ label, deployed, target, color }: { label: string; deployed: number; target: number; color: string }) {
   const pct = target > 0 ? Math.min(100, (deployed / target) * 100) : 0;
@@ -639,6 +857,122 @@ function TimelineBar({ startDte, endDte, totalDays, color, label, status }: { st
   );
 }
 
+
+// ── Market Conditions Panel ────────────────────────────────────────────────
+function MarketConditionsPanel({ mc, th, loading }: { mc: MarketConditions | null; th: typeof THEMES[Theme]; loading: boolean }) {
+  const [expanded, setExpanded] = useState(true);
+
+  const signalStyles = {
+    'TRADE TODAY': { bg: 'bg-emerald-500/10', border: 'border-emerald-600/50', text: 'text-emerald-400', ring: 'border-emerald-500', score: 'text-emerald-400', detail: 'text-emerald-400/70' },
+    'MANAGE ONLY': { bg: 'bg-blue-500/10',    border: 'border-blue-600/50',    text: 'text-blue-400',    ring: 'border-blue-500',    score: 'text-blue-400',    detail: 'text-blue-400/70' },
+    'CAUTION':     { bg: 'bg-amber-500/10',   border: 'border-amber-600/50',   text: 'text-amber-400',   ring: 'border-amber-500',   score: 'text-amber-400',   detail: 'text-amber-400/70' },
+    'WAIT TODAY':  { bg: 'bg-red-500/10',     border: 'border-red-600/50',     text: 'text-red-400',     ring: 'border-red-500',     score: 'text-red-400',     detail: 'text-red-400/70' },
+  };
+
+  const flagStatusColors = {
+    good: { pill: 'bg-emerald-500/15 text-emerald-400 border-emerald-700', dot: 'bg-emerald-500' },
+    warn: { pill: 'bg-amber-500/15 text-amber-400 border-amber-700',       dot: 'bg-amber-500'   },
+    bad:  { pill: 'bg-red-500/15 text-red-400 border-red-700',             dot: 'bg-red-500'     },
+  };
+
+  const signal = mc?.signal ?? 'TRADE TODAY';
+  const ss = signalStyles[signal];
+
+  const flagGroups = mc ? [
+    { section: 'TIME & SESSION', items: [mc.flags.dayOfWeek, mc.flags.timeOfDay] },
+    { section: 'VOLATILITY',     items: [mc.flags.vix, mc.flags.termStructure, mc.flags.spxMove] },
+    { section: 'CALENDAR RISK',  items: [mc.flags.fomc, mc.flags.expirationWeek, mc.flags.earnings] },
+  ] : [];
+
+  const flagCount = mc ? Object.values(mc.flags).filter(f => f.status !== 'good').length : 0;
+
+  return (
+    <div className={`border ${ss.border} ${ss.bg} rounded-xl overflow-hidden`}>
+      {/* Header — always visible */}
+      <button onClick={() => setExpanded(!expanded)} className="w-full text-left">
+        <div className="flex items-center gap-4 px-4 py-3">
+          {/* Score ring */}
+          {loading ? (
+            <div className="w-12 h-12 rounded-full border-2 border-slate-600 flex items-center justify-center shrink-0">
+              <div className="w-4 h-4 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : mc ? (
+            <div className={`w-12 h-12 rounded-full border-2 ${ss.ring} flex flex-col items-center justify-center shrink-0`}>
+              <span className={`text-base font-bold leading-none ${ss.score}`}>{mc.score}</span>
+              <span className={`text-[8px] ${ss.detail}`}>/100</span>
+            </div>
+          ) : null}
+
+          {/* Signal */}
+          <div className="flex-1 min-w-0">
+            {loading ? (
+              <p className={`text-xs font-bold ${th.textFaint} tracking-widest`}>ANALYZING MARKET CONDITIONS...</p>
+            ) : mc ? (
+              <>
+                <p className={`text-sm font-bold tracking-widest ${ss.text}`}>{mc.signal}</p>
+                <p className={`text-[10px] ${ss.detail} mt-0.5`}>{mc.signalDetail}</p>
+              </>
+            ) : null}
+          </div>
+
+          {/* Flag count + expand */}
+          <div className="flex items-center gap-3 shrink-0">
+            {mc && flagCount > 0 && (
+              <span className={`text-[9px] px-2 py-0.5 border rounded font-medium ${
+                signal === 'WAIT TODAY' ? 'border-red-700 text-red-400 bg-red-500/10'
+                : signal === 'CAUTION' ? 'border-amber-700 text-amber-400 bg-amber-500/10'
+                : 'border-blue-700 text-blue-400 bg-blue-500/10'
+              }`}>{flagCount} flag{flagCount !== 1 ? 's' : ''}</span>
+            )}
+            {mc && (
+              <span className={`text-[10px] ${th.textFaint}`}>{expanded ? '▲' : '▼'}</span>
+            )}
+          </div>
+        </div>
+      </button>
+
+      {/* Expanded detail */}
+      {expanded && mc && (
+        <div className={`border-t ${th.border}`}>
+          {/* 50% profit alert */}
+          {mc.fiftyPctPositions.length > 0 && (
+            <div className="flex items-center gap-3 px-4 py-2.5 bg-emerald-500/10 border-b border-emerald-600/30">
+              <span className="text-emerald-400 text-xs">✓</span>
+              <p className="text-[10px] text-emerald-400 font-medium">
+                {mc.fiftyPctPositions.join(', ')} at 50%+ profit — close before opening new positions
+              </p>
+            </div>
+          )}
+
+          {/* Flag grid */}
+          <div className="grid grid-cols-3 divide-x" style={{ borderColor: 'inherit' }}>
+            {flagGroups.map(group => (
+              <div key={group.section} className={`divide-y ${th.border}`}>
+                <p className={`text-[8px] ${th.textFaint} tracking-widest px-3 py-1.5 font-bold uppercase ${th.sidebar}`}>{group.section}</p>
+                {group.items.map((flag, i) => (
+                  <div key={i} className="flex items-start gap-2 px-3 py-2">
+                    <div className={`w-1.5 h-1.5 rounded-full mt-1 shrink-0 ${flagStatusColors[flag.status].dot}`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-1 mb-0.5">
+                        <p className={`text-[9px] ${th.textFaint} truncate`}>{flag.label}</p>
+                        <span className={`text-[8px] px-1.5 py-0.5 border rounded shrink-0 font-medium ${flagStatusColors[flag.status].pill}`}>
+                          {flag.status === 'good' ? '✓' : flag.status === 'warn' ? '⚠' : '✗'}
+                        </span>
+                      </div>
+                      <p className={`text-[10px] font-medium ${th.textMuted} truncate`}>{flag.value}</p>
+                      <p className={`text-[9px] ${th.textFaint} leading-tight mt-0.5`}>{flag.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────
 export default function EnginePage() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
@@ -663,6 +997,8 @@ export default function EnginePage() {
   const [error, setError] = useState('');
   const [aiAnalysis, setAiAnalysis] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
+  const [marketConditions, setMarketConditions] = useState<MarketConditions | null>(null);
+  const [mcLoading, setMcLoading] = useState(false);
   const [editingAlloc, setEditingAlloc] = useState({ ...alloc });
 
   const saveSubTab = (t: SubTab) => {
@@ -691,6 +1027,12 @@ export default function EnginePage() {
       const data = await loadEngineData(watchlist, alloc);
       setEngineData(data);
       setStatus('ready');
+      // Load market conditions in background
+      setMcLoading(true);
+      loadMarketConditions(watchlist, data)
+        .then(mc => setMarketConditions(mc))
+        .catch(() => {})
+        .finally(() => setMcLoading(false));
       // Load AI analysis in background
       setAiLoading(true);
       try {
@@ -885,6 +1227,9 @@ export default function EnginePage() {
         {/* ── ACTIONS TAB ── */}
         {status === 'ready' && d && subTab === 'actions' && (
           <div className="space-y-4 max-w-5xl">
+            {/* Market Conditions */}
+            <MarketConditionsPanel mc={marketConditions} th={th} loading={mcLoading} />
+
             {/* AI summary */}
             <div className={`border ${th.border} rounded-xl px-4 py-3 bg-violet-500/5`}>
               <div className="flex items-center gap-2 mb-2">
