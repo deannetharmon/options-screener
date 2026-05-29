@@ -4162,10 +4162,9 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       if (needsOco) {
         setPhase('Cancelling existing GTC order...');
         console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
-        // Cancel via complex order endpoint if applicable
-        const gtcOrderForCancel = findProfitGtcOrder(pos.legs, gtcOrders ?? []);
-        if (gtcOrderForCancel?.complexOrderId) {
-          await ttDelete(`/accounts/${pos.accountNumber}/complex-orders/${gtcOrderForCancel.complexOrderId}`, token);
+        // Cancel via complex order endpoint if this is part of an OCO
+        if ((pos as any).gtcComplexOrderId) {
+          await ttDelete(`/accounts/${pos.accountNumber}/complex-orders/${(pos as any).gtcComplexOrderId}`, token);
         } else {
           await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
         }
