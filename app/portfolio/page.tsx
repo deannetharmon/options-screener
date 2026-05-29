@@ -2184,7 +2184,7 @@ function BatchConfirmModal({
               console.log(`CANCEL SUCCESS: ${item.pos.symbol}`, cancelResult);
               await new Promise(r => setTimeout(r, 800));
             } catch (cancelErr: any) {
-              console.error(`CANCEL FAILED: ${item.pos.symbol} orderId=${item.pos.gtcOrderId} complexId=${gtcComplexId} error=`, cancelErr?.message);
+              console.error(`CANCEL FAILED: ${item.pos.symbol} orderId=${item.pos.gtcOrderId} error=`, cancelErr?.message);
               // TastyTrade may reject cancel if order is in terminal/partial state.
               // Proceed with placing the new order — TT will reject it if the old one
               // is still truly active, but the user will see a clear error message.
