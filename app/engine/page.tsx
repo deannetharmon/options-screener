@@ -194,7 +194,17 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
   if (!accountNumber) throw new Error('No account found');
 
   const balanceData = await ttFetch(`/accounts/${accountNumber}/balances`, token);
-  const obp = parseFloat(balanceData?.data?.['option-buying-power'] ?? balanceData?.data?.['buying-power'] ?? '0');
+  const balData = balanceData?.data ?? {};
+  // TastyTrade uses different field names — try all known variants
+  const obp = parseFloat(
+    balData['derivative-buying-power'] ??
+    balData['option-buying-power'] ??
+    balData['equity-buying-power'] ??
+    balData['buying-power'] ??
+    balData['net-liquidating-value'] ??
+    '0'
+  );
+  console.log('BALANCE DATA:', JSON.stringify(balData).slice(0, 500));
 
   const capital: CapitalSummary = {
     obp,
