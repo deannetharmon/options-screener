@@ -2137,14 +2137,15 @@ function BatchConfirmModal({
           if (!dryRun && item.pos.hasGtc && gtcConfirmed.has(item.pos.key) && item.pos.gtcOrderId) {
             try {
               const gtcComplexId = (item.pos as any).gtcComplexOrderId as string | undefined;
-              console.log(`CANCEL DEBUG: symbol=${item.pos.symbol} orderId=${item.pos.gtcOrderId} complexId=${gtcComplexId} hasGtc=${item.pos.hasGtc} confirmed=${gtcConfirmed.has(item.pos.key)}`);
+              console.log(`CANCEL DEBUG: symbol=${item.pos.symbol} orderId=${item.pos.gtcOrderId} complexId=${gtcComplexId}`);
               await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token, gtcComplexId);
-              console.log(`CANCEL SUCCESS: ${item.pos.symbol} GTC ${item.pos.gtcOrderId}`);
-              // Wait 500ms for TastyTrade to process the cancel before placing new order
+              console.log(`CANCEL SUCCESS: ${item.pos.symbol}`);
               await new Promise(r => setTimeout(r, 500));
             } catch (cancelErr: any) {
-              console.error(`CANCEL FAILED: ${item.pos.symbol}`, cancelErr?.message);
-              throw new Error(`Failed to cancel existing GTC order before replacing: ${cancelErr?.message}`);
+              console.warn(`CANCEL FAILED (proceeding anyway): ${item.pos.symbol}`, cancelErr?.message);
+              // TastyTrade may reject cancel if order is in terminal/partial state.
+              // Proceed with placing the new order — TT will reject it if the old one
+              // is still truly active, but the user will see a clear error message.
             }
           }
 
@@ -2420,7 +2421,11 @@ function BatchConfirmModal({
                     </div>
                     {r.error && (
                       <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
-                        <p className="text-[10px] text-red-300 leading-relaxed">{r.error}</p>
+                        <p className="text-[10px] text-red-300 leading-relaxed">
+                          {r.error.includes('cannot_update_order') || r.error.includes('cancel')
+                            ? `Existing GTC order could not be cancelled automatically — it may be partially filled. Cancel it manually in TastyTrade first, then retry.`
+                            : r.error}
+                        </p>
                       </div>
                     )}
                   </div>
