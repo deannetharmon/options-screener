@@ -1351,6 +1351,10 @@ async function loadPositions(): Promise<Position[]> {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
         return match?.id ?? null;
       })(),
+      gtcComplexOrderId: (() => {
+        const match = findProfitGtcOrder(positionLegs, gtcOrders);
+        return match?.complexOrderId ?? null;
+      })(),
       gtcOrderPrice: (() => {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
         return match ? parseFloat(match.price) || null : null;
@@ -2132,8 +2136,10 @@ function BatchConfirmModal({
           // AUTO CANCEL EXISTING GTC IF USER CONFIRMED
           if (!dryRun && item.pos.hasGtc && gtcConfirmed.has(item.pos.key) && item.pos.gtcOrderId) {
             try {
-              const gtcMatch = findProfitGtcOrder(item.pos.legs, gtcOrders);
-              await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token, gtcMatch?.complexOrderId);
+              // complexOrderId is stored on the GtcOrder object via item.pos.gtcOrderId
+              // We need to find it from the position's cached gtc data
+              const gtcComplexId = (item.pos as any).gtcComplexOrderId as string | undefined;
+              await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token, gtcComplexId);
               console.log(`Cancelled old GTC ${item.pos.gtcOrderId} for ${item.pos.symbol}`);
             } catch (cancelErr) {
               console.warn(`Failed to cancel GTC for ${item.pos.symbol}`, cancelErr);
