@@ -940,7 +940,7 @@ function pickOrderField(o: any, keys: string[]): string | null {
   return null;
 }
 
-function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
+function mapGtcOrder(o: any, parentTif?: string, parentComplexId?: string): GtcOrder {
   // Collect legs from direct legs array OR from nested orders' legs (automation/complex orders)
   let legs = (o?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') }));
   if (legs.length === 0) {
@@ -949,8 +949,14 @@ function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
       legs = legs.concat(nestedLegs);
     }
   }
-  // TIF may be on parent complex order but missing on sub-orders — inherit from parent
   const tif = String(o?.['time-in-force'] ?? o?.timeInForce ?? parentTif ?? '');
+  // complex-order-id comes from TT on individual orders; parentComplexId comes from collectRawOrders
+  const complexOrderId = o?.['complex-order-id']
+    ? String(o['complex-order-id'])
+    : parentComplexId
+    ? String(parentComplexId)
+    : undefined;
+  console.log(`MAP_GTC_ORDER id=${o?.id} complex-order-id=${o?.['complex-order-id']} parentComplexId=${parentComplexId} resolved=${complexOrderId}`);
   return {
     id: String(o?.id ?? ''),
     price: String(o?.price ?? o?.['limit-price'] ?? ''),
@@ -958,18 +964,20 @@ function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
     orderType: String(o?.['order-type'] ?? o?.orderType ?? ''),
     timeInForce: tif,
     legs,
-    complexOrderId: o?.['complex-order-id'] ? String(o['complex-order-id']) : undefined,
+    complexOrderId,
   };
 }
 
 function collectRawOrders(raw: any): any[] {
   const out: any[] = [];
-  const visit = (order: any, parentTif?: string) => {
+  const visit = (order: any, parentTif?: string, parentComplexId?: string) => {
     if (!order || typeof order !== 'object') return;
     const tif = String(order?.['time-in-force'] ?? order?.timeInForce ?? parentTif ?? '');
     // Collect this order if it has direct legs
     if (Array.isArray(order.legs) && order.legs.length > 0) {
-      out.push({ ...order, _inheritedTif: tif });
+      // Inject complex-order-id from parent if not already set on the order
+      const complexId = order['complex-order-id'] ?? parentComplexId;
+      out.push({ ...order, 'complex-order-id': complexId, _inheritedTif: tif, _parentComplexId: parentComplexId });
     }
     // For complex/automation orders: also collect as a combined order with all nested legs merged
     if (Array.isArray(order.orders) && order.orders.length > 0) {
@@ -978,7 +986,9 @@ function collectRawOrders(raw: any): any[] {
       if (allLegs.length > 0) {
         out.push({ ...order, legs: allLegs, _inheritedTif: tif, _isCombined: true });
       }
-      for (const nested of order.orders) visit(nested, tif);
+      // Pass this order's ID as the parentComplexId to its nested orders
+      const thisComplexId = String(order.id ?? parentComplexId ?? '');
+      for (const nested of order.orders) visit(nested, tif, thisComplexId);
     }
   };
   for (const item of raw?.data?.items ?? []) visit(item);
@@ -1037,7 +1047,7 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
     ]);
     const rawOrders = requests.flatMap(r => r.status === 'fulfilled' ? collectRawOrders(r.value) : []);
     const seen = new Set<string>();
-    return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif)).filter(order => {
+    return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif, o._parentComplexId)).filter(order => {
       const tif = order.timeInForce.toUpperCase();
       const type = order.orderType.toLowerCase();
       // Parent OCO envelope has no tif/type — check nested sub-orders
