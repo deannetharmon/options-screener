@@ -4,6 +4,24 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
+
+// Inject accent CSS variable style
+if (typeof document !== 'undefined') {
+  if (!document.getElementById('hunter-accent-style')) {
+    const style = document.createElement('style');
+    style.id = 'hunter-accent-style';
+    style.textContent = `
+      :root { --accent: #3b82f6; --accent-r: 59; --accent-g: 130; --accent-b: 246; }
+      .accent-border { border-color: var(--accent) !important; }
+      .accent-text { color: var(--accent) !important; }
+      .accent-bg { background-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.1) !important; }
+      .accent-ring { box-shadow: 0 0 0 1px var(--accent) !important; }
+      nav a.active-nav, nav span.active-nav { background: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.2); color: var(--accent); }
+    `;
+    document.head.appendChild(style);
+  }
+}
+
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
   if (!document.getElementById('prosper-font')) {
@@ -1894,15 +1912,30 @@ const ACTION_META: Record<ActionType, { label: string; color: string; btnClass: 
   PLACE_GTC:   { label: '⏱ Place GTC',   color: 'text-blue-400',    btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/20' },
 };
 
-function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+function ThemeToggle({ theme, setTheme, accent, setAccent }: {
+  theme: Theme; setTheme: (t: Theme) => void;
+  accent: Accent; setAccent: (a: Accent) => void;
+}) {
   return (
-    <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-      {(['light', 'medium', 'dark'] as Theme[]).map((v, i) => (
-        <button key={v} onClick={() => { setTheme(v); try { localStorage.setItem(LS_THEME, v); } catch {} }}
-          className={`text-sm px-2 py-1 rounded transition-all ${theme === v ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
-          {['☀', '◐', '☾'][i]}
-        </button>
-      ))}
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
+        {(Object.entries(ACCENTS) as [Accent, typeof ACCENTS[Accent]][]).map(([key, val]) => (
+          <button key={key} onClick={() => { setAccent(key); applyAccent(key); try { localStorage.setItem(LS_ACCENT, key); } catch {} }}
+            title={val.label}
+            className={`w-3.5 h-3.5 rounded-full transition-all ${accent === key ? 'ring-2 ring-white/60 ring-offset-1 ring-offset-black scale-125' : 'opacity-60 hover:opacity-100'}`}
+            style={{ backgroundColor: val.hex }}
+          />
+        ))}
+      </div>
+      <div className="w-px h-4 bg-white/20" />
+      <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
+        {(['light', 'medium', 'dark'] as Theme[]).map((v, i) => (
+          <button key={v} onClick={() => { setTheme(v); try { localStorage.setItem(LS_THEME, v); } catch {} }}
+            className={`text-sm px-2 py-1 rounded transition-all ${theme === v ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
+            {['☀', '◐', '☾'][i]}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -5177,6 +5210,9 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
 export default function PortfolioPage() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
+  const [accent, setAccent] = useState<Accent>(getSavedAccent);
+  useEffect(() => { applyAccent(accent); }, [accent]);
+  useEffect(() => { applyAccent(getSavedAccent()); }, []);
 
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
@@ -5259,7 +5295,7 @@ export default function PortfolioPage() {
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <Link href="/"              className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
-            <span                       className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">PORTFOLIO</span>
+            <span                       className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>PORTFOLIO</span>
             <Link href="/rinse-repeat"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</Link>
             <Link href="/trade-log"     className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</Link>
             <Link href="/performance"   className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</Link>
@@ -5304,7 +5340,7 @@ export default function PortfolioPage() {
             className="text-[10px] px-3 py-1.5 border border-white/10 text-white/30 rounded hover:border-white/30 hover:text-white/60 transition-colors tracking-wider">
             SIGN OUT
           </button>
-          <ThemeToggle theme={theme} setTheme={setTheme} />
+          <ThemeToggle theme={theme} setTheme={setTheme} accent={accent} setAccent={setAccent} />
         </div>
       </div>
 
