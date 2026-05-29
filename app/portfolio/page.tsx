@@ -1000,13 +1000,28 @@ async function ttPatch(path: string, token: string, body: unknown) {
   return data;
 }
 
+async function fetchAllComplexOrders(accountNumber: string, token: string): Promise<any> {
+  // Paginate through all complex orders — TT defaults to 10/page
+  const allItems: any[] = [];
+  let page = 0;
+  while (true) {
+    const data = await ttFetch(`/accounts/${accountNumber}/complex-orders?page-offset=${page}&per-page=50`, token);
+    const items = data?.data?.items ?? [];
+    allItems.push(...items);
+    const pagination = data?.pagination;
+    if (!pagination || page >= (pagination['total-pages'] ?? 1) - 1) break;
+    page++;
+  }
+  return { data: { items: allItems } };
+}
+
 async function fetchGtcOrders(accountNumber: string, token: string): Promise<GtcOrder[]> {
   try {
     // Use /orders/live only — it returns working + recent 24h orders.
     // ?status=Open and ?per-page=250 are invalid params that return 400.
     const requests = await Promise.allSettled([
       ttFetch(`/accounts/${accountNumber}/orders/live`, token),
-      ttFetch(`/accounts/${accountNumber}/complex-orders`, token),
+      fetchAllComplexOrders(accountNumber, token),
     ]);
     const rawOrders = requests.flatMap(r => r.status === 'fulfilled' ? collectRawOrders(r.value) : []);
     const seen = new Set<string>();
@@ -1178,7 +1193,7 @@ async function loadPositions(): Promise<Position[]> {
   } catch {}
 
   try {
-    const complexData = await ttFetch(`/accounts/${accountNumber}/complex-orders`, token);
+    const complexData = await fetchAllComplexOrders(accountNumber, token);
     for (const order of complexData?.data?.items ?? []) {
       // Parent OCO envelope has no status/tif/type — check nested sub-orders instead
       const nestedOrders: any[] = order.orders ?? [];
@@ -2898,7 +2913,7 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
       {[
         { label: 'Open Positions', value: String(positions.length), sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`, color: th.text },
         { label: 'Captured', value: `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, sub: `of $${totalCredit.toFixed(0)} · ${capturedPct.toFixed(0)}%`, color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: '50% Target', value: `$${Math.round(totalCredit * 0.5)}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / (totalCredit * 0.5)) * 100) : 0}% of target`, color: 'text-yellow-400' },
+        { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
         { label: 'At Risk', value: `$${totalAtRisk.toFixed(0)}`, sub: 'max loss if expired', color: th.textMuted },
         { label: 'Est. Theta/Day', value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—', sub: 'daily decay', color: 'text-blue-400' },
       ].map((item, i, arr) => (
@@ -4710,6 +4725,11 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
               <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
+                {pos.plOpen != null && pos.creditReceived !== 0 && (
+                  <span className={`ml-1 font-normal text-[10px]`}>
+                    ({pos.plOpen >= 0 ? '+' : ''}{(pos.plOpen / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
+                  </span>
+                )}
               </p>
             </div>
 
@@ -5219,16 +5239,18 @@ export default function PortfolioPage() {
     <div className={`min-h-screen ${th.bg} pb-24 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
 
       {/* Header */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
+      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
         <div className="flex items-center gap-6">
           <div>
             <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
             <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>PORTFOLIO MANAGEMENT</p>
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-            <Link href="/" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
-            <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">PORTFOLIO</span>
-            <button onClick={() => setShowPerformance(true)} className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</button>
+            <Link href="/"              className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
+            <span                       className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">PORTFOLIO</span>
+            <Link href="/rinse-repeat"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</Link>
+            <Link href="/trade-log"     className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</Link>
+            <Link href="/performance"   className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</Link>
           </nav>
         </div>
         <div className="flex items-center gap-3">
