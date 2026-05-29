@@ -49,6 +49,7 @@ export function applyAccent(accent: Accent) {
   document.documentElement.style.setProperty('--accent-b', String(b));
 }
 
+
 export function injectAccentStyle() {
   if (typeof document === 'undefined') return;
   if (document.getElementById('hunter-accent-style')) return;
@@ -56,6 +57,37 @@ export function injectAccentStyle() {
   style.id = 'hunter-accent-style';
   style.textContent = `
     :root { --accent: #3b82f6; --accent-r: 59; --accent-g: 130; --accent-b: 246; }
+
+    /* Text */
+    .ac-text { color: var(--accent) !important; }
+
+    /* Borders */
+    .ac-border { border-color: var(--accent) !important; }
+    .ac-border-faint { border-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.4) !important; }
+
+    /* Backgrounds */
+    .ac-bg { background-color: var(--accent) !important; }
+    .ac-bg-10 { background-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.10) !important; }
+    .ac-bg-20 { background-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.20) !important; }
+
+    /* Hover states */
+    .ac-hover-text:hover { color: var(--accent) !important; }
+    .ac-hover-border:hover { border-color: var(--accent) !important; }
+    .ac-hover-bg:hover { background-color: var(--accent) !important; }
+    .ac-hover-bg-10:hover { background-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.10) !important; }
+
+    /* Focus */
+    .ac-focus:focus { border-color: var(--accent) !important; outline: none; }
+
+    /* Combined common patterns */
+    .ac-btn { border-color: var(--accent) !important; color: var(--accent) !important; }
+    .ac-btn:hover { background-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.10) !important; }
+
+    .ac-btn-solid { background-color: var(--accent) !important; border-color: var(--accent) !important; }
+    .ac-btn-solid:hover { opacity: 0.85; }
+
+    /* Active nav */
+    .active-nav { background-color: rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25) !important; border-bottom: 2px solid var(--accent) !important; }
   `;
   document.head.appendChild(style);
 }
