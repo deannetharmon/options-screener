@@ -5,6 +5,24 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { createPortal } from 'react-dom';
 
+
+// Inject accent CSS variable style
+if (typeof document !== 'undefined') {
+  if (!document.getElementById('hunter-accent-style')) {
+    const style = document.createElement('style');
+    style.id = 'hunter-accent-style';
+    style.textContent = `
+      :root { --accent: #3b82f6; --accent-r: 59; --accent-g: 130; --accent-b: 246; }
+      .accent-border { border-color: var(--accent) !important; }
+      .accent-text { color: var(--accent) !important; }
+      .accent-bg { background-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.1) !important; }
+      .accent-ring { box-shadow: 0 0 0 1px var(--accent) !important; }
+      nav a.active-nav, nav span.active-nav { background: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.2); color: var(--accent); }
+    `;
+    document.head.appendChild(style);
+  }
+}
+
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
   if (!document.getElementById('hunter-font')) {
@@ -19,6 +37,41 @@ if (typeof document !== 'undefined') {
 // ── Theme ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
 const LS_THEME = 'hunter-theme';
+
+// ── Accent Colors ──────────────────────────────────────────────────────────
+const LS_ACCENT = 'hunter-accent';
+
+const ACCENTS = {
+  electric: { hex: '#3b82f6', label: 'Electric',  tw: 'blue' },
+  emerald:  { hex: '#10b981', label: 'Emerald',   tw: 'emerald' },
+  amber:    { hex: '#f59e0b', label: 'Amber',     tw: 'amber' },
+  violet:   { hex: '#8b5cf6', label: 'Violet',    tw: 'violet' },
+  rose:     { hex: '#f43f5e', label: 'Rose',      tw: 'rose' },
+  slate:    { hex: '#64748b', label: 'Slate',     tw: 'slate' },
+} as const;
+type Accent = keyof typeof ACCENTS;
+
+function getSavedAccent(): Accent {
+  try { const a = localStorage.getItem(LS_ACCENT); return (a && a in ACCENTS) ? a as Accent : 'electric'; }
+  catch { return 'electric'; }
+}
+
+// Inject accent CSS variable into document root
+function applyAccent(accent: Accent) {
+  const hex = ACCENTS[accent].hex;
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--accent', hex);
+    // Parse hex to RGB for rgba() usage
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    document.documentElement.style.setProperty('--accent-r', String(r));
+    document.documentElement.style.setProperty('--accent-g', String(g));
+    document.documentElement.style.setProperty('--accent-b', String(b));
+  }
+}
+
+
 
 const THEMES: Record<Theme, {
   bg: string; sidebar: string; card: string; cardQualified: string;
@@ -1446,21 +1499,38 @@ const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '
 const strategyAccent = (s: string) => s === 'BPS' ? 'border-l-4 border-l-emerald-500' : s === 'BCS' ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500';
 
 // ── Theme Toggle ───────────────────────────────────────────────────────────
-function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+function ThemeToggle({ theme, setTheme, accent, setAccent }: {
+  theme: Theme; setTheme: (t: Theme) => void;
+  accent: Accent; setAccent: (a: Accent) => void;
+}) {
   const options: { value: Theme; icon: string; label: string }[] = [
     { value: 'light', icon: '☀', label: 'Light' },
     { value: 'medium', icon: '◐', label: 'Dim' },
     { value: 'dark', icon: '☾', label: 'Dark' },
   ];
   return (
-    <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-      {options.map(o => (
-        <button key={o.value} onClick={() => { setTheme(o.value); try { localStorage.setItem(LS_THEME, o.value); } catch {} }}
-          title={o.label}
-          className={`text-sm px-2 py-1 rounded transition-all ${theme === o.value ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
-          {o.icon}
-        </button>
-      ))}
+    <div className="flex items-center gap-2">
+      {/* Accent swatches */}
+      <div className="flex items-center gap-1">
+        {(Object.entries(ACCENTS) as [Accent, typeof ACCENTS[Accent]][]).map(([key, val]) => (
+          <button key={key} onClick={() => { setAccent(key); applyAccent(key); try { localStorage.setItem(LS_ACCENT, key); } catch {} }}
+            title={val.label}
+            className={`w-3.5 h-3.5 rounded-full transition-all ${accent === key ? 'ring-2 ring-white/60 ring-offset-1 ring-offset-black scale-125' : 'opacity-60 hover:opacity-100'}`}
+            style={{ backgroundColor: val.hex }}
+          />
+        ))}
+      </div>
+      <div className="w-px h-4 bg-white/20" />
+      {/* Theme buttons */}
+      <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
+        {options.map(o => (
+          <button key={o.value} onClick={() => { setTheme(o.value); try { localStorage.setItem(LS_THEME, o.value); } catch {} }}
+            title={o.label}
+            className={`text-sm px-2 py-1 rounded transition-all ${theme === o.value ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
+            {o.icon}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -4184,7 +4254,10 @@ interface RawScanEntry {
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
+  const [accent, setAccent] = useState<Accent>(getSavedAccent);
   const th = THEMES[theme];
+  useEffect(() => { applyAccent(accent); }, [accent]);
+  useEffect(() => { applyAccent(getSavedAccent()); }, []);
 
   const [autoTickers, setAutoTickers] = useState('');
   const autoFileRef = useRef<HTMLInputElement>(null);
@@ -4465,7 +4538,7 @@ export default function Home() {
             <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-            <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
+            <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>HUNTER</span>
             <a href="/portfolio"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
             <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</a>
             <a href="/trade-log"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
@@ -4475,7 +4548,7 @@ export default function Home() {
         
         <div className="flex items-center gap-3">
           <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
-          <ThemeToggle theme={theme} setTheme={setTheme} />
+          <ThemeToggle theme={theme} setTheme={setTheme} accent={accent} setAccent={setAccent} />
         </div>
       </div>
 
@@ -4588,7 +4661,7 @@ export default function Home() {
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
           <button onClick={() => setShowRunModal(true)} disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
+            className="w-full text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg" style={{ background: `var(--accent)` }}>
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
 
