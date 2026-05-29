@@ -96,8 +96,160 @@ interface ScreenResult {
   failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
   isEtf?: boolean;
   ruleSetApplied?: string;
+  hv30?: number | null; // 30-day historical volatility from TastyTrade
   checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; };
 }
+interface ExistingPosition {
+  symbol: string;
+  strategy: string;
+  expDate: string;
+  strikes: string;   // human-readable e.g. "450P/440P" or "450P/440P · 470C/480C"
+  qty: number;
+}
+
+// ── Sector map ────────────────────────────────────────────────────────────
+const SECTOR_MAP: Record<string, string> = {
+  // Technology
+  AAPL:'Technology', MSFT:'Technology', NVDA:'Technology', AMD:'Technology', INTC:'Technology',
+  GOOGL:'Technology', GOOG:'Technology', META:'Technology', TSLA:'Technology', AVGO:'Technology',
+  QCOM:'Technology', TXN:'Technology', MU:'Technology', AMAT:'Technology', LRCX:'Technology',
+  KLAC:'Technology', MRVL:'Technology', ADBE:'Technology', CRM:'Technology', NOW:'Technology',
+  ORCL:'Technology', IBM:'Technology', HPE:'Technology', DELL:'Technology', SNOW:'Technology',
+  PLTR:'Technology', CRWD:'Technology', ZS:'Technology', PANW:'Technology', FTNT:'Technology',
+  NET:'Technology', DDOG:'Technology', MDB:'Technology', TEAM:'Technology', SHOP:'Technology',
+  // Financials
+  JPM:'Financials', BAC:'Financials', GS:'Financials', MS:'Financials', WFC:'Financials',
+  C:'Financials', BLK:'Financials', AXP:'Financials', V:'Financials', MA:'Financials',
+  // Healthcare
+  JNJ:'Healthcare', UNH:'Healthcare', PFE:'Healthcare', ABBV:'Healthcare', MRK:'Healthcare',
+  LLY:'Healthcare', BMY:'Healthcare', AMGN:'Healthcare', GILD:'Healthcare', CVS:'Healthcare',
+  // Consumer
+  AMZN:'Consumer', WMT:'Consumer', HD:'Consumer', TGT:'Consumer', COST:'Consumer',
+  NKE:'Consumer', MCD:'Consumer', SBUX:'Consumer', DIS:'Consumer', NFLX:'Consumer',
+  // Energy
+  XOM:'Energy', CVX:'Energy', COP:'Energy', OXY:'Energy', SLB:'Energy',
+  // Industrials
+  BA:'Industrials', CAT:'Industrials', GE:'Industrials', HON:'Industrials', UPS:'Industrials',
+  // ETFs / Indexes (no sector concentration concern)
+  SPY:'Index', QQQ:'Index', IWM:'Index', DIA:'Index', SMH:'Technology', SOXX:'Technology',
+  XLF:'Financials', XLK:'Technology', XLE:'Energy', XLV:'Healthcare', XLI:'Industrials',
+  XLP:'Consumer', XLY:'Consumer', GLD:'Commodity', SLV:'Commodity', TLT:'Bonds',
+};
+
+async function getSector(symbol: string): Promise<string> {
+  if (SECTOR_MAP[symbol]) return SECTOR_MAP[symbol];
+  try {
+    const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`);
+    const data = await res.json();
+    const sector = data?.chart?.result?.[0]?.meta?.sector;
+    return sector ?? 'Unknown';
+  } catch { return 'Unknown'; }
+}
+
+// ── Portfolio risk types ───────────────────────────────────────────────────
+type RiskLevel = 'clear' | 'same_symbol' | 'same_strikes' | 'synthetic_ic' | 'sector_concentration';
+
+interface PortfolioRisk {
+  level: RiskLevel;
+  warnings: string[];           // specific factual flags
+  recommendation: string;       // AI-style actionable guidance
+  sectorName: string;
+  sectorCount: number;          // how many open positions in same sector
+}
+
+function parseStrikesFromString(strikes: string): { puts: number[]; calls: number[] } {
+  const puts: number[] = [], calls: number[] = [];
+  const parts = strikes.replace(/·/g, '/').split('/');
+  for (const p of parts) {
+    const m = p.trim().match(/^(\d+(?:\.\d+)?)(P|C)$/i);
+    if (!m) continue;
+    const n = parseFloat(m[1]);
+    if (m[2].toUpperCase() === 'P') puts.push(n);
+    else calls.push(n);
+  }
+  return { puts, calls };
+}
+
+function checkPortfolioRisk(
+  symbol: string,
+  candidate: SpreadCandidate | null,
+  existingPositions: ExistingPosition[],
+  sectorName: string,
+  allSectorCounts: Record<string, number>,
+): PortfolioRisk {
+  const warnings: string[] = [];
+  let level: RiskLevel = 'clear';
+  let recommendation = '';
+
+  const sameSymbolPositions = existingPositions.filter(p => p.symbol === symbol);
+  const sectorCount = allSectorCounts[sectorName] ?? 0;
+
+  // ── Same strikes check ──────────────────────────────────────────────────
+  if (candidate && sameSymbolPositions.length > 0) {
+    for (const pos of sameSymbolPositions) {
+      const existing = parseStrikesFromString(pos.strikes);
+      const newPuts  = candidate.strategy === 'BPS' || candidate.strategy === 'IC'
+        ? [candidate.shortStrike, candidate.longStrike] : [];
+      const newCalls = candidate.strategy === 'BCS' || candidate.strategy === 'IC'
+        ? [candidate.shortCallStrike ?? candidate.shortStrike, candidate.longCallStrike ?? candidate.longStrike] : [];
+
+      const putOverlap  = newPuts.some(s  => existing.puts.some(e  => Math.abs(e - s)  < 1));
+      const callOverlap = newCalls.some(s => existing.calls.some(e => Math.abs(e - s) < 1));
+      const exactMatch  = putOverlap && (newCalls.length === 0 || callOverlap);
+
+      if (exactMatch) {
+        level = 'same_strikes';
+        warnings.push(`Duplicate strikes: you already hold ${pos.strikes} on ${symbol} (exp ${pos.expDate})`);
+        recommendation = `This is nearly identical to your existing ${pos.symbol} ${pos.strategy} position. Adding it doubles your notional risk on this ticker without diversification benefit. Only consider this if you intentionally want to scale up your position size — and only if your account can absorb a full loss on both spreads simultaneously.`;
+        break;
+      }
+    }
+  }
+
+  // ── Same symbol, different strikes ─────────────────────────────────────
+  if (level === 'clear' && sameSymbolPositions.length > 0 && candidate) {
+    const existingStrategy = sameSymbolPositions[0].strategy;
+    const newStrategy = candidate.strategy;
+
+    // Check if adding this creates a synthetic IC
+    const hasPuts  = sameSymbolPositions.some(p => p.strategy === 'BPS');
+    const hasCalls = sameSymbolPositions.some(p => p.strategy === 'BCS');
+    const addingCalls = newStrategy === 'BCS';
+    const addingPuts  = newStrategy === 'BPS';
+
+    if ((hasPuts && addingCalls) || (hasCalls && addingPuts)) {
+      level = 'synthetic_ic';
+      warnings.push(`Adding this ${newStrategy} would create a synthetic Iron Condor on ${symbol}`);
+      recommendation = `You already have a ${existingStrategy} on ${symbol}. Adding this ${newStrategy} effectively builds an IC — which can be a valid strategy, but evaluate whether the combined structure has sufficient buffer on both sides and fits your current market view on ${symbol}. If you intended to enter an IC, it may be cleaner to close both and re-enter as a single IC order.`;
+    } else {
+      level = 'same_symbol';
+      warnings.push(`You already have ${sameSymbolPositions.length} open position${sameSymbolPositions.length > 1 ? 's' : ''} on ${symbol}: ${sameSymbolPositions.map(p => p.strikes).join(', ')}`);
+      const totalQty = sameSymbolPositions.reduce((s, p) => s + p.qty, 0);
+      recommendation = `Adding this increases your ${symbol} exposure to ${totalQty + (candidate ? 1 : 0)} spread${totalQty > 0 ? 's' : ''}. This concentrates risk on a single name. Only add if your conviction on ${symbol} is high and the combined risk fits your position-sizing rules.`;
+    }
+  }
+
+  // ── Sector concentration ────────────────────────────────────────────────
+  const SECTOR_LIMIT = 3;
+  if (sectorName !== 'Index' && sectorName !== 'Unknown' && sectorCount >= SECTOR_LIMIT) {
+    const sectorWarning = `Sector concentration: you already have ${sectorCount} open position${sectorCount !== 1 ? 's' : ''} in ${sectorName}`;
+    warnings.push(sectorWarning);
+    if (level === 'clear') {
+      level = 'sector_concentration';
+      recommendation = `You have ${sectorCount} positions already in ${sectorName}. Adding another increases sector risk — a sector-wide event (regulatory, macro, earnings miss from a major player) could hit multiple positions simultaneously. Consider whether your portfolio has sufficient exposure to other sectors before adding this.`;
+    } else {
+      // Append sector note to existing recommendation
+      recommendation += ` Additionally, you already have ${sectorCount} ${sectorName} positions open — sector concentration amplifies the risk here.`;
+    }
+  }
+
+  if (level === 'clear') {
+    recommendation = 'No portfolio conflicts detected. Evaluate on its own merits.';
+  }
+
+  return { level, warnings, recommendation, sectorName, sectorCount };
+}
+
 interface FilterSuggestion {
   priority: number; rule: keyof RulesType; currentValue: number; suggestedValue: number;
   label: string; rationale: string; tradeoff: string; wouldQualify: number;
@@ -514,6 +666,10 @@ const LS_GLOBAL_SESSIONS = 'hunter-global-sessions';
 const LS_SCREEN_MODE = 'hunter-screen-mode';
 const LS_RANK_CONFIG = 'hunter-rank-config';
 const LS_SESSION_LOADED_AT = 'hunter-session-loaded-at';
+const LS_DEEP_ANALYSIS = 'hunter-deep-analysis';
+const LS_RESULTS_CACHE = 'hunter-results-cache';
+const LS_RAW_SCAN_CACHE = 'hunter-raw-scan-cache';
+const LS_RESULTS_CACHE_AT = 'hunter-results-cache-at';
 
 // ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
@@ -546,117 +702,208 @@ interface DimensionScore {
   momentum: number; ivr: number; range: number; technical: number; liquidity: number; total: number;
 }
 
-function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
+// ── Shared 5-Pillar Scoring Engine ────────────────────────────────────────
+// Pillar 1: IV Quality       (30 pts) — IVR level + IV vs HV30
+// Pillar 2: Trend & Direction (25 pts) — alignment, MA structure, subtype
+// Pillar 3: Position Safety   (25 pts) — buffer % × DTE interaction (they only mean something together)
+// Pillar 4: Earnings & Gap    (10 pts) — binary event risk within the trade window
+// Pillar 5: Credit Quality    (10 pts) — credit ratio + ROC
+// OI: hard gate only — flagged as informational, never scored
+function computePillarScore(result: ScreenResult, strategy: string): { pillars: { ivQuality: number; trend: number; safety: number; eventRisk: number; credit: number; total: number }; flags: string[]; notes: string[] } {
   const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
-  const t = result.trendResult;
   const c = result.bestCandidate;
+  const t = result.trendResult;
+  const flags: string[] = [];
+  const notes: string[] = [];
 
-  // ── Momentum (30pts) ──────────────────────────────────────────────────────
-  // trend engine momentum is signed (-48..+48); normalize by direction alignment
-  // When total directional score is very strong (>100), boost momentum slightly
-  let momentumRaw = 0;
-  if (t?.scores?.momentum != null) {
-    const raw = t.scores.momentum;
-    const totalScore = Math.abs(t.scores.total ?? raw);
-    // normalize: 45 = typical max momentum; total score >100 = very strong signal
-    const absNorm = clamp(Math.abs(raw) / 45);
-    const totalBoost = clamp(totalScore / 120); // strong total score adds up to 15% boost
-    const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
-    const aligned = expectedSign === 0 ? 0.7 : (Math.sign(raw) === expectedSign ? 1.0 : 0.3);
-    // IVR boost: when momentum is very strong, reduce IVR penalty weight
-    // (WFC fix: strong -135 BCS signal should rank high even with 39% IVR)
-    momentumRaw = clamp(absNorm * 0.75 + totalBoost * 0.25) * aligned;
-  } else if (t?.confidence != null) {
-    momentumRaw = clamp(t.confidence / 80);
-    if (t.trend === 'sideways' || t.trend === 'unknown') momentumRaw *= 0.5;
-  } else if (c) {
-    const pop = c.pop ?? 70;
-    momentumRaw = clamp((pop - 60) / 25);
-  }
-  const momentumScore = clamp(momentumRaw) * cfg.weightMomentum;
-
-  // ── IV Quality (25pts) ────────────────────────────────────────────────────
-  // When momentum is very strong, reduce effective IVR weight so it doesn't
-  // dominate over a clear directional signal (WFC: 39% IVR but -135 momentum)
-  const ivr = result.ivr ?? 0;
-  const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
-  const momentumStrength = t?.scores?.total != null ? clamp(Math.abs(t.scores.total) / 150) : 0;
-  const effectiveIvrWeight = cfg.weightIvr * (1 - momentumStrength * 0.35);
-  const ivrScore = clamp(ivrRaw) * effectiveIvrWeight;
-
-  // ── 52W Range Position (20pts) ────────────────────────────────────────────
-  // BPS near 52W highs (r60 > 0.85) gets penalized — stock is stretched
-  // BCS near 52W lows (r60 < 0.15) gets penalized — stock is stretched
-  // (CAT/GOOGL fix: at 93-97% of range, BPS is a risky setup)
-  let rangeRaw = 0.5;
-  if (t?.metrics?.range60 != null) {
-    const r60 = clamp(t.metrics.range60);
-    if (t.strategy === 'BPS') {
-      // near lows = good, but also penalize if stock is at extreme highs (exhaustion risk)
-      rangeRaw = r60 > 0.85 ? (1 - r60) * 2 : 1 - r60;
-    } else if (t.strategy === 'BCS') {
-      // near highs = good, but penalize extreme lows
-      rangeRaw = r60 < 0.15 ? r60 * 2 : r60;
-    } else {
-      rangeRaw = 1 - Math.abs(r60 - 0.5) * 2;
-    }
-  } else if (t?.metrics?.distFromMa50 != null) {
-    const dist = t.metrics.distFromMa50;
-    if (t.strategy === 'BPS') rangeRaw = clamp(1 - (dist + 0.15) / 0.30);
-    else if (t.strategy === 'BCS') rangeRaw = clamp((dist + 0.15) / 0.30);
-    else rangeRaw = clamp(1 - Math.abs(dist) / 0.20);
-  } else if (c) {
-    rangeRaw = clamp(c.roc / 40);
-  }
-  const rangeScore = clamp(rangeRaw) * cfg.weightRange;
-
-  // ── Technical (15pts) ─────────────────────────────────────────────────────
-  // MA alignment signed (-34..+34), slope signed (-22..+22)
-  let technicalRaw = 0;
-  if (t?.scores != null) {
-    const maRaw = t.scores.maAlignment ?? 0;
-    const slopeRaw = t.scores.slope ?? 0;
-    const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
-    const maNorm = expectedSign === 0
-      ? clamp(Math.abs(maRaw) / 34)
-      : clamp((maRaw * expectedSign + 34) / 68);
-    const slopeNorm = expectedSign === 0
-      ? clamp(Math.abs(slopeRaw) / 22)
-      : clamp((slopeRaw * expectedSign + 22) / 44);
-    technicalRaw = maNorm * 0.6 + slopeNorm * 0.4;
-  } else if (t?.confidence != null) {
-    technicalRaw = clamp(t.confidence / 100) * 0.6;
-  } else if (c) {
-    const delta = c.shortDelta;
-    technicalRaw = delta >= 0.20 && delta <= 0.30 ? 1.0 : clamp(1 - Math.abs(delta - 0.25) / 0.15);
-  }
-  const technicalScore = clamp(technicalRaw) * cfg.weightTechnical;
-
-  // ── Liquidity (10pts) ─────────────────────────────────────────────────────
-  // OI is weighted heavily here — low OI means the spread is physically untradeable
-  // regardless of how good the other metrics look. OI < 100 is near-zero; OI >= 500 is full score.
-  let liquidityRaw = 0.4;
+  // ── OI: informational flag only — not scored ──────────────────────────────
+  // OI is already hard-gated in runChecklist. Above the gate, it doesn't
+  // differentiate trade quality for 1-5 contract position sizes.
   if (c) {
     const minOI = Math.min(c.shortOI, c.longOI);
-    // Steep curve: OI=0→0, OI=100→0.18, OI=300→0.54, OI=500→1.0, OI>500→1.0
-    const oiScore = minOI <= 0 ? 0 : clamp(Math.pow(minOI / 500, 0.7));
-    const creditRatioScore = clamp((c.creditRatio - 0.15) / 0.35);
-    const rocScore = clamp(c.roc / 35);
-    // OI now carries 60% of liquidity score (was 40%) — low OI is a much bigger drag
-    liquidityRaw = oiScore * 0.6 + creditRatioScore * 0.2 + rocScore * 0.2;
+    if (minOI < 100)       flags.push(`Very low OI (${minOI}) — fills may be impossible, 1 contract only`);
+    else if (minOI < 200)  flags.push(`Low OI (${minOI}) — fills difficult, size to 1 contract`);
+    else if (minOI < 500)  flags.push(`OI (${minOI}) below 500 course minimum — manageable at 1-2 contracts`);
+    // 500+ = no flag, no score impact — it's tradeable, that's all that matters
   }
-  const liquidityScore = clamp(liquidityRaw) * cfg.weightLiquidity;
 
-  const total = Math.round(momentumScore + ivrScore + rangeScore + technicalScore + liquidityScore);
+  // ── Pillar 1: IV Quality (30 pts) ─────────────────────────────────────────
+  // Is IV elevated enough that you're actually getting paid for the risk?
+  let p1 = 0;
+  const ivr = result.ivr ?? 0;
+  // Sweet spot: 35-65%. Below 30 = thin premium. Above 75 = distorted/event risk.
+  const ivrRaw = ivr < 20 ? 0 : ivr < 30 ? 0.25 : ivr < 35 ? 0.50 : ivr <= 50 ? 0.80 : ivr <= 65 ? 1.0 : ivr <= 75 ? 0.85 : 0.65;
+  p1 += ivrRaw * 22; // 22 pts for IVR level
+
+  // IV vs HV30 — selling IV above historical vol = real edge (8 pts)
+  const hv30 = result.hv30 ?? null;
+  if (hv30 != null && hv30 > 0) {
+    const ivPremium = ivr - 50; // IVR > 50 ≈ IV elevated above median
+    const hvAdjust = ivPremium > 15 ? 1.0 : ivPremium > 5 ? 0.75 : ivPremium > 0 ? 0.50 : 0.20;
+    p1 += hvAdjust * 8;
+    if (ivPremium > 15) notes.push(`IV well above HV30 (${hv30.toFixed(0)}%) — strong premium edge`);
+    else if (ivPremium < 0) flags.push(`IV likely below HV30 (${hv30.toFixed(0)}%) — selling cheap premium`);
+  } else {
+    p1 += 4; // neutral when no HV data
+  }
+  p1 = Math.min(30, p1);
+
+  // ── Pillar 2: Trend & Direction (25 pts) ──────────────────────────────────
+  // Trading with the trend is the single most predictive factor.
+  // A BPS in a downtrend (PEP today) should score near zero here regardless of everything else.
+  let p2 = 0;
+  if (t) {
+    const stratAligns =
+      (strategy === 'BPS' && t.trend === 'uptrend') ||
+      (strategy === 'BCS' && t.trend === 'downtrend') ||
+      (strategy === 'IC'  && (t.trend === 'sideways' || t.strategy === 'IC'));
+    const stratNeutral = t.trend === 'unknown' ||
+      (strategy === 'IC' && t.trend !== 'downtrend' && t.trend !== 'uptrend');
+    const stratAgainst = !stratAligns && !stratNeutral;
+
+    // Trend alignment (15 pts) — weighted by confidence
+    if (stratAligns)       p2 += t.confidence != null ? clamp(t.confidence / 100) * 15 : 12;
+    else if (stratNeutral) p2 += 6;
+    else                   { p2 += 0; flags.push(`Trend (${t.trend}) opposes ${strategy} — major risk`); }
+
+    // MA structure (7 pts) — are the MAs confirming direction?
+    const maScore = t.scores?.maAlignment != null ? clamp((t.scores.maAlignment + 34) / 68) : 0.5;
+    p2 += (stratAgainst ? 0 : maScore) * 7;
+
+    // Trend subtype (3 pts) — continuation is safer than reversal
+    if      (t.subtype === 'CONTINUATION' && stratAligns) p2 += 3;
+    else if (t.subtype === 'REVERSAL'     && stratAligns) p2 += 1.5;
+    else if (!stratAgainst)                               p2 += 1;
+
+    if (stratAligns && t.confidence != null && t.confidence >= 70)
+      notes.push(`Strong ${t.trend} (${t.confidence}% confidence) confirms ${strategy} thesis`);
+    if (stratAgainst && t.confidence != null && t.confidence >= 70)
+      flags.push(`High-confidence ${t.trend} (${t.confidence}%) directly opposes ${strategy}`);
+  } else {
+    p2 += 10; // neutral — no trend data available
+    flags.push('No trend data — evaluate chart manually before entering');
+  }
+  p2 = Math.min(25, p2);
+
+  // ── Pillar 3: Position Safety (25 pts) ────────────────────────────────────
+  // Buffer % and DTE are inseparable — 0.8% buffer at 7 DTE (PEP today) is catastrophic.
+  // The same 0.8% buffer at 40 DTE is uncomfortable but manageable.
+  // Score them as a combined interaction, not independently.
+  let p3 = 0;
+  const dte = c?.dte ?? 38;
+
+  if (result.price != null && result.price > 0 && c) {
+    const bufferPct = strategy === 'BPS'
+      ? ((result.price - c.shortStrike) / result.price) * 100
+      : ((c.shortStrike - result.price) / result.price) * 100;
+
+    // DTE safety multiplier — more DTE = more time for buffer to stay intact
+    // Short DTE with thin buffer = gamma risk accelerating into breach
+    const dteMult = dte >= 35 ? 1.0 : dte >= 25 ? 0.85 : dte >= 14 ? 0.65 : dte >= 7 ? 0.40 : 0.20;
+
+    // Buffer score — raw quality of the cushion
+    const bufferRaw = bufferPct >= 10 ? 1.0 : bufferPct >= 7 ? 0.85 : bufferPct >= 5 ? 0.70 : bufferPct >= 3 ? 0.50 : bufferPct >= 1.5 ? 0.25 : 0.05;
+
+    // Combined: buffer quality × DTE safety = position safety score
+    const combinedSafety = bufferRaw * dteMult;
+    p3 += combinedSafety * 25;
+
+    // Flags based on the dangerous combinations
+    if (bufferPct < 2 && dte < 14)
+      flags.push(`CRITICAL: ${bufferPct.toFixed(1)}% buffer at ${dte} DTE — gamma risk extreme, exit or defend now`);
+    else if (bufferPct < 2)
+      flags.push(`Thin buffer ${bufferPct.toFixed(1)}% — near short strike`);
+    else if (bufferPct < 4 && dte < 21)
+      flags.push(`Tight buffer ${bufferPct.toFixed(1)}% with ${dte} DTE — monitor closely`);
+    else if (bufferPct >= 8 && dte >= 25)
+      notes.push(`Strong position: ${bufferPct.toFixed(1)}% buffer at ${dte} DTE`);
+  } else {
+    p3 += 12; // neutral when no price data
+  }
+  p3 = Math.min(25, p3);
+
+  // ── Pillar 4: Earnings & Gap Risk (10 pts) ────────────────────────────────
+  // Binary events that can override everything else.
+  // Key insight: what matters is whether earnings falls BEFORE expiry — not how far away it is.
+  let p4 = 0;
+
+  // Earnings clearance (6 pts)
+  const earningsDate = result.earningsDate;
+  if (!earningsDate || result.isEtf) {
+    p4 += 6;
+  } else {
+    const daysToEarnings = daysUntil(earningsDate);
+    const earningsBeforeExpiry = c?.expiration
+      ? new Date(earningsDate) <= new Date(c.expiration)
+      : daysToEarnings <= dte;
+    if (daysToEarnings < 0) {
+      p4 += 6; // already reported
+    } else if (!earningsBeforeExpiry) {
+      p4 += 6; // earnings after expiry — trade is clear
+      if (daysToEarnings <= dte + 7) notes.push(`Earnings ${daysToEarnings}d out — just clears expiry`);
+    } else {
+      // Earnings within trade window — penalize by proximity
+      if      (daysToEarnings >= 21) { p4 += 3; flags.push(`Earnings in ${daysToEarnings}d — within expiry window`); }
+      else if (daysToEarnings >= 14) { p4 += 1; flags.push(`Earnings in ${daysToEarnings}d — binary risk, size to 1 contract`); }
+      else                            { p4 += 0; flags.push(`Earnings in ${daysToEarnings}d — within expiry, high binary risk, skip or avoid`); }
+    }
+  }
+
+  // Gap / volatility risk (4 pts) — from Yahoo bars momentum data
+  const maxMom10 = Math.abs(t?.metrics?.momentum10 ?? 0);
+  if      (maxMom10 > 0.12) { p4 += 1; flags.push(`Sharp move >12% in last 10 days — gap risk elevated`); }
+  else if (maxMom10 > 0.07) { p4 += 2.5; flags.push(`Elevated recent volatility — watch for continuation gaps`); }
+  else                       { p4 += 4; }
+  p4 = Math.min(10, p4);
+
+  // ── Pillar 5: Credit Quality (10 pts) ─────────────────────────────────────
+  // Is the trade actually worth taking from a premium standpoint?
+  let p5 = 0;
+  if (c) {
+    // Credit ratio (6 pts) — how much of the spread width you're collecting
+    const crScore = c.creditRatio >= 0.40 ? 1.0 : c.creditRatio >= 0.33 ? 0.85 : c.creditRatio >= 0.28 ? 0.65 : c.creditRatio >= 0.22 ? 0.35 : 0.10;
+    p5 += crScore * 6;
+    if (c.creditRatio >= 0.40) notes.push(`Excellent credit ratio ${(c.creditRatio * 100).toFixed(0)}% of width`);
+    else if (c.creditRatio < 0.25) flags.push(`Thin credit ${(c.creditRatio * 100).toFixed(0)}% of width — marginal premium`);
+
+    // ROC (4 pts) — return on capital at risk
+    const rocScore = c.roc >= 35 ? 1.0 : c.roc >= 25 ? 0.80 : c.roc >= 20 ? 0.60 : c.roc >= 15 ? 0.35 : 0.10;
+    p5 += rocScore * 4;
+    if (c.roc >= 35) notes.push(`Strong ROC ${c.roc.toFixed(0)}% — good return on capital at risk`);
+    else if (c.roc < 15) flags.push(`Low ROC ${c.roc.toFixed(0)}% — poor return for risk taken`);
+  }
+  p5 = Math.min(10, p5);
+
+  const total = Math.min(100, Math.round(p1 + p2 + p3 + p4 + p5));
+
+  if (notes.length === 0 && flags.length === 0) notes.push('Clean setup — all pillars pass');
+
   return {
-    score: Math.min(100, total),
+    pillars: {
+      ivQuality:  Math.round(p1),
+      trend:      Math.round(p2),
+      safety:     Math.round(p3),
+      eventRisk:  Math.round(p4),
+      credit:     Math.round(p5),
+      total,
+    },
+    flags,
+    notes,
+  };
+}
+
+function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
+  if (!result.bestCandidate) return null;
+  const { pillars } = computePillarScore(result, result.strategy);
+  return {
+    score: pillars.total,
     dims: {
-      momentum: Math.round(momentumScore),
-      ivr: Math.round(ivrScore),
-      range: Math.round(rangeScore),
-      technical: Math.round(technicalScore),
-      liquidity: Math.round(liquidityScore),
-      total: Math.min(100, total),
+      momentum:  pillars.trend,       // trend pillar
+      ivr:       pillars.ivQuality,   // IV quality pillar
+      range:     pillars.safety,      // position safety pillar
+      technical: pillars.eventRisk,   // earnings/gap risk pillar
+      liquidity: pillars.credit,      // credit quality pillar
+      total:     pillars.total,
     },
   };
 }
@@ -779,9 +1026,70 @@ async function loadPortfolioTickers(): Promise<{ current: string[]; historical: 
   return { current, historical };
 }
 
+// Parses an OCC option symbol into components needed for position display
+function parseOccForDisplay(occ: string): { optionType: 'P' | 'C' | null; strike: number } {
+  const cleaned = occ.replace(/\s+/g, '');
+  const m = cleaned.match(/^[A-Z]+(\d{6})([CP])(\d{8})$/);
+  if (!m) return { optionType: null, strike: 0 };
+  return { optionType: m[2] as 'P' | 'C', strike: parseInt(m[3], 10) / 1000 };
+}
+
+async function loadExistingPositions(): Promise<ExistingPosition[]> {
+  try {
+    const token = await getAccessToken();
+    const accountsData = await ttFetch('/customers/me/accounts', token);
+    const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+    if (!accountNumber) return [];
+    const posData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
+    const rawPositions: any[] = posData?.data?.items ?? [];
+    const optionLegs = rawPositions.filter((p: any) =>
+      p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option'
+    );
+    const groups: Record<string, any[]> = {};
+    for (const leg of optionLegs) {
+      const sym = leg['underlying-symbol'];
+      const exp = (leg['expires-at'] ?? leg['expiration-date'] ?? 'unknown').slice(0, 10);
+      const key = `${sym}::${exp}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(leg);
+    }
+    const positions: ExistingPosition[] = [];
+    for (const [key, legs] of Object.entries(groups)) {
+      const [symbol, expDate] = key.split('::');
+      const shortLeg = legs.find(l => l['quantity-direction'] === 'Short');
+      const qty = shortLeg ? parseInt(shortLeg['quantity'] ?? '1', 10) : 1;
+      const parsed = legs.map(l => ({ ...parseOccForDisplay(l.symbol), dir: l['quantity-direction'] as string }));
+      const putLegs  = parsed.filter(l => l.optionType === 'P');
+      const callLegs = parsed.filter(l => l.optionType === 'C');
+      let strategy = 'SPREAD';
+      if (putLegs.length >= 2 && callLegs.length === 0) strategy = 'BPS';
+      else if (callLegs.length >= 2 && putLegs.length === 0) strategy = 'BCS';
+      else if (putLegs.length >= 2 && callLegs.length >= 2) strategy = 'IC';
+      const sortedPuts  = putLegs.map(l => l.strike).sort((a, b) => b - a);
+      const sortedCalls = callLegs.map(l => l.strike).sort((a, b) => a - b);
+      let strikes = '';
+      if (strategy === 'BPS' && sortedPuts.length >= 2)
+        strikes = `${sortedPuts[0]}P/${sortedPuts[1]}P`;
+      else if (strategy === 'BCS' && sortedCalls.length >= 2)
+        strikes = `${sortedCalls[0]}C/${sortedCalls[1]}C`;
+      else if (strategy === 'IC' && sortedPuts.length >= 2 && sortedCalls.length >= 2)
+        strikes = `${sortedPuts[0]}P/${sortedPuts[1]}P · ${sortedCalls[0]}C/${sortedCalls[1]}C`;
+      else
+        strikes = parsed.map(l => `${l.strike}${l.optionType}`).join('/');
+      positions.push({ symbol, strategy, expDate, strikes, qty });
+    }
+    return positions;
+  } catch { return []; }
+}
+
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
-  return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
+  return (data.data?.items || []).map((item: any) => ({
+    symbol: item.symbol,
+    ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null,
+    earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
+    hv30: item['historical-volatility-30'] != null ? parseFloat(item['historical-volatility-30']) * 100 : null,
+  }));
 }
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
@@ -1225,7 +1533,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     : { status: 'pending', value: '—', reason: 'No candidate' };
   if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, hv30: metrics.hv30 ?? null, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
@@ -2124,7 +2432,114 @@ function TradeModal({ result, th, onClose }: {
   );
 }
 
-function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cachedEntry }: {
+
+// ── Stock Research Component ──────────────────────────────────────────────
+async function fetchStockResearch(symbol: string, riskContext?: string): Promise<string> {
+  // Step 1: fetch recent news headlines from Yahoo Finance
+  let headlines = '';
+  try {
+    const newsRes = await fetch(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=8&quotesCount=0`,
+      { cache: 'no-store' }
+    );
+    const newsData = await newsRes.json();
+    const articles = newsData?.news ?? [];
+    headlines = articles
+      .slice(0, 6)
+      .map((a: any) => `- ${a.title}`)
+      .join('\n');
+  } catch { headlines = 'News unavailable'; }
+
+  // Step 2: send to GPT-4o for trading-focused summary
+  const prompt = `You are a professional options trader analyzing ${symbol} before placing a trade.
+
+Recent news headlines:
+${headlines}
+
+Give a concise 4-sentence trading analysis covering:
+1. What is driving price action right now
+2. Any near-term risks (earnings, macro, sector headwinds)
+3. Analyst/market sentiment
+4. Whether conditions currently favor selling premium (credit spreads) on this stock
+${riskContext ? `\n5. Given this portfolio risk context, is adding this trade advisable: ${riskContext}` : ''}
+
+Be direct and specific. No disclaimers. If the news is thin, say so.`;
+
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      max_tokens: 400,
+      system: 'You are a concise, direct options trading analyst. No hedging. No disclaimers. Plain prose only.',
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!res.ok) throw new Error(`Research failed (${res.status})`);
+  const data = await res.json();
+  return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+}
+
+function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof THEMES[Theme]; riskContext?: string }) {
+  const [open, setOpen]         = useState(false);
+  const [loading, setLoading]   = useState(false);
+  const [result, setResult]     = useState<string | null>(null);
+  const [error, setError]       = useState('');
+
+  const handleClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (result) return; // already fetched — just re-open
+    setLoading(true); setError('');
+    try {
+      const text = await fetchStockResearch(symbol, riskContext);
+      setResult(text);
+    } catch (err: any) {
+      setError(err.message ?? 'Research failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div onClick={e => e.stopPropagation()}>
+      <button
+        onClick={handleClick}
+        className={`inline-flex items-center gap-1 text-[9px] px-2 py-0.5 border rounded transition-colors ${
+          open
+            ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10'
+            : `${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400`
+        }`}>
+        <span className="text-[8px]">◎</span> Research
+      </button>
+
+      {open && (
+        <div className={`mt-2 p-3 rounded-lg border ${th.borderLight} bg-indigo-500/5 text-[11px] leading-relaxed ${th.textMuted}`}>
+          {loading && (
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+              <span className={`text-[10px] ${th.textFaint}`}>Researching {symbol}...</span>
+            </div>
+          )}
+          {error && <p className="text-red-400 text-[10px]">{error}</p>}
+          {result && (
+            <>
+              <p className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest mb-1.5">◎ {symbol} Research</p>
+              <p className="whitespace-pre-wrap">{result}</p>
+              <button onClick={() => { setResult(null); setOpen(false); }}
+                className={`mt-2 text-[9px] ${th.textFaint} hover:text-red-400 transition-colors`}>
+                ✕ Dismiss
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cachedEntry, existingPositions }: {
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
@@ -2132,12 +2547,37 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   rankConfig?: RankConfig;
   onTrade?: (result: ScreenResult) => void;
   cachedEntry?: RawScanEntry;
+  existingPositions?: ExistingPosition[];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showBestFinder, setShowBestFinder] = useState(false);
+  const [showChart, setShowChart] = useState(false);
+  const [sparkData, setSparkData] = useState<number[] | null>(null);
+  const [sparkLoading, setSparkLoading] = useState(false);
+  const [portfolioRisk, setPortfolioRisk] = useState<PortfolioRisk | null>(null);
 
   const c = result.bestCandidate;
   const t = result.trendResult;
+  const matchingPositions = (existingPositions ?? []).filter(p => p.symbol === result.symbol);
+
+  useEffect(() => {
+    if (!existingPositions || existingPositions.length === 0) return;
+    // Build sector counts across all positions
+    const sectorCounts: Record<string, number> = {};
+    Promise.all(existingPositions.map(p => getSector(p.symbol))).then(sectors => {
+      sectors.forEach(s => { if (s !== 'Index' && s !== 'Unknown') sectorCounts[s] = (sectorCounts[s] ?? 0) + 1; });
+      getSector(result.symbol).then(sector => {
+        // Don't count the current symbol's existing positions in the concentration check
+        const adjCounts = { ...sectorCounts };
+        const symSector = sector;
+        existingPositions.filter(p => p.symbol === result.symbol).forEach(() => {
+          if (adjCounts[symSector] > 0) adjCounts[symSector]--;
+        });
+        const risk = checkPortfolioRisk(result.symbol, result.bestCandidate, existingPositions, sector, adjCounts);
+        setPortfolioRisk(risk);
+      });
+    });
+  }, [existingPositions, result.symbol, result.bestCandidate]);
 
   // Ranking
   const scored = rankConfig ? scoreCandidate(result, rankConfig) : null;
@@ -2171,7 +2611,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
 
   return (
     <div className={`border ${cardBorder} ${scoreBorderL} ${cardBg} rounded-lg cursor-pointer transition-all hover:shadow-md`}
-         onClick={() => setExpanded(!expanded)}>
+         onClick={() => { setExpanded(!expanded); setShowChart(false); }}>
 
       {/* Header Row */}
       <div className="px-4 py-3 flex items-center gap-2">
@@ -2184,19 +2624,109 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               {result.symbol === 'SPX' || result.symbol === 'XSP' || result.symbol === 'NDX' || result.symbol === 'RUT' ? 'index' : 'etf'}
             </p>
           )}
-          <a
-            href={`https://www.tradingview.com/chart/?symbol=${result.symbol}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()}
-            title="Open chart in TradingView"
-            className="inline-flex items-center gap-0.5 mt-0.5 text-[9px] text-slate-500 hover:text-blue-400 transition-colors"
-          >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-            </svg>
-            <span className="tracking-wide">chart</span>
-          </a>
+          <div className="relative mt-0.5">
+            <button
+              onClick={e => {
+                e.stopPropagation();
+                if (!showChart) {
+                  setShowChart(true);
+                  if (!sparkData) {
+                    setSparkLoading(true);
+                    fetch(`/api/chart?symbol=${encodeURIComponent(result.symbol)}`)
+                      .then(r => r.json())
+                      .then(d => {
+                        const allBars = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null);
+                        const closes = allBars.slice(-90);
+                        setSparkData(closes);
+                      })
+                      .catch(() => setSparkData([]))
+                      .finally(() => setSparkLoading(false));
+                  }
+                } else {
+                  setShowChart(false);
+                }
+              }}
+              className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 hover:text-blue-400'}`}
+              title="Quick chart"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              <span className="tracking-wide">chart</span>
+            </button>
+
+            {showChart && (
+              <div
+                className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
+                style={{ width: '280px' }}
+                onClick={e => e.stopPropagation()}
+              >
+                {/* Sparkline */}
+                <div className="mb-2">
+                  {sparkLoading && (
+                    <div className="flex items-center justify-center h-16">
+                      <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  )}
+                  {!sparkLoading && sparkData && sparkData.length > 1 && (() => {
+                    const min = Math.min(...sparkData);
+                    const max = Math.max(...sparkData);
+                    const range = max - min || 1;
+                    const w = 256, h = 56;
+                    const pts = sparkData.map((v, i) => {
+                      const x = (i / (sparkData.length - 1)) * w;
+                      const y = h - ((v - min) / range) * h;
+                      return `${x.toFixed(1)},${y.toFixed(1)}`;
+                    }).join(' ');
+                    const isUp = sparkData[sparkData.length - 1] >= sparkData[0];
+                    const color = isUp ? '#10b981' : '#ef4444';
+                    const lastPrice = sparkData[sparkData.length - 1];
+                    const firstPrice = sparkData[0];
+                    const changePct = ((lastPrice - firstPrice) / firstPrice * 100).toFixed(1);
+                    return (
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className={`text-[10px] font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{result.symbol}</span>
+                          <span className={`text-[10px] font-bold`} style={{ color }}>
+                            ${lastPrice.toFixed(2)} <span className="text-[9px]">{isUp ? '+' : ''}{changePct}% 30d</span>
+                          </span>
+                        </div>
+                        <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: '56px' }}>
+                          <defs>
+                            <linearGradient id={`grad-${result.symbol}`} x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+                              <stop offset="100%" stopColor={color} stopOpacity="0" />
+                            </linearGradient>
+                          </defs>
+                          <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+                          <polygon points={`0,${h} ${pts} ${w},${h}`} fill={`url(#grad-${result.symbol})`} />
+                        </svg>
+                      </div>
+                    );
+                  })()}
+                  {!sparkLoading && sparkData && sparkData.length === 0 && (
+                    <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
+                  )}
+                </div>
+
+                {/* Open in TradingView button */}
+                <a
+                  href={`https://www.tradingview.com/chart/?symbol=${result.symbol}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={e => e.stopPropagation()}
+                  className="flex items-center justify-center gap-2 w-full py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-600/40 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors"
+                >
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                    <polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
+                  Open in TradingView
+                </a>
+              </div>
+            )}
+          </div>
+          <StockResearch symbol={result.symbol} th={th} riskContext={portfolioRisk && portfolioRisk.level !== 'clear' ? portfolioRisk.recommendation : undefined} />
         </div>
         {/* Col 2: Badges — fixed width */}
         <div className="w-52 shrink-0 flex items-center gap-1 flex-wrap">
@@ -2279,11 +2809,11 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               </div>
               <div className="grid grid-cols-5 gap-2">
                 {[
-                  { label: 'Momentum', val: scored.dims.momentum, max: rankConfig!.weightMomentum },
-                  { label: 'IV', val: scored.dims.ivr, max: rankConfig!.weightIvr },
-                  { label: 'Range', val: scored.dims.range, max: rankConfig!.weightRange },
-                  { label: 'Technical', val: scored.dims.technical, max: rankConfig!.weightTechnical },
-                  { label: 'Liquidity', val: scored.dims.liquidity, max: rankConfig!.weightLiquidity },
+                  { label: 'IV Quality', val: scored.dims.ivr,       max: 30 },
+                  { label: 'Trend',      val: scored.dims.momentum,  max: 25 },
+                  { label: 'Safety',     val: scored.dims.range,     max: 25 },
+                  { label: 'Event Risk', val: scored.dims.technical, max: 10 },
+                  { label: 'Credit',     val: scored.dims.liquidity, max: 10 },
                 ].map(d => (
                   <div key={d.label} className="text-center">
                     <p className={`text-[8px] ${th.textFaint} mb-1`}>{d.label}</p>
@@ -2362,6 +2892,63 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               🔍 FIND BEST
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Portfolio risk banner */}
+      {portfolioRisk && portfolioRisk.level !== 'clear' && (
+        <div className={`border-t px-4 py-2.5 rounded-b-lg ${
+          portfolioRisk.level === 'same_strikes'
+            ? 'border-red-500/40 bg-red-500/8'
+            : portfolioRisk.level === 'synthetic_ic'
+            ? 'border-purple-500/30 bg-purple-500/8'
+            : 'border-amber-500/30 bg-amber-500/8'
+        }`} onClick={e => e.stopPropagation()}>
+          {/* Warnings */}
+          <div className="flex items-start gap-2 mb-1.5">
+            <span className={`text-sm shrink-0 mt-0.5 ${
+              portfolioRisk.level === 'same_strikes' ? 'text-red-400'
+              : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-400'
+              : 'text-amber-400'
+            }`}>⚠</span>
+            <div className="space-y-0.5">
+              {portfolioRisk.warnings.map((w, i) => (
+                <p key={i} className={`text-[10px] font-bold ${
+                  portfolioRisk.level === 'same_strikes' ? 'text-red-300'
+                  : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-300'
+                  : 'text-amber-300'
+                }`}>{w}</p>
+              ))}
+            </div>
+          </div>
+          {/* Recommendation */}
+          <p className={`text-[10px] leading-relaxed ml-5 ${
+            portfolioRisk.level === 'same_strikes' ? 'text-red-400/80'
+            : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-400/80'
+            : 'text-amber-400/80'
+          }`}>{portfolioRisk.recommendation}</p>
+        </div>
+      )}
+
+      {/* Existing position banner */}
+      {matchingPositions.length > 0 && (
+        <div className="border-t border-amber-500/30 bg-amber-500/8 px-4 py-2 flex items-center gap-3 flex-wrap rounded-b-lg"
+             onClick={e => e.stopPropagation()}>
+          <span className="text-[9px] font-bold text-amber-400 tracking-widest shrink-0 uppercase">▸ Open Position</span>
+          {matchingPositions.map((p, i) => (
+            <div key={i} className="flex items-center gap-2 text-[10px]" style={{ fontFamily: "'DM Mono', monospace" }}>
+              <span className={`px-1.5 py-0.5 border rounded text-[9px] font-bold ${
+                p.strategy === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
+                : p.strategy === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
+                : p.strategy === 'IC' ? 'border-blue-600 text-blue-400 bg-blue-500/10'
+                : 'border-amber-600 text-amber-400 bg-amber-500/10'
+              }`}>{p.strategy}</span>
+              <span className="text-amber-300/90 font-medium">{p.strikes}</span>
+              <span className="text-amber-500/70">exp {p.expDate}</span>
+              <span className="text-amber-500/70">×{p.qty}</span>
+              {i < matchingPositions.length - 1 && <span className="text-amber-700 mx-1">·</span>}
+            </div>
+          ))}
         </div>
       )}
 
@@ -3443,12 +4030,25 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 }
 
 // ── Best Opportunity Finder ────────────────────────────────────────────────
+interface PillarScores {
+  ivQuality:  number;  // 30 pts — IVR level + IV vs HV30
+  trend:      number;  // 25 pts — trend alignment, MA structure, subtype
+  safety:     number;  // 25 pts — buffer % × DTE interaction
+  eventRisk:  number;  // 10 pts — earnings within expiry + gap risk
+  credit:     number;  // 10 pts — credit ratio + ROC
+  total:      number;  // 0-100
+}
+
+type FullGrade = 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'D' | 'F';
+
 interface BestSetup {
   strategy: string;
-  grade: 'A+' | 'A' | 'B' | 'C';
+  grade: FullGrade;
   setup: SpreadCandidate;
   score: number;
+  pillars: PillarScores;
   notes: string[];
+  flags: string[]; // warnings that don't disqualify but matter
   result: ScreenResult;
 }
 
@@ -3499,20 +4099,14 @@ function BestOpportunityFinder({
 
   const scoreCandidateLocal = (result: ScreenResult, strat: string): BestSetup | null => {
     if (!result.qualified || !result.bestCandidate) return null;
-    const c = result.bestCandidate;
-    const ivrScore = Math.min(result.ivr ?? 30, 100);
-    const score = (c.roc || 0) * 0.35 + ((c.pop || 70) * 0.30) + (c.creditRatio * 100 * 0.15) + (ivrScore * 0.20);
-    let grade: BestSetup['grade'] = 'C';
-    if (score > 75) grade = 'A+'; else if (score > 62) grade = 'A'; else if (score > 50) grade = 'B';
-    const notes: string[] = [];
-    if (c.dte < 35) notes.push(`DTE is ${c.dte} — shorter side, watch 21 DTE closely`);
-    if (c.dte < 29) notes.push(`⚠ Short term setup — active daily management required, gamma risk elevated`);
-    if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% elevated — verify no binary event`);
-    if (result.ivr && result.ivr < 35) notes.push(`IVR ${result.ivr.toFixed(0)}% — low volatility environment, premium is thin, size down or wait`);
-    else if (result.ivr && result.ivr < 50) notes.push(`IVR ${result.ivr.toFixed(0)}% — moderate volatility, grade reflects reduced premium opportunity`);
-    if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
-    if (notes.length === 0) notes.push('Clean setup — all rules pass');
-    return { strategy: strat, grade, setup: c, score, notes, result };
+    const { pillars, flags, notes } = computePillarScore(result, strat);
+    const total = pillars.total;
+    const grade: FullGrade =
+      total >= 90 ? 'A+' : total >= 85 ? 'A' : total >= 80 ? 'A-' :
+      total >= 75 ? 'B+' : total >= 70 ? 'B' : total >= 65 ? 'B-' :
+      total >= 60 ? 'C+' : total >= 50 ? 'C' : total >= 40 ? 'D' : 'F';
+    if (notes.length === 0 && flags.length === 0) notes.push('Clean setup — all pillars pass');
+    return { strategy: strat, grade, setup: result.bestCandidate, score: total, pillars, notes, flags, result };
   };
 
   // Only run the preferred strategy. If none specified, run all three.
@@ -3559,7 +4153,11 @@ function BestOpportunityFinder({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
+  const gradeColor = (g: string) =>
+    g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-400' : g === 'A-' ? 'text-emerald-500' :
+    g === 'B+' ? 'text-yellow-300' : g === 'B' ? 'text-yellow-400' : g === 'B-' ? 'text-yellow-500' :
+    g === 'C+' ? 'text-orange-300' : g === 'C' ? 'text-orange-400' :
+    g === 'D' ? 'text-red-400' : 'text-red-600';
 
   return (
     <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
@@ -3613,26 +4211,49 @@ function BestOpportunityFinder({
                 <div className="divide-y divide-[inherit]" style={{ borderColor: 'inherit' }}>
                   {level.ranked.map((setup, idx) => (
                     <div key={setup.strategy} className={`p-4 ${idx === 0 ? '' : 'opacity-80'}`}>
+                      {/* Header row */}
                       <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className={`text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border ${idx === 0 ? 'border-emerald-500 text-emerald-400' : idx === 1 ? 'border-slate-500 text-slate-400' : 'border-slate-700 text-slate-500'}`}>{idx + 1}</span>
                           <span className={`text-xs font-bold px-2 py-0.5 border rounded ${setup.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : setup.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{setup.strategy}</span>
                           {preferredStrategy && setup.strategy !== preferredStrategy && (
                             <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/60 bg-yellow-500/10 text-yellow-400 font-bold">⚠ contradicts {preferredStrategy} box</span>
                           )}
-                          <span className={`text-xs font-bold ${gradeColor(setup.grade)}`}>Grade {setup.grade}</span>
-                          <span className={`text-[9px] ${th.textFaint}`}>score {setup.score.toFixed(1)}</span>
+                          {/* Grade + Score badge */}
+                          <span className={`text-sm font-black ${gradeColor(setup.grade)}`}>{setup.grade}</span>
+                          <span className={`text-[10px] font-bold ${th.text}`}>{setup.score}/100</span>
                         </div>
                         <button
                           onClick={() => {
                             const strikesStr = setup.strategy === 'IC' && setup.setup.shortCallStrike != null
                               ? `Puts: ${setup.setup.shortStrike}/${setup.setup.longStrike} · Calls: ${setup.setup.shortCallStrike}/${setup.setup.longCallStrike}`
                               : `${setup.setup.shortStrike}/${setup.setup.longStrike}`;
-                            alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${strikesStr}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`);
+                            alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nGrade ${setup.grade} · ${setup.score}/100\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${strikesStr}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`);
                           }}
                           className="text-[9px] px-2 py-1 border border-emerald-600 text-emerald-400 rounded hover:bg-emerald-600/10 transition-colors font-medium tracking-wider"
                         >TRADE →</button>
                       </div>
+
+                      {/* 5-Pillar score bars */}
+                      <div className="grid grid-cols-5 gap-1.5 mb-3">
+                        {[
+                          { label: 'IV Quality',  val: setup.pillars.ivQuality, max: 30, color: 'bg-blue-500' },
+                          { label: 'Trend',       val: setup.pillars.trend,     max: 25, color: 'bg-emerald-500' },
+                          { label: 'Safety',      val: setup.pillars.safety,    max: 25, color: 'bg-yellow-500' },
+                          { label: 'Event Risk',  val: setup.pillars.eventRisk, max: 10, color: 'bg-orange-500' },
+                          { label: 'Credit',      val: setup.pillars.credit,    max: 10, color: 'bg-purple-500' },
+                        ].map(p => (
+                          <div key={p.label} className="text-center">
+                            <p className={`text-[8px] ${th.textFaint} mb-1 truncate`}>{p.label}</p>
+                            <div className="h-1 rounded-full bg-slate-700 mb-0.5">
+                              <div className={`h-full rounded-full ${p.color}`} style={{ width: `${p.max > 0 ? (p.val / p.max) * 100 : 0}%` }} />
+                            </div>
+                            <p className={`text-[9px] font-bold ${th.text}`}>{p.val}<span className={`${th.textFaint} font-normal`}>/{p.max}</span></p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Trade data */}
                       <div className="grid grid-cols-4 gap-3 mb-2">
                         <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.expiration} <span className="text-slate-500">({setup.setup.dte}d)</span></p></div>
                         <div>
@@ -3657,7 +4278,19 @@ function BestOpportunityFinder({
                           )}
                         </div>
                       </div>
-                      <p className={`text-[9px] ${th.textFaint}`}>{setup.notes[0]}</p>
+
+                      {/* Notes */}
+                      {setup.notes.length > 0 && (
+                        <p className={`text-[9px] text-emerald-400/80 mb-1`}>✓ {setup.notes[0]}</p>
+                      )}
+                      {/* Flags */}
+                      {setup.flags.length > 0 && (
+                        <div className="space-y-0.5">
+                          {setup.flags.map((f, i) => (
+                            <p key={i} className="text-[9px] text-yellow-400/80">⚠ {f}</p>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -3704,14 +4337,24 @@ export default function Home() {
   const [icTickers, setIcTickers] = useState('');
   const [brokenTickers, setBrokenTickers] = useState('');
   const [pmccTickers, setPmccTickers] = useState('');
-  const [results, setResults] = useState<ScreenResult[]>([]);
-  const [rawScanCache, setRawScanCache] = useState<RawScanEntry[]>([]);
+  const [results, setResults] = useState<ScreenResult[]>(() => {
+    try { const s = localStorage.getItem(LS_RESULTS_CACHE); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [rawScanCache, setRawScanCache] = useState<RawScanEntry[]>(() => {
+    try { const s = localStorage.getItem(LS_RAW_SCAN_CACHE); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [resultsCachedAt, setResultsCachedAt] = useState<number | null>(() => {
+    try { const s = localStorage.getItem(LS_RESULTS_CACHE_AT); return s ? parseInt(s, 10) : null; } catch { return null; }
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [showRunModal, setShowRunModal] = useState(false);
   const [tradeResult, setTradeResult] = useState<ScreenResult | null>(null);
+  const [deepAnalysis, setDeepAnalysis] = useState<boolean>(() => {
+    try { return localStorage.getItem(LS_DEEP_ANALYSIS) !== 'false'; } catch { return true; }
+  });
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
   const [runtimeEtfRules, setRuntimeEtfRules] = useState<RulesType>(getSavedEtfRules);
@@ -3729,6 +4372,10 @@ export default function Home() {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
   });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
+  const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
+  useEffect(() => {
+    loadExistingPositions().then(setExistingPositions).catch(() => {});
+  }, []);
   useEffect(() => {
     try {
       setBpsTickers(localStorage.getItem(LS_BPS) || '');
@@ -3739,11 +4386,15 @@ export default function Home() {
     } catch {}
   }, []);
 
-  const handleBpsChange = (v: string) => { setBpsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BPS, v); } catch {} };
-  const handleBcsChange = (v: string) => { setBcsTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_BCS, v); } catch {} };
-  const handleIcChange = (v: string) => { setIcTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_IC, v); } catch {} };
+  const clearResultsCache = () => {
+    setResults([]); setRawScanCache([]); setResultsCachedAt(null);
+    try { localStorage.removeItem(LS_RESULTS_CACHE); localStorage.removeItem(LS_RAW_SCAN_CACHE); localStorage.removeItem(LS_RESULTS_CACHE_AT); } catch {}
+  };
+  const handleBpsChange = (v: string) => { setBpsTickers(v); clearResultsCache(); try { localStorage.setItem(LS_BPS, v); } catch {} };
+  const handleBcsChange = (v: string) => { setBcsTickers(v); clearResultsCache(); try { localStorage.setItem(LS_BCS, v); } catch {} };
+  const handleIcChange = (v: string) => { setIcTickers(v); clearResultsCache(); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
-  const handlePmccChange = (v: string) => { setPmccTickers(v); setRawScanCache([]); try { localStorage.setItem(LS_PMCC, v); } catch {} };
+  const handlePmccChange = (v: string) => { setPmccTickers(v); clearResultsCache(); try { localStorage.setItem(LS_PMCC, v); } catch {} };
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); if (!newBps && !newBcs && !newIc && !newBroken) { setResults([]); setAutoTrendEntries([]); } };
   const showLoadPrompt = (state: Omit<LoadPromptState, 'show'>) => { setLoadPrompt({ show: true, ...state }); };
 
@@ -3800,11 +4451,18 @@ export default function Home() {
     }
 
     setResults(screenResults);
+    const applyTs = Date.now();
+    setResultsCachedAt(applyTs);
+    try {
+      localStorage.setItem(LS_RESULTS_CACHE, JSON.stringify(screenResults));
+      localStorage.setItem(LS_RESULTS_CACHE_AT, String(applyTs));
+    } catch {}
   }, [rawScanCache, screenMode, rankConfig]);
 
   const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
     setError('');
-    setResults([]);
+    setResults([]); setResultsCachedAt(null);
+    try { localStorage.removeItem(LS_RESULTS_CACHE); localStorage.removeItem(LS_RESULTS_CACHE_AT); } catch {}
     setAutoTrendEntries([]);
 
     const autoList = parseTickers(autoTickers);
@@ -3902,6 +4560,7 @@ export default function Home() {
 
       // Store raw cache for instant re-filtering
       setRawScanCache(scanCache);
+      try { localStorage.setItem(LS_RAW_SCAN_CACHE, JSON.stringify(scanCache)); } catch {}
 
       // Remove duplicates and sort
       const uniqueResults = screenResults.filter((r, index, self) =>
@@ -3924,6 +4583,12 @@ export default function Home() {
       }
 
       setResults(uniqueResults);
+      const cacheTs = Date.now();
+      setResultsCachedAt(cacheTs);
+      try {
+        localStorage.setItem(LS_RESULTS_CACHE, JSON.stringify(uniqueResults));
+        localStorage.setItem(LS_RESULTS_CACHE_AT, String(cacheTs));
+      } catch {}
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -3938,7 +4603,7 @@ export default function Home() {
   return (
     <div className={`min-h-screen ${th.bg} text-slate-100 transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       {/* Header */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between`}>
+      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
         <div className="flex items-center gap-4">
           <div>
             <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
@@ -3946,8 +4611,10 @@ export default function Home() {
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
-            <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
-            <a href="/portfolio#performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
+            <a href="/portfolio"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
+            <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</a>
+            <a href="/trade-log"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
+            <a href="/performance"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
           </nav>
         </div>
         
@@ -4065,6 +4732,23 @@ export default function Home() {
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
+          {/* Deep Analysis toggle */}
+          <div className={`flex items-center justify-between px-3 py-2 rounded-lg border ${deepAnalysis ? 'border-blue-700 bg-blue-500/5' : `${th.borderLight} ${th.card}`}`}>
+            <div>
+              <p className={`text-[9px] font-bold tracking-wider ${deepAnalysis ? 'text-blue-400' : th.textFaint}`}>DEEP ANALYSIS</p>
+              <p className={`text-[8px] ${th.textFaint} leading-tight`}>{deepAnalysis ? 'HV30 + gap risk scoring active' : 'Quantitative only — faster'}</p>
+            </div>
+            <button
+              onClick={() => {
+                const next = !deepAnalysis;
+                setDeepAnalysis(next);
+                try { localStorage.setItem(LS_DEEP_ANALYSIS, String(next)); } catch {}
+              }}
+              className={`w-8 h-4 rounded-full transition-all relative ${deepAnalysis ? 'bg-blue-600' : 'bg-slate-700'}`}>
+              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${deepAnalysis ? 'left-4' : 'left-0.5'}`} />
+            </button>
+          </div>
+
           <button onClick={() => setShowRunModal(true)} disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
@@ -4174,8 +4858,11 @@ export default function Home() {
                     </>
                   )}
                   <span className={th.textFaint}>{results.length} SCANNED</span>
-                  {rawScanCache.length > 0 && (
-                    <span className="text-purple-400 border border-purple-700 rounded px-1.5 py-0.5 text-[9px]" title="Filters applied to cached scan — click RUN HUNTER to rescan">⚡ cached</span>
+                  {results.length > 0 && resultsCachedAt && (
+                    <span className="text-purple-400 border border-purple-700 rounded px-1.5 py-0.5 text-[9px]" title="Results restored from last scan — click RUN HUNTER to rescan">
+                      {rawScanCache.length > 0 ? '⚡ cached' : '↺ restored'}{' '}
+                      <span className="text-purple-500/70">{(() => { const mins = Math.round((Date.now() - resultsCachedAt) / 60000); return mins < 60 ? `${mins}m ago` : `${Math.round(mins/60)}h ago`; })()}</span>
+                    </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
@@ -4219,13 +4906,13 @@ export default function Home() {
                   {qualified.length > 0 && (
                     <div>
                       <p className="text-[9px] text-emerald-500 tracking-widest mb-2 font-medium">QUALIFIED</p>
-                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                      <div className="space-y-2">{qualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} />)}</div>
                     </div>
                   )}
                   {disqualified.length > 0 && (
                     <div>
                       <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>DISQUALIFIED</p>
-                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} />)}</div>
+                      <div className="space-y-2">{disqualified.map(r => <ResultCard key={`${r.symbol}-${r.strategy}`} result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} />)}</div>
                     </div>
                   )}
                 </>
@@ -4235,7 +4922,7 @@ export default function Home() {
                   <div className="space-y-2">{results.map((r, i) => (
                     <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} /></div>
+                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} /></div>
                     </div>
                   ))}</div>
                 </div>
