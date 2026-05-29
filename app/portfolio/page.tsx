@@ -889,14 +889,14 @@ function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' =
   // A closing spread order is a debit — we pay to buy back what we sold.
   // Use price-effect: Debit with a POSITIVE price value (the absolute amount).
   // Both formats have been seen in the wild; using positive + price-effect is safest.
+  // TastyTrade rejects Market orders on multi-leg spreads.
+  // Always use Limit. Floor at $0.01 — TT accepts this as a valid close price
+  // and will fill at market when the spread is essentially worthless.
   const safePrice = Math.max(limitPrice, 0.01);
-  // When spread is worth less than $0.05/contract, switch to Market order.
-  // A limit at $0.01 risks not filling if the market is $0.02-$0.03.
-  // Market order closes immediately at whatever price is available.
-  const useMarket = safePrice <= 0.05;
-  const orderBody: any = {
-    'order-type': useMarket ? 'Market' : 'Limit',
-    'time-in-force': useMarket ? 'Day' : effectiveTif, // Market orders must be Day
+  return {
+    'order-type': 'Limit',
+    'time-in-force': effectiveTif,
+    price: safePrice.toFixed(2),
     'price-effect': 'Debit',
     legs: pos.legs.map(leg => ({
       symbol: leg.symbol,
@@ -905,10 +905,6 @@ function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' =
       'instrument-type': itype,
     })),
   };
-  if (!useMarket) {
-    orderBody.price = safePrice.toFixed(2);
-  }
-  return orderBody;
 }
 
 function buildOpenSpreadOrder(
