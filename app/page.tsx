@@ -850,7 +850,7 @@ function computePillarScore(result: ScreenResult, strategy: string): { pillars: 
   }
 
   // Gap / volatility risk (4 pts) — from Yahoo bars momentum data
-  const maxMom10 = Math.abs(t?.metrics?.momentum10 ?? 0);
+  const maxMom10 = Math.abs(t?.metrics?.momentum20 ?? 0);
   if      (maxMom10 > 0.12) { p4 += 1; flags.push(`Sharp move >12% in last 10 days — gap risk elevated`); }
   else if (maxMom10 > 0.07) { p4 += 2.5; flags.push(`Elevated recent volatility — watch for continuation gaps`); }
   else                       { p4 += 4; }
