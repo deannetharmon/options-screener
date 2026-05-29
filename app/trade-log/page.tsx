@@ -1,5 +1,6 @@
 // path: app/trade-log/page.tsx
 'use client';
+import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
@@ -15,38 +16,10 @@ if (typeof document !== 'undefined') {
 
 const BASE       = 'https://api.tastytrade.com';
 const CLIENT_ID  = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-const LS_THEME   = 'hunter-theme';
 
-// ── Accent Colors ──────────────────────────────────────────────────────────
-const LS_ACCENT = 'hunter-accent';
 
-const ACCENTS = {
-  electric: { hex: '#3b82f6', label: 'Electric',  tw: 'blue' },
-  emerald:  { hex: '#10b981', label: 'Emerald',   tw: 'emerald' },
-  amber:    { hex: '#f59e0b', label: 'Amber',     tw: 'amber' },
-  violet:   { hex: '#8b5cf6', label: 'Violet',    tw: 'violet' },
-  rose:     { hex: '#f43f5e', label: 'Rose',      tw: 'rose' },
-  slate:    { hex: '#64748b', label: 'Slate',     tw: 'slate' },
-} as const;
-type Accent = keyof typeof ACCENTS;
 
-function getSavedAccent(): Accent {
-  try { const a = localStorage.getItem(LS_ACCENT); return (a && a in ACCENTS) ? a as Accent : 'electric'; }
-  catch { return 'electric'; }
-}
 
-function applyAccent(accent: Accent) {
-  const hex = ACCENTS[accent].hex;
-  if (typeof document !== 'undefined') {
-    document.documentElement.style.setProperty('--accent', hex);
-    const r = parseInt(hex.slice(1,3),16);
-    const g = parseInt(hex.slice(3,5),16);
-    const b = parseInt(hex.slice(5,7),16);
-    document.documentElement.style.setProperty('--accent-r', String(r));
-    document.documentElement.style.setProperty('--accent-g', String(g));
-    document.documentElement.style.setProperty('--accent-b', String(b));
-  }
-}
 
 
 const LS_DEVICE  = 'hunter-device-id';
@@ -58,15 +31,6 @@ const LS_TL_6M   = 'hunter-tradelog-6m';
 const LS_TL_12M  = 'hunter-tradelog-12m';
 const CACHE_VERSION = 'v3'; // bump to invalidate stale caches
 
-type Theme = 'dark' | 'medium' | 'light';
-const THEMES = {
-  dark:   { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#0f0f0f]', card: 'bg-[#171717]', border: 'border-[#2c2c2c]', borderLight: 'border-[#202020]', header: 'bg-[#0f0f0f]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#808080]', input: 'bg-[#141414]', inputBorder: 'border-[#353535]', tag: 'bg-[#222222]', label: 'text-[#aaaaaa]' },
-  medium: { bg: 'bg-[#141414]', sidebar: 'bg-[#1a1a1a]', card: 'bg-[#202020]', border: 'border-[#333333]', borderLight: 'border-[#282828]', header: 'bg-[#1a1a1a]', text: 'text-white', textMuted: 'text-[#d8d8d8]', textFaint: 'text-[#777777]', input: 'bg-[#1e1e1e]', inputBorder: 'border-[#3a3a3a]', tag: 'bg-[#2a2a2a]', label: 'text-[#999999]' },
-  light:  { bg: 'bg-[#f5f5f5]', sidebar: 'bg-white', card: 'bg-white', border: 'border-[#e0e0e0]', borderLight: 'border-[#ebebeb]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#1a1a1a]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#cccccc]', tag: 'bg-[#f0f0f0]', label: 'text-[#444444]' },
-};
-function getSavedTheme(): Theme {
-  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
-}
 
 type TimeRange = '1w' | '2w' | '1m' | '3m' | '6m' | '12m';
 type Outcome  = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
