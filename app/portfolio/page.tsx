@@ -1209,11 +1209,21 @@ async function loadPositions(): Promise<Position[]> {
           // Prefer underlying-symbol; fall back to parsing the OCC option symbol
           const underlying = leg['underlying-symbol'];
           if (underlying) {
-            gtcSymbols.add(underlying.split(' ')[0].trim());
+            const sym = underlying.split(' ')[0].trim();
+            gtcSymbols.add(sym);
+            // Also add SPX↔SPXW variants
+            if (sym === 'SPXW') gtcSymbols.add('SPX');
+            if (sym === 'SPX') gtcSymbols.add('SPXW');
+            console.log(`COMPLEX LEG underlying=${underlying} added=${sym}`);
           } else if (leg.symbol) {
             // OCC format: SPX   260726P07290000 — split on first digit sequence
             const fromOcc = leg.symbol.split(/\d{6}/)[0].trim();
-            if (fromOcc) gtcSymbols.add(fromOcc);
+            if (fromOcc) {
+              gtcSymbols.add(fromOcc);
+              if (fromOcc === 'SPXW') gtcSymbols.add('SPX');
+              if (fromOcc === 'SPX') gtcSymbols.add('SPXW');
+              console.log(`COMPLEX LEG occ=${leg.symbol} added=${fromOcc}`);
+            }
           }
         }
       }
@@ -1312,12 +1322,14 @@ async function loadPositions(): Promise<Position[]> {
       hasGtc: (() => {
         // Check both the position symbol and its weekly option variant
         // SPX positions may have SPXW option legs; SPXW positions may have SPXW legs
-        if (gtcSymbols.has(symbol)) return true;
+        if (gtcSymbols.has(symbol)) { console.log(`HASGТС ${symbol}: direct match`); return true; }
         // Map underlying to possible OCC prefix variants
         const variants: Record<string, string> = { 'SPX': 'SPXW', 'NDX': 'NDXP', 'RUT': 'RUTW', 'VIX': 'VIXW' };
         const reverseVariants: Record<string, string> = { 'SPXW': 'SPX', 'NDXP': 'NDX', 'RUTW': 'RUT', 'VIXW': 'VIX' };
         const variant = variants[symbol] ?? reverseVariants[symbol];
-        return variant ? gtcSymbols.has(variant) : false;
+        const result = variant ? gtcSymbols.has(variant) : false;
+        console.log(`HASGTC ${symbol}: variant=${variant} result=${result} gtcSymbols=[${Array.from(gtcSymbols).join(',')}]`);
+        return result;
       })(),
       gtcOrderId: (() => {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
