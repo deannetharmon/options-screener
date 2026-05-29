@@ -1,31 +1,8 @@
 // app/portfolio/page.tsx
 
 'use client';
+import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 
-// ── Accent Colors ──────────────────────────────────────────────────────────
-const LS_ACCENT = 'hunter-accent';
-const ACCENTS = {
-  electric: { hex: '#3b82f6', label: 'Electric' },
-  emerald:  { hex: '#10b981', label: 'Emerald' },
-  amber:    { hex: '#f59e0b', label: 'Amber' },
-  violet:   { hex: '#8b5cf6', label: 'Violet' },
-  rose:     { hex: '#f43f5e', label: 'Rose' },
-  slate:    { hex: '#64748b', label: 'Slate' },
-} as const;
-type Accent = keyof typeof ACCENTS;
-function getSavedAccent(): Accent {
-  try { const a = localStorage.getItem(LS_ACCENT); return (a && a in ACCENTS) ? a as Accent : 'electric'; } catch { return 'electric'; }
-}
-function applyAccent(accent: Accent) {
-  const hex = ACCENTS[accent].hex;
-  if (typeof document !== 'undefined') {
-    document.documentElement.style.setProperty('--accent', hex);
-    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-    document.documentElement.style.setProperty('--accent-r', String(r));
-    document.documentElement.style.setProperty('--accent-g', String(g));
-    document.documentElement.style.setProperty('--accent-b', String(b));
-  }
-}
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
@@ -49,9 +26,9 @@ if (typeof document !== 'undefined') {
 
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
-  if (!document.getElementById('prosper-font')) {
+  if (!document.getElementById('hunter-font')) {
     const link = document.createElement('link');
-    link.id = 'prosper-font';
+    link.id = 'hunter-font';
     link.rel = 'stylesheet';
     link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=DM+Mono:wght@400;500&display=swap';
     document.head.appendChild(link);
@@ -60,11 +37,11 @@ if (typeof document !== 'undefined') {
 
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-const LS_PROFIT_TARGETS = 'prosper-profit-targets';
-const LS_AUDIT_LOG = 'prosper-audit-log';
-const LS_THEME = 'prosper-theme';
-const LS_MEMORY = 'prosper-trading-memory';
-const LS_DRY_RUN = 'prosper-dry-run';
+const LS_PROFIT_TARGETS = 'hunter-profit-targets';
+const LS_AUDIT_LOG = 'hunter-audit-log';
+const LS_THEME = 'hunter-theme';
+const LS_MEMORY = 'hunter-trading-memory';
+const LS_DRY_RUN = 'hunter-dry-run';
 const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
 const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
 const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
@@ -81,7 +58,6 @@ function setDryRun(val: boolean) {
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
-type Theme = 'dark' | 'medium' | 'light';
 type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
 
 interface PositionLeg {
@@ -265,7 +241,7 @@ interface RollSuggestion {
   longOi: number | null;
   shortBidAsk: number | null;   // ask - bid on short leg
   longBidAsk: number | null;    // ask - bid on long leg
-  // Prosper rule checks
+  // Rule checks
   ruleViolations: string[];     // empty = all clear, strings = specific violations
   meetsMinCredit: boolean;      // credit >= 1/3 spread width
   meetsDte: boolean;            // 30-45 DTE
@@ -275,19 +251,7 @@ interface RollSuggestion {
 }
 
 // ── Theme ──────────────────────────────────────────────────────────────────
-const THEMES: Record<Theme, {
-  bg: string; sidebar: string; card: string; border: string; borderLight: string;
-  header: string; text: string; textMuted: string; textFaint: string;
-  input: string; inputBorder: string; tag: string; label: string;
-}> = {
-  dark:   { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#0f0f0f]', card: 'bg-[#171717]', border: 'border-[#2c2c2c]', borderLight: 'border-[#202020]', header: 'bg-[#0f0f0f]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#808080]', input: 'bg-[#141414]', inputBorder: 'border-[#353535]', tag: 'bg-[#222222]', label: 'text-[#aaaaaa]' },
-  medium: { bg: 'bg-[#141414]', sidebar: 'bg-[#1a1a1a]', card: 'bg-[#202020]', border: 'border-[#333333]', borderLight: 'border-[#282828]', header: 'bg-[#1a1a1a]', text: 'text-white', textMuted: 'text-[#d8d8d8]', textFaint: 'text-[#777777]', input: 'bg-[#1e1e1e]', inputBorder: 'border-[#3a3a3a]', tag: 'bg-[#2a2a2a]', label: 'text-[#999999]' },
-  light:  { bg: 'bg-[#f5f5f5]', sidebar: 'bg-white', card: 'bg-white', border: 'border-[#e0e0e0]', borderLight: 'border-[#ebebeb]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#1a1a1a]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#cccccc]', tag: 'bg-[#f0f0f0]', label: 'text-[#444444]' },
-};
 
-function getSavedTheme(): Theme {
-  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
-}
 
 // ── Market Hours ───────────────────────────────────────────────────────────
 function isMarketOpen(): boolean {
@@ -334,7 +298,7 @@ function exportAuditCsv() {
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `prosper-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.href = url; a.download = `hunter-audit-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click(); URL.revokeObjectURL(url);
 }
 
@@ -769,7 +733,7 @@ async function fetchFreshPositionPrice(pos: Position, token: string): Promise<nu
 async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSuggestion | null> {
   try {
     const optType = pos.strategy === 'BCS' ? 'C' : 'P';
-    // Delta targets per Prosper rules: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
+    // Delta targets: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
     const targetDelta = pos.strategy === 'BCS' ? 0.25 : -0.25;
     const deltaMin = pos.strategy === 'BCS' ?  0.20 : -0.30;
     const deltaMax = pos.strategy === 'BCS' ?  0.30 : -0.20;
@@ -860,7 +824,7 @@ async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSu
     const shortBidAsk = parseFloat((best.ask - best.bid).toFixed(2));
     const longBidAsk  = longLegData ? parseFloat((longLegData.ask - longLegData.bid).toFixed(2)) : null;
 
-    // Step 8: Prosper rule validation
+    // Step 8: Rule validation
     const ruleViolations: string[] = [];
     const meetsMinCredit = creditRatio >= (1/3);
     const meetsDte       = dte >= 30 && dte <= 45;
@@ -1516,7 +1480,7 @@ function getExtendSignal(pos: Position): string | null {
 }
 
 // ── AI Analysis ───────────────────────────────────────────────────────────
-const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
+const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Options Hunter methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
 
 You are in a live conversation about a specific position or portfolio. The trader has already seen a structured analysis. They are now asking follow-up questions to dig deeper.
 
@@ -1530,7 +1494,7 @@ You know the methodology deeply:
 
 Keep responses focused and concise — 3-6 sentences unless the question genuinely requires more. If the trader asks about rolling, give specific guidance on strikes and expiry. If they ask about risk, quantify it. If they're thinking about something wrong, say so directly.`;
 
-const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
+const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Options Hunter methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
 
 CORE METHODOLOGY (know it deeply, apply it intelligently):
 - Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound
@@ -2221,7 +2185,7 @@ function BatchConfirmModal({
               const inputCredit = parseFloat(ri.credit);
               const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
               if (inputWidth > 0 && inputCredit < inputWidth / 3) {
-                throw new Error(`Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). This roll doesn't meet the Prosper credit rule.`);
+                throw new Error(`Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). This roll doesn't meet the credit rule.`);
               }
 
               let finalCredit = inputCredit;
@@ -2643,7 +2607,7 @@ function BatchConfirmModal({
                             if (inputCredit > 0 && inputRatio < 1/3) {
                               return (
                                 <p className="text-[9px} text-red-400">
-                                  ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Prosper credit rule
+                                  ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates credit rule
                                 </p>
                               );
                             }
@@ -2864,7 +2828,7 @@ function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[T
             <div className="flex flex-col items-center justify-center h-40 gap-2">
               <p className={`text-sm ${th.textFaint}`}>No trades recorded yet</p>
               <p className={`text-[10px] ${th.textFaint} text-center max-w-xs`}>
-                Memory builds automatically as you execute trades through Prosper. Each trade teaches the verdict engine your patterns.
+                Memory builds automatically as you execute trades through Options Hunter. Each trade teaches the verdict engine your patterns.
               </p>
             </div>
           )}
@@ -3788,7 +3752,7 @@ interface StopGtcSuggestion {
   deviationNote: string | null;
 }
 
-const STOP_GTC_SYSTEM_PROMPT = `You are an expert options trader specializing in credit spreads using the Prosper Trading methodology. Your job is to recommend optimal GTC profit-target and stop-loss prices for an open spread position.
+const STOP_GTC_SYSTEM_PROMPT = `You are an expert options trader specializing in credit spreads using the Options Hunter methodology. Your job is to recommend optimal GTC profit-target and stop-loss prices for an open spread position.
 
 CRITICAL RULE — STOP MUST BE ABOVE CURRENT SPREAD VALUE:
 The stop trigger price MUST be strictly above the current spread value (buyback cost). A stop at or below the current value would execute immediately and be rejected by the broker. This is a hard constraint — never violate it.
@@ -5047,7 +5011,7 @@ function BulkActionBar({ selectedKeys, positions, onExecute, onClear, th }: {
 // ── Performance Panel ──────────────────────────────────────────────────────
 function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
   const auditLog: AuditEntry[] = (() => {
-    try { return JSON.parse(localStorage.getItem('prosper-audit-log') ?? '[]'); } catch { return []; }
+    try { return JSON.parse(localStorage.getItem('hunter-audit-log') ?? '[]'); } catch { return []; }
   })();
 
   const closed = auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
