@@ -2455,8 +2455,10 @@ function BatchConfirmModal({
                     {r.error && (
                       <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
                         <p className="text-[10px] text-red-300 leading-relaxed">
-                          {r.error.includes('cannot_update_order') || r.error.includes('cancel')
-                            ? `Existing GTC order could not be cancelled automatically — it may be partially filled. Cancel it manually in TastyTrade first, then retry.`
+                          {r.error.includes('cannot_close_against_more_than_existing') || r.error.includes('closing order')
+                            ? `TastyTrade blocked this order because an existing closing order is already working on this position. Go to TastyTrade → Activity → Working Orders, cancel the existing GTC on ${r.symbol}, then retry here.`
+                            : r.error.includes('cannot_update_order') || r.error.includes('cancel')
+                            ? `The existing GTC order could not be cancelled automatically. Cancel it manually in TastyTrade first, then retry.`
                             : r.error}
                         </p>
                       </div>
