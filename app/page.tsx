@@ -4257,7 +4257,7 @@ export default function Home() {
   const [accent, setAccent] = useState<Accent>(getSavedAccent);
   const th = THEMES[theme];
   useEffect(() => { applyAccent(accent); }, [accent]);
-  useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
+  useEffect(() => { applyAccent(getSavedAccent()); }, []);
 
   const [autoTickers, setAutoTickers] = useState('');
   const autoFileRef = useRef<HTMLInputElement>(null);
