@@ -96,7 +96,6 @@ interface ScreenResult {
   failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
   isEtf?: boolean;
   ruleSetApplied?: string;
-  hv30?: number | null; // 30-day historical volatility from TastyTrade
   checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; };
 }
 interface ExistingPosition {
@@ -666,7 +665,6 @@ const LS_GLOBAL_SESSIONS = 'hunter-global-sessions';
 const LS_SCREEN_MODE = 'hunter-screen-mode';
 const LS_RANK_CONFIG = 'hunter-rank-config';
 const LS_SESSION_LOADED_AT = 'hunter-session-loaded-at';
-const LS_DEEP_ANALYSIS = 'hunter-deep-analysis';
 const LS_RESULTS_CACHE = 'hunter-results-cache';
 const LS_RAW_SCAN_CACHE = 'hunter-raw-scan-cache';
 const LS_RESULTS_CACHE_AT = 'hunter-results-cache-at';
@@ -702,208 +700,117 @@ interface DimensionScore {
   momentum: number; ivr: number; range: number; technical: number; liquidity: number; total: number;
 }
 
-// ── Shared 5-Pillar Scoring Engine ────────────────────────────────────────
-// Pillar 1: IV Quality       (30 pts) — IVR level + IV vs HV30
-// Pillar 2: Trend & Direction (25 pts) — alignment, MA structure, subtype
-// Pillar 3: Position Safety   (25 pts) — buffer % × DTE interaction (they only mean something together)
-// Pillar 4: Earnings & Gap    (10 pts) — binary event risk within the trade window
-// Pillar 5: Credit Quality    (10 pts) — credit ratio + ROC
-// OI: hard gate only — flagged as informational, never scored
-function computePillarScore(result: ScreenResult, strategy: string): { pillars: { ivQuality: number; trend: number; safety: number; eventRisk: number; credit: number; total: number }; flags: string[]; notes: string[] } {
+function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
   const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
-  const c = result.bestCandidate;
   const t = result.trendResult;
-  const flags: string[] = [];
-  const notes: string[] = [];
+  const c = result.bestCandidate;
 
-  // ── OI: informational flag only — not scored ──────────────────────────────
-  // OI is already hard-gated in runChecklist. Above the gate, it doesn't
-  // differentiate trade quality for 1-5 contract position sizes.
+  // ── Momentum (30pts) ──────────────────────────────────────────────────────
+  // trend engine momentum is signed (-48..+48); normalize by direction alignment
+  // When total directional score is very strong (>100), boost momentum slightly
+  let momentumRaw = 0;
+  if (t?.scores?.momentum != null) {
+    const raw = t.scores.momentum;
+    const totalScore = Math.abs(t.scores.total ?? raw);
+    // normalize: 45 = typical max momentum; total score >100 = very strong signal
+    const absNorm = clamp(Math.abs(raw) / 45);
+    const totalBoost = clamp(totalScore / 120); // strong total score adds up to 15% boost
+    const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
+    const aligned = expectedSign === 0 ? 0.7 : (Math.sign(raw) === expectedSign ? 1.0 : 0.3);
+    // IVR boost: when momentum is very strong, reduce IVR penalty weight
+    // (WFC fix: strong -135 BCS signal should rank high even with 39% IVR)
+    momentumRaw = clamp(absNorm * 0.75 + totalBoost * 0.25) * aligned;
+  } else if (t?.confidence != null) {
+    momentumRaw = clamp(t.confidence / 80);
+    if (t.trend === 'sideways' || t.trend === 'unknown') momentumRaw *= 0.5;
+  } else if (c) {
+    const pop = c.pop ?? 70;
+    momentumRaw = clamp((pop - 60) / 25);
+  }
+  const momentumScore = clamp(momentumRaw) * cfg.weightMomentum;
+
+  // ── IV Quality (25pts) ────────────────────────────────────────────────────
+  // When momentum is very strong, reduce effective IVR weight so it doesn't
+  // dominate over a clear directional signal (WFC: 39% IVR but -135 momentum)
+  const ivr = result.ivr ?? 0;
+  const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
+  const momentumStrength = t?.scores?.total != null ? clamp(Math.abs(t.scores.total) / 150) : 0;
+  const effectiveIvrWeight = cfg.weightIvr * (1 - momentumStrength * 0.35);
+  const ivrScore = clamp(ivrRaw) * effectiveIvrWeight;
+
+  // ── 52W Range Position (20pts) ────────────────────────────────────────────
+  // BPS near 52W highs (r60 > 0.85) gets penalized — stock is stretched
+  // BCS near 52W lows (r60 < 0.15) gets penalized — stock is stretched
+  // (CAT/GOOGL fix: at 93-97% of range, BPS is a risky setup)
+  let rangeRaw = 0.5;
+  if (t?.metrics?.range60 != null) {
+    const r60 = clamp(t.metrics.range60);
+    if (t.strategy === 'BPS') {
+      // near lows = good, but also penalize if stock is at extreme highs (exhaustion risk)
+      rangeRaw = r60 > 0.85 ? (1 - r60) * 2 : 1 - r60;
+    } else if (t.strategy === 'BCS') {
+      // near highs = good, but penalize extreme lows
+      rangeRaw = r60 < 0.15 ? r60 * 2 : r60;
+    } else {
+      rangeRaw = 1 - Math.abs(r60 - 0.5) * 2;
+    }
+  } else if (t?.metrics?.distFromMa50 != null) {
+    const dist = t.metrics.distFromMa50;
+    if (t.strategy === 'BPS') rangeRaw = clamp(1 - (dist + 0.15) / 0.30);
+    else if (t.strategy === 'BCS') rangeRaw = clamp((dist + 0.15) / 0.30);
+    else rangeRaw = clamp(1 - Math.abs(dist) / 0.20);
+  } else if (c) {
+    rangeRaw = clamp(c.roc / 40);
+  }
+  const rangeScore = clamp(rangeRaw) * cfg.weightRange;
+
+  // ── Technical (15pts) ─────────────────────────────────────────────────────
+  // MA alignment signed (-34..+34), slope signed (-22..+22)
+  let technicalRaw = 0;
+  if (t?.scores != null) {
+    const maRaw = t.scores.maAlignment ?? 0;
+    const slopeRaw = t.scores.slope ?? 0;
+    const expectedSign = t.strategy === 'BPS' ? 1 : t.strategy === 'BCS' ? -1 : 0;
+    const maNorm = expectedSign === 0
+      ? clamp(Math.abs(maRaw) / 34)
+      : clamp((maRaw * expectedSign + 34) / 68);
+    const slopeNorm = expectedSign === 0
+      ? clamp(Math.abs(slopeRaw) / 22)
+      : clamp((slopeRaw * expectedSign + 22) / 44);
+    technicalRaw = maNorm * 0.6 + slopeNorm * 0.4;
+  } else if (t?.confidence != null) {
+    technicalRaw = clamp(t.confidence / 100) * 0.6;
+  } else if (c) {
+    const delta = c.shortDelta;
+    technicalRaw = delta >= 0.20 && delta <= 0.30 ? 1.0 : clamp(1 - Math.abs(delta - 0.25) / 0.15);
+  }
+  const technicalScore = clamp(technicalRaw) * cfg.weightTechnical;
+
+  // ── Liquidity (10pts) ─────────────────────────────────────────────────────
+  // OI is weighted heavily here — low OI means the spread is physically untradeable
+  // regardless of how good the other metrics look. OI < 100 is near-zero; OI >= 500 is full score.
+  let liquidityRaw = 0.4;
   if (c) {
     const minOI = Math.min(c.shortOI, c.longOI);
-    if (minOI < 100)       flags.push(`Very low OI (${minOI}) — fills may be impossible, 1 contract only`);
-    else if (minOI < 200)  flags.push(`Low OI (${minOI}) — fills difficult, size to 1 contract`);
-    else if (minOI < 500)  flags.push(`OI (${minOI}) below 500 course minimum — manageable at 1-2 contracts`);
-    // 500+ = no flag, no score impact — it's tradeable, that's all that matters
+    // Steep curve: OI=0→0, OI=100→0.18, OI=300→0.54, OI=500→1.0, OI>500→1.0
+    const oiScore = minOI <= 0 ? 0 : clamp(Math.pow(minOI / 500, 0.7));
+    const creditRatioScore = clamp((c.creditRatio - 0.15) / 0.35);
+    const rocScore = clamp(c.roc / 35);
+    // OI now carries 60% of liquidity score (was 40%) — low OI is a much bigger drag
+    liquidityRaw = oiScore * 0.6 + creditRatioScore * 0.2 + rocScore * 0.2;
   }
+  const liquidityScore = clamp(liquidityRaw) * cfg.weightLiquidity;
 
-  // ── Pillar 1: IV Quality (30 pts) ─────────────────────────────────────────
-  // Is IV elevated enough that you're actually getting paid for the risk?
-  let p1 = 0;
-  const ivr = result.ivr ?? 0;
-  // Sweet spot: 35-65%. Below 30 = thin premium. Above 75 = distorted/event risk.
-  const ivrRaw = ivr < 20 ? 0 : ivr < 30 ? 0.25 : ivr < 35 ? 0.50 : ivr <= 50 ? 0.80 : ivr <= 65 ? 1.0 : ivr <= 75 ? 0.85 : 0.65;
-  p1 += ivrRaw * 22; // 22 pts for IVR level
-
-  // IV vs HV30 — selling IV above historical vol = real edge (8 pts)
-  const hv30 = result.hv30 ?? null;
-  if (hv30 != null && hv30 > 0) {
-    const ivPremium = ivr - 50; // IVR > 50 ≈ IV elevated above median
-    const hvAdjust = ivPremium > 15 ? 1.0 : ivPremium > 5 ? 0.75 : ivPremium > 0 ? 0.50 : 0.20;
-    p1 += hvAdjust * 8;
-    if (ivPremium > 15) notes.push(`IV well above HV30 (${hv30.toFixed(0)}%) — strong premium edge`);
-    else if (ivPremium < 0) flags.push(`IV likely below HV30 (${hv30.toFixed(0)}%) — selling cheap premium`);
-  } else {
-    p1 += 4; // neutral when no HV data
-  }
-  p1 = Math.min(30, p1);
-
-  // ── Pillar 2: Trend & Direction (25 pts) ──────────────────────────────────
-  // Trading with the trend is the single most predictive factor.
-  // A BPS in a downtrend (PEP today) should score near zero here regardless of everything else.
-  let p2 = 0;
-  if (t) {
-    const stratAligns =
-      (strategy === 'BPS' && t.trend === 'uptrend') ||
-      (strategy === 'BCS' && t.trend === 'downtrend') ||
-      (strategy === 'IC'  && (t.trend === 'sideways' || t.strategy === 'IC'));
-    const stratNeutral = t.trend === 'unknown' ||
-      (strategy === 'IC' && t.trend !== 'downtrend' && t.trend !== 'uptrend');
-    const stratAgainst = !stratAligns && !stratNeutral;
-
-    // Trend alignment (15 pts) — weighted by confidence
-    if (stratAligns)       p2 += t.confidence != null ? clamp(t.confidence / 100) * 15 : 12;
-    else if (stratNeutral) p2 += 6;
-    else                   { p2 += 0; flags.push(`Trend (${t.trend}) opposes ${strategy} — major risk`); }
-
-    // MA structure (7 pts) — are the MAs confirming direction?
-    const maScore = t.scores?.maAlignment != null ? clamp((t.scores.maAlignment + 34) / 68) : 0.5;
-    p2 += (stratAgainst ? 0 : maScore) * 7;
-
-    // Trend subtype (3 pts) — continuation is safer than reversal
-    if      (t.subtype === 'CONTINUATION' && stratAligns) p2 += 3;
-    else if (t.subtype === 'REVERSAL'     && stratAligns) p2 += 1.5;
-    else if (!stratAgainst)                               p2 += 1;
-
-    if (stratAligns && t.confidence != null && t.confidence >= 70)
-      notes.push(`Strong ${t.trend} (${t.confidence}% confidence) confirms ${strategy} thesis`);
-    if (stratAgainst && t.confidence != null && t.confidence >= 70)
-      flags.push(`High-confidence ${t.trend} (${t.confidence}%) directly opposes ${strategy}`);
-  } else {
-    p2 += 10; // neutral — no trend data available
-    flags.push('No trend data — evaluate chart manually before entering');
-  }
-  p2 = Math.min(25, p2);
-
-  // ── Pillar 3: Position Safety (25 pts) ────────────────────────────────────
-  // Buffer % and DTE are inseparable — 0.8% buffer at 7 DTE (PEP today) is catastrophic.
-  // The same 0.8% buffer at 40 DTE is uncomfortable but manageable.
-  // Score them as a combined interaction, not independently.
-  let p3 = 0;
-  const dte = c?.dte ?? 38;
-
-  if (result.price != null && result.price > 0 && c) {
-    const bufferPct = strategy === 'BPS'
-      ? ((result.price - c.shortStrike) / result.price) * 100
-      : ((c.shortStrike - result.price) / result.price) * 100;
-
-    // DTE safety multiplier — more DTE = more time for buffer to stay intact
-    // Short DTE with thin buffer = gamma risk accelerating into breach
-    const dteMult = dte >= 35 ? 1.0 : dte >= 25 ? 0.85 : dte >= 14 ? 0.65 : dte >= 7 ? 0.40 : 0.20;
-
-    // Buffer score — raw quality of the cushion
-    const bufferRaw = bufferPct >= 10 ? 1.0 : bufferPct >= 7 ? 0.85 : bufferPct >= 5 ? 0.70 : bufferPct >= 3 ? 0.50 : bufferPct >= 1.5 ? 0.25 : 0.05;
-
-    // Combined: buffer quality × DTE safety = position safety score
-    const combinedSafety = bufferRaw * dteMult;
-    p3 += combinedSafety * 25;
-
-    // Flags based on the dangerous combinations
-    if (bufferPct < 2 && dte < 14)
-      flags.push(`CRITICAL: ${bufferPct.toFixed(1)}% buffer at ${dte} DTE — gamma risk extreme, exit or defend now`);
-    else if (bufferPct < 2)
-      flags.push(`Thin buffer ${bufferPct.toFixed(1)}% — near short strike`);
-    else if (bufferPct < 4 && dte < 21)
-      flags.push(`Tight buffer ${bufferPct.toFixed(1)}% with ${dte} DTE — monitor closely`);
-    else if (bufferPct >= 8 && dte >= 25)
-      notes.push(`Strong position: ${bufferPct.toFixed(1)}% buffer at ${dte} DTE`);
-  } else {
-    p3 += 12; // neutral when no price data
-  }
-  p3 = Math.min(25, p3);
-
-  // ── Pillar 4: Earnings & Gap Risk (10 pts) ────────────────────────────────
-  // Binary events that can override everything else.
-  // Key insight: what matters is whether earnings falls BEFORE expiry — not how far away it is.
-  let p4 = 0;
-
-  // Earnings clearance (6 pts)
-  const earningsDate = result.earningsDate;
-  if (!earningsDate || result.isEtf) {
-    p4 += 6;
-  } else {
-    const daysToEarnings = daysUntil(earningsDate);
-    const earningsBeforeExpiry = c?.expiration
-      ? new Date(earningsDate) <= new Date(c.expiration)
-      : daysToEarnings <= dte;
-    if (daysToEarnings < 0) {
-      p4 += 6; // already reported
-    } else if (!earningsBeforeExpiry) {
-      p4 += 6; // earnings after expiry — trade is clear
-      if (daysToEarnings <= dte + 7) notes.push(`Earnings ${daysToEarnings}d out — just clears expiry`);
-    } else {
-      // Earnings within trade window — penalize by proximity
-      if      (daysToEarnings >= 21) { p4 += 3; flags.push(`Earnings in ${daysToEarnings}d — within expiry window`); }
-      else if (daysToEarnings >= 14) { p4 += 1; flags.push(`Earnings in ${daysToEarnings}d — binary risk, size to 1 contract`); }
-      else                            { p4 += 0; flags.push(`Earnings in ${daysToEarnings}d — within expiry, high binary risk, skip or avoid`); }
-    }
-  }
-
-  // Gap / volatility risk (4 pts) — from Yahoo bars momentum data
-  const maxMom10 = Math.abs(t?.metrics?.momentum20 ?? 0);
-  if      (maxMom10 > 0.12) { p4 += 1; flags.push(`Sharp move >12% in last 10 days — gap risk elevated`); }
-  else if (maxMom10 > 0.07) { p4 += 2.5; flags.push(`Elevated recent volatility — watch for continuation gaps`); }
-  else                       { p4 += 4; }
-  p4 = Math.min(10, p4);
-
-  // ── Pillar 5: Credit Quality (10 pts) ─────────────────────────────────────
-  // Is the trade actually worth taking from a premium standpoint?
-  let p5 = 0;
-  if (c) {
-    // Credit ratio (6 pts) — how much of the spread width you're collecting
-    const crScore = c.creditRatio >= 0.40 ? 1.0 : c.creditRatio >= 0.33 ? 0.85 : c.creditRatio >= 0.28 ? 0.65 : c.creditRatio >= 0.22 ? 0.35 : 0.10;
-    p5 += crScore * 6;
-    if (c.creditRatio >= 0.40) notes.push(`Excellent credit ratio ${(c.creditRatio * 100).toFixed(0)}% of width`);
-    else if (c.creditRatio < 0.25) flags.push(`Thin credit ${(c.creditRatio * 100).toFixed(0)}% of width — marginal premium`);
-
-    // ROC (4 pts) — return on capital at risk
-    const rocScore = c.roc >= 35 ? 1.0 : c.roc >= 25 ? 0.80 : c.roc >= 20 ? 0.60 : c.roc >= 15 ? 0.35 : 0.10;
-    p5 += rocScore * 4;
-    if (c.roc >= 35) notes.push(`Strong ROC ${c.roc.toFixed(0)}% — good return on capital at risk`);
-    else if (c.roc < 15) flags.push(`Low ROC ${c.roc.toFixed(0)}% — poor return for risk taken`);
-  }
-  p5 = Math.min(10, p5);
-
-  const total = Math.min(100, Math.round(p1 + p2 + p3 + p4 + p5));
-
-  if (notes.length === 0 && flags.length === 0) notes.push('Clean setup — all pillars pass');
-
+  const total = Math.round(momentumScore + ivrScore + rangeScore + technicalScore + liquidityScore);
   return {
-    pillars: {
-      ivQuality:  Math.round(p1),
-      trend:      Math.round(p2),
-      safety:     Math.round(p3),
-      eventRisk:  Math.round(p4),
-      credit:     Math.round(p5),
-      total,
-    },
-    flags,
-    notes,
-  };
-}
-
-function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
-  if (!result.bestCandidate) return null;
-  const { pillars } = computePillarScore(result, result.strategy);
-  return {
-    score: pillars.total,
+    score: Math.min(100, total),
     dims: {
-      momentum:  pillars.trend,       // trend pillar
-      ivr:       pillars.ivQuality,   // IV quality pillar
-      range:     pillars.safety,      // position safety pillar
-      technical: pillars.eventRisk,   // earnings/gap risk pillar
-      liquidity: pillars.credit,      // credit quality pillar
-      total:     pillars.total,
+      momentum: Math.round(momentumScore),
+      ivr: Math.round(ivrScore),
+      range: Math.round(rangeScore),
+      technical: Math.round(technicalScore),
+      liquidity: Math.round(liquidityScore),
+      total: Math.min(100, total),
     },
   };
 }
@@ -1084,12 +991,7 @@ async function loadExistingPositions(): Promise<ExistingPosition[]> {
 
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
-  return (data.data?.items || []).map((item: any) => ({
-    symbol: item.symbol,
-    ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null,
-    earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
-    hv30: item['historical-volatility-30'] != null ? parseFloat(item['historical-volatility-30']) * 100 : null,
-  }));
+  return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null }));
 }
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
@@ -1533,7 +1435,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     : { status: 'pending', value: '—', reason: 'No candidate' };
   if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, hv30: metrics.hv30 ?? null, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
@@ -2809,11 +2711,11 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               </div>
               <div className="grid grid-cols-5 gap-2">
                 {[
-                  { label: 'IV Quality', val: scored.dims.ivr,       max: 30 },
-                  { label: 'Trend',      val: scored.dims.momentum,  max: 25 },
-                  { label: 'Safety',     val: scored.dims.range,     max: 25 },
-                  { label: 'Event Risk', val: scored.dims.technical, max: 10 },
-                  { label: 'Credit',     val: scored.dims.liquidity, max: 10 },
+                  { label: 'Momentum', val: scored.dims.momentum, max: rankConfig!.weightMomentum },
+                  { label: 'IV', val: scored.dims.ivr, max: rankConfig!.weightIvr },
+                  { label: 'Range', val: scored.dims.range, max: rankConfig!.weightRange },
+                  { label: 'Technical', val: scored.dims.technical, max: rankConfig!.weightTechnical },
+                  { label: 'Liquidity', val: scored.dims.liquidity, max: rankConfig!.weightLiquidity },
                 ].map(d => (
                   <div key={d.label} className="text-center">
                     <p className={`text-[8px] ${th.textFaint} mb-1`}>{d.label}</p>
@@ -4030,25 +3932,12 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 }
 
 // ── Best Opportunity Finder ────────────────────────────────────────────────
-interface PillarScores {
-  ivQuality:  number;  // 30 pts — IVR level + IV vs HV30
-  trend:      number;  // 25 pts — trend alignment, MA structure, subtype
-  safety:     number;  // 25 pts — buffer % × DTE interaction
-  eventRisk:  number;  // 10 pts — earnings within expiry + gap risk
-  credit:     number;  // 10 pts — credit ratio + ROC
-  total:      number;  // 0-100
-}
-
-type FullGrade = 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'D' | 'F';
-
 interface BestSetup {
   strategy: string;
-  grade: FullGrade;
+  grade: 'A+' | 'A' | 'B' | 'C';
   setup: SpreadCandidate;
   score: number;
-  pillars: PillarScores;
   notes: string[];
-  flags: string[]; // warnings that don't disqualify but matter
   result: ScreenResult;
 }
 
@@ -4099,14 +3988,22 @@ function BestOpportunityFinder({
 
   const scoreCandidateLocal = (result: ScreenResult, strat: string): BestSetup | null => {
     if (!result.qualified || !result.bestCandidate) return null;
-    const { pillars, flags, notes } = computePillarScore(result, strat);
-    const total = pillars.total;
-    const grade: FullGrade =
-      total >= 90 ? 'A+' : total >= 85 ? 'A' : total >= 80 ? 'A-' :
-      total >= 75 ? 'B+' : total >= 70 ? 'B' : total >= 65 ? 'B-' :
-      total >= 60 ? 'C+' : total >= 50 ? 'C' : total >= 40 ? 'D' : 'F';
-    if (notes.length === 0 && flags.length === 0) notes.push('Clean setup — all pillars pass');
-    return { strategy: strat, grade, setup: result.bestCandidate, score: total, pillars, notes, flags, result };
+    const c = result.bestCandidate;
+    // Use the same scoreCandidate function as Hunter cards for consistency
+    const cfg = getSavedRankConfig();
+    const scored = scoreCandidate(result, cfg);
+    const score = scored?.score ?? 0;
+    let grade: BestSetup['grade'] = 'C';
+    if (score >= 70) grade = 'A+'; else if (score >= 55) grade = 'A'; else if (score >= 40) grade = 'B';
+    const notes: string[] = [];
+    if (c.dte < 35) notes.push(`DTE is ${c.dte} — shorter side, watch 21 DTE closely`);
+    if (c.dte < 29) notes.push(`⚠ Short term setup — active daily management required, gamma risk elevated`);
+    if (result.ivr && result.ivr > 60) notes.push(`IVR ${result.ivr.toFixed(0)}% elevated — verify no binary event`);
+    if (result.ivr && result.ivr < 35) notes.push(`IVR ${result.ivr.toFixed(0)}% — low volatility environment, premium is thin, size down or wait`);
+    else if (result.ivr && result.ivr < 50) notes.push(`IVR ${result.ivr.toFixed(0)}% — moderate volatility, grade reflects reduced premium opportunity`);
+    if (c.creditRatio > 0.45) notes.push(`Excellent credit ratio at ${(c.creditRatio * 100).toFixed(0)}% of width`);
+    if (notes.length === 0) notes.push('Clean setup — all rules pass');
+    return { strategy: strat, grade, setup: c, score, notes, result };
   };
 
   // Only run the preferred strategy. If none specified, run all three.
@@ -4153,11 +4050,7 @@ function BestOpportunityFinder({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const gradeColor = (g: string) =>
-    g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-400' : g === 'A-' ? 'text-emerald-500' :
-    g === 'B+' ? 'text-yellow-300' : g === 'B' ? 'text-yellow-400' : g === 'B-' ? 'text-yellow-500' :
-    g === 'C+' ? 'text-orange-300' : g === 'C' ? 'text-orange-400' :
-    g === 'D' ? 'text-red-400' : 'text-red-600';
+  const gradeColor = (g: string) => g === 'A+' ? 'text-emerald-400' : g === 'A' ? 'text-emerald-500' : g === 'B' ? 'text-yellow-400' : 'text-orange-400';
 
   return (
     <div className="fixed inset-0 bg-black flex items-center justify-center z-[60] p-4">
@@ -4211,49 +4104,26 @@ function BestOpportunityFinder({
                 <div className="divide-y divide-[inherit]" style={{ borderColor: 'inherit' }}>
                   {level.ranked.map((setup, idx) => (
                     <div key={setup.strategy} className={`p-4 ${idx === 0 ? '' : 'opacity-80'}`}>
-                      {/* Header row */}
                       <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex items-center gap-2">
                           <span className={`text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border ${idx === 0 ? 'border-emerald-500 text-emerald-400' : idx === 1 ? 'border-slate-500 text-slate-400' : 'border-slate-700 text-slate-500'}`}>{idx + 1}</span>
                           <span className={`text-xs font-bold px-2 py-0.5 border rounded ${setup.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : setup.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{setup.strategy}</span>
                           {preferredStrategy && setup.strategy !== preferredStrategy && (
                             <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/60 bg-yellow-500/10 text-yellow-400 font-bold">⚠ contradicts {preferredStrategy} box</span>
                           )}
-                          {/* Grade + Score badge */}
-                          <span className={`text-sm font-black ${gradeColor(setup.grade)}`}>{setup.grade}</span>
-                          <span className={`text-[10px] font-bold ${th.text}`}>{setup.score}/100</span>
+                          <span className={`text-xs font-bold ${gradeColor(setup.grade)}`}>Grade {setup.grade}</span>
+                          <span className={`text-[9px] ${th.textFaint}`}>score {Math.round(setup.score)}/100</span>
                         </div>
                         <button
                           onClick={() => {
                             const strikesStr = setup.strategy === 'IC' && setup.setup.shortCallStrike != null
                               ? `Puts: ${setup.setup.shortStrike}/${setup.setup.longStrike} · Calls: ${setup.setup.shortCallStrike}/${setup.setup.longCallStrike}`
                               : `${setup.setup.shortStrike}/${setup.setup.longStrike}`;
-                            alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nGrade ${setup.grade} · ${setup.score}/100\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${strikesStr}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`);
+                            alert(`${setup.strategy} ${symbol} [${level.presetLabel} rules]\nExp: ${setup.setup.expiration} (${setup.setup.dte}d)\nStrikes: ${strikesStr}\nCredit: $${(setup.setup.totalCredit ?? setup.setup.credit).toFixed(2)}\n50% target: $${((setup.setup.totalCredit ?? setup.setup.credit) * 0.5).toFixed(2)}`);
                           }}
                           className="text-[9px] px-2 py-1 border border-emerald-600 text-emerald-400 rounded hover:bg-emerald-600/10 transition-colors font-medium tracking-wider"
                         >TRADE →</button>
                       </div>
-
-                      {/* 5-Pillar score bars */}
-                      <div className="grid grid-cols-5 gap-1.5 mb-3">
-                        {[
-                          { label: 'IV Quality',  val: setup.pillars.ivQuality, max: 30, color: 'bg-blue-500' },
-                          { label: 'Trend',       val: setup.pillars.trend,     max: 25, color: 'bg-emerald-500' },
-                          { label: 'Safety',      val: setup.pillars.safety,    max: 25, color: 'bg-yellow-500' },
-                          { label: 'Event Risk',  val: setup.pillars.eventRisk, max: 10, color: 'bg-orange-500' },
-                          { label: 'Credit',      val: setup.pillars.credit,    max: 10, color: 'bg-purple-500' },
-                        ].map(p => (
-                          <div key={p.label} className="text-center">
-                            <p className={`text-[8px] ${th.textFaint} mb-1 truncate`}>{p.label}</p>
-                            <div className="h-1 rounded-full bg-slate-700 mb-0.5">
-                              <div className={`h-full rounded-full ${p.color}`} style={{ width: `${p.max > 0 ? (p.val / p.max) * 100 : 0}%` }} />
-                            </div>
-                            <p className={`text-[9px] font-bold ${th.text}`}>{p.val}<span className={`${th.textFaint} font-normal`}>/{p.max}</span></p>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Trade data */}
                       <div className="grid grid-cols-4 gap-3 mb-2">
                         <div><p className={`text-[9px] ${th.textFaint} uppercase tracking-wider`}>Expiry</p><p className={`text-xs font-bold ${th.text}`}>{setup.setup.expiration} <span className="text-slate-500">({setup.setup.dte}d)</span></p></div>
                         <div>
@@ -4278,19 +4148,7 @@ function BestOpportunityFinder({
                           )}
                         </div>
                       </div>
-
-                      {/* Notes */}
-                      {setup.notes.length > 0 && (
-                        <p className={`text-[9px] text-emerald-400/80 mb-1`}>✓ {setup.notes[0]}</p>
-                      )}
-                      {/* Flags */}
-                      {setup.flags.length > 0 && (
-                        <div className="space-y-0.5">
-                          {setup.flags.map((f, i) => (
-                            <p key={i} className="text-[9px] text-yellow-400/80">⚠ {f}</p>
-                          ))}
-                        </div>
-                      )}
+                      <p className={`text-[9px] ${th.textFaint}`}>{setup.notes[0]}</p>
                     </div>
                   ))}
                 </div>
@@ -4352,9 +4210,6 @@ export default function Home() {
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [showRunModal, setShowRunModal] = useState(false);
   const [tradeResult, setTradeResult] = useState<ScreenResult | null>(null);
-  const [deepAnalysis, setDeepAnalysis] = useState<boolean>(() => {
-    try { return localStorage.getItem(LS_DEEP_ANALYSIS) !== 'false'; } catch { return true; }
-  });
   const [loadPrompt, setLoadPrompt] = useState<LoadPromptState>({ show: false, name: '', type: 'strategy' });
   const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
   const [runtimeEtfRules, setRuntimeEtfRules] = useState<RulesType>(getSavedEtfRules);
@@ -4731,23 +4586,6 @@ export default function Home() {
           </div>
 
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
-
-          {/* Deep Analysis toggle */}
-          <div className={`flex items-center justify-between px-3 py-2 rounded-lg border ${deepAnalysis ? 'border-blue-700 bg-blue-500/5' : `${th.borderLight} ${th.card}`}`}>
-            <div>
-              <p className={`text-[9px] font-bold tracking-wider ${deepAnalysis ? 'text-blue-400' : th.textFaint}`}>DEEP ANALYSIS</p>
-              <p className={`text-[8px] ${th.textFaint} leading-tight`}>{deepAnalysis ? 'HV30 + gap risk scoring active' : 'Quantitative only — faster'}</p>
-            </div>
-            <button
-              onClick={() => {
-                const next = !deepAnalysis;
-                setDeepAnalysis(next);
-                try { localStorage.setItem(LS_DEEP_ANALYSIS, String(next)); } catch {}
-              }}
-              className={`w-8 h-4 rounded-full transition-all relative ${deepAnalysis ? 'bg-blue-600' : 'bg-slate-700'}`}>
-              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${deepAnalysis ? 'left-4' : 'left-0.5'}`} />
-            </button>
-          </div>
 
           <button onClick={() => setShowRunModal(true)} disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
