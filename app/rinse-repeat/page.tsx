@@ -510,7 +510,7 @@ function fmtDate(d: string) {
 function stratColor(s: string) {
   if (s === 'BPS') return 'text-emerald-400 border-emerald-600 bg-emerald-500/10';
   if (s === 'BCS') return 'text-red-400 border-red-600 bg-red-500/10';
-  if (s === 'IC')  return 'text-blue-400 border-blue-600 bg-blue-500/10';
+  if (s === 'IC')  return 'text-blue-400 ac-border ac-bg-10';
   return 'text-slate-400 border-slate-600 bg-slate-500/10';
 }
 function scoreColor(s: number) {
@@ -690,7 +690,7 @@ function RRCard({ result, th, onAddToHunter, existingPositions }: {
                   }
                 } else { setShowChart(false); }
               }}
-              className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 hover:text-blue-400'}`}
+              className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 ac-hover-text'}`}
               title="Quick chart">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -730,7 +730,7 @@ function RRCard({ result, th, onAddToHunter, existingPositions }: {
                 </div>
                 <a href={`https://www.tradingview.com/chart/?symbol=${profile.symbol}`} target="_blank" rel="noopener noreferrer"
                   onClick={e => e.stopPropagation()}
-                  className="flex items-center justify-center gap-2 w-full py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-600/40 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors">
+                  className="flex items-center justify-center gap-2 w-full py-2 ac-bg-20 ac-hover-bg/30 border ac-border/40 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                     <polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
@@ -809,7 +809,7 @@ function RRCard({ result, th, onAddToHunter, existingPositions }: {
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={e => { e.stopPropagation(); onAddToHunter(profile.symbol, profile.preferredStrategy); }}
-            className={`text-[9px] px-2.5 py-1 border border-blue-700 text-blue-400 rounded hover:border-blue-500 hover:bg-blue-500/10 transition-colors`}>
+            className={`text-[9px] px-2.5 py-1 border ac-btn rounded ac-hover-border hover:ac-bg-10 transition-colors`}>
             + Add to Hunter
           </button>
           <span className={`text-[10px] ${th.textFaint}`}>{expanded ? '▲' : '▼'}</span>
@@ -897,7 +897,7 @@ export default function RinseRepeatPage() {
   const th = THEMES[theme];
   const [accent, setAccent] = useState<Accent>(getSavedAccent);
   useEffect(() => { applyAccent(accent); }, [accent]);
-  useEffect(() => { applyAccent(getSavedAccent()); }, []);
+  useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
   const [range, setRange]     = useState<TimeRange>('6m');
   const [results, setResults] = useState<RRResult[]>([]);
   const [profiles, setProfiles] = useState<WinningProfile[]>([]);
@@ -1091,7 +1091,7 @@ export default function RinseRepeatPage() {
           <div className="w-px h-4 bg-white/20 mr-1" />
           {(['dark','medium','light'] as Theme[]).map(t => (
             <button key={t} onClick={() => { setTheme(t); try { localStorage.setItem(LS_THEME, t); } catch {} }}
-              className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'border-blue-500 text-blue-400' : `${th.border} ${th.textFaint}`}`}>
+              className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'ac-btn' : `${th.border} ${th.textFaint}`}`}>
               {t}
             </button>
           ))}
@@ -1106,7 +1106,7 @@ export default function RinseRepeatPage() {
             <div className="flex items-center gap-1">
               {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
                 <button key={r} onClick={() => setRange(r)}
-                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors ${range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700`}`}>
+                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors ${range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
                   {label}
                 </button>
               ))}
@@ -1116,7 +1116,7 @@ export default function RinseRepeatPage() {
               <span className={`text-[10px] ${th.textFaint}`}>Min wins:</span>
               {[1,2,3].map(n => (
                 <button key={n} onClick={() => setMinWins(n)}
-                  className={`text-[10px] w-6 h-6 border rounded font-bold transition-colors ${minWins === n ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700`}`}>
+                  className={`text-[10px] w-6 h-6 border rounded font-bold transition-colors ${minWins === n ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
                   {n}
                 </button>
               ))}
@@ -1130,7 +1130,7 @@ export default function RinseRepeatPage() {
           <div className="flex items-center gap-3">
             {hunterQueue.length > 0 && (
               <button onClick={sendToHunter}
-                className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors ${addedToHunter ? 'border-emerald-600 text-emerald-400' : 'border-blue-700 text-blue-400 hover:border-blue-500 hover:bg-blue-500/10'}`}>
+                className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors ${addedToHunter ? 'border-emerald-600 text-emerald-400' : 'ac-btn ac-hover-border hover:ac-bg-10'}`}>
                 {addedToHunter ? `✓ Sent to Hunter` : `→ Send ${hunterQueue.length} to Hunter`}
               </button>
             )}
@@ -1159,7 +1159,7 @@ export default function RinseRepeatPage() {
             <div className="text-4xl mb-3 opacity-20">↺</div>
             <p className="text-sm font-medium">No winning trades found in the last {range === '3m' ? '3 months' : range === '6m' ? '6 months' : '12 months'}</p>
             <p className="text-[10px] mt-2 opacity-60">Make sure your Trade Log is synced, or try a longer range.</p>
-            <Link href="/trade-log" className="inline-block mt-3 text-[10px] text-blue-400 hover:text-blue-300 underline">Go to Trade Log →</Link>
+            <Link href="/trade-log" className="inline-block mt-3 text-[10px] text-blue-400 hover:ac-text underline">Go to Trade Log →</Link>
           </div>
         )}
 
