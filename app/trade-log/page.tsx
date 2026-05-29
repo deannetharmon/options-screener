@@ -16,12 +16,6 @@ if (typeof document !== 'undefined') {
 
 const BASE       = 'https://api.tastytrade.com';
 const CLIENT_ID  = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-
-
-
-
-
-
 const LS_DEVICE  = 'hunter-device-id';
 const LS_TL_1W   = 'hunter-tradelog-1w';
 const LS_TL_2W   = 'hunter-tradelog-2w';
