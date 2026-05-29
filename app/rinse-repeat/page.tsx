@@ -34,7 +34,7 @@ function getSavedTheme(): Theme {
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────
-type TimeRange = '3m' | '6m' | '12m';
+type TimeRange = '1w' | '2w' | '1m' | '3m' | '6m' | '12m';
 
 interface ClosedTrade {
   id: string; symbol: string; strategy: string; openDate: string; closeDate: string;
@@ -278,7 +278,8 @@ function getWidthSteps(maxWidth: number, price: number | null): number[] {
 
 // ── Profile building ───────────────────────────────────────────────────────
 function loadTradesFromCache(range: TimeRange): ClosedTrade[] {
-  const key = range === '3m' ? LS_TL_3M : range === '6m' ? LS_TL_6M : LS_TL_12M;
+  const LS_TL_1W = 'hunter-tradelog-1w', LS_TL_2W = 'hunter-tradelog-2w', LS_TL_1M = 'hunter-tradelog-1m';
+  const key = range === '1w' ? LS_TL_1W : range === '2w' ? LS_TL_2W : range === '1m' ? LS_TL_1M : range === '3m' ? LS_TL_3M : range === '6m' ? LS_TL_6M : LS_TL_12M;
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return [];
@@ -1097,10 +1098,10 @@ export default function RinseRepeatPage() {
           <div className="flex items-center gap-3 flex-wrap">
             {/* Range */}
             <div className="flex items-center gap-1">
-              {(['3m','6m','12m'] as TimeRange[]).map(r => (
+              {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
                 <button key={r} onClick={() => setRange(r)}
                   className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors ${range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700`}`}>
-                  {r === '3m' ? '3 MO' : r === '6m' ? '6 MO' : '12 MO'}
+                  {label}
                 </button>
               ))}
             </div>
