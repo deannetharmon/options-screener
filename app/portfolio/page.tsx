@@ -154,6 +154,7 @@ interface GtcOrderLeg { symbol: string; action: string; }
 interface GtcOrder {
   id: string; price: string; stopPrice: string | null;
   orderType: string; timeInForce: string; legs: GtcOrderLeg[];
+  complexOrderId?: string; // set when this order is part of a complex/OCO order
 }
 interface StopLossInfo { status: StopStatus; price: number | null; }
 
@@ -662,8 +663,12 @@ async function ttPost(path: string, token: string, body: unknown) {
   return data;
 }
 
-async function cancelOrder(accountNumber: string, orderId: string, token: string) {
-  const res = await fetch(`${BASE}/accounts/${accountNumber}/orders/${orderId}`, {
+async function cancelOrder(accountNumber: string, orderId: string, token: string, complexOrderId?: string) {
+  // If part of a complex order, cancel the whole complex order
+  const path = complexOrderId
+    ? `${BASE}/accounts/${accountNumber}/complex-orders/${complexOrderId}`
+    : `${BASE}/accounts/${accountNumber}/orders/${orderId}`;
+  const res = await fetch(path, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
@@ -953,6 +958,7 @@ function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
     orderType: String(o?.['order-type'] ?? o?.orderType ?? ''),
     timeInForce: tif,
     legs,
+    complexOrderId: o?.['complex-order-id'] ? String(o['complex-order-id']) : undefined,
   };
 }
 
@@ -2126,7 +2132,8 @@ function BatchConfirmModal({
           // AUTO CANCEL EXISTING GTC IF USER CONFIRMED
           if (!dryRun && item.pos.hasGtc && gtcConfirmed.has(item.pos.key) && item.pos.gtcOrderId) {
             try {
-              await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token);
+              const gtcMatch = findProfitGtcOrder(item.pos.legs, gtcOrders);
+              await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token, gtcMatch?.complexOrderId);
               console.log(`Cancelled old GTC ${item.pos.gtcOrderId} for ${item.pos.symbol}`);
             } catch (cancelErr) {
               console.warn(`Failed to cancel GTC for ${item.pos.symbol}`, cancelErr);
@@ -4149,7 +4156,13 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       if (needsOco) {
         setPhase('Cancelling existing GTC order...');
         console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
-        await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+        // Cancel via complex order endpoint if applicable
+        const gtcOrderForCancel = findProfitGtcOrder(pos.legs, gtcOrders ?? []);
+        if (gtcOrderForCancel?.complexOrderId) {
+          await ttDelete(`/accounts/${pos.accountNumber}/complex-orders/${gtcOrderForCancel.complexOrderId}`, token);
+        } else {
+          await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+        }
 
         setPhase('Placing OCO order...');
         const ocoBody = {
@@ -4758,10 +4771,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                 <div className="cursor-pointer" onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}>
                   <p className={`text-xs ac-hover-text transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
                     style={{ fontFamily: "'DM Mono', monospace" }}>
-                    {pos.plOpen != null
-                      ? <>{pos.plOpen >= 0 ? '+' : ''}${pos.plOpen.toFixed(0)} <span className={th.textFaint}>/ ${pos.targetPrice.toFixed(2)}</span></>
-                      : <>${pos.targetPrice.toFixed(2)}</>
-                    }{pos.hitTarget && ' ✓'}
+                    ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
                   </p>
                 </div>
               )}
