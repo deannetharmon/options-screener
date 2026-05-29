@@ -4737,12 +4737,12 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
               <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
-                {pos.plOpen != null && pos.creditReceived !== 0 && (
-                  <span className={`ml-1 font-normal text-[10px]`}>
-                    ({pos.plOpen >= 0 ? '+' : ''}{(pos.plOpen / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
-                  </span>
-                )}
               </p>
+              {pos.plOpen != null && pos.creditReceived !== 0 && (
+                <p className={`font-normal text-[10px] ${pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                  ({pos.plOpen >= 0 ? '+' : ''}{(pos.plOpen / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
+                </p>
+              )}
             </div>
 
             {/* ── GREEKS ─────────────────────────────── */}
