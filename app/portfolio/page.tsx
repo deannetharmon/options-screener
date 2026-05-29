@@ -679,9 +679,12 @@ async function cancelOrder(accountNumber: string, orderId: string, token: string
   }
   if (!res.ok) {
     const text = await res.text();
+    console.error(`CANCEL RAW RESPONSE (${res.status}):`, text.slice(0, 500));
     throw new Error(`Cancel failed: ${text.slice(0, 200)}`);
   }
-  return res.json().catch(() => ({}));
+  const result = await res.json().catch(() => ({}));
+  console.log('CANCEL RAW SUCCESS:', JSON.stringify(result).slice(0, 200));
+  return result;
 }
 
 // TastyTrade supports a native dry-run: POST to same endpoint with ?dry-run=true
@@ -886,18 +889,26 @@ function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' =
   // A closing spread order is a debit — we pay to buy back what we sold.
   // Use price-effect: Debit with a POSITIVE price value (the absolute amount).
   // Both formats have been seen in the wild; using positive + price-effect is safest.
-  return {
-    'order-type': 'Limit',
-    'time-in-force': effectiveTif,
-    price: limitPrice.toFixed(2),
+  const safePrice = Math.max(limitPrice, 0.01);
+  // When spread is worth less than $0.05/contract, switch to Market order.
+  // A limit at $0.01 risks not filling if the market is $0.02-$0.03.
+  // Market order closes immediately at whatever price is available.
+  const useMarket = safePrice <= 0.05;
+  const orderBody: any = {
+    'order-type': useMarket ? 'Market' : 'Limit',
+    'time-in-force': useMarket ? 'Day' : effectiveTif, // Market orders must be Day
     'price-effect': 'Debit',
     legs: pos.legs.map(leg => ({
-      symbol: leg.symbol, // keep OCC space-padded format exactly as returned by positions API
+      symbol: leg.symbol,
       quantity: leg.quantity,
       action: leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close',
       'instrument-type': itype,
     })),
   };
+  if (!useMarket) {
+    orderBody.price = safePrice.toFixed(2);
+  }
+  return orderBody;
 }
 
 function buildOpenSpreadOrder(
@@ -2052,12 +2063,10 @@ function BatchConfirmModal({
             if (effectivePerContract != null && targetPrice >= effectivePerContract) {
               limitPrice = parseFloat(Math.max(effectivePerContract - 0.01, 0.01).toFixed(2));
             } else {
-              limitPrice = targetPrice;
+              limitPrice = Math.max(targetPrice, 0.01);
             }
-            if (limitPrice <= 0) {
-              priceError = `Calculated limit price $${limitPrice.toFixed(2)} is invalid — position may already be worthless`;
-              limitPrice = 0.01;
-            }
+            // Hard floor — negative or zero prices are always rejected by TastyTrade
+            limitPrice = Math.max(parseFloat(limitPrice.toFixed(2)), 0.01);
           } else if (action === 'CUT_LOSSES' || action === 'CLOSE_ROLL') {
             if (effectivePerContract != null) {
               limitPrice = parseFloat((effectivePerContract * 1.02).toFixed(2));
@@ -2171,11 +2180,11 @@ function BatchConfirmModal({
             try {
               const gtcComplexId = (item.pos as any).gtcComplexOrderId as string | undefined;
               console.log(`CANCEL DEBUG: symbol=${item.pos.symbol} orderId=${item.pos.gtcOrderId} complexId=${gtcComplexId}`);
-              await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token, gtcComplexId);
-              console.log(`CANCEL SUCCESS: ${item.pos.symbol}`);
-              await new Promise(r => setTimeout(r, 500));
+              const cancelResult = await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token, gtcComplexId);
+              console.log(`CANCEL SUCCESS: ${item.pos.symbol}`, cancelResult);
+              await new Promise(r => setTimeout(r, 800));
             } catch (cancelErr: any) {
-              console.warn(`CANCEL FAILED (proceeding anyway): ${item.pos.symbol}`, cancelErr?.message);
+              console.error(`CANCEL FAILED: ${item.pos.symbol} orderId=${item.pos.gtcOrderId} complexId=${gtcComplexId} error=`, cancelErr?.message);
               // TastyTrade may reject cancel if order is in terminal/partial state.
               // Proceed with placing the new order — TT will reject it if the old one
               // is still truly active, but the user will see a clear error message.
@@ -2197,7 +2206,7 @@ function BatchConfirmModal({
                   const pctFromLive = Math.abs(item.limitPrice - livePerContract) / livePerContract;
                   if (pctFromLive > 0.30) {
                     const freshLimit = item.action === 'TAKE_PROFIT'
-                      ? parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2))
+                      ? Math.max(parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2)), 0.01)
                       : parseFloat((livePerContract * 1.02).toFixed(2));
                     item.orderBody = buildCloseOrder(item.pos, freshLimit, item.orderBody['time-in-force'] as 'GTC' | 'Day');
                     (item as any).limitPrice = freshLimit;
