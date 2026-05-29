@@ -282,8 +282,8 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
   for (const sym of watchlist) {
     for (const [key, legs] of Object.entries(groups)) {
       if (key.startsWith(`${sym}::`)) {
-        activeWheelSymbols.add(sym);
         const [, expDate] = key.split('::');
+        // Don't mark as active yet — wait until we confirm it's a CSP/CC, not a spread
         const shortLeg = legs.find(l => l['quantity-direction'] === 'Short');
         const longLeg = legs.find(l => l['quantity-direction'] === 'Long');
         const putLeg = legs.find(l => l.symbol?.includes('P'));
@@ -292,20 +292,47 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
         const qty = parseInt(shortLeg?.['quantity'] ?? longLeg?.['quantity'] ?? '1', 10);
         const currentPrice = currentPricesMap[sym] ?? null;
 
-        if (putLeg && shortLeg && putLeg.symbol === shortLeg.symbol) {
-          // Cash-secured put
-          const strike = parseFloat(putLeg.symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
-          const avgOpen = parseFloat(shortLeg['average-open-price'] ?? '0');
-          const markPrice = parseFloat(shortLeg['mark-price'] ?? shortLeg['close-price'] ?? '0');
+        const putLegs = legs.filter(l => l.symbol?.match(/P\d{8}$/) || l.symbol?.includes('P0'));
+        const callLegs = legs.filter(l => l.symbol?.match(/C\d{8}$/) || l.symbol?.includes('C0'));
+        const shortPuts = putLegs.filter(l => l['quantity-direction'] === 'Short');
+        const longPuts = putLegs.filter(l => l['quantity-direction'] === 'Long');
+        const shortCalls = callLegs.filter(l => l['quantity-direction'] === 'Short');
+        const longCalls = callLegs.filter(l => l['quantity-direction'] === 'Long');
+        const isSpread = (shortPuts.length > 0 && longPuts.length > 0) || (shortCalls.length > 0 && longCalls.length > 0);
+        const isCsp = shortPuts.length > 0 && longPuts.length === 0 && callLegs.length === 0;
+        const isCoveredCall = shortCalls.length > 0 && longCalls.length === 0 && putLegs.length === 0;
+
+        if (isSpread) {
+          // BPS/BCS/IC — this is a spread, not a wheel position. Mark as idle for wheel purposes.
+          // Don't add to wheelDeployed — spreads belong to the SPX or non-wheel bucket.
+          // Only show in wheel if it's on a watchlist stock (informational).
+          wheelPositions.push({ symbol: sym, phase: 'idle', currentPrice: currentPricesMap[sym] ?? undefined, status: 'idle', capitalRequired: 0 });
+        } else if (isCsp && shortPuts[0]) {
+          // True cash-secured put — single short put, no long leg
+          const putSymbol = shortPuts[0].symbol;
+          const strike = parseFloat(putSymbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
+          const avgOpen = parseFloat(shortPuts[0]['average-open-price'] ?? '0');
+          const markPrice = parseFloat(shortPuts[0]['mark-price'] ?? shortPuts[0]['close-price'] ?? '0');
           const creditRec = avgOpen * qty * 100;
           const pnl = (avgOpen - markPrice) * qty * 100;
           const pnlPct = creditRec > 0 ? (pnl / creditRec) * 100 : null;
-          const capitalRequired = strike * qty * 100;
+          const capitalRequired = strike * qty * 100; // full cash-secured requirement
           wheelDeployed += capitalRequired;
           let status: WheelPosition['status'] = 'hold';
           if (pnlPct !== null && pnlPct >= 50) status = 'entry';
           else if (dte <= 14) status = 'watch';
-          wheelPositions.push({ symbol: sym, phase: 'cash-secured-put', strike, expiration: expDate, dte, pop: Math.max(60, 80 - Math.abs(pnlPct ?? 0) * 0.2), credit: markPrice, pnl, pnlPct, status, capitalRequired, currentPrice: currentPrice ?? undefined });
+          activeWheelSymbols.add(sym);
+          wheelPositions.push({ symbol: sym, phase: 'cash-secured-put', strike, expiration: expDate, dte, pop: Math.max(60, 80 - Math.abs(pnlPct ?? 0) * 0.2), credit: markPrice, pnl, pnlPct, status, capitalRequired, currentPrice: currentPricesMap[sym] ?? undefined });
+        } else if (isCoveredCall && shortCalls[0]) {
+          // Covered call leg (shares should be in stock positions)
+          const callSymbol = shortCalls[0].symbol;
+          const strike = parseFloat(callSymbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
+          const avgOpen = parseFloat(shortCalls[0]['average-open-price'] ?? '0');
+          const markPrice = parseFloat(shortCalls[0]['mark-price'] ?? shortCalls[0]['close-price'] ?? '0');
+          const pnl = (avgOpen - markPrice) * qty * 100;
+          const pnlPct = avgOpen > 0 ? (pnl / (avgOpen * qty * 100)) * 100 : null;
+          activeWheelSymbols.add(sym);
+          wheelPositions.push({ symbol: sym, phase: 'covered-call', strike, expiration: expDate, dte, pnl, pnlPct, status: 'hold', capitalRequired: 0, currentPrice: currentPricesMap[sym] ?? undefined });
         }
       }
     }
@@ -316,7 +343,8 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
         const shares = parseInt(stockLeg['quantity'] ?? '0', 10);
         const costBasis = parseFloat(stockLeg['average-open-price'] ?? '0');
         const currentPrice = currentPricesMap[sym] ?? costBasis;
-        wheelDeployed += costBasis * shares;
+        // Shares held: deployed = current market value (what it would cost to sell)
+        wheelDeployed += (currentPricesMap[sym] ?? costBasis) * shares;
         wheelPositions.push({ symbol: sym, phase: 'assigned', sharesHeld: shares, costBasis, currentPrice, status: 'entry', capitalRequired: costBasis * shares });
       } else {
         const currentPrice = currentPricesMap[sym];
