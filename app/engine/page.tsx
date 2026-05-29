@@ -777,28 +777,26 @@ function CapitalBar({ label, deployed, target, color }: { label: string; deploye
 
 function ActionCard({ item, th }: { item: ActionItem; th: typeof THEMES[Theme] }) {
   const colors = {
-    urgent: { border: 'border-l-red-500', badge: 'bg-red-500/15 text-red-400 border-red-600', dot: 'bg-red-500', glow: 'bg-red-500/5' },
-    review: { border: 'border-l-amber-500', badge: 'bg-amber-500/15 text-amber-400 border-amber-600', dot: 'bg-amber-500', glow: 'bg-amber-500/5' },
-    entry:  { border: 'border-l-blue-500', badge: 'bg-blue-500/15 text-blue-400 border-blue-600', dot: 'bg-blue-500', glow: '' },
-    hold:   { border: 'border-l-slate-600', badge: 'bg-slate-700 text-slate-400 border-slate-600', dot: 'bg-slate-500', glow: '' },
+    urgent: { border: 'border-l-red-500',    badge: 'bg-red-500/15 text-red-400 border-red-600',     action: 'text-red-400' },
+    review: { border: 'border-l-amber-500',  badge: 'bg-amber-500/15 text-amber-400 border-amber-600', action: 'text-amber-400' },
+    entry:  { border: 'border-l-blue-500',   badge: 'bg-blue-500/15 text-blue-400 border-blue-600',   action: 'text-blue-400' },
+    hold:   { border: 'border-l-slate-600',  badge: 'bg-slate-700 text-slate-400 border-slate-600',   action: 'text-slate-400' },
   };
   const c = colors[item.priority];
+  const priorityIcon = { urgent: '⚡', review: '⚠', entry: '→', hold: '·' }[item.priority];
   return (
-    <div className={`border-l-4 ${c.border} ${th.card} border ${th.border} rounded-r-lg p-3 ${c.glow}`}>
-      <div className="flex items-start justify-between gap-2 mb-1.5">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className={`text-[8px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${item.category === 'spx' ? 'border-violet-700 text-violet-400 bg-violet-500/10' : 'border-blue-700 text-blue-400 bg-blue-500/10'}`}>
-            {item.category === 'spx' ? 'SPX' : item.symbol}
-          </span>
-          <p className={`text-xs font-bold ${th.text} truncate`}>{item.title}</p>
-        </div>
-        <span className={`text-[8px] px-1.5 py-0.5 border rounded shrink-0 font-medium ${c.badge}`}>{item.priority}</span>
+    <div className={`border-l-4 ${c.border} ${th.card} border ${th.border} rounded-r-lg px-3 py-2.5 flex items-center gap-3`}>
+      {/* Symbol badge */}
+      <span className={`text-[8px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${item.category === 'spx' ? 'border-violet-700 text-violet-400 bg-violet-500/10' : 'border-blue-700 text-blue-400 bg-blue-500/10'}`}>
+        {item.category === 'spx' ? 'SPX' : item.symbol}
+      </span>
+      {/* Action — main text */}
+      <div className="flex-1 min-w-0">
+        <p className={`text-xs font-bold ${th.text} truncate`}>{item.action}</p>
+        <p className={`text-[10px] ${th.textFaint} truncate`}>{item.detail}</p>
       </div>
-      <p className={`text-[10px] ${th.textMuted} mb-1`}>{item.detail}</p>
-      <div className="flex items-center justify-between">
-        <p className={`text-[9px] ${th.textFaint}`}>{item.urgency}</p>
-        <p className={`text-[9px] font-medium text-emerald-400/80`}>→ {item.action}</p>
-      </div>
+      {/* Priority indicator */}
+      <span className={`text-[9px] font-bold shrink-0 ${c.action}`}>{priorityIcon} {item.priority}</span>
     </div>
   );
 }
@@ -1190,6 +1188,8 @@ export default function EnginePage() {
               <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString()}</p>
             </div>
             <div className="flex-1 grid grid-cols-3 gap-4">
+              <CapitalBar label={`SPX (${alloc.spx}%)`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
+              <CapitalBar label={`Wheel (${alloc.wheel}%)`} deployed={d.capital.wheelDeployed} target={d.capital.wheelTarget} color="bg-blue-500" />
               <div>
                 <p className={`text-[9px] ${th.textFaint} mb-1`}>Reserve ({alloc.reserve}%)</p>
                 <div className="h-1.5 rounded-full bg-slate-700/60 overflow-hidden mb-1">
@@ -1197,8 +1197,6 @@ export default function EnginePage() {
                 </div>
                 <p className={`text-[9px] ${th.textFaint}`}>${d.capital.reserveTarget.toLocaleString()} protected</p>
               </div>
-              <CapitalBar label={`Wheel (${alloc.wheel}%)`} deployed={d.capital.wheelDeployed} target={d.capital.wheelTarget} color="bg-blue-500" />
-              <CapitalBar label={`SPX (${alloc.spx}%)`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
             </div>
             <div className="shrink-0 text-right">
               <p className={`text-[9px] ${th.textFaint}`}>Deployment</p>
@@ -1281,9 +1279,9 @@ export default function EnginePage() {
               {d.actions.length === 0 && <span className={`text-[10px] ${th.textFaint}`}>No actions required today</span>}
             </div>
 
-            {/* Action cards grid */}
+            {/* Action list */}
             {d.actions.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
                 {d.actions.map(action => <ActionCard key={action.id} item={action} th={th} />)}
               </div>
             )}
