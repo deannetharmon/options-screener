@@ -1884,7 +1884,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 function stratColor(strategy: string) {
   if (strategy === 'BPS') return 'text-emerald-400 border-emerald-700';
   if (strategy === 'BCS') return 'text-red-400 border-red-700';
-  if (strategy === 'IC')  return 'text-blue-400 border-blue-700';
+  if (strategy === 'IC')  return 'text-blue-400 ac-border-faint';
   return 'text-slate-400 border-slate-700';
 }
 function pnlColor(pnl: number | null) { return pnl == null ? 'text-slate-400' : pnl >= 0 ? 'text-emerald-400' : 'text-red-400'; }
@@ -1897,7 +1897,7 @@ const ACTION_META: Record<ActionType, { label: string; color: string; btnClass: 
   TAKE_PROFIT: { label: '✓ Take Profit',  color: 'text-emerald-400', btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/20' },
   CUT_LOSSES:  { label: '✕ Cut Losses',   color: 'text-red-400',     btnClass: 'border-red-600 text-red-400 hover:bg-red-600/20' },
   CLOSE_ROLL:  { label: '↻ Close/Roll',   color: 'text-purple-400',  btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/20' },
-  PLACE_GTC:   { label: '⏱ Place GTC',   color: 'text-blue-400',    btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/20' },
+  PLACE_GTC:   { label: '⏱ Place GTC',   color: 'text-blue-400',    btnClass: 'ac-btn hover:ac-bg-20' },
 };
 
 function ThemeToggle({ theme, setTheme, accent, setAccent }: {
@@ -2491,7 +2491,7 @@ function BatchConfirmModal({
                               if (isNaN(v) || v <= 0) setLimitOverrides(prev => { const n = { ...prev }; delete n[item.pos.key]; return n; });
                               else setLimitOverrides(prev => ({ ...prev, [item.pos.key]: v.toFixed(2) }));
                             }}
-                            className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${item.priceError != null ? 'border-red-500/60 text-red-400' : 'border-blue-500/40 text-blue-400'} bg-transparent outline-none focus:border-blue-400`}
+                            className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${item.priceError != null ? 'border-red-500/60 text-red-400' : 'border-blue-500/40 text-blue-400'} bg-transparent outline-none focus:ac-border`}
                             style={{ fontFamily: "'DM Mono', monospace" }}
                           />
                         </div>
@@ -2522,14 +2522,14 @@ function BatchConfirmModal({
                               <div className="flex items-center justify-between flex-wrap gap-2">
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">Suggested Roll</span>
-                                  <span className="text-[10px] text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+                                  <span className="text-[10px] ac-text" style={{ fontFamily: "'DM Mono', monospace" }}>
                                     {suggestion.expiry} ({suggestion.dte}d) · {suggestion.shortStrike}/{suggestion.longStrike} · δ{suggestion.delta.toFixed(2)}
                                   </span>
                                 </div>
                                 <button onClick={() => setRollInputs(prev => ({
                                   ...prev,
                                   [item.pos.key]: { expiry: suggestion.expiry, shortStrike: String(suggestion.shortStrike), longStrike: String(suggestion.longStrike), credit: String(suggestion.credit) }
-                                }))} className="text-[9px] px-2 py-0.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/20 transition-colors">
+                                }))} className="text-[9px] px-2 py-0.5 border ac-btn rounded hover:ac-bg-20 transition-colors">
                                   Use this
                                 </button>
                               </div>
@@ -2657,7 +2657,7 @@ function BatchConfirmModal({
                   </button>
                 ) : (
                   <button onClick={submitAll} disabled={activeItems.length === 0}
-                    className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'}`}>
+                    className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'ac-btn-solid'}`}>
                     {dryRun ? `⚗ DRY RUN — Simulate ${activeItems.length} Order${activeItems.length !== 1 ? 's' : ''}` : `SUBMIT ${activeItems.length} ORDER${activeItems.length !== 1 ? 'S' : ''}`}
                   </button>
                 )}
@@ -2669,7 +2669,7 @@ function BatchConfirmModal({
           )}
           {status === 'done' && (
             <div className="flex gap-3">
-              <button onClick={() => { onSuccess(); onClose(); }} className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'}`}>
+              <button onClick={() => { onSuccess(); onClose(); }} className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'ac-btn-solid'}`}>
                 {dryRun ? 'DRY RUN DONE — Close' : 'DONE — REFRESH POSITIONS'}
               </button>
             </div>
@@ -3037,7 +3037,7 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
               )}
               <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[11px] leading-relaxed ${
                 m.role === 'user'
-                  ? 'bg-blue-600/20 border border-blue-600/30 text-blue-100 ml-auto'
+                  ? 'ac-bg-20 border ac-border/30 text-blue-100 ml-auto'
                   : `${th.card} border ${th.border} ${th.textMuted}`
               }`}>
                 {m.content}
@@ -3523,7 +3523,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
         className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${
           result === 'success' ? 'border-emerald-600 text-emerald-400' :
           result === 'error'   ? 'border-red-600 text-red-400' :
-          open ? 'border-blue-500 text-blue-400 bg-blue-500/10' :
+          open ? 'ac-btn ac-bg-10' :
           assessColor
         }`}>
         {result === 'success' ? '✓ Extended' : result === 'error' ? '✕ Failed' : '↑ Extend Profit'}
@@ -3586,7 +3586,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
                     disabled={loading}
                     onClick={() => handleSelectPct(pct)}
                     className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors text-[10px] font-bold ${
-                      isSelected ? 'border-blue-500 bg-blue-500/15' : `${th.border} hover:border-blue-500 hover:bg-blue-500/10`
+                      isSelected ? 'border-blue-500 bg-blue-500/15' : `${th.border} ac-hover-border hover:ac-bg-10`
                     } disabled:opacity-50`}>
                     <span className="text-blue-400">{pct}% profit target</span>
                     <span className={`${th.textFaint} font-normal`}>BTC @ ${newPrice}</span>
@@ -3605,7 +3605,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
                         className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${
                           isStop
                             ? 'bg-red-600/20 border border-red-600 text-red-400 hover:bg-red-600/40'
-                            : 'bg-blue-600 hover:bg-blue-500 text-white'
+                            : 'ac-btn-solid text-white'
                         } disabled:opacity-50`}>
                         {loading ? 'Updating...' : isStop ? `Override & Extend to ${pct}%` : `Confirm — Extend to ${pct}%`}
                       </button>
@@ -4253,7 +4253,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
             <button
               onClick={fetchLivePrice}
               disabled={livePriceLoading}
-              className={`text-[9px] ${th.textFaint} hover:text-blue-400 transition-colors disabled:opacity-40`}>
+              className={`text-[9px] ${th.textFaint} ac-hover-text transition-colors disabled:opacity-40`}>
               ↻
             </button>
           </div>
@@ -4746,7 +4746,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   <span className="text-[9px] text-blue-400">%</span>
                 </div>
               ) : (
-                <p className={`text-xs cursor-pointer hover:text-blue-400 transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
+                <p className={`text-xs cursor-pointer ac-hover-text transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
                   style={{ fontFamily: "'DM Mono', monospace" }}
                   onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}>
                   ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
@@ -5200,7 +5200,7 @@ export default function PortfolioPage() {
   const th = THEMES[theme];
   const [accent, setAccent] = useState<Accent>(getSavedAccent);
   useEffect(() => { applyAccent(accent); }, [accent]);
-  useEffect(() => { applyAccent(getSavedAccent()); }, []);
+  useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
 
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
