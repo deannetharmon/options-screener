@@ -360,7 +360,7 @@ function AIChatPanel({ trades, range, th, onClose }: {
           <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {m.role === 'assistant' && <span className="text-indigo-400 text-[11px] mt-1 shrink-0 font-bold">◈</span>}
             <div className={`rounded-2xl px-4 py-3 text-[12px] leading-relaxed whitespace-pre-wrap max-w-[92%] ${
-              m.role === 'user' ? 'bg-blue-600/20 border border-blue-600/30 text-blue-100 ml-auto' : `${th.card} border ${th.border} ${th.textMuted}`
+              m.role === 'user' ? 'ac-bg-20 border ac-border/30 text-blue-100 ml-auto' : `${th.card} border ${th.border} ${th.textMuted}`
             }`}>{m.content}</div>
           </div>
         ))}
@@ -759,7 +759,7 @@ function ByStrategyWidget({ trades, th }: { trades: ClosedTrade[]; th: typeof TH
               <span className={`text-[9px] font-bold px-1.5 py-0.5 border rounded ${
                 r.strategy === 'BPS' ? 'border-emerald-600 text-emerald-400'
                 : r.strategy === 'BCS' ? 'border-red-600 text-red-400'
-                : r.strategy === 'IC' ? 'border-blue-600 text-blue-400'
+                : r.strategy === 'IC' ? 'ac-btn'
                 : 'border-slate-600 text-slate-400'
               }`}>{r.strategy}</span>
               <span className={`text-[10px] ${th.textFaint}`}>{r.total} trades · {Math.round(r.winRate * 100)}% win rate</span>
@@ -1068,7 +1068,7 @@ export default function PerformancePage() {
   const th = THEMES[theme];
   const [accent, setAccent] = useState<Accent>(getSavedAccent);
   useEffect(() => { applyAccent(accent); }, [accent]);
-  useEffect(() => { applyAccent(getSavedAccent()); }, []);
+  useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
 
   const [trades, setTrades]       = useState<ClosedTrade[]>([]);
   const [loading, setLoading]     = useState(false);
@@ -1165,7 +1165,7 @@ export default function PerformancePage() {
           <div className="w-px h-4 bg-white/20 mr-1" />
           {(['dark','medium','light'] as Theme[]).map(t => (
             <button key={t} onClick={() => { setTheme(t); try { localStorage.setItem(LS_THEME, t); } catch {} }}
-              className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'border-blue-500 text-blue-400' : `${th.border} ${th.textFaint} hover:border-blue-700`}`}>
+              className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'ac-btn' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
               {t}
             </button>
           ))}
@@ -1179,7 +1179,7 @@ export default function PerformancePage() {
             {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
               <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
                 className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${
-                  range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700 hover:text-blue-400`
+                  range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint ac-hover-text`
                 }`}>
                 {label}
               </button>
@@ -1204,7 +1204,7 @@ export default function PerformancePage() {
               ⊞ Configure
             </button>
             <button onClick={() => loadTrades(range, true)} disabled={loading}
-              className={`text-[10px] px-3 py-1.5 border ${th.border} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-50 tracking-wider`}>
+              className={`text-[10px] px-3 py-1.5 border ${th.border} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors disabled:opacity-50 tracking-wider`}>
               {loading ? '↺ Loading...' : '↺ Refresh'}
             </button>
           </div>
@@ -1222,8 +1222,8 @@ export default function PerformancePage() {
                 <button key={w.id} onClick={() => toggleWidget(w.id)}
                   className={`text-[10px] px-3 py-2 border rounded text-left transition-colors ${
                     w.enabled
-                      ? 'border-blue-500 text-blue-400 bg-blue-500/10'
-                      : `${th.border} ${th.textFaint} hover:border-blue-700 hover:text-blue-300`
+                      ? 'ac-btn ac-bg-10'
+                      : `${th.border} ${th.textFaint} ac-hover-border ac-hover-text`
                   }`}>
                   {w.enabled ? '✓ ' : '+ '}{w.label}
                 </button>
