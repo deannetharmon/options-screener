@@ -39,7 +39,6 @@ const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 const LS_PROFIT_TARGETS = 'hunter-profit-targets';
 const LS_AUDIT_LOG = 'hunter-audit-log';
-const LS_THEME = 'hunter-theme';
 const LS_MEMORY = 'hunter-trading-memory';
 const LS_DRY_RUN = 'hunter-dry-run';
 const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
