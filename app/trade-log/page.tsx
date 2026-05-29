@@ -16,6 +16,39 @@ if (typeof document !== 'undefined') {
 const BASE       = 'https://api.tastytrade.com';
 const CLIENT_ID  = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 const LS_THEME   = 'hunter-theme';
+
+// ── Accent Colors ──────────────────────────────────────────────────────────
+const LS_ACCENT = 'hunter-accent';
+
+const ACCENTS = {
+  electric: { hex: '#3b82f6', label: 'Electric',  tw: 'blue' },
+  emerald:  { hex: '#10b981', label: 'Emerald',   tw: 'emerald' },
+  amber:    { hex: '#f59e0b', label: 'Amber',     tw: 'amber' },
+  violet:   { hex: '#8b5cf6', label: 'Violet',    tw: 'violet' },
+  rose:     { hex: '#f43f5e', label: 'Rose',      tw: 'rose' },
+  slate:    { hex: '#64748b', label: 'Slate',     tw: 'slate' },
+} as const;
+type Accent = keyof typeof ACCENTS;
+
+function getSavedAccent(): Accent {
+  try { const a = localStorage.getItem(LS_ACCENT); return (a && a in ACCENTS) ? a as Accent : 'electric'; }
+  catch { return 'electric'; }
+}
+
+function applyAccent(accent: Accent) {
+  const hex = ACCENTS[accent].hex;
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--accent', hex);
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    document.documentElement.style.setProperty('--accent-r', String(r));
+    document.documentElement.style.setProperty('--accent-g', String(g));
+    document.documentElement.style.setProperty('--accent-b', String(b));
+  }
+}
+
+
 const LS_DEVICE  = 'hunter-device-id';
 const LS_TL_1W   = 'hunter-tradelog-1w';
 const LS_TL_2W   = 'hunter-tradelog-2w';
