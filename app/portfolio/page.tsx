@@ -1,6 +1,31 @@
 // app/portfolio/page.tsx
 
 'use client';
+
+// ── Accent Colors ──────────────────────────────────────────────────────────
+const LS_ACCENT = 'hunter-accent';
+const ACCENTS = {
+  electric: { hex: '#3b82f6', label: 'Electric' },
+  emerald:  { hex: '#10b981', label: 'Emerald' },
+  amber:    { hex: '#f59e0b', label: 'Amber' },
+  violet:   { hex: '#8b5cf6', label: 'Violet' },
+  rose:     { hex: '#f43f5e', label: 'Rose' },
+  slate:    { hex: '#64748b', label: 'Slate' },
+} as const;
+type Accent = keyof typeof ACCENTS;
+function getSavedAccent(): Accent {
+  try { const a = localStorage.getItem(LS_ACCENT); return (a && a in ACCENTS) ? a as Accent : 'electric'; } catch { return 'electric'; }
+}
+function applyAccent(accent: Accent) {
+  const hex = ACCENTS[accent].hex;
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--accent', hex);
+    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+    document.documentElement.style.setProperty('--accent-r', String(r));
+    document.documentElement.style.setProperty('--accent-g', String(g));
+    document.documentElement.style.setProperty('--accent-b', String(b));
+  }
+}
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
