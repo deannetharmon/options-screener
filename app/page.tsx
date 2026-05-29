@@ -39,8 +39,6 @@ type Theme = 'dark' | 'medium' | 'light';
 const LS_THEME = 'hunter-theme';
 
 // ── Accent Colors ──────────────────────────────────────────────────────────
-const LS_ACCENT = 'hunter-accent';
-
 const ACCENTS = {
   electric: { hex: '#3b82f6', label: 'Electric',  tw: 'blue' },
   emerald:  { hex: '#10b981', label: 'Emerald',   tw: 'emerald' },
