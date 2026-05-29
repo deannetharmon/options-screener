@@ -2136,13 +2136,15 @@ function BatchConfirmModal({
           // AUTO CANCEL EXISTING GTC IF USER CONFIRMED
           if (!dryRun && item.pos.hasGtc && gtcConfirmed.has(item.pos.key) && item.pos.gtcOrderId) {
             try {
-              // complexOrderId is stored on the GtcOrder object via item.pos.gtcOrderId
-              // We need to find it from the position's cached gtc data
               const gtcComplexId = (item.pos as any).gtcComplexOrderId as string | undefined;
+              console.log(`CANCEL DEBUG: symbol=${item.pos.symbol} orderId=${item.pos.gtcOrderId} complexId=${gtcComplexId} hasGtc=${item.pos.hasGtc} confirmed=${gtcConfirmed.has(item.pos.key)}`);
               await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token, gtcComplexId);
-              console.log(`Cancelled old GTC ${item.pos.gtcOrderId} for ${item.pos.symbol}`);
-            } catch (cancelErr) {
-              console.warn(`Failed to cancel GTC for ${item.pos.symbol}`, cancelErr);
+              console.log(`CANCEL SUCCESS: ${item.pos.symbol} GTC ${item.pos.gtcOrderId}`);
+              // Wait 500ms for TastyTrade to process the cancel before placing new order
+              await new Promise(r => setTimeout(r, 500));
+            } catch (cancelErr: any) {
+              console.error(`CANCEL FAILED: ${item.pos.symbol}`, cancelErr?.message);
+              throw new Error(`Failed to cancel existing GTC order before replacing: ${cancelErr?.message}`);
             }
           }
 
@@ -4163,11 +4165,17 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
         setPhase('Cancelling existing GTC order...');
         console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
         // Cancel via complex order endpoint if this is part of an OCO
-        if ((pos as any).gtcComplexOrderId) {
-          await ttDelete(`/accounts/${pos.accountNumber}/complex-orders/${(pos as any).gtcComplexOrderId}`, token);
+        const complexId = (pos as any).gtcComplexOrderId;
+        console.log(`PLACE_GTC CANCEL: orderId=${pos.gtcOrderId} complexId=${complexId}`);
+        if (complexId) {
+          console.log(`Cancelling complex order ${complexId}`);
+          await ttDelete(`/accounts/${pos.accountNumber}/complex-orders/${complexId}`, token);
         } else {
+          console.log(`Cancelling simple order ${pos.gtcOrderId}`);
           await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
         }
+        console.log(`Cancel complete, waiting 500ms...`);
+        await new Promise(r => setTimeout(r, 500));
 
         setPhase('Placing OCO order...');
         const ocoBody = {
