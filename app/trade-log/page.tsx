@@ -436,7 +436,7 @@ function fmtAge(ms: number): string {
 }
 function exitTypeColor(e: ExitType) {
   if (e === 'TARGET_HIT')     return 'text-emerald-400 border-emerald-700 bg-emerald-500/8';
-  if (e === 'FAST_CUT')       return 'text-blue-400 border-blue-700 bg-blue-500/8';
+  if (e === 'FAST_CUT')       return 'text-blue-400 ac-border-faint bg-blue-500/8';
   if (e === 'TIME_STOP')      return 'text-yellow-400 border-yellow-700 bg-yellow-500/8';
   if (e === 'MAX_LOSS')       return 'text-red-400 border-red-700 bg-red-500/8';
   if (e === 'HELD_TO_EXPIRY') return 'text-orange-400 border-orange-700 bg-orange-500/8';
@@ -462,7 +462,7 @@ function outcomeColor(o: Outcome) {
 function stratColor(s: string) {
   if (s === 'BPS') return 'text-emerald-400 border-emerald-600';
   if (s === 'BCS') return 'text-red-400 border-red-600';
-  if (s === 'IC')  return 'text-blue-400 border-blue-600';
+  if (s === 'IC')  return 'text-blue-400 ac-border';
   return 'text-slate-400 border-slate-600';
 }
 
@@ -563,7 +563,7 @@ function AIChatPanel({ trades, range, th, onClose }: {
             {m.role === 'assistant' && <span className="text-indigo-400 text-[11px] mt-1 shrink-0 font-bold">◈</span>}
             <div className={`rounded-2xl px-4 py-3 text-[12px] leading-relaxed whitespace-pre-wrap max-w-[92%] ${
               m.role === 'user'
-                ? 'bg-blue-600/20 border border-blue-600/30 text-blue-100 ml-auto'
+                ? 'ac-bg-20 border ac-border/30 text-blue-100 ml-auto'
                 : `${th.card} border ${th.border} ${th.textMuted}`
             }`}>
               {m.content}
@@ -664,8 +664,8 @@ function MultiSelect({ label, options, selected, onChange, th }: {
         onClick={() => setOpen(v => !v)}
         className={`text-[10px] px-2.5 py-1.5 border rounded flex items-center gap-1.5 transition-colors whitespace-nowrap ${
           !allSelected
-            ? 'border-blue-500 text-blue-400 bg-blue-500/8'
-            : `${th.inputBorder} ${th.textFaint} hover:border-blue-500 hover:text-blue-300`
+            ? 'ac-btn bg-blue-500/8'
+            : `${th.inputBorder} ${th.textFaint} ac-hover-border hover:ac-text`
         }`}>
         {summaryLabel}
         <span className="text-[8px] opacity-50">▾</span>
@@ -717,6 +717,7 @@ export default function TradeLogPage() {
   const [theme, setTheme]       = useState<Theme>(getSavedTheme);
   const [accent, setAccent] = useState<Accent>(getSavedAccent);
   useEffect(() => { applyAccent(accent); }, [accent]);
+  useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
   const th = THEMES[theme];
   const [trades, setTrades]     = useState<ClosedTrade[]>([]);
   const [loading, setLoading]   = useState(false);
@@ -857,7 +858,7 @@ export default function TradeLogPage() {
           <div className="w-px h-4 bg-white/20 mr-1" />
           {(['dark','medium','light'] as Theme[]).map(t => (
             <button key={t} onClick={() => { setTheme(t); try { localStorage.setItem(LS_THEME, t); } catch {} }}
-              className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'border-blue-500 text-blue-400' : `${th.border} ${th.textFaint} hover:border-blue-700`}`}>
+              className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'ac-btn' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
               {t}
             </button>
           ))}
@@ -871,7 +872,7 @@ export default function TradeLogPage() {
             <div className="flex items-center gap-1">
               {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
                 <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
-                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${range === r ? 'border-blue-500 text-blue-400 bg-blue-500/10' : `${th.border} ${th.textFaint} hover:border-blue-700 hover:text-blue-400`}`}>
+                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint ac-hover-text`}`}>
                   {label}
                 </button>
               ))}
@@ -933,7 +934,7 @@ export default function TradeLogPage() {
               </button>
             )}
             <button onClick={() => loadTrades(range, true)} disabled={loading}
-              className={`text-[10px] px-3 py-1.5 border ${th.border} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-50 tracking-wider`}>
+              className={`text-[10px] px-3 py-1.5 border ${th.border} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors disabled:opacity-50 tracking-wider`}>
               {loading ? '↺ Loading...' : '↺ Refresh'}
             </button>
           </div>
@@ -946,7 +947,7 @@ export default function TradeLogPage() {
         {isNewDevice && !loading && (
           <div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/30 bg-blue-500/8">
             <span className="text-blue-400">↺</span>
-            <p className="text-xs text-blue-300">Different device detected — trade history loaded fresh from TastyTrade.</p>
+            <p className="text-xs ac-text">Different device detected — trade history loaded fresh from TastyTrade.</p>
           </div>
         )}
 
