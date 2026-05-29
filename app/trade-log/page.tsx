@@ -839,11 +839,23 @@ export default function TradeLogPage() {
             <Link href="/"            className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
             <Link href="/portfolio"   className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
             <Link href="/rinse-repeat"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</Link>
-            <span                     className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">TRADE LOG</span>
+            <span                     className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>TRADE LOG</span>
             <Link href="/performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</Link>
           </nav>
         </div>
         <div className="flex items-center gap-3">
+
+          {/* Accent swatches */}
+          <div className="flex items-center gap-1 mr-1">
+            {(Object.entries(ACCENTS) as [Accent, typeof ACCENTS[Accent]][]).map(([key, val]) => (
+              <button key={key} onClick={() => { setAccent(key); applyAccent(key); try { localStorage.setItem(LS_ACCENT, key); } catch {} }}
+                title={val.label}
+                className={`w-3.5 h-3.5 rounded-full transition-all ${accent === key ? 'ring-2 ring-white/60 ring-offset-1 ring-offset-black scale-125' : 'opacity-60 hover:opacity-100'}`}
+                style={{ backgroundColor: val.hex }}
+              />
+            ))}
+          </div>
+          <div className="w-px h-4 bg-white/20 mr-1" />
           {(['dark','medium','light'] as Theme[]).map(t => (
             <button key={t} onClick={() => { setTheme(t); try { localStorage.setItem(LS_THEME, t); } catch {} }}
               className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'border-blue-500 text-blue-400' : `${th.border} ${th.textFaint} hover:border-blue-700`}`}>
