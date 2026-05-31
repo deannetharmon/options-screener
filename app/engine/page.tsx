@@ -195,7 +195,7 @@ function daysUntil(dateStr: string): number {
 }
 
 // ── Engine data loader ─────────────────────────────────────────────────────
-async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesSignal: EsFutures | null = null): Promise<EngineData> {
+async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesSignal: EsFutures | null = null, trendContext: TrendContext | null = null): Promise<EngineData> {
   const token = await getAccessToken();
 
   // ── Account + OBP ──────────────────────────────────────────────────────
@@ -483,11 +483,19 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
               const biasNote = esFuturesSignal
                 ? `ES=F ${esFuturesSignal.overnightChangePct >= 0 ? '+' : ''}${esFuturesSignal.overnightChangePct.toFixed(2)}% overnight → ${strategy} bias. `
                 : '';
+              const primeNote = trendContext?.primeSetup
+                ? `★ PRIME SETUP — reversal from ${trendContext.consecutiveDays}d downtrend. VIX elevated. `
+                : trendContext?.recoverySetup
+                ? `↑ Recovery setup — reversal confirmed. `
+                : '';
+              const anchorNote = trendContext?.reversalAnchorPrice
+                ? ` Reversal anchor: ${trendContext.reversalAnchorPrice.toFixed(0)}.`
+                : '';
               spxSuggestedEntry = {
                 shortStrike, longStrike, expiration: exp.date, dte: exp.dte,
                 pop, credit, creditRatio, roc,
                 contracts, capitalRequired: MAX_LOSS_PER_CONTRACT * contracts,
-                rationale: `${biasNote}${exp.dte}d DTE · ${pop.toFixed(0)}% POP · ${(creditRatio * 100).toFixed(0)}% credit ratio · 25-wide · 1256 tax treatment.`
+                rationale: `${primeNote}${biasNote}${exp.dte}d DTE · ${pop.toFixed(0)}% POP · ${(creditRatio * 100).toFixed(0)}% credit ratio · 25-wide · 1256 tax treatment.${anchorNote}`
               };
               break;
             }
@@ -641,9 +649,19 @@ interface EsFutures {
   settling: boolean;
 }
 
+interface TrendContext {
+  sma10: number;
+  currentVsSma: 'above' | 'below' | 'just_crossed_above' | 'just_crossed_below';
+  consecutiveDays: number; // days above or below SMA before today
+  primeSetup: boolean;     // reversal + VIX >= 20
+  recoverySetup: boolean;  // reversal but VIX < 20
+  reversalAnchorPrice: number | null; // low of reversal candle — BPS strike anchor
+  trendLabel: string;      // e.g. "In downtrend 8 days" / "Reversal day 1" / "Uptrend 12 days"
+}
+
 interface MarketConditions {
   score: number;
-  signal: 'TRADE TODAY' | 'MANAGE ONLY' | 'CAUTION' | 'WAIT TODAY';
+  signal: 'PRIME SETUP' | 'TRADE TODAY' | 'MANAGE ONLY' | 'CAUTION' | 'WAIT TODAY';
   signalDetail: string;
   flags: {
     dayOfWeek: ConditionFlag;
@@ -657,6 +675,7 @@ interface MarketConditions {
     earnings: ConditionFlag;
   };
   esFutures: EsFutures | null;
+  trendContext: TrendContext | null;
   fiftyPctPositions: string[];
 }
 
@@ -714,11 +733,12 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
   let esFutures: EsFutures | null = null;
 
   try {
-    const [vixRes, vix3mRes, spxRes, esRes] = await Promise.allSettled([
+    const [vixRes, vix3mRes, spxRes, esRes, esTrendRes] = await Promise.allSettled([
       fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=2d', { cache: 'no-store' }),
       fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX3M?interval=1d&range=2d', { cache: 'no-store' }),
       fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=2d', { cache: 'no-store' }),
       fetch('https://query1.finance.yahoo.com/v8/finance/chart/ES%3DF?interval=1d&range=2d&includePrePost=true', { cache: 'no-store' }),
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/ES%3DF?interval=1d&range=1mo', { cache: 'no-store' }), // 30-day trend data
     ]);
     if (vixRes.status === 'fulfilled' && vixRes.value.ok) {
       const d = await vixRes.value.json();
@@ -774,7 +794,66 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
     }
   } catch {}
 
-  // ES=F futures flag
+  // ── ES=F 30-day trend analysis — PRIME SETUP detection ────────────────
+  let trendContext: TrendContext | null = null;
+  try {
+    if (esTrendRes.status === 'fulfilled' && esTrendRes.value.ok) {
+      const td = await esTrendRes.value.json();
+      const closes: number[] = td?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
+      const lows: number[] = td?.chart?.result?.[0]?.indicators?.quote?.[0]?.low ?? [];
+      const validCloses = closes.filter(c => c != null && c > 0);
+
+      if (validCloses.length >= 11) {
+        // Calculate 10-day SMA using the 10 closes ending at yesterday (index -2 to -11)
+        const yesterday = validCloses[validCloses.length - 2] ?? validCloses[validCloses.length - 1];
+        const today = validCloses[validCloses.length - 1];
+        const sma10Closes = validCloses.slice(-11, -1); // last 10 closes before today
+        const sma10 = sma10Closes.reduce((a, b) => a + b, 0) / sma10Closes.length;
+
+        const todayAbove = today > sma10;
+        const yesterdayAbove = yesterday > sma10;
+
+        // Detect cross
+        let currentVsSma: TrendContext['currentVsSma'];
+        if (!yesterdayAbove && todayAbove) currentVsSma = 'just_crossed_above';
+        else if (yesterdayAbove && !todayAbove) currentVsSma = 'just_crossed_below';
+        else if (todayAbove) currentVsSma = 'above';
+        else currentVsSma = 'below';
+
+        // Count consecutive days in current state (walking back from yesterday)
+        let consecutiveDays = 0;
+        const compareAbove = currentVsSma === 'just_crossed_above' ? false : todayAbove; // count days in prior state for reversals
+        for (let i = validCloses.length - 2; i >= 0 && validCloses.length - 11 <= i; i--) {
+          const c = validCloses[i];
+          const smaSlice = validCloses.slice(Math.max(0, i - 10), i);
+          if (smaSlice.length < 5) break;
+          const sma = smaSlice.reduce((a, b) => a + b, 0) / smaSlice.length;
+          const wasAbove = c > sma;
+          if (wasAbove !== compareAbove) break;
+          consecutiveDays++;
+        }
+
+        // Reversal conditions
+        const isReversal = currentVsSma === 'just_crossed_above' && consecutiveDays >= 5;
+        const reversalAnchorPrice = isReversal
+          ? Math.min(...lows.filter(l => l != null && l > 0).slice(-3)) // low of recent 3 candles
+          : null;
+
+        const primeSetup = isReversal && vixValue >= 20;
+        const recoverySetup = isReversal && vixValue < 20;
+
+        const trendLabel = currentVsSma === 'just_crossed_above'
+          ? `Reversal — crossed above SMA10 after ${consecutiveDays}d downtrend`
+          : currentVsSma === 'just_crossed_below'
+          ? `Breakdown — crossed below SMA10 after ${consecutiveDays}d uptrend`
+          : currentVsSma === 'above'
+          ? `Uptrend — above SMA10 for ${consecutiveDays}d`
+          : `Downtrend — below SMA10 for ${consecutiveDays}d`;
+
+        trendContext = { sma10, currentVsSma, consecutiveDays, primeSetup, recoverySetup, reversalAnchorPrice, trendLabel };
+      }
+    }
+  } catch {}
   if (esFutures) {
     const chg = esFutures.overnightChangePct;
     const chgStr = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% overnight · ${esFutures.biasLabel} bias`;
@@ -886,12 +965,20 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
 
   score = Math.max(0, Math.min(100, Math.round(score)));
 
+  // PRIME SETUP boost — reversal from sustained downtrend with elevated IV
+  if (trendContext?.primeSetup) score = Math.min(100, score + 15);
+
   let signal: MarketConditions['signal'];
   let signalDetail: string;
-  if (score >= 75) {
+
+  if (trendContext?.primeSetup && score >= 70) {
+    signal = 'PRIME SETUP';
+    signalDetail = `${trendContext.trendLabel} · VIX ${vixValue.toFixed(1)} still elevated · maximum BPS entry conditions`;
+  } else if (score >= 75) {
     signal = 'TRADE TODAY';
     const biasNote = esFutures ? ` · ${esFutures.biasLabel} bias from ES=F` : '';
-    signalDetail = `All systems green · optimal window for new entries${biasNote}`;
+    const recoveryNote = trendContext?.recoverySetup ? ' · Recovery setup — good BPS conditions' : '';
+    signalDetail = `All systems green · optimal window for new entries${biasNote}${recoveryNote}`;
   } else if (score >= 55) {
     signal = 'MANAGE ONLY';
     if (fiftyPct.length > 0) signalDetail = `Close ${fiftyPct.join(', ')} profit targets first · defer new entries`;
@@ -905,7 +992,7 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
     signalDetail = 'High-risk environment · no new positions, only stop-loss closes if needed';
   }
 
-  return { score, signal, signalDetail, flags, esFutures, fiftyPctPositions: fiftyPct };
+  return { score, signal, signalDetail, flags, esFutures, trendContext, fiftyPctPositions: fiftyPct };
 }
 
 // ── UI Components ──────────────────────────────────────────────────────────
@@ -1052,10 +1139,11 @@ function MarketConditionsPanel({ mc, th, loading }: { mc: MarketConditions | nul
   const [expanded, setExpanded] = useState(true);
 
   const signalStyles = {
-    'TRADE TODAY': { bg: 'bg-emerald-500/10', border: 'border-emerald-600/50', text: 'text-emerald-400', ring: 'border-emerald-500', score: 'text-emerald-400', detail: 'text-emerald-400/70' },
-    'MANAGE ONLY': { bg: 'bg-blue-500/10',    border: 'border-blue-600/50',    text: 'text-blue-400',    ring: 'border-blue-500',    score: 'text-blue-400',    detail: 'text-blue-400/70' },
-    'CAUTION':     { bg: 'bg-amber-500/10',   border: 'border-amber-600/50',   text: 'text-amber-400',   ring: 'border-amber-500',   score: 'text-amber-400',   detail: 'text-amber-400/70' },
-    'WAIT TODAY':  { bg: 'bg-red-500/10',     border: 'border-red-600/50',     text: 'text-red-400',     ring: 'border-red-500',     score: 'text-red-400',     detail: 'text-red-400/70' },
+    'PRIME SETUP':  { bg: 'bg-yellow-500/10',   border: 'border-yellow-500/60',  text: 'text-yellow-300',  ring: 'border-yellow-400',  score: 'text-yellow-300',  detail: 'text-yellow-300/70' },
+    'TRADE TODAY':  { bg: 'bg-emerald-500/10',  border: 'border-emerald-600/50', text: 'text-emerald-400', ring: 'border-emerald-500', score: 'text-emerald-400', detail: 'text-emerald-400/70' },
+    'MANAGE ONLY':  { bg: 'bg-blue-500/10',     border: 'border-blue-600/50',    text: 'text-blue-400',    ring: 'border-blue-500',    score: 'text-blue-400',    detail: 'text-blue-400/70' },
+    'CAUTION':      { bg: 'bg-amber-500/10',    border: 'border-amber-600/50',   text: 'text-amber-400',   ring: 'border-amber-500',   score: 'text-amber-400',   detail: 'text-amber-400/70' },
+    'WAIT TODAY':   { bg: 'bg-red-500/10',      border: 'border-red-600/50',     text: 'text-red-400',     ring: 'border-red-500',     score: 'text-red-400',     detail: 'text-red-400/70' },
   };
 
   const flagStatusColors = {
@@ -1123,6 +1211,40 @@ function MarketConditionsPanel({ mc, th, loading }: { mc: MarketConditions | nul
       {/* Expanded detail */}
       {expanded && mc && (
         <div className={`border-t ${th.border}`}>
+
+          {/* PRIME SETUP banner */}
+          {mc.signal === 'PRIME SETUP' && mc.trendContext && (
+            <div className="flex items-center gap-3 px-4 py-3 bg-yellow-500/10 border-b border-yellow-500/30">
+              <span className="text-yellow-300 text-base shrink-0">★</span>
+              <div className="flex-1">
+                <p className="text-xs font-bold text-yellow-300 tracking-wider">PRIME SETUP DETECTED</p>
+                <p className="text-[10px] text-yellow-300/70 mt-0.5">
+                  {mc.trendContext.trendLabel} · VIX {mc.esFutures ? '' : ''}still elevated · fat premium + bullish reversal = maximum BPS entry conditions
+                </p>
+                {mc.trendContext.reversalAnchorPrice && (
+                  <p className="text-[9px] text-yellow-300/60 mt-0.5">
+                    Reversal anchor: ~{mc.trendContext.reversalAnchorPrice.toFixed(0)} — BPS short put strike should be below this level
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Trend context row */}
+          {mc.trendContext && mc.signal !== 'PRIME SETUP' && (
+            <div className={`flex items-center gap-4 px-4 py-2 border-b ${th.border} ${th.sidebar}`}>
+              <span className={`text-[9px] font-bold tracking-widest shrink-0 ${
+                mc.trendContext.currentVsSma === 'just_crossed_above' ? 'text-emerald-400'
+                : mc.trendContext.currentVsSma === 'just_crossed_below' ? 'text-red-400'
+                : mc.trendContext.currentVsSma === 'above' ? 'text-emerald-400/70'
+                : 'text-red-400/70'
+              }`}>ES=F TREND</span>
+              <span className={`text-[9px] ${th.textFaint} flex-1`}>{mc.trendContext.trendLabel}</span>
+              {mc.trendContext.recoverySetup && (
+                <span className="text-[9px] font-bold text-emerald-400 border border-emerald-700 bg-emerald-500/10 px-2 py-0.5 rounded shrink-0">↑ RECOVERY SETUP</span>
+              )}
+            </div>
+          )}
           {/* 50% profit alert */}
           {mc.fiftyPctPositions.length > 0 && (
             <div className="flex items-center gap-3 px-4 py-2.5 bg-emerald-500/10 border-b border-emerald-600/30">
@@ -1242,7 +1364,7 @@ export default function EnginePage() {
       setMcLoading(false);
 
       // Now load engine data with ES=F signal wired in
-      const data = await loadEngineData(watchlist, alloc, mc?.esFutures ?? null);
+      const data = await loadEngineData(watchlist, alloc, mc?.esFutures ?? null, mc?.trendContext ?? null);
       setEngineData(data);
       setStatus('ready');
 
