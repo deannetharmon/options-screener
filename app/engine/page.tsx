@@ -102,12 +102,30 @@ interface ActionItem {
   urgency?: string;
 }
 
+interface SpySuggestion {
+  shortStrike: number;
+  longStrike: number;
+  expiration: string;
+  dte: number;
+  pop: number;
+  credit: number;
+  creditRatio: number;
+  roc: number;
+  contracts: number;
+  spreadWidth: number;
+  capitalRequired: number;
+  strategy: 'BPS' | 'BCS' | 'IC';
+  rationale: string;
+}
+
 interface EngineData {
   capital: CapitalSummary;
   spxPositions: SpxPosition[];
+  spyPositions: SpxPosition[]; // SPY spreads — same shape as SPX
   wheelPositions: WheelPosition[];
   actions: ActionItem[];
   spxSuggestedEntry: SpxSuggestion | null;
+  spySuggestedEntry: SpySuggestion | null;
   wheelSuggestions: WheelSuggestion[];
   lastUpdated: Date;
 }
@@ -236,17 +254,15 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   // ── Unified capital classification ─────────────────────────────────────
   // ALL spreads (2-leg defined risk) → spread bucket regardless of symbol
   // ALL CSPs/CCs (single short option) → wheel bucket regardless of symbol
-  // This ensures Hunter-sourced trades count against the right bucket
 
-  // Parse SPX/SPY positions + any other spreads → spread bucket
   const spxPositions: SpxPosition[] = [];
+  const spyPositions: SpxPosition[] = [];
   let spxDeployed = 0;
   for (const [key, legs] of Object.entries(groups)) {
     const [symbol, expDate] = key.split('::');
     const shortLegs = legs.filter(l => l['quantity-direction'] === 'Short');
     const longLegs = legs.filter(l => l['quantity-direction'] === 'Long');
 
-    // Spread: has both short and long legs (defined risk) → spread bucket
     if (shortLegs.length > 0 && longLegs.length > 0) {
       const shortLeg = shortLegs[0];
       const longLeg = longLegs[0];
@@ -270,7 +286,11 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       else if (pnlPct !== null && pnlPct < -100) status = 'manage';
 
       const pop = Math.max(55, Math.min(90, 70 + (pnlPct ?? 0) * 0.1));
-      spxPositions.push({ symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * 100), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk });
+      const posEntry: SpxPosition = { symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * 100), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk };
+
+      // Route to SPX or SPY bucket based on symbol
+      if (symbol === 'SPY') spyPositions.push(posEntry);
+      else spxPositions.push(posEntry); // SPX, SPXW, or any Hunter-sourced spread
     }
   }
   capital.spxDeployed = spxDeployed;
@@ -507,6 +527,89 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
     } catch {}
   }
 
+  // ── SPY chain scan — fills remaining spread bucket capital ─────────────
+  let spySuggestedEntry: SpySuggestion | null = null;
+  // SPY available = spread target minus ALL deployed spread capital (SPX + SPY positions)
+  const spyCapitalAvailable = Math.max(0, capital.spxTarget - spxDeployed);
+  const SPY_WIDTH = 3; // 3-wide default — liquid, granular
+  const SPY_MAX_LOSS = SPY_WIDTH * 100; // $300 per contract
+  if (spyCapitalAvailable >= SPY_MAX_LOSS * 2) { // need at least 2 contracts worth
+    try {
+      const etfRules = getSavedEtfRules();
+      const nested = await ttFetch('/option-chains/SPY/nested', token);
+      const expirations = nested?.data?.items?.[0]?.expirations ?? [];
+      const validExps = expirations
+        .map((e: any) => ({ date: e['expiration-date'], dte: daysUntil(e['expiration-date']), strikes: e.strikes }))
+        .filter((e: any) => e.dte >= 28 && e.dte <= 48)
+        .sort((a: any, b: any) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
+
+      const esBias = esFuturesSignal?.bias ?? 'bullish';
+      const strategy: 'BPS' | 'BCS' | 'IC' = esBias === 'bearish' ? 'BCS' : esBias === 'neutral' ? 'IC' : 'BPS';
+
+      for (const exp of validExps.slice(0, 3)) {
+        const allSymbols: string[] = [];
+        for (const s of exp.strikes ?? []) {
+          if (strategy === 'BCS' && s.call) allSymbols.push(s.call);
+          else if (s.put) allSymbols.push(s.put);
+        }
+        if (allSymbols.length === 0) continue;
+        for (let i = 0; i < allSymbols.length; i += 100) {
+          const chunk = allSymbols.slice(i, i + 100);
+          const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
+          try {
+            const greeksData = await ttFetch(`/market-data/by-type?${qs}`, token);
+            for (const item of greeksData?.data?.items ?? []) {
+              const delta = item.delta != null ? Math.abs(parseFloat(item.delta)) : null;
+              if (!delta || delta < etfRules.SPREAD_DELTA_MIN || delta > etfRules.SPREAD_DELTA_MAX) continue;
+
+              const shortMatch = item.symbol?.match(/(\d{8})$/);
+              if (!shortMatch) continue;
+              const shortStrike = parseInt(shortMatch[1]) / 1000;
+              const longStrike = strategy === 'BCS' ? shortStrike + SPY_WIDTH : shortStrike - SPY_WIDTH;
+
+              // ES=F strike anchor (scaled to SPY price — SPY ≈ SPX ÷ 10)
+              if (esFuturesSignal) {
+                const buffer = 0.005;
+                const spyOvernight = { low: esFuturesSignal.overnightLow / 10, high: esFuturesSignal.overnightHigh / 10 };
+                if (strategy === 'BPS' && shortStrike > spyOvernight.low * (1 - buffer)) continue;
+                if (strategy === 'BCS' && shortStrike < spyOvernight.high * (1 + buffer)) continue;
+              }
+
+              const shortMid = (parseFloat(item.bid ?? '0') + parseFloat(item.ask ?? '0')) / 2;
+              if (shortMid <= 0) continue;
+              const credit = shortMid * 0.65; // SPY fills slightly better than SPX
+              const creditRatio = credit / SPY_WIDTH;
+              if (creditRatio < etfRules.CREDIT_RATIO_MIN) continue;
+              const maxLoss = SPY_WIDTH - credit;
+              const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
+              if (roc < etfRules.ROC_MIN_SPREAD) continue;
+              const pop = (1 - delta) * 100;
+              if (pop < Math.max(etfRules.POP_MIN, 68)) continue;
+
+              const maxContracts = Math.floor(spyCapitalAvailable / SPY_MAX_LOSS);
+              const contracts = Math.max(2, Math.min(maxContracts, 10));
+              const biasNote = esFuturesSignal
+                ? `ES=F ${esFuturesSignal.overnightChangePct >= 0 ? '+' : ''}${esFuturesSignal.overnightChangePct.toFixed(2)}% → ${strategy}. `
+                : '';
+              const taxNote = 'Short-term tax treatment.';
+              spySuggestedEntry = {
+                shortStrike, longStrike, expiration: exp.date, dte: exp.dte,
+                pop, credit, creditRatio, roc, contracts,
+                spreadWidth: SPY_WIDTH,
+                capitalRequired: SPY_MAX_LOSS * contracts,
+                strategy,
+                rationale: `${biasNote}${exp.dte}d DTE · ${pop.toFixed(0)}% POP · ${(creditRatio * 100).toFixed(0)}% credit ratio · ${SPY_WIDTH}-wide · ${contracts} contracts · ${taxNote}`
+              };
+              break;
+            }
+            if (spySuggestedEntry) break;
+          } catch {}
+        }
+        if (spySuggestedEntry) break;
+      }
+    } catch {}
+  }
+
   // ── Wheel suggestions ──────────────────────────────────────────────────
   const wheelSuggestions: WheelSuggestion[] = [];
   for (const pos of wheelPositions.filter(p => p.phase === 'idle' || p.phase === 'assigned')) {
@@ -554,7 +657,10 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 
   // New SPX entry
   if (spxSuggestedEntry) {
-    actions.push({ id: 'spx-new-entry', priority: 'entry', category: 'spx', symbol: 'SPX', title: `New BPS ${spxSuggestedEntry.shortStrike}/${spxSuggestedEntry.longStrike}P`, detail: `${spxSuggestedEntry.dte}d · ${spxSuggestedEntry.pop.toFixed(0)}% POP · $${spxSuggestedEntry.credit.toFixed(2)} cr · ${spxSuggestedEntry.contracts} contract${spxSuggestedEntry.contracts > 1 ? 's' : ''}`, action: 'Enter new position', urgency: 'Fill SPX allocation' });
+    actions.push({ id: 'spx-new-entry', priority: 'entry', category: 'spx', symbol: 'SPX', title: `New ${spxSuggestedEntry.rationale.startsWith('★') ? '★ ' : ''}BPS ${spxSuggestedEntry.shortStrike}/${spxSuggestedEntry.longStrike}P`, detail: `${spxSuggestedEntry.dte}d · ${spxSuggestedEntry.pop.toFixed(0)}% POP · $${spxSuggestedEntry.credit.toFixed(2)} cr · ${spxSuggestedEntry.contracts} contract${spxSuggestedEntry.contracts > 1 ? 's' : ''} · 25-wide · 1256`, action: 'Enter SPX anchor position', urgency: 'Fill SPX spread allocation' });
+  }
+  if (spySuggestedEntry) {
+    actions.push({ id: 'spy-new-entry', priority: 'entry', category: 'spx', symbol: 'SPY', title: `New ${spySuggestedEntry.strategy} ${spySuggestedEntry.shortStrike}/${spySuggestedEntry.longStrike}${spySuggestedEntry.strategy === 'BCS' ? 'C' : 'P'}`, detail: `${spySuggestedEntry.dte}d · ${spySuggestedEntry.pop.toFixed(0)}% POP · $${spySuggestedEntry.credit.toFixed(2)} cr · ${spySuggestedEntry.contracts} contracts · ${spySuggestedEntry.spreadWidth}-wide · ST tax`, action: 'Enter SPY fill position', urgency: 'Deploy remaining spread capital' });
   }
 
   // Wheel actions
@@ -581,7 +687,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   const priorityOrder: Record<ActionPriority, number> = { urgent: 0, review: 1, entry: 2, hold: 3 };
   actions.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
 
-  return { capital, spxPositions, wheelPositions: finalWheelPositions, actions, spxSuggestedEntry, wheelSuggestions, lastUpdated: new Date() };
+  return { capital, spxPositions, spyPositions, wheelPositions: finalWheelPositions, actions, spxSuggestedEntry, spySuggestedEntry, wheelSuggestions, lastUpdated: new Date() };
 }
 
 // ── AI analysis ────────────────────────────────────────────────────────────
@@ -1500,7 +1606,7 @@ export default function EnginePage() {
               <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString()}</p>
             </div>
             <div className="flex-1 grid grid-cols-3 gap-4">
-              <CapitalBar label={`SPX (${alloc.spx}%)`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
+              <CapitalBar label={`Spread Engine · SPX+SPY (${alloc.spx}%)`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
               <CapitalBar label={`Wheel (${alloc.wheel}%)`} deployed={d.capital.wheelDeployed} target={d.capital.wheelTarget} color="bg-blue-500" />
               <div>
                 <p className={`text-[9px] ${th.textFaint} mb-1`}>Reserve ({alloc.reserve}%)</p>
@@ -1616,44 +1722,83 @@ export default function EnginePage() {
             <div className={`border ${th.border} rounded-xl overflow-hidden`}>
               <div className={`px-4 py-3 border-b ${th.border} flex items-center justify-between ${th.card}`}>
                 <div className="flex items-center gap-3">
-                  <span className="text-violet-400 font-bold text-xs tracking-widest">SPX ENGINE</span>
+                  <span className="text-violet-400 font-bold text-xs tracking-widest">SPREAD ENGINE</span>
+                  <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold">SPX anchor · SPY fills</span>
                   <span className={`text-[9px] ${th.textFaint}`}>{alloc.spx}% · ${d.capital.spxTarget.toLocaleString()} target · ${d.capital.spxDeployed.toLocaleString()} deployed</span>
                 </div>
                 <div className="flex items-center gap-3 text-xs">
-                  <span className={th.textFaint}>{d.spxPositions.length} active</span>
+                  <span className={th.textFaint}>{d.spxPositions.length + d.spyPositions.length} active</span>
                   <span className={`${d.capital.spxDeployed >= d.capital.spxTarget * 0.8 ? 'text-emerald-400' : 'text-amber-400'} text-[9px]`}>
                     {d.capital.spxDeployed >= d.capital.spxTarget * 0.8 ? '✓ Well deployed' : '⚠ Under-deployed'}
                   </span>
                 </div>
               </div>
 
-              {/* SPX position headers */}
+              {/* SPX positions */}
               {d.spxPositions.length > 0 && (
-                <div className={`flex items-center gap-3 px-4 py-1.5 border-b ${th.border} ${th.sidebar}`}>
-                  <div className={`w-32 text-[8px] ${th.textFaint} tracking-widest uppercase`}>Strikes</div>
-                  <div className={`w-16 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>POP</div>
-                  <div className={`w-20 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>P&L</div>
-                  <div className={`w-20 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>Capital</div>
-                  <div className={`w-16 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>Qty</div>
-                  <div className="flex-1 text-right text-[8px] text-slate-500 uppercase tracking-widest">Status</div>
-                </div>
+                <>
+                  <div className={`flex items-center gap-2 px-4 py-1.5 border-b ${th.border} ${th.sidebar}`}>
+                    <span className="text-[8px] text-violet-400 font-bold tracking-widest">SPX · 25-WIDE · 1256 TAX</span>
+                  </div>
+                  <div className={`flex items-center gap-3 px-4 py-1.5 border-b ${th.border} ${th.sidebar}`}>
+                    <div className={`w-32 text-[8px] ${th.textFaint} tracking-widest uppercase`}>Strikes</div>
+                    <div className={`w-16 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>POP</div>
+                    <div className={`w-20 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>P&L</div>
+                    <div className={`w-20 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>Capital</div>
+                    <div className={`w-16 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>Qty</div>
+                    <div className="flex-1 text-right text-[8px] text-slate-500 uppercase tracking-widest">Status</div>
+                  </div>
+                  {d.spxPositions.map((pos, i) => <SpxPositionRow key={i} pos={pos} th={th} />)}
+                </>
               )}
-              {d.spxPositions.map((pos, i) => <SpxPositionRow key={i} pos={pos} th={th} />)}
 
-              {d.spxPositions.length === 0 && (
-                <div className={`px-4 py-4 text-center ${th.textFaint} text-[10px]`}>No active SPX positions</div>
+              {/* SPY positions */}
+              {d.spyPositions.length > 0 && (
+                <>
+                  <div className={`flex items-center gap-2 px-4 py-1.5 border-b ${th.border} ${th.sidebar}`}>
+                    <span className="text-[8px] text-cyan-400 font-bold tracking-widest">SPY · FLEXIBLE WIDTH · SHORT-TERM TAX</span>
+                  </div>
+                  <div className={`flex items-center gap-3 px-4 py-1.5 border-b ${th.border} ${th.sidebar}`}>
+                    <div className={`w-32 text-[8px] ${th.textFaint} tracking-widest uppercase`}>Strikes</div>
+                    <div className={`w-16 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>POP</div>
+                    <div className={`w-20 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>P&L</div>
+                    <div className={`w-20 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>Capital</div>
+                    <div className={`w-16 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>Qty</div>
+                    <div className="flex-1 text-right text-[8px] text-slate-500 uppercase tracking-widest">Status</div>
+                  </div>
+                  {d.spyPositions.map((pos, i) => <SpxPositionRow key={`spy-${i}`} pos={pos} th={th} />)}
+                </>
               )}
 
-              {/* Suggested entry */}
+              {d.spxPositions.length === 0 && d.spyPositions.length === 0 && (
+                <div className={`px-4 py-4 text-center ${th.textFaint} text-[10px]`}>No active spread positions</div>
+              )}
+
+              {/* SPX Suggested entry */}
               {d.spxSuggestedEntry && (
-                <div className={`border-t ${th.border} px-4 py-3 bg-violet-500/5`}>
+                <div className={`border-t ${th.border} px-4 py-3 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'bg-yellow-500/5' : 'bg-violet-500/5'}`}>
                   <div className="flex items-center gap-3">
-                    <span className="text-[8px] text-violet-400 font-bold tracking-widest uppercase shrink-0">↗ Suggested Entry</span>
+                    <span className={`text-[8px] font-bold tracking-widest uppercase shrink-0 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'text-yellow-300' : 'text-violet-400'}`}>
+                      {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ Prime Entry' : '↗ SPX Entry'}
+                    </span>
                     <p className={`text-[10px] ${th.textMuted}`}>
-                      BPS {d.spxSuggestedEntry.shortStrike}/{d.spxSuggestedEntry.longStrike}P · {d.spxSuggestedEntry.expiration} ({d.spxSuggestedEntry.dte}d) · {d.spxSuggestedEntry.pop.toFixed(0)}% POP · ${d.spxSuggestedEntry.credit.toFixed(2)} cr · {d.spxSuggestedEntry.contracts}× · ${d.spxSuggestedEntry.capitalRequired.toLocaleString()} required
+                      BPS {d.spxSuggestedEntry.shortStrike}/{d.spxSuggestedEntry.longStrike}P · {d.spxSuggestedEntry.expiration} ({d.spxSuggestedEntry.dte}d) · {d.spxSuggestedEntry.pop.toFixed(0)}% POP · ${d.spxSuggestedEntry.credit.toFixed(2)} cr · {d.spxSuggestedEntry.contracts}× · ${d.spxSuggestedEntry.capitalRequired.toLocaleString()}
                     </p>
                   </div>
-                  <p className={`text-[9px] ${th.textFaint} mt-1 ml-[90px]`}>{d.spxSuggestedEntry.rationale}</p>
+                  <p className={`text-[9px] ${th.textFaint} mt-1 ml-[80px]`}>{d.spxSuggestedEntry.rationale}</p>
+                </div>
+              )}
+
+              {/* SPY Suggested entry */}
+              {d.spySuggestedEntry && (
+                <div className={`border-t ${th.border} px-4 py-3 bg-cyan-500/5`}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[8px] text-cyan-400 font-bold tracking-widest uppercase shrink-0">↗ SPY Fill</span>
+                    <p className={`text-[10px] ${th.textMuted}`}>
+                      {d.spySuggestedEntry.strategy} {d.spySuggestedEntry.shortStrike}/{d.spySuggestedEntry.longStrike}{d.spySuggestedEntry.strategy === 'BCS' ? 'C' : 'P'} · {d.spySuggestedEntry.expiration} ({d.spySuggestedEntry.dte}d) · {d.spySuggestedEntry.pop.toFixed(0)}% POP · ${d.spySuggestedEntry.credit.toFixed(2)} cr · {d.spySuggestedEntry.contracts}× · {d.spySuggestedEntry.spreadWidth}-wide · ${d.spySuggestedEntry.capitalRequired.toLocaleString()}
+                    </p>
+                  </div>
+                  <p className={`text-[9px] ${th.textFaint} mt-1 ml-[65px]`}>{d.spySuggestedEntry.rationale}</p>
                 </div>
               )}
             </div>
@@ -1706,7 +1851,7 @@ export default function EnginePage() {
                 <div className="absolute top-0 bottom-0" style={{ left: `calc(80px + 4px)`, width: '1px', background: 'rgba(239,68,68,0.4)' }} />
 
                 {/* SPX positions */}
-                <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>SPX Bull Put Spreads</p>
+                <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2`}>SPX · 25-Wide · 1256 Tax</p>
                 {d.spxPositions.map((pos, i) => (
                   <div key={i} className="flex items-center mb-1.5">
                     <div className={`w-20 shrink-0 text-[9px] ${th.textFaint}`}>{pos.shortStrike}/{pos.longStrike}</div>
@@ -1722,17 +1867,29 @@ export default function EnginePage() {
                     </div>
                   </div>
                 ))}
-                {d.spxSuggestedEntry && (
-                  <div className="flex items-center mb-1.5">
-                    <div className={`w-20 shrink-0 text-[9px] text-violet-400 font-medium`}>+ Suggest</div>
+                {d.spxPositions.length === 0 && (
+                  <p className={`text-[9px] ${th.textFaint} italic mb-3`}>No SPX positions — spread bucket available for new entry</p>
+                )}
+
+                {/* SPY positions */}
+                <p className={`text-[8px] ${th.textFaint} tracking-widest uppercase font-bold mb-2 mt-3`}>SPY · Flexible Width · ST Tax</p>
+                {d.spyPositions.map((pos, i) => (
+                  <div key={`spy-${i}`} className="flex items-center mb-1.5">
+                    <div className={`w-20 shrink-0 text-[9px] ${th.textFaint}`}>{pos.shortStrike}/{pos.longStrike}</div>
                     <div className="flex-1 relative">
-                      <TimelineBar startDte={2} endDte={d.spxSuggestedEntry.dte} totalDays={timelineDays}
-                        color="border border-dashed border-violet-500 text-violet-400 bg-transparent" label={`${d.spxSuggestedEntry.shortStrike}/${d.spxSuggestedEntry.longStrike} · ${d.spxSuggestedEntry.pop.toFixed(0)}%`} status="entry" />
+                      <TimelineBar
+                        startDte={0}
+                        endDte={pos.dte}
+                        totalDays={timelineDays}
+                        color={pos.status === 'hold' ? 'bg-cyan-600/80 text-cyan-100' : pos.status === 'watch' ? 'bg-amber-600/80 text-amber-100' : 'bg-red-600/80 text-red-100'}
+                        label={`${pos.pop.toFixed(0)}% POP`}
+                        status={pos.status}
+                      />
                     </div>
                   </div>
-                )}
-                {d.spxPositions.length === 0 && !d.spxSuggestedEntry && (
-                  <p className={`text-[9px] ${th.textFaint} italic mb-2`}>No SPX positions</p>
+                ))}
+                {d.spyPositions.length === 0 && (
+                  <p className={`text-[9px] ${th.textFaint} italic mb-3`}>No SPY positions — remaining spread capital available</p>
                 )}
 
                 {/* Divider */}
