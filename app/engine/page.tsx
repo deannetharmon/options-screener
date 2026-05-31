@@ -731,6 +731,7 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
   let vix3mValue = 20;
   let spxChange = 0;
   let esFutures: EsFutures | null = null;
+  let trendContext: TrendContext | null = null;
 
   try {
     const [vixRes, vix3mRes, spxRes, esRes, esTrendRes] = await Promise.allSettled([
@@ -792,11 +793,8 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
 
       esFutures = { price: esPrice, overnightChangePct, overnightHigh, overnightLow, bias, biasLabel, strikeAnchorNote, settling };
     }
-  } catch {}
 
-  // ── ES=F 30-day trend analysis — PRIME SETUP detection ────────────────
-  let trendContext: TrendContext | null = null;
-  try {
+    // ── ES=F 30-day trend analysis — PRIME SETUP detection ────────────────
     if (esTrendRes.status === 'fulfilled' && esTrendRes.value.ok) {
       const td = await esTrendRes.value.json();
       const closes: number[] = td?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
