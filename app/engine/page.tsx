@@ -25,7 +25,18 @@ const LS_ENGINE_ALLOC = 'hunter-engine-allocation';
 const LS_ENGINE_WATCHLIST = 'hunter-engine-watchlist';
 const LS_ENGINE_SUBTAB = 'hunter-engine-subtab';
 
-const DEFAULT_WATCHLIST = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'MU', 'AMD'];
+const DEFAULT_WATCHLIST = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA']; // Mag 7 default — add AMD, MU via settings
+
+// ── Shared ETF rules (same keys as Hunter — tune once, applies everywhere) ──
+const LS_RULES_ETF = 'hunter-rules-etf';
+interface EtfRules { CREDIT_RATIO_MIN: number; POP_MIN: number; SPREAD_DELTA_MIN: number; SPREAD_DELTA_MAX: number; ROC_MIN_SPREAD: number; }
+const DEFAULT_ETF_RULES: EtfRules = { CREDIT_RATIO_MIN: 0.20, POP_MIN: 65, SPREAD_DELTA_MIN: 0.15, SPREAD_DELTA_MAX: 0.35, ROC_MIN_SPREAD: 15 };
+function getSavedEtfRules(): EtfRules {
+  try {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem(LS_RULES_ETF) : null;
+    return saved ? { ...DEFAULT_ETF_RULES, ...JSON.parse(saved) } : { ...DEFAULT_ETF_RULES };
+  } catch { return { ...DEFAULT_ETF_RULES }; }
+}
 
 const DEFAULT_ALLOC = { reserve: 20, wheel: 50, spx: 30 };
 
@@ -184,7 +195,7 @@ function daysUntil(dateStr: string): number {
 }
 
 // ── Engine data loader ─────────────────────────────────────────────────────
-async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<EngineData> {
+async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesSignal: EsFutures | null = null): Promise<EngineData> {
   const token = await getAccessToken();
 
   // ── Account + OBP ──────────────────────────────────────────────────────
@@ -222,40 +233,45 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
     groups[key].push(leg);
   }
 
-  // Parse SPX positions (underlying-symbol = SPX or SPXW)
+  // ── Unified capital classification ─────────────────────────────────────
+  // ALL spreads (2-leg defined risk) → spread bucket regardless of symbol
+  // ALL CSPs/CCs (single short option) → wheel bucket regardless of symbol
+  // This ensures Hunter-sourced trades count against the right bucket
+
+  // Parse SPX/SPY positions + any other spreads → spread bucket
   const spxPositions: SpxPosition[] = [];
   let spxDeployed = 0;
   for (const [key, legs] of Object.entries(groups)) {
     const [symbol, expDate] = key.split('::');
-    if (symbol !== 'SPX' && symbol !== 'SPXW') continue;
-    const shortLeg = legs.find(l => l['quantity-direction'] === 'Short');
-    const longLeg = legs.find(l => l['quantity-direction'] === 'Long');
-    if (!shortLeg || !longLeg) continue;
-    const shortStrike = parseFloat(shortLeg.symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
-    const longStrike = parseFloat(longLeg.symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
-    const qty = parseInt(shortLeg['quantity'] ?? '1', 10);
-    const creditReceived = (parseFloat(shortLeg['average-open-price'] ?? '0') - parseFloat(longLeg['average-open-price'] ?? '0')) * qty * 100;
-    const shortMark = parseFloat(shortLeg['mark-price'] ?? shortLeg['close-price'] ?? '0');
-    const longMark = parseFloat(longLeg['mark-price'] ?? longLeg['close-price'] ?? '0');
-    const currentCost = (shortMark - longMark) * qty * 100;
-    const pnl = creditReceived - currentCost;
-    const dte = daysUntil(expDate);
-    const pnlPct = creditReceived !== 0 ? (pnl / creditReceived) * 100 : null;
-    const spreadWidth = Math.abs(shortStrike - longStrike);
-    const capitalAtRisk = spreadWidth * 100 * qty;
-    spxDeployed += capitalAtRisk;
+    const shortLegs = legs.filter(l => l['quantity-direction'] === 'Short');
+    const longLegs = legs.filter(l => l['quantity-direction'] === 'Long');
 
-    // Determine status
-    let status: SpxPosition['status'] = 'hold';
-    if (pnlPct !== null && pnlPct >= 50) status = 'close';
-    else if (dte <= 21) status = 'watch';
-    else if (pnlPct !== null && pnlPct < -100) status = 'manage';
+    // Spread: has both short and long legs (defined risk) → spread bucket
+    if (shortLegs.length > 0 && longLegs.length > 0) {
+      const shortLeg = shortLegs[0];
+      const longLeg = longLegs[0];
+      const shortStrike = parseFloat(shortLeg.symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
+      const longStrike = parseFloat(longLeg.symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
+      const qty = parseInt(shortLeg['quantity'] ?? '1', 10);
+      const creditReceived = (parseFloat(shortLeg['average-open-price'] ?? '0') - parseFloat(longLeg['average-open-price'] ?? '0')) * qty * 100;
+      const shortMark = parseFloat(shortLeg['mark-price'] ?? shortLeg['close-price'] ?? '0');
+      const longMark = parseFloat(longLeg['mark-price'] ?? longLeg['close-price'] ?? '0');
+      const currentCost = (shortMark - longMark) * qty * 100;
+      const pnl = creditReceived - currentCost;
+      const dte = daysUntil(expDate);
+      const pnlPct = creditReceived !== 0 ? (pnl / creditReceived) * 100 : null;
+      const spreadWidth = Math.abs(shortStrike - longStrike);
+      const capitalAtRisk = spreadWidth * 100 * qty;
+      spxDeployed += capitalAtRisk;
 
-    // Estimate POP from current delta (approximate from strike distance)
-    const atmEstimate = 0.5;
-    const pop = Math.max(55, Math.min(90, 70 + (pnlPct ?? 0) * 0.1));
+      let status: SpxPosition['status'] = 'hold';
+      if (pnlPct !== null && pnlPct >= 50) status = 'close';
+      else if (dte <= 21) status = 'watch';
+      else if (pnlPct !== null && pnlPct < -100) status = 'manage';
 
-    spxPositions.push({ symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * 100), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk });
+      const pop = Math.max(55, Math.min(90, 70 + (pnlPct ?? 0) * 0.1));
+      spxPositions.push({ symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * 100), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk });
+    }
   }
   capital.spxDeployed = spxDeployed;
   capital.spxAvailable = Math.max(0, capital.spxTarget - spxDeployed);
@@ -354,13 +370,60 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
     }
   }
   capital.wheelDeployed = wheelDeployed;
+
+  // ── Count Hunter-sourced CSPs/CCs on non-watchlist symbols toward wheel bucket ──
+  // Any single short put or covered call NOT already counted above goes here
+  const alreadyCounted = new Set(wheelPositions.map(p => p.symbol));
+  for (const [key, legs] of Object.entries(groups)) {
+    const [symbol] = key.split('::');
+    if (alreadyCounted.has(symbol)) continue; // already in wheel or spread bucket
+    const shortPuts = legs.filter(l => l['quantity-direction'] === 'Short' && (l.symbol?.includes('P')));
+    const longPuts = legs.filter(l => l['quantity-direction'] === 'Long' && (l.symbol?.includes('P')));
+    const shortCalls = legs.filter(l => l['quantity-direction'] === 'Short' && (l.symbol?.includes('C')));
+    const longCalls = legs.filter(l => l['quantity-direction'] === 'Long' && (l.symbol?.includes('C')));
+    const isSpread = (shortPuts.length > 0 && longPuts.length > 0) || (shortCalls.length > 0 && longCalls.length > 0);
+    if (isSpread) continue; // spreads already in spread bucket
+    // Single short put on non-watchlist stock — counts against wheel bucket capital
+    if (shortPuts.length > 0 && longPuts.length === 0) {
+      const strike = parseFloat(shortPuts[0].symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
+      const qty = parseInt(shortPuts[0]['quantity'] ?? '1', 10);
+      const capitalRequired = strike * qty * 100;
+      capital.wheelDeployed += capitalRequired;
+    }
+  }
   capital.wheelAvailable = Math.max(0, capital.wheelTarget - wheelDeployed);
   capital.deploymentPct = obp > 0 ? Math.round(((wheelDeployed + spxDeployed) / (capital.wheelTarget + capital.spxTarget)) * 100) : 0;
 
+  // Deduplicate wheelPositions by symbol — keep the most meaningful phase.
+  // Two accounts scanning the same watchlist symbol can create duplicate entries.
+  // Priority: cash-secured-put > covered-call > assigned > idle
+  const phasePriority = (phase: string) =>
+    phase === 'cash-secured-put' ? 4 : phase === 'covered-call' ? 3 : phase === 'assigned' ? 2 : 1;
+  const dedupedWheelPositions: WheelPosition[] = [];
+  const seenWheelSymbols = new Map<string, number>(); // symbol → index in dedupedWheelPositions
+  for (const pos of wheelPositions) {
+    const existing = seenWheelSymbols.get(pos.symbol);
+    if (existing === undefined) {
+      seenWheelSymbols.set(pos.symbol, dedupedWheelPositions.length);
+      dedupedWheelPositions.push(pos);
+    } else {
+      // Replace if this entry has a higher-priority phase
+      if (phasePriority(pos.phase) > phasePriority(dedupedWheelPositions[existing].phase)) {
+        dedupedWheelPositions[existing] = pos;
+      }
+    }
+  }
+  const finalWheelPositions = dedupedWheelPositions;
+
   // ── SPX chain scan for suggestion ─────────────────────────────────────
   let spxSuggestedEntry: SpxSuggestion | null = null;
-  if (capital.spxAvailable >= 1000) {
+  if (capital.spxAvailable >= 2500) {
     try {
+      // Read user's saved ETF rules (shared with Hunter — tune once, applies here too)
+      const etfRules = getSavedEtfRules();
+      const SPREAD_WIDTH = 25; // 25-wide SPX spreads — liquid, manageable, standard
+      const MAX_LOSS_PER_CONTRACT = SPREAD_WIDTH * 100; // $2,500
+
       const nested = await ttFetch('/option-chains/SPX/nested', token);
       const expirations = nested?.data?.items?.[0]?.expirations ?? [];
       // Find best 30-45 DTE expiration
@@ -369,11 +432,19 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
         .filter((e: any) => e.dte >= 28 && e.dte <= 48)
         .sort((a: any, b: any) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
 
+      // Determine strategy from ES=F bias — default BPS if no signal
+      const esBias = esFuturesSignal?.bias ?? 'bullish';
+      const strategy: 'BPS' | 'BCS' | 'IC' = esBias === 'bearish' ? 'BCS' : esBias === 'neutral' ? 'IC' : 'BPS';
+      const deltaMin = etfRules.SPREAD_DELTA_MIN;
+      const deltaMax = etfRules.SPREAD_DELTA_MAX;
+
       for (const exp of validExps.slice(0, 3)) {
         const allSymbols: string[] = [];
-        for (const s of exp.strikes ?? []) { if (s.put) allSymbols.push(s.put); }
+        for (const s of exp.strikes ?? []) {
+          if (strategy === 'BCS' && s.call) allSymbols.push(s.call);
+          else if (s.put) allSymbols.push(s.put);
+        }
         if (allSymbols.length === 0) continue;
-        // Fetch greeks for puts in this expiry
         for (let i = 0; i < allSymbols.length; i += 100) {
           const chunk = allSymbols.slice(i, i + 100);
           const qs = chunk.map((s: string) => `equity-option=${encodeURIComponent(s)}`).join('&');
@@ -381,35 +452,42 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
             const greeksData = await ttFetch(`/market-data/by-type?${qs}`, token);
             for (const item of greeksData?.data?.items ?? []) {
               const delta = item.delta != null ? Math.abs(parseFloat(item.delta)) : null;
-              if (!delta || delta < 0.18 || delta > 0.28) continue;
-              // Find 10-wide spread
+              if (!delta || delta < deltaMin || delta > deltaMax) continue;
+
               const shortMatch = item.symbol?.match(/(\d{8})$/);
               if (!shortMatch) continue;
               const shortStrike = parseInt(shortMatch[1]) / 1000;
-              const longStrike = shortStrike - 10;
+              // For BPS: long strike below short; for BCS: long strike above short
+              const longStrike = strategy === 'BCS' ? shortStrike + SPREAD_WIDTH : shortStrike - SPREAD_WIDTH;
+
+              // ES=F strike anchor check — short strike must clear overnight S/R by 0.5% buffer
+              if (esFuturesSignal) {
+                const buffer = 0.005;
+                if (strategy === 'BPS' && shortStrike > esFuturesSignal.overnightLow * (1 - buffer)) continue;
+                if (strategy === 'BCS' && shortStrike < esFuturesSignal.overnightHigh * (1 + buffer)) continue;
+              }
+
               const shortMid = (parseFloat(item.bid ?? '0') + parseFloat(item.ask ?? '0')) / 2;
               if (shortMid <= 0) continue;
-              // Look for long leg in same batch
-              const longSymbol = allSymbols.find(s => {
-                const m = s.match(/(\d{8})$/);
-                return m && Math.abs(parseInt(m[1]) / 1000 - longStrike) < 0.5;
-              });
-              if (!longSymbol) continue;
-              // Approximate long mid from delta curve
-              const credit = shortMid * 0.6; // rough estimate; real data needs separate fetch
-              const creditRatio = credit / 10;
-              if (creditRatio < 0.20) continue;
-              const maxLoss = 10 - credit;
+              const credit = shortMid * 0.6; // approximate net credit after long leg cost
+              const creditRatio = credit / SPREAD_WIDTH;
+              if (creditRatio < etfRules.CREDIT_RATIO_MIN) continue;
+              const maxLoss = SPREAD_WIDTH - credit;
               const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
+              if (roc < etfRules.ROC_MIN_SPREAD) continue;
               const pop = (1 - delta) * 100;
-              if (pop < 70) continue;
-              const maxContracts = Math.floor(capital.spxAvailable / (10 * 100));
-              const contracts = Math.max(1, Math.min(maxContracts, 5));
+              if (pop < Math.max(etfRules.POP_MIN, 70)) continue; // enforce 70% floor for SPX
+
+              const maxContracts = Math.floor(capital.spxAvailable / MAX_LOSS_PER_CONTRACT);
+              const contracts = Math.max(1, Math.min(maxContracts, 3));
+              const biasNote = esFuturesSignal
+                ? `ES=F ${esFuturesSignal.overnightChangePct >= 0 ? '+' : ''}${esFuturesSignal.overnightChangePct.toFixed(2)}% overnight → ${strategy} bias. `
+                : '';
               spxSuggestedEntry = {
                 shortStrike, longStrike, expiration: exp.date, dte: exp.dte,
                 pop, credit, creditRatio, roc,
-                contracts, capitalRequired: 10 * 100 * contracts,
-                rationale: `BPS aligned with bullish bias. ${exp.dte}d DTE in the 30-45 window. ${pop.toFixed(0)}% POP with ${(creditRatio * 100).toFixed(0)}% credit ratio.`
+                contracts, capitalRequired: MAX_LOSS_PER_CONTRACT * contracts,
+                rationale: `${biasNote}${exp.dte}d DTE · ${pop.toFixed(0)}% POP · ${(creditRatio * 100).toFixed(0)}% credit ratio · 25-wide · 1256 tax treatment.`
               };
               break;
             }
@@ -495,7 +573,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation): Promise<E
   const priorityOrder: Record<ActionPriority, number> = { urgent: 0, review: 1, entry: 2, hold: 3 };
   actions.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
 
-  return { capital, spxPositions, wheelPositions, actions, spxSuggestedEntry, wheelSuggestions, lastUpdated: new Date() };
+  return { capital, spxPositions, wheelPositions: finalWheelPositions, actions, spxSuggestedEntry, wheelSuggestions, lastUpdated: new Date() };
 }
 
 // ── AI analysis ────────────────────────────────────────────────────────────
@@ -552,6 +630,17 @@ interface ConditionFlag {
   detail: string;
 }
 
+interface EsFutures {
+  price: number;
+  overnightChangePct: number;
+  overnightHigh: number;
+  overnightLow: number;
+  bias: 'bullish' | 'bearish' | 'neutral';
+  biasLabel: string;
+  strikeAnchorNote: string;
+  settling: boolean;
+}
+
 interface MarketConditions {
   score: number;
   signal: 'TRADE TODAY' | 'MANAGE ONLY' | 'CAUTION' | 'WAIT TODAY';
@@ -559,6 +648,7 @@ interface MarketConditions {
   flags: {
     dayOfWeek: ConditionFlag;
     timeOfDay: ConditionFlag;
+    esFutures: ConditionFlag;
     vix: ConditionFlag;
     termStructure: ConditionFlag;
     spxMove: ConditionFlag;
@@ -566,12 +656,17 @@ interface MarketConditions {
     expirationWeek: ConditionFlag;
     earnings: ConditionFlag;
   };
-  fiftyPctPositions: string[]; // positions at 50%+ profit
+  esFutures: EsFutures | null;
+  fiftyPctPositions: string[];
 }
 
 async function loadMarketConditions(watchlist: string[], engineData: EngineData | null): Promise<MarketConditions> {
   const now = new Date();
-  const etOffset = -5; // EST (adjust for DST: -4 in summer)
+  // Dynamic ET offset — handles EST (-5) and EDT (-4) automatically
+  const etOffsetMs = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
+    ? -(new Date().getTime() - new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).getTime()) / 3600000
+    : -5;
+  const etOffset = Math.round(etOffsetMs); // -5 (EST) or -4 (EDT)
   const etHour = (now.getUTCHours() + 24 + etOffset) % 24;
   const etMinutes = now.getMinutes();
   const etTimeDecimal = etHour + etMinutes / 60;
@@ -616,11 +711,14 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
   let vixValue = 18;
   let vix3mValue = 20;
   let spxChange = 0;
+  let esFutures: EsFutures | null = null;
+
   try {
-    const [vixRes, vix3mRes, spxRes] = await Promise.allSettled([
+    const [vixRes, vix3mRes, spxRes, esRes] = await Promise.allSettled([
       fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=2d', { cache: 'no-store' }),
       fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX3M?interval=1d&range=2d', { cache: 'no-store' }),
       fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=2d', { cache: 'no-store' }),
+      fetch('https://query1.finance.yahoo.com/v8/finance/chart/ES%3DF?interval=1d&range=2d&includePrePost=true', { cache: 'no-store' }),
     ]);
     if (vixRes.status === 'fulfilled' && vixRes.value.ok) {
       const d = await vixRes.value.json();
@@ -639,7 +737,61 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
       const curr = meta?.regularMarketPrice ?? prev;
       spxChange = prev > 0 ? ((curr - prev) / prev) * 100 : 0;
     }
+    if (esRes.status === 'fulfilled' && esRes.value.ok) {
+      const d = await esRes.value.json();
+      const result = d?.chart?.result?.[0];
+      const meta = result?.meta;
+      const quotes = result?.indicators?.quote?.[0];
+      const timestamps = result?.timestamp ?? [];
+      // Current price
+      const esPrice = meta?.regularMarketPrice ?? meta?.previousClose ?? 0;
+      const esPrevClose = meta?.chartPreviousClose ?? meta?.previousClose ?? esPrice;
+      // Overnight high/low: look at last session's candle data
+      const highs: number[] = quotes?.high ?? [];
+      const lows: number[] = quotes?.low ?? [];
+      const overnightHigh = highs.length > 0 ? Math.max(...highs.filter(h => h > 0)) : esPrice * 1.005;
+      const overnightLow = lows.length > 0 ? Math.min(...lows.filter(l => l > 0)) : esPrice * 0.995;
+      const overnightChangePct = esPrevClose > 0 ? ((esPrice - esPrevClose) / esPrevClose) * 100 : 0;
+      // Direction bias
+      let bias: EsFutures['bias'] = 'neutral';
+      let biasLabel = 'IC';
+      if (overnightChangePct > 0.5) { bias = 'bullish'; biasLabel = 'BPS'; }
+      else if (overnightChangePct < -0.5) { bias = 'bearish'; biasLabel = 'BCS'; }
+      // Strike anchor note
+      const bufferPct = 0.5;
+      const strikeAnchorNote = bias === 'bullish'
+        ? `Overnight low ~${overnightLow.toFixed(0)} — short put strike should clear this by ${bufferPct}% (≥${(overnightLow * (1 - bufferPct / 100)).toFixed(0)})`
+        : bias === 'bearish'
+        ? `Overnight high ~${overnightHigh.toFixed(0)} — short call strike should clear this by ${bufferPct}% (≤${(overnightHigh * (1 + bufferPct / 100)).toFixed(0)})`
+        : `ES=F flat — IC strikes: puts below ${overnightLow.toFixed(0)}, calls above ${overnightHigh.toFixed(0)}`;
+      // Settling: market just opened and ES still moving > 0.3% intraday
+      const etHourNow = (new Date().getUTCHours() + 24 - 5) % 24;
+      const etMinNow = new Date().getMinutes();
+      const etDecNow = etHourNow + etMinNow / 60;
+      const settling = etDecNow >= 9.5 && etDecNow < 9.75 && Math.abs(overnightChangePct) > 0.3;
+
+      esFutures = { price: esPrice, overnightChangePct, overnightHigh, overnightLow, bias, biasLabel, strikeAnchorNote, settling };
+    }
   } catch {}
+
+  // ES=F futures flag
+  if (esFutures) {
+    const chg = esFutures.overnightChangePct;
+    const chgStr = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% overnight · ${esFutures.biasLabel} bias`;
+    if (esFutures.settling) {
+      score -= 15;
+      flags.esFutures = { label: 'ES=F Futures', value: chgStr, status: 'warn', detail: `Open settling — ES still moving aggressively. Wait until 9:45am ET before entering. ${esFutures.strikeAnchorNote}` };
+    } else if (Math.abs(chg) > 2.0) {
+      score -= 20;
+      flags.esFutures = { label: 'ES=F Futures', value: chgStr, status: 'bad', detail: `Large overnight move >2% — elevated gap risk. ${esFutures.strikeAnchorNote}` };
+    } else if (Math.abs(chg) > 0.5) {
+      flags.esFutures = { label: 'ES=F Futures', value: chgStr, status: 'good', detail: `Directional bias clear — ${esFutures.biasLabel} favored. ${esFutures.strikeAnchorNote}` };
+    } else {
+      flags.esFutures = { label: 'ES=F Futures', value: chgStr, status: 'good', detail: `ES flat — IC conditions. ${esFutures.strikeAnchorNote}` };
+    }
+  } else {
+    flags.esFutures = { label: 'ES=F Futures', value: 'Unavailable', status: 'warn', detail: 'Could not fetch ES=F data — use SPX day move as proxy' };
+  }
 
   // VIX scoring
   const vixStr = vixValue.toFixed(1);
@@ -738,7 +890,8 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
   let signalDetail: string;
   if (score >= 75) {
     signal = 'TRADE TODAY';
-    signalDetail = 'All systems green · optimal window for new entries';
+    const biasNote = esFutures ? ` · ${esFutures.biasLabel} bias from ES=F` : '';
+    signalDetail = `All systems green · optimal window for new entries${biasNote}`;
   } else if (score >= 55) {
     signal = 'MANAGE ONLY';
     if (fiftyPct.length > 0) signalDetail = `Close ${fiftyPct.join(', ')} profit targets first · defer new entries`;
@@ -752,7 +905,7 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
     signalDetail = 'High-risk environment · no new positions, only stop-loss closes if needed';
   }
 
-  return { score, signal, signalDetail, flags, fiftyPctPositions: fiftyPct };
+  return { score, signal, signalDetail, flags, esFutures, fiftyPctPositions: fiftyPct };
 }
 
 // ── UI Components ──────────────────────────────────────────────────────────
@@ -806,31 +959,39 @@ function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme
   const statusColors = { hold: 'text-emerald-400', watch: 'text-amber-400', close: 'text-blue-400', manage: 'text-red-400' };
   const statusBg = { hold: 'bg-emerald-500/10 border-emerald-700', watch: 'bg-amber-500/10 border-amber-700', close: 'bg-blue-500/10 border-blue-700', manage: 'bg-red-500/10 border-red-700' };
   return (
-    <div className={`flex items-center gap-3 px-4 py-2.5 border-b ${th.border} last:border-b-0`}>
-      <div className="w-32 shrink-0">
-        <p className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.shortStrike}/{pos.longStrike}P</p>
-        <p className={`text-[9px] ${th.textFaint}`}>{pos.expiration} · {pos.dte}d</p>
+    <div className={`border-b ${th.border} last:border-b-0`}>
+      <div className={`flex items-center gap-3 px-4 py-2.5`}>
+        <div className="w-32 shrink-0">
+          <p className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.shortStrike}/{pos.longStrike}P</p>
+          <p className={`text-[9px] ${th.textFaint}`}>{pos.expiration} · {pos.dte}d</p>
+        </div>
+        <div className="w-16 shrink-0 text-center">
+          <p className={`text-xs font-bold ${pos.pop >= 70 ? 'text-emerald-400' : pos.pop >= 60 ? 'text-amber-400' : 'text-red-400'}`}>{pos.pop.toFixed(0)}%</p>
+          <p className={`text-[9px] ${th.textFaint}`}>POP</p>
+        </div>
+        <div className="w-20 shrink-0 text-center">
+          <p className={`text-xs font-bold ${pos.pnl != null && pos.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {pos.pnlPct != null ? `${pos.pnlPct >= 0 ? '+' : ''}${pos.pnlPct.toFixed(0)}%` : '—'}
+          </p>
+          <p className={`text-[9px] ${th.textFaint}`}>{pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(0)}` : '—'}</p>
+        </div>
+        <div className="w-20 shrink-0 text-center">
+          <p className={`text-[9px] ${th.textFaint}`}>${pos.capitalAtRisk.toLocaleString()}</p>
+          <p className={`text-[9px] ${th.textFaint}`}>at risk</p>
+        </div>
+        <div className="w-16 shrink-0 text-center">
+          <p className={`text-[9px] ${pos.contracts > 1 ? 'text-amber-400 font-bold' : th.textFaint}`}>{pos.contracts}×</p>
+        </div>
+        <div className="flex-1 flex justify-end">
+          <span className={`text-[9px] px-2 py-0.5 border rounded font-bold ${statusColors[pos.status]} ${statusBg[pos.status]}`}>{pos.status.toUpperCase()}</span>
+        </div>
       </div>
-      <div className="w-16 shrink-0 text-center">
-        <p className={`text-xs font-bold ${pos.pop >= 70 ? 'text-emerald-400' : pos.pop >= 60 ? 'text-amber-400' : 'text-red-400'}`}>{pos.pop.toFixed(0)}%</p>
-        <p className={`text-[9px] ${th.textFaint}`}>POP</p>
-      </div>
-      <div className="w-20 shrink-0 text-center">
-        <p className={`text-xs font-bold ${pos.pnl != null && pos.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-          {pos.pnlPct != null ? `${pos.pnlPct >= 0 ? '+' : ''}${pos.pnlPct.toFixed(0)}%` : '—'}
-        </p>
-        <p className={`text-[9px] ${th.textFaint}`}>{pos.pnl != null ? `${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(0)}` : '—'}</p>
-      </div>
-      <div className="w-20 shrink-0 text-center">
-        <p className={`text-[9px] ${th.textFaint}`}>${pos.capitalAtRisk.toLocaleString()}</p>
-        <p className={`text-[9px] ${th.textFaint}`}>at risk</p>
-      </div>
-      <div className="w-16 shrink-0 text-center">
-        <p className={`text-[9px] ${th.textFaint}`}>{pos.contracts}×</p>
-      </div>
-      <div className="flex-1 flex justify-end">
-        <span className={`text-[9px] px-2 py-0.5 border rounded font-bold ${statusColors[pos.status]} ${statusBg[pos.status]}`}>{pos.status.toUpperCase()}</span>
-      </div>
+      {pos.contracts > 1 && (
+        <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-500/8 border-t border-amber-600/20">
+          <span className="text-amber-400 text-[9px]">⚠</span>
+          <p className="text-[9px] text-amber-400/80">Multiple contracts on a single SPX expiry concentrates risk. Consider spreading across expiries.</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -908,8 +1069,8 @@ function MarketConditionsPanel({ mc, th, loading }: { mc: MarketConditions | nul
 
   const flagGroups = mc ? [
     { section: 'TIME & SESSION', items: [mc.flags.dayOfWeek, mc.flags.timeOfDay] },
-    { section: 'VOLATILITY',     items: [mc.flags.vix, mc.flags.termStructure, mc.flags.spxMove] },
-    { section: 'CALENDAR RISK',  items: [mc.flags.fomc, mc.flags.expirationWeek, mc.flags.earnings] },
+    { section: 'FUTURES & VOLATILITY', items: [mc.flags.esFutures, mc.flags.vix, mc.flags.termStructure, mc.flags.spxMove] },
+    { section: 'CALENDAR RISK', items: [mc.flags.fomc, mc.flags.expirationWeek, mc.flags.earnings] },
   ] : [];
 
   const flagCount = mc ? Object.values(mc.flags).filter(f => f.status !== 'good').length : 0;
@@ -995,6 +1156,28 @@ function MarketConditionsPanel({ mc, th, loading }: { mc: MarketConditions | nul
               </div>
             ))}
           </div>
+
+          {/* ES=F bias action strip */}
+          {mc.esFutures && (
+            <div className={`border-t ${th.border} px-4 py-2.5 flex items-center gap-4 ${th.sidebar}`}>
+              <span className={`text-[9px] font-bold tracking-widest shrink-0 ${
+                mc.esFutures.bias === 'bullish' ? 'text-emerald-400'
+                : mc.esFutures.bias === 'bearish' ? 'text-red-400'
+                : 'text-blue-400'
+              }`}>
+                {mc.esFutures.bias === 'bullish' ? '↑ BULLISH BIAS' : mc.esFutures.bias === 'bearish' ? '↓ BEARISH BIAS' : '↔ NEUTRAL BIAS'}
+              </span>
+              <span className={`text-[9px] px-2 py-0.5 border rounded font-bold shrink-0 ${
+                mc.esFutures.bias === 'bullish' ? 'border-emerald-700 text-emerald-400 bg-emerald-500/10'
+                : mc.esFutures.bias === 'bearish' ? 'border-red-700 text-red-400 bg-red-500/10'
+                : 'border-blue-700 text-blue-400 bg-blue-500/10'
+              }`}>{mc.esFutures.biasLabel}</span>
+              <span className={`text-[9px] ${th.textFaint} flex-1`}>{mc.esFutures.strikeAnchorNote}</span>
+              {mc.esFutures.settling && (
+                <span className="text-[9px] font-bold text-amber-400 border border-amber-700 bg-amber-500/10 px-2 py-0.5 rounded shrink-0">⏳ WAIT FOR SETTLE</span>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1052,13 +1235,21 @@ export default function EnginePage() {
     setStatus('loading');
     setError('');
     try {
-      const data = await loadEngineData(watchlist, alloc);
+      // Fetch market conditions first so ES=F signal is available for screener
+      setMcLoading(true);
+      const mc = await loadMarketConditions(watchlist, null).catch(() => null);
+      if (mc) setMarketConditions(mc);
+      setMcLoading(false);
+
+      // Now load engine data with ES=F signal wired in
+      const data = await loadEngineData(watchlist, alloc, mc?.esFutures ?? null);
       setEngineData(data);
       setStatus('ready');
-      // Load market conditions in background
+
+      // Refresh market conditions with position data now available
       setMcLoading(true);
       loadMarketConditions(watchlist, data)
-        .then(mc => setMarketConditions(mc))
+        .then(mc2 => setMarketConditions(mc2))
         .catch(() => {})
         .finally(() => setMcLoading(false));
       // Load AI analysis in background
@@ -1100,7 +1291,7 @@ export default function EnginePage() {
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <a href="/" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</a>
             <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
-            <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>ENGINE</span>
+            <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>INCOME ENGINE</span>
             <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</a>
             <a href="/trade-log" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
             <a href="/performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
