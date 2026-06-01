@@ -454,7 +454,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const SPREAD_WIDTH = 25; // 25-wide SPX spreads — liquid, manageable, standard
       const MAX_LOSS_PER_CONTRACT = SPREAD_WIDTH * 100; // $2,500
 
-      const nested = await ttFetch('/option-chains/SPX/nested', token);
+      const nested = await ttFetch('/option-chains/SPXW/nested', token);
       const expirations = nested?.data?.items?.[0]?.expirations ?? [];
       // Find best 30-45 DTE expiration
       const validExps = expirations
