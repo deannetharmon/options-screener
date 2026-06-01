@@ -1523,6 +1523,88 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
 }
 
 
+// ── Spread Comparison Panel ────────────────────────────────────────────────
+function SpreadComparisonPanel({ spx, spy, available, th }: {
+  spx: SpxSuggestion;
+  spy: SpySuggestion;
+  available: number;
+  th: typeof THEMES[Theme];
+}) {
+  const totalCombined = spx.capitalRequired + spy.capitalRequired;
+  const canAffordBoth = available >= totalCombined;
+  const canAffordSpxOnly = available >= spx.capitalRequired;
+  const canAffordSpyOnly = available >= spy.capitalRequired;
+
+  const spxScore = (spx.pop * 0.4) + (spx.creditRatio * 100 * 0.4) + (spx.dte >= 30 ? 20 : 0);
+  const spyScore = (spy.pop * 0.4) + (spy.creditRatio * 100 * 0.4) + (spy.dte >= 30 ? 20 : 0);
+
+  let rec: string;
+  let recColor: string;
+  let badge: string;
+
+  if (canAffordBoth) {
+    rec = `Both fit within your $${available.toLocaleString()} available capital ($${totalCombined.toLocaleString()} combined). SPX gives 1256 tax treatment on the larger allocation. SPY fills remaining capital with more contracts. Enter SPX first, then SPY.`;
+    recColor = 'text-emerald-400';
+    badge = 'BOTH';
+  } else if (canAffordSpxOnly && spxScore >= spyScore) {
+    rec = `Not enough capital for both ($${totalCombined.toLocaleString()} needed, $${available.toLocaleString()} available). SPX wins — higher credit ($${spx.credit.toFixed(2)} vs $${spy.credit.toFixed(2)}), 1256 tax treatment, stronger liquidity. Use SPX today.`;
+    recColor = 'text-violet-400';
+    badge = 'SPX ONLY';
+  } else if (canAffordSpyOnly) {
+    rec = `Not enough capital for SPX ($${spx.capitalRequired.toLocaleString()} needed, $${available.toLocaleString()} available). SPY fits — lower credit but keeps the engine active.`;
+    recColor = 'text-cyan-400';
+    badge = 'SPY ONLY';
+  } else {
+    rec = `Neither suggestion fits current available capital ($${available.toLocaleString()}). Wait for an existing position to close or adjust allocation.`;
+    recColor = 'text-amber-400';
+    badge = 'WAIT';
+  }
+
+  return (
+    <div className="border-b border-emerald-600/20 px-4 py-3 bg-slate-900/60">
+      <div className="flex items-center gap-3 mb-2">
+        <span className="text-[9px] font-bold text-violet-400 tracking-widest">◈ ENGINE ANALYSIS</span>
+        <span className={`text-[8px] px-2 py-0.5 border rounded font-bold ${
+          badge === 'BOTH' ? 'border-emerald-700 text-emerald-400 bg-emerald-500/10' :
+          badge === 'SPX ONLY' ? 'border-violet-700 text-violet-400 bg-violet-500/10' :
+          badge === 'SPY ONLY' ? 'border-cyan-700 text-cyan-400 bg-cyan-500/10' :
+          'border-amber-700 text-amber-400 bg-amber-500/10'
+        }`}>{badge}</span>
+        <span className={`text-[9px] ${th.textFaint}`}>
+          Available: ${available.toLocaleString()} · SPX ${spx.capitalRequired.toLocaleString()} · SPY ${spy.capitalRequired.toLocaleString()}
+          {!canAffordBoth && ` · combined $${totalCombined.toLocaleString()} exceeds available`}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 mb-2">
+        <div className={`rounded-lg p-2.5 border ${canAffordBoth || badge === 'SPX ONLY' ? 'border-violet-600/40 bg-violet-500/5' : `${th.border} opacity-50`}`}>
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-[8px] font-bold text-violet-400">SPX</span>
+            <span className="text-[8px] text-violet-400/60">25-wide · 1256 tax</span>
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            <div><p className={`text-[10px] font-bold ${th.text}`}>{spx.pop.toFixed(0)}%</p><p className={`text-[8px] ${th.textFaint}`}>POP</p></div>
+            <div><p className={`text-[10px] font-bold ${th.text}`}>${spx.credit.toFixed(2)}</p><p className={`text-[8px] ${th.textFaint}`}>credit</p></div>
+            <div><p className={`text-[10px] font-bold ${th.text}`}>{(spx.creditRatio * 100).toFixed(0)}%</p><p className={`text-[8px] ${th.textFaint}`}>ratio</p></div>
+          </div>
+        </div>
+        <div className={`rounded-lg p-2.5 border ${canAffordBoth || badge === 'SPY ONLY' ? 'border-cyan-600/40 bg-cyan-500/5' : `${th.border} opacity-50`}`}>
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-[8px] font-bold text-cyan-400">SPY</span>
+            <span className="text-[8px] text-cyan-400/60">{spy.spreadWidth}-wide · ST tax</span>
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            <div><p className={`text-[10px] font-bold ${th.text}`}>{spy.pop.toFixed(0)}%</p><p className={`text-[8px] ${th.textFaint}`}>POP</p></div>
+            <div><p className={`text-[10px] font-bold ${th.text}`}>${spy.credit.toFixed(2)}</p><p className={`text-[8px] ${th.textFaint}`}>credit</p></div>
+            <div><p className={`text-[10px] font-bold ${th.text}`}>{(spy.creditRatio * 100).toFixed(0)}%</p><p className={`text-[8px] ${th.textFaint}`}>ratio</p></div>
+          </div>
+        </div>
+      </div>
+      <p className={`text-[10px] ${recColor} leading-relaxed`}>{rec}</p>
+    </div>
+  );
+}
+
+
 function MarketConditionsPanel({ mc, th, loading }: { mc: MarketConditions | null; th: typeof THEMES[Theme]; loading: boolean }) {
   const [expanded, setExpanded] = useState(true);
 
@@ -2069,6 +2151,16 @@ export default function EnginePage() {
                     <span className="text-[9px] font-bold tracking-widest text-emerald-400 uppercase">✦ Suggested New Positions</span>
                     <span className={`text-[9px] ${th.textFaint}`}>Engine recommends these entries based on available capital + market conditions</span>
                   </div>
+
+                {/* ── AI COMPARISON — only when both suggestions exist ── */}
+                {(d.spxSuggestedEntry && d.spySuggestedEntry) && (
+                  <SpreadComparisonPanel
+                    spx={d.spxSuggestedEntry}
+                    spy={d.spySuggestedEntry}
+                    available={d.capital.spxAvailable}
+                    th={th}
+                  />
+                )}
 
                   {/* SPX suggestion */}
                   {d.spxSuggestedEntry && (
