@@ -2059,6 +2059,15 @@ export default function EnginePage() {
 
   const d = engineData;
 
+  const formatCurrency = (value: number) =>
+    value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+
+  const allocationDollar = (pct: number) =>
+    d?.capital?.obp ? d.capital.obp * (pct / 100) : 0;
+
+  const allocationLabel = (pct: number) =>
+    d?.capital?.obp ? `$${formatCurrency(allocationDollar(pct))}` : '$—';
+
   // ── Timeline date helpers ──────────────────────────────────────────────
   const today = new Date();
   const timelineDays = 60;
@@ -2135,11 +2144,16 @@ export default function EnginePage() {
                       <input type="range" min={5} max={60} step={5} value={editingAlloc[key]}
                         onChange={e => setEditingAlloc(prev => ({ ...prev, [key]: parseInt(e.target.value) }))}
                         className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-blue-500" />
-                      <span className={`text-[10px] font-bold ${th.text} w-8 text-right`}>{editingAlloc[key]}%</span>
+                      <span className={`text-[10px] font-bold ${th.text} w-24 text-right`}>
+                        {editingAlloc[key]}% <span className={th.textFaint}>({allocationLabel(editingAlloc[key])})</span>
+                      </span>
                     </div>
                   ))}
                   <div className={`text-[9px] ${editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx === 100 ? 'text-emerald-400' : 'text-amber-400'}`}>
                     Total: {editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx}% {editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx !== 100 && '(will normalize to 100%)'}
+                  </div>
+                  <div className={`text-[9px] ${th.textFaint}`}>
+                    Dollar amounts are based on current option buying power: {d?.capital?.obp ? `$${formatCurrency(d.capital.obp)}` : 'not loaded'}.
                   </div>
                   <button onClick={() => { saveAlloc(editingAlloc); setShowSettings(false); }}
                     className="text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors">
@@ -2172,10 +2186,10 @@ export default function EnginePage() {
               <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString()}</p>
             </div>
             <div className="flex-1 grid grid-cols-3 gap-4">
-              <CapitalBar label={`Spread Engine · SPX+SPY (${alloc.spx}%)`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
-              <CapitalBar label={`Wheel (${alloc.wheel}%)`} deployed={d.capital.wheelDeployed} target={d.capital.wheelTarget} color="bg-blue-500" />
+              <CapitalBar label={`Spread Engine · SPX+SPY (${alloc.spx}% · $${formatCurrency(d.capital.spxTarget)})`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
+              <CapitalBar label={`Wheel (${alloc.wheel}% · $${formatCurrency(d.capital.wheelTarget)})`} deployed={d.capital.wheelDeployed} target={d.capital.wheelTarget} color="bg-blue-500" />
               <div>
-                <p className={`text-[9px] ${th.textFaint} mb-1`}>Reserve ({alloc.reserve}%)</p>
+                <p className={`text-[9px] ${th.textFaint} mb-1`}>Reserve ({alloc.reserve}% · ${formatCurrency(d.capital.reserveTarget)})</p>
                 <div className="h-1.5 rounded-full bg-slate-700/60 overflow-hidden mb-1">
                   <div className="h-full rounded-full bg-slate-500" style={{ width: '100%' }} />
                 </div>
