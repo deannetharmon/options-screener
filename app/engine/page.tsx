@@ -1312,7 +1312,7 @@ function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme
       {pos.contracts > 1 && (
         <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-500/8 border-t border-amber-600/20">
           <span className="text-amber-400 text-[9px]">⚠</span>
-          <p className="text-[9px] text-amber-400/80">Multiple contracts on a single SPX expiry concentrates risk. Consider spreading across expiries.</p>
+          <p className="text-[9px] text-amber-400/80">Existing position — {pos.contracts}× contracts on {pos.expiration} expiry concentrates risk. New suggestions will target a different expiry week.</p>
         </div>
       )}
     </div>
