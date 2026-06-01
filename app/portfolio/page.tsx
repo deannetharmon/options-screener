@@ -4835,7 +4835,6 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                       {!sparkLoading && sparkData && sparkData.length === 0 && (
                         <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
                       )}
-                    </div>
                     <a
                       href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`}
                       target="_blank"
