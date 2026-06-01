@@ -862,7 +862,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 async function getEngineAIAnalysis(data: EngineData, watchlist: string[]): Promise<string> {
   const prompt = `You are an options trading portfolio manager analyzing a premium-selling account.
 
-Capital: $${data.capital.obp.toLocaleString()} OBP
+Capital: $${data.capital.netLiq.toLocaleString()} Net Liq · $${data.capital.obp.toLocaleString()} Option BP
 SPX allocation: $${data.capital.spxTarget.toLocaleString()} target, $${data.capital.spxDeployed.toLocaleString()} deployed (${Math.round(data.capital.spxDeployed / data.capital.spxTarget * 100)}%)
 Wheel allocation: $${data.capital.wheelTarget.toLocaleString()} target, $${data.capital.wheelDeployed.toLocaleString()} deployed (${Math.round(data.capital.wheelDeployed / data.capital.wheelTarget * 100)}%)
 
@@ -1321,7 +1321,7 @@ function ActionCard({ item, th }: { item: ActionItem; th: typeof THEMES[Theme] }
         <span className={`text-[9px] font-bold shrink-0 ${c.action}`}>{priorityIcon} {item.priority}</span>
       </div>
       {isSuggested && (
-        <p className={`text-[9px] ${th.textFaint} mt-1 ml-1 italic`}>Not yet placed — review details and enter manually in TastyTrade</p>
+        <p className={`text-[9px] ${th.textFaint} mt-1 ml-1 italic`}>Not yet placed — review details, then use the Enter button in Suggested New Positions</p>
       )}
     </div>
   );
@@ -1566,9 +1566,16 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
   const [orderId, setOrderId] = useState('');
 
   const gtcBuyback = parseFloat((entryLimit * (1 - gtcPct / 100)).toFixed(2));
-  const totalCredit = entryLimit * contracts;
-  const maxLoss = (entry.spreadWidth - entryLimit) * contracts * 100;
-  const hasOcc = entry.shortOccSymbol && entry.longOccSymbol;
+  const totalCredit = entryLimit * contracts * 100;
+  const maxLoss = Math.max(0, (entry.spreadWidth - entryLimit) * contracts * 100);
+  const hasOcc = Boolean(entry.shortOccSymbol && entry.longOccSymbol);
+  const engineInstrumentType = (symbol: string): 'Equity Option' | 'Index Option' => {
+    const normalized = String(symbol ?? '').replace(/\s+/g, '').toUpperCase();
+    return normalized.startsWith('SPX') || normalized.startsWith('NDX') || normalized.startsWith('RUT') || normalized.startsWith('VIX')
+      ? 'Index Option'
+      : 'Equity Option';
+  };
+  const legInstrumentType = engineInstrumentType(entry.shortOccSymbol || entry.symbol);
 
   const placeOrder = async () => {
     setPhase('placing'); setError('');
@@ -1580,11 +1587,18 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
       const accountNumber = account?.account?.['account-number'];
       if (!accountNumber) throw new Error('No account found');
 
+      if (!hasOcc) throw new Error('Missing OCC option symbols. Refresh the engine during market hours and try again.');
+      if (entryLimit <= 0) throw new Error('Entry credit must be greater than $0.00.');
+      if (entryLimit >= entry.spreadWidth) throw new Error(`Entry credit $${entryLimit.toFixed(2)} cannot be greater than/equal to spread width $${entry.spreadWidth.toFixed(2)}.`);
+
       const legs = [
-        { 'instrument-type': 'Equity Option', symbol: entry.shortOccSymbol, quantity: contracts, action: 'Sell to Open' },
-        { 'instrument-type': 'Equity Option', symbol: entry.longOccSymbol,  quantity: contracts, action: 'Buy to Open'  },
+        { 'instrument-type': legInstrumentType, symbol: entry.shortOccSymbol, quantity: contracts, action: 'Sell to Open' },
+        { 'instrument-type': legInstrumentType, symbol: entry.longOccSymbol,  quantity: contracts, action: 'Buy to Open'  },
       ];
-      const closingLegs = legs.map(l => ({ ...l, action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close' }));
+      const closingLegs = legs.map(l => ({
+        ...l,
+        action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
+      }));
 
       const payload = {
         type: 'OTOCO',
@@ -1598,13 +1612,22 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
         }],
       };
 
-      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/complex-orders`, {
+      const res = await fetch(`${BASE}/accounts/${accountNumber}/complex-orders`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Order failed (${res.status})`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data?.error?.message
+          ?? data?.['error-message']
+          ?? data?.errors?.[0]?.message
+          ?? data?.error?.errors?.map((e: any) => e.message ?? e.reason ?? String(e)).join('; ')
+          ?? JSON.stringify(data).slice(0, 500)
+          ?? `Order failed (${res.status})`;
+        console.error('Engine order rejected:', JSON.stringify({ payload, data }, null, 2));
+        throw new Error(detail);
+      }
       setOrderId(data?.data?.['complex-order']?.id ?? data?.data?.order?.id ?? 'submitted');
       setPhase('done');
     } catch (e: any) { setError(e.message); setPhase('error'); }
@@ -1652,6 +1675,10 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
               <div className="flex justify-between">
                 <span className={`text-[10px] ${th.textFaint}`}>DTE</span>
                 <span className={`text-[10px] ${th.text}`}>{entry.dte}d</span>
+              </div>
+              <div className="flex justify-between">
+                <span className={`text-[10px] ${th.textFaint}`}>Instrument type</span>
+                <span className={`text-[10px] ${th.text}`}>{legInstrumentType}</span>
               </div>
             </div>
 
