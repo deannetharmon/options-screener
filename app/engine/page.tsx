@@ -1365,11 +1365,10 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
   const [error, setError] = useState('');
   const [orderId, setOrderId] = useState('');
 
-  const isIC = entry.strategy === 'IC';
   const gtcBuyback = parseFloat((entryLimit * (1 - gtcPct / 100)).toFixed(2));
   const totalCredit = entryLimit * contracts;
   const maxLoss = (entry.spreadWidth - entryLimit) * contracts * 100;
-  const hasOcc = entry.shortOccSymbol && entry.longOccSymbol && !isIC;
+  const hasOcc = entry.shortOccSymbol && entry.longOccSymbol;
 
   const placeOrder = async () => {
     setPhase('placing'); setError('');
@@ -1434,17 +1433,9 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
           </div>
         ) : (
           <div className="space-y-4">
-            {!hasOcc && !isIC && (
+            {!hasOcc && (
               <div className="bg-amber-500/10 border border-amber-600/30 rounded-lg px-3 py-2">
                 <p className="text-[10px] text-amber-400">OCC symbols not available — market may be closed. Orders can only be placed during market hours when live chain data is available.</p>
-              </div>
-            )}
-
-            {isIC && (
-              <div className="bg-blue-500/10 border border-blue-600/30 rounded-lg px-3 py-2">
-                <p className="text-[10px] text-blue-400 font-bold mb-1">Iron Condor — Manual Entry Required</p>
-                <p className="text-[10px] text-blue-400/80">IC orders require 4 legs (put spread + call spread). Place this in TastyTrade directly using the strikes shown. The engine has identified the put spread side only — you'll need to select the call spread side manually.</p>
-                <p className="text-[10px] text-blue-400/80 mt-1">Put spread: {entry.shortStrike}/{entry.longStrike}P · Target delta 0.16–0.20 on call side</p>
               </div>
             )}
 
