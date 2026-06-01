@@ -470,9 +470,21 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const deltaMax = etfRules.SPREAD_DELTA_MAX;
 
       for (const exp of validExps.slice(0, 5)) {
-        // Skip expiries that already have an open position — always spread across expiries
-        if (spxPositions.some(p => p.expiration === exp.date) || spyPositions.some(p => p.expiration === exp.date)) {
-          console.log(`[SPX screener] Skipping ${exp.date} — already have open position on this expiry`);
+        // Skip expiries in the same calendar week (Mon-Sun) as any existing position
+        // Same-week expiries share gamma risk, macro events, and Friday risk
+        const getWeekStart = (dateStr: string) => {
+          const d = new Date(dateStr);
+          const day = d.getDay(); // 0=Sun
+          const diff = day === 0 ? -6 : 1 - day; // Monday of that week
+          d.setDate(d.getDate() + diff);
+          return d.toISOString().slice(0, 10);
+        };
+        const expWeek = getWeekStart(exp.date);
+        const conflictsWithExisting = [...spxPositions, ...spyPositions].some(p =>
+          getWeekStart(p.expiration) === expWeek
+        );
+        if (conflictsWithExisting) {
+          console.log(`[SPX screener] Skipping ${exp.date} — same calendar week as existing position`);
           continue;
         }
         const allSymbols: string[] = [];
@@ -593,9 +605,19 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const strategy: 'BPS' | 'BCS' = esBias === 'bearish' ? 'BCS' : 'BPS';
 
       for (const exp of validExps.slice(0, 5)) {
-        // Skip expiries already used by SPX or SPY positions
-        if (spxPositions.some(p => p.expiration === exp.date) || spyPositions.some(p => p.expiration === exp.date)) {
-          console.log(`[SPY screener] Skipping ${exp.date} — already have open position on this expiry`);
+        const getWeekStartSpy = (dateStr: string) => {
+          const d = new Date(dateStr);
+          const day = d.getDay();
+          const diff = day === 0 ? -6 : 1 - day;
+          d.setDate(d.getDate() + diff);
+          return d.toISOString().slice(0, 10);
+        };
+        const expWeekSpy = getWeekStartSpy(exp.date);
+        const conflictsSpy = [...spxPositions, ...spyPositions].some(p =>
+          getWeekStartSpy(p.expiration) === expWeekSpy
+        );
+        if (conflictsSpy) {
+          console.log(`[SPY screener] Skipping ${exp.date} — same calendar week as existing position`);
           continue;
         }
         const allSymbols: string[] = [];
