@@ -931,13 +931,13 @@ interface MarketConditions {
 
 async function loadMarketConditions(watchlist: string[], engineData: EngineData | null): Promise<MarketConditions> {
   const now = new Date();
-  // Reliable DST-aware ET time using Intl — works correctly for both EST (-5) and EDT (-4)
-  const etParts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    hour: 'numeric', minute: 'numeric', hour12: false,
-  }).formatToParts(now);
-  const etHour = parseInt(etParts.find(p => p.type === 'hour')?.value ?? '0', 10);
-  const etMinutes = parseInt(etParts.find(p => p.type === 'minute')?.value ?? '0', 10);
+  // Dynamic ET offset — handles EST (-5) and EDT (-4) automatically
+  const etOffsetMs = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
+    ? -(new Date().getTime() - new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).getTime()) / 3600000
+    : -5;
+  const etOffset = Math.round(etOffsetMs); // -5 (EST) or -4 (EDT)
+  const etHour = (now.getUTCHours() + 24 + etOffset) % 24;
+  const etMinutes = now.getMinutes();
   const etTimeDecimal = etHour + etMinutes / 60;
   const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon ... 5=Fri
   const todayStr = now.toISOString().slice(0, 10);
@@ -1036,12 +1036,8 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
         ? `Overnight high ~${overnightHigh.toFixed(0)} — short call strike should clear this by ${bufferPct}% (≤${(overnightHigh * (1 + bufferPct / 100)).toFixed(0)})`
         : `ES=F flat — BPS conditions · puts below ${overnightLow.toFixed(0)} for best buffer`;
       // Settling: market just opened and ES still moving > 0.3% intraday
-      const etPartsNow = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        hour: 'numeric', minute: 'numeric', hour12: false,
-      }).formatToParts(new Date());
-      const etHourNow = parseInt(etPartsNow.find(p => p.type === 'hour')?.value ?? '0', 10);
-      const etMinNow = parseInt(etPartsNow.find(p => p.type === 'minute')?.value ?? '0', 10);
+      const etHourNow = (new Date().getUTCHours() + 24 - 5) % 24;
+      const etMinNow = new Date().getMinutes();
       const etDecNow = etHourNow + etMinNow / 60;
       const settling = etDecNow >= 9.5 && etDecNow < 9.75 && Math.abs(overnightChangePct) > 0.3;
 
@@ -1303,6 +1299,110 @@ function ActionCard({ item, th }: { item: ActionItem; th: typeof THEMES[Theme] }
   );
 }
 
+// ── Reusable chart button — sparkline popup + TradingView link ─────────────
+function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] }) {
+  const [showChart, setShowChart] = useState(false);
+  const [sparkData, setSparkData] = useState<number[] | null>(null);
+  const [sparkLoading, setSparkLoading] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        onClick={e => {
+          e.stopPropagation();
+          if (!showChart) {
+            setShowChart(true);
+            if (!sparkData) {
+              setSparkLoading(true);
+              fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`)
+                .then(r => r.json())
+                .then(d => {
+                  const closes = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null).slice(-90);
+                  setSparkData(closes);
+                })
+                .catch(() => setSparkData([]))
+                .finally(() => setSparkLoading(false));
+            }
+          } else { setShowChart(false); }
+        }}
+        className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 hover:text-blue-400'}`}
+        title="Quick chart"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        <span className="tracking-wide">chart</span>
+      </button>
+
+      {showChart && (
+        <div
+          className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
+          style={{ width: '280px' }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="mb-2">
+            {sparkLoading && (
+              <div className="flex items-center justify-center h-16">
+                <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            )}
+            {!sparkLoading && sparkData && sparkData.length > 1 && (() => {
+              const min = Math.min(...sparkData);
+              const max = Math.max(...sparkData);
+              const range = max - min || 1;
+              const w = 256, h = 56;
+              const pts = sparkData.map((v, i) => {
+                const x = (i / (sparkData.length - 1)) * w;
+                const y = h - ((v - min) / range) * h;
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+              }).join(' ');
+              const isUp = sparkData[sparkData.length - 1] >= sparkData[0];
+              const color = isUp ? '#10b981' : '#ef4444';
+              const lastPrice = sparkData[sparkData.length - 1];
+              const changePct = ((lastPrice - sparkData[0]) / sparkData[0] * 100).toFixed(1);
+              return (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`text-[10px] font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{symbol}</span>
+                    <span className="text-[10px] font-bold" style={{ color }}>
+                      ${lastPrice.toFixed(2)} <span className="text-[9px]">{isUp ? '+' : ''}{changePct}% 30d</span>
+                    </span>
+                  </div>
+                  <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: '56px' }}>
+                    <defs>
+                      <linearGradient id={`grad-engine-${symbol}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+                        <stop offset="100%" stopColor={color} stopOpacity="0" />
+                      </linearGradient>
+                    </defs>
+                    <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+                    <polygon points={`0,${h} ${pts} ${w},${h}`} fill={`url(#grad-engine-${symbol})`} />
+                  </svg>
+                </div>
+              );
+            })()}
+            {!sparkLoading && sparkData && sparkData.length === 0 && (
+              <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
+            )}
+          </div>
+          <a
+            href={`https://www.tradingview.com/chart/?symbol=${symbol}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors border border-blue-500/30 hover:border-blue-500/60 hover:bg-blue-500/10"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+            Open in TradingView
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme] }) {
   const statusColors = { hold: 'text-emerald-400', watch: 'text-amber-400', close: 'text-blue-400', manage: 'text-red-400' };
   const statusBg = { hold: 'bg-emerald-500/10 border-emerald-700', watch: 'bg-amber-500/10 border-amber-700', close: 'bg-blue-500/10 border-blue-700', manage: 'bg-red-500/10 border-red-700' };
@@ -1362,6 +1462,7 @@ function WheelPositionRow({ pos, th }: { pos: WheelPosition; th: typeof THEMES[T
       <div className="w-16 shrink-0">
         <p className={`text-xs font-bold ${th.text}`}>{pos.symbol}</p>
         {pos.currentPrice && <p className={`text-[9px] ${th.textFaint}`}>${pos.currentPrice.toFixed(2)}</p>}
+        <ChartButton symbol={pos.symbol} th={th} />
       </div>
       <span className={`text-[8px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${phaseColors[pos.phase]}`}>{phaseLabel[pos.phase]}</span>
       <span className={`text-[8px] font-bold shrink-0 ${ivrColor}`}>{ivrLabel}</span>
