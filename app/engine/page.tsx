@@ -256,11 +256,36 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   // ALL spreads (2-leg defined risk) → spread bucket regardless of symbol
   // ALL CSPs/CCs (single short option) → wheel bucket regardless of symbol
 
+  // Helper: parse expiry date from TastyTrade option symbol
+  // Format: UNDERLYING YYMMDD C/P STRIKE — e.g. AAPL  260626C00300000
+  // expires-at may differ between legs; use option symbol date as canonical key
+  function parseExpFromSymbol(sym: string): string {
+    const m = sym?.match(/(\d{6})[CP]/);
+    if (!m) return '';
+    const raw = m[1]; // YYMMDD
+    return `20${raw.slice(0,2)}-${raw.slice(2,4)}-${raw.slice(4,6)}`;
+  }
+
+  // Re-group using canonical expiry from option symbol (more reliable than expires-at)
+  const canonicalGroups: Record<string, any[]> = {};
+  for (const leg of rawPositions.filter((p: any) => p['instrument-type']?.includes('Option'))) {
+    const sym = leg['underlying-symbol'];
+    const expDate = parseExpFromSymbol(leg.symbol ?? '') || (leg['expires-at'] ?? '').slice(0, 10);
+    const key = `${sym}::${expDate}`;
+    if (!canonicalGroups[key]) canonicalGroups[key] = [];
+    canonicalGroups[key].push(leg);
+  }
+
   const spxPositions: SpxPosition[] = [];
   const spyPositions: SpxPosition[] = [];
   let spxDeployed = 0;
-  for (const [key, legs] of Object.entries(groups)) {
+  for (const [key, legs] of Object.entries(canonicalGroups)) {
     const [symbol, expDate] = key.split('::');
+
+    // Income Engine only tracks SPX/SPXW (anchor) and SPY (fills)
+    // Hunter-sourced spreads on other symbols are visible in Portfolio, not here
+    if (symbol !== 'SPX' && symbol !== 'SPXW' && symbol !== 'SPY') continue;
+
     const shortLegs = legs.filter(l => l['quantity-direction'] === 'Short');
     const longLegs = legs.filter(l => l['quantity-direction'] === 'Long');
 
@@ -269,16 +294,20 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const longLeg = longLegs[0];
       const shortStrike = parseFloat(shortLeg.symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
       const longStrike = parseFloat(longLeg.symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
-      const qty = parseInt(shortLeg['quantity'] ?? '1', 10);
-      const creditReceived = (parseFloat(shortLeg['average-open-price'] ?? '0') - parseFloat(longLeg['average-open-price'] ?? '0')) * qty * 100;
+      const qty = Math.abs(parseInt(shortLeg['quantity'] ?? '1', 10));
+      const multiplier = parseFloat(shortLeg['multiplier'] ?? '100');
+      const avgShort = parseFloat(shortLeg['average-open-price'] ?? '0');
+      const avgLong = parseFloat(longLeg['average-open-price'] ?? '0');
+      const creditReceived = (avgShort - avgLong) * qty * multiplier;
       const shortMark = parseFloat(shortLeg['mark-price'] ?? shortLeg['close-price'] ?? '0');
       const longMark = parseFloat(longLeg['mark-price'] ?? longLeg['close-price'] ?? '0');
-      const currentCost = (shortMark - longMark) * qty * 100;
+      const currentCost = (shortMark - longMark) * qty * multiplier;
       const pnl = creditReceived - currentCost;
       const dte = daysUntil(expDate);
       const pnlPct = creditReceived !== 0 ? (pnl / creditReceived) * 100 : null;
       const spreadWidth = Math.abs(shortStrike - longStrike);
-      const capitalAtRisk = spreadWidth * 100 * qty;
+      // Capital at risk = spread width × multiplier × qty (max loss on a defined-risk spread)
+      const capitalAtRisk = spreadWidth * multiplier * qty;
       spxDeployed += capitalAtRisk;
 
       let status: SpxPosition['status'] = 'hold';
@@ -287,11 +316,10 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       else if (pnlPct !== null && pnlPct < -100) status = 'manage';
 
       const pop = Math.max(55, Math.min(90, 70 + (pnlPct ?? 0) * 0.1));
-      const posEntry: SpxPosition = { symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * 100), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk };
+      const posEntry: SpxPosition = { symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * multiplier), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk };
 
-      // Route to SPX or SPY bucket based on symbol
       if (symbol === 'SPY') spyPositions.push(posEntry);
-      else spxPositions.push(posEntry); // SPX, SPXW, or any Hunter-sourced spread
+      else spxPositions.push(posEntry);
     }
   }
   capital.spxDeployed = spxDeployed;
@@ -320,8 +348,8 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   // Find which watchlist stocks have active option positions
   const activeWheelSymbols = new Set<string>();
   for (const sym of watchlist) {
-    for (const [key, legs] of Object.entries(groups)) {
-      if (key.startsWith(`${sym}::`)) {
+    for (const [key, legs] of Object.entries(canonicalGroups)) {
+      if (key.startsWith(`${sym}::`) || legs.some(l => l['underlying-symbol'] === sym)) {
         const [, expDate] = key.split('::');
         // Don't mark as active yet — wait until we confirm it's a CSP/CC, not a spread
         const shortLeg = legs.find(l => l['quantity-direction'] === 'Short');
@@ -389,27 +417,6 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
     }
   }
   capital.wheelDeployed = wheelDeployed;
-
-  // ── Count Hunter-sourced CSPs/CCs on non-watchlist symbols toward wheel bucket ──
-  // Any single short put or covered call NOT already counted above goes here
-  const alreadyCounted = new Set(wheelPositions.map(p => p.symbol));
-  for (const [key, legs] of Object.entries(groups)) {
-    const [symbol] = key.split('::');
-    if (alreadyCounted.has(symbol)) continue; // already in wheel or spread bucket
-    const shortPuts = legs.filter(l => l['quantity-direction'] === 'Short' && (l.symbol?.includes('P')));
-    const longPuts = legs.filter(l => l['quantity-direction'] === 'Long' && (l.symbol?.includes('P')));
-    const shortCalls = legs.filter(l => l['quantity-direction'] === 'Short' && (l.symbol?.includes('C')));
-    const longCalls = legs.filter(l => l['quantity-direction'] === 'Long' && (l.symbol?.includes('C')));
-    const isSpread = (shortPuts.length > 0 && longPuts.length > 0) || (shortCalls.length > 0 && longCalls.length > 0);
-    if (isSpread) continue; // spreads already in spread bucket
-    // Single short put on non-watchlist stock — counts against wheel bucket capital
-    if (shortPuts.length > 0 && longPuts.length === 0) {
-      const strike = parseFloat(shortPuts[0].symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
-      const qty = parseInt(shortPuts[0]['quantity'] ?? '1', 10);
-      const capitalRequired = strike * qty * 100;
-      capital.wheelDeployed += capitalRequired;
-    }
-  }
   capital.wheelAvailable = Math.max(0, capital.wheelTarget - wheelDeployed);
   capital.deploymentPct = obp > 0 ? Math.round(((wheelDeployed + spxDeployed) / (capital.wheelTarget + capital.spxTarget)) * 100) : 0;
 
