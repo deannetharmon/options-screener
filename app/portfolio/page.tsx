@@ -4887,7 +4887,12 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
             <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
-              <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (
+                Math.abs(pos.gamma) <= 0.003 ? 'text-emerald-400' :
+                Math.abs(pos.gamma) <= 0.006 ? 'text-yellow-400' :
+                Math.abs(pos.gamma) <= 0.010 ? 'text-orange-400' :
+                'text-red-400'
+              ) : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
               </p>
               <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
