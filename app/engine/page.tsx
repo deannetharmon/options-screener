@@ -1145,24 +1145,33 @@ function ActionCard({ item, th }: { item: ActionItem; th: typeof THEMES[Theme] }
   const colors = {
     urgent: { border: 'border-l-red-500',    badge: 'bg-red-500/15 text-red-400 border-red-600',     action: 'text-red-400' },
     review: { border: 'border-l-amber-500',  badge: 'bg-amber-500/15 text-amber-400 border-amber-600', action: 'text-amber-400' },
-    entry:  { border: 'border-l-blue-500',   badge: 'bg-blue-500/15 text-blue-400 border-blue-600',   action: 'text-blue-400' },
+    entry:  { border: 'border-l-emerald-500', badge: 'bg-emerald-500/15 text-emerald-400 border-emerald-600', action: 'text-emerald-400' },
     hold:   { border: 'border-l-slate-600',  badge: 'bg-slate-700 text-slate-400 border-slate-600',   action: 'text-slate-400' },
   };
   const c = colors[item.priority];
-  const priorityIcon = { urgent: '⚡', review: '⚠', entry: '→', hold: '·' }[item.priority];
+  const priorityIcon = { urgent: '⚡', review: '⚠', entry: '✦', hold: '·' }[item.priority];
+  const isSuggested = item.priority === 'entry' && (item.symbol === 'SPX' || item.symbol === 'SPY');
   return (
-    <div className={`border-l-4 ${c.border} ${th.card} border ${th.border} rounded-r-lg px-3 py-2.5 flex items-center gap-3`}>
-      {/* Symbol badge */}
-      <span className={`text-[8px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${item.category === 'spx' ? 'border-violet-700 text-violet-400 bg-violet-500/10' : 'border-blue-700 text-blue-400 bg-blue-500/10'}`}>
-        {item.category === 'spx' ? 'SPX' : item.symbol}
-      </span>
-      {/* Action — main text */}
-      <div className="flex-1 min-w-0">
-        <p className={`text-xs font-bold ${th.text} truncate`}>{item.action}</p>
-        <p className={`text-[10px] ${th.textFaint} truncate`}>{item.detail}</p>
+    <div className={`border-l-4 ${c.border} ${th.card} border ${th.border} rounded-r-lg px-3 py-2.5`}>
+      <div className="flex items-center gap-3">
+        {/* Symbol badge */}
+        <span className={`text-[8px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${item.category === 'spx' ? 'border-violet-700 text-violet-400 bg-violet-500/10' : 'border-blue-700 text-blue-400 bg-blue-500/10'}`}>
+          {item.symbol}
+        </span>
+        {isSuggested && (
+          <span className="text-[8px] px-1.5 py-0.5 border border-emerald-700 text-emerald-400 bg-emerald-500/10 rounded font-bold shrink-0">SUGGESTED</span>
+        )}
+        {/* Action — main text */}
+        <div className="flex-1 min-w-0">
+          <p className={`text-xs font-bold ${th.text} truncate`}>{item.title}</p>
+          <p className={`text-[10px] ${th.textFaint} truncate`}>{item.detail}</p>
+        </div>
+        {/* Priority indicator */}
+        <span className={`text-[9px] font-bold shrink-0 ${c.action}`}>{priorityIcon} {item.priority}</span>
       </div>
-      {/* Priority indicator */}
-      <span className={`text-[9px] font-bold shrink-0 ${c.action}`}>{priorityIcon} {item.priority}</span>
+      {isSuggested && (
+        <p className={`text-[9px] ${th.textFaint} mt-1 ml-1 italic`}>Not yet placed — review details and enter manually in TastyTrade</p>
+      )}
     </div>
   );
 }
@@ -1808,31 +1817,88 @@ export default function EnginePage() {
                 <div className={`px-4 py-4 text-center ${th.textFaint} text-[10px]`}>No active spread positions</div>
               )}
 
-              {/* SPX Suggested entry */}
-              {d.spxSuggestedEntry && (
-                <div className={`border-t ${th.border} px-4 py-3 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'bg-yellow-500/5' : 'bg-violet-500/5'}`}>
-                  <div className="flex items-center gap-3">
-                    <span className={`text-[8px] font-bold tracking-widest uppercase shrink-0 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'text-yellow-300' : 'text-violet-400'}`}>
-                      {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ Prime Entry' : '↗ SPX Entry'}
-                    </span>
-                    <p className={`text-[10px] ${th.textMuted}`}>
-                      BPS {d.spxSuggestedEntry.shortStrike}/{d.spxSuggestedEntry.longStrike}P · {d.spxSuggestedEntry.expiration} ({d.spxSuggestedEntry.dte}d) · {d.spxSuggestedEntry.pop.toFixed(0)}% POP · ${d.spxSuggestedEntry.credit.toFixed(2)} cr · {d.spxSuggestedEntry.contracts}× · ${d.spxSuggestedEntry.capitalRequired.toLocaleString()}
-                    </p>
+              {/* ── SUGGESTED NEW ENTRIES ── */}
+              {(d.spxSuggestedEntry || d.spySuggestedEntry) && (
+                <div className="border-t-2 border-dashed border-emerald-600/40">
+                  {/* Section header */}
+                  <div className="flex items-center gap-3 px-4 py-2 bg-emerald-500/5 border-b border-emerald-600/20">
+                    <span className="text-[9px] font-bold tracking-widest text-emerald-400 uppercase">✦ Suggested New Positions</span>
+                    <span className={`text-[9px] ${th.textFaint}`}>Engine recommends these entries based on available capital + market conditions</span>
                   </div>
-                  <p className={`text-[9px] ${th.textFaint} mt-1 ml-[80px]`}>{d.spxSuggestedEntry.rationale}</p>
-                </div>
-              )}
 
-              {/* SPY Suggested entry */}
-              {d.spySuggestedEntry && (
-                <div className={`border-t ${th.border} px-4 py-3 bg-cyan-500/5`}>
-                  <div className="flex items-center gap-3">
-                    <span className="text-[8px] text-cyan-400 font-bold tracking-widest uppercase shrink-0">↗ SPY Fill</span>
-                    <p className={`text-[10px] ${th.textMuted}`}>
-                      {d.spySuggestedEntry.strategy} {d.spySuggestedEntry.shortStrike}/{d.spySuggestedEntry.longStrike}{d.spySuggestedEntry.strategy === 'BCS' ? 'C' : 'P'} · {d.spySuggestedEntry.expiration} ({d.spySuggestedEntry.dte}d) · {d.spySuggestedEntry.pop.toFixed(0)}% POP · ${d.spySuggestedEntry.credit.toFixed(2)} cr · {d.spySuggestedEntry.contracts}× · {d.spySuggestedEntry.spreadWidth}-wide · ${d.spySuggestedEntry.capitalRequired.toLocaleString()}
-                    </p>
-                  </div>
-                  <p className={`text-[9px] ${th.textFaint} mt-1 ml-[65px]`}>{d.spySuggestedEntry.rationale}</p>
+                  {/* SPX suggestion */}
+                  {d.spxSuggestedEntry && (
+                    <div className={`px-4 py-3 border-b border-emerald-600/20 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'bg-yellow-500/5' : 'bg-emerald-500/5'}`}>
+                      <div className="flex items-center gap-3 mb-1.5">
+                        <span className={`text-[8px] px-2 py-0.5 border rounded font-bold shrink-0 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'border-yellow-600 text-yellow-300 bg-yellow-500/10' : 'border-emerald-700 text-emerald-400 bg-emerald-500/10'}`}>
+                          {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ PRIME ENTRY' : 'NEW SPX POSITION'}
+                        </span>
+                        <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold shrink-0">25-WIDE · 1256 TAX</span>
+                        <span className={`text-[9px] ${th.textFaint}`}>Not yet placed — review and enter in TastyTrade</span>
+                      </div>
+                      <div className="flex items-center gap-6 px-1">
+                        <div>
+                          <p className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                            {d.spxSuggestedEntry.shortStrike}/{d.spxSuggestedEntry.longStrike}P
+                          </p>
+                          <p className={`text-[9px] ${th.textFaint}`}>{d.spxSuggestedEntry.expiration} · {d.spxSuggestedEntry.dte}d DTE</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-xs font-bold text-emerald-400">{d.spxSuggestedEntry.pop.toFixed(0)}%</p>
+                          <p className={`text-[9px] ${th.textFaint}`}>POP</p>
+                        </div>
+                        <div className="text-center">
+                          <p className={`text-xs font-bold ${th.text}`}>${d.spxSuggestedEntry.credit.toFixed(2)}</p>
+                          <p className={`text-[9px] ${th.textFaint}`}>credit</p>
+                        </div>
+                        <div className="text-center">
+                          <p className={`text-xs font-bold ${th.text}`}>{d.spxSuggestedEntry.contracts}×</p>
+                          <p className={`text-[9px] ${th.textFaint}`}>contracts</p>
+                        </div>
+                        <div className="text-center">
+                          <p className={`text-xs font-bold ${th.text}`}>${d.spxSuggestedEntry.capitalRequired.toLocaleString()}</p>
+                          <p className={`text-[9px] ${th.textFaint}`}>capital req.</p>
+                        </div>
+                      </div>
+                      <p className={`text-[9px] ${th.textFaint} mt-1.5 px-1`}>{d.spxSuggestedEntry.rationale}</p>
+                    </div>
+                  )}
+
+                  {/* SPY suggestion */}
+                  {d.spySuggestedEntry && (
+                    <div className="px-4 py-3 bg-emerald-500/5">
+                      <div className="flex items-center gap-3 mb-1.5">
+                        <span className="text-[8px] px-2 py-0.5 border border-emerald-700 text-emerald-400 bg-emerald-500/10 rounded font-bold shrink-0">NEW SPY POSITION</span>
+                        <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.spreadWidth}-WIDE · ST TAX</span>
+                        <span className={`text-[9px] ${th.textFaint}`}>Not yet placed — review and enter in TastyTrade</span>
+                      </div>
+                      <div className="flex items-center gap-6 px-1">
+                        <div>
+                          <p className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                            {d.spySuggestedEntry.shortStrike}/{d.spySuggestedEntry.longStrike}{d.spySuggestedEntry.strategy === 'BCS' ? 'C' : 'P'}
+                          </p>
+                          <p className={`text-[9px] ${th.textFaint}`}>{d.spySuggestedEntry.expiration} · {d.spySuggestedEntry.dte}d DTE · {d.spySuggestedEntry.strategy}</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-xs font-bold text-emerald-400">{d.spySuggestedEntry.pop.toFixed(0)}%</p>
+                          <p className={`text-[9px] ${th.textFaint}`}>POP</p>
+                        </div>
+                        <div className="text-center">
+                          <p className={`text-xs font-bold ${th.text}`}>${d.spySuggestedEntry.credit.toFixed(2)}</p>
+                          <p className={`text-[9px] ${th.textFaint}`}>credit</p>
+                        </div>
+                        <div className="text-center">
+                          <p className={`text-xs font-bold ${th.text}`}>{d.spySuggestedEntry.contracts}×</p>
+                          <p className={`text-[9px] ${th.textFaint}`}>contracts</p>
+                        </div>
+                        <div className="text-center">
+                          <p className={`text-xs font-bold ${th.text}`}>${d.spySuggestedEntry.capitalRequired.toLocaleString()}</p>
+                          <p className={`text-[9px] ${th.textFaint}`}>capital req.</p>
+                        </div>
+                      </div>
+                      <p className={`text-[9px] ${th.textFaint} mt-1.5 px-1`}>{d.spySuggestedEntry.rationale}</p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
