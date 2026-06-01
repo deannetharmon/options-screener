@@ -4874,7 +4874,14 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                 {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
               </p>
               <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
-                {pos.netDelta == null ? '' : Math.abs(pos.netDelta) <= 0.05 ? '✓ neutral' : Math.abs(pos.netDelta) <= 0.10 ? '✓ near neutral' : Math.abs(pos.netDelta) <= 0.15 ? '~ directional' : Math.abs(pos.netDelta) <= 0.25 ? '⚠ exposed' : '✗ high exposure'}
+                {pos.netDelta == null ? '' : (() => {
+                  const t = deltaTint(pos.netDelta);
+                  if (t.includes('emerald') && t.includes('10')) return '✓ neutral';
+                  if (t.includes('emerald')) return '✓ near neutral';
+                  if (t.includes('yellow')) return '~ directional';
+                  if (t.includes('orange')) return '⚠ exposed';
+                  return '✗ high exposure';
+                })()}
               </p>
             </div>
 
@@ -4884,7 +4891,14 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
               </p>
               <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
-                {pos.gamma == null ? '' : Math.abs(pos.gamma) <= 0.001 ? '✓ low risk' : Math.abs(pos.gamma) <= 0.003 ? '✓ manageable' : Math.abs(pos.gamma) <= 0.006 ? '~ watch' : Math.abs(pos.gamma) <= 0.010 ? '⚠ elevated' : '✗ high gamma'}
+                {pos.gamma == null ? '' : (() => {
+                  const t = gammaTint(pos.gamma);
+                  if (t.includes('emerald') && t.includes('10')) return '✓ low risk';
+                  if (t.includes('emerald')) return '✓ manageable';
+                  if (t.includes('yellow')) return '~ watch';
+                  if (t.includes('orange')) return '⚠ elevated';
+                  return '✗ high gamma';
+                })()}
               </p>
             </div>
 
@@ -4894,7 +4908,13 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                 {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
               </p>
               <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
-                {pos.netVega == null ? '' : pos.netVega <= -0.10 ? '✓ short vega' : pos.netVega <= -0.05 ? '✓ short vega' : pos.netVega <= -0.01 ? '~ slight short' : '✗ long vega (wrong side)'}
+                {pos.netVega == null ? '' : (() => {
+                  const t = vegaTint(pos.netVega);
+                  if (t.includes('emerald') && t.includes('10')) return '✓ short vega';
+                  if (t.includes('emerald') && t.includes('8')) return '✓ short vega';
+                  if (t.includes('emerald')) return '~ slight short';
+                  return '✗ long vega (wrong side)';
+                })()}
               </p>
             </div>
 
