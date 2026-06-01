@@ -942,12 +942,12 @@ interface MarketConditions {
 async function loadMarketConditions(watchlist: string[], engineData: EngineData | null): Promise<MarketConditions> {
   const now = new Date();
   // Dynamic ET offset — handles EST (-5) and EDT (-4) automatically
-  const etOffsetMs = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false })
-    ? -(new Date().getTime() - new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })).getTime()) / 3600000
-    : -5;
-  const etOffset = Math.round(etOffsetMs); // -5 (EST) or -4 (EDT)
-  const etHour = (now.getUTCHours() + 24 + etOffset) % 24;
-  const etMinutes = now.getMinutes();
+  const etParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric', minute: 'numeric', hour12: false,
+  }).formatToParts(now);
+  const etHour = parseInt(etParts.find(p => p.type === 'hour')?.value ?? '0', 10);
+  const etMinutes = parseInt(etParts.find(p => p.type === 'minute')?.value ?? '0', 10);
   const etTimeDecimal = etHour + etMinutes / 60;
   const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon ... 5=Fri
   const todayStr = now.toISOString().slice(0, 10);
@@ -1046,8 +1046,12 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
         ? `Overnight high ~${overnightHigh.toFixed(0)} — short call strike should clear this by ${bufferPct}% (≤${(overnightHigh * (1 + bufferPct / 100)).toFixed(0)})`
         : `ES=F flat — BPS conditions · puts below ${overnightLow.toFixed(0)} for best buffer`;
       // Settling: market just opened and ES still moving > 0.3% intraday
-      const etHourNow = (new Date().getUTCHours() + 24 - 5) % 24;
-      const etMinNow = new Date().getMinutes();
+      const etPartsNow = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric', minute: 'numeric', hour12: false,
+      }).formatToParts(new Date());
+      const etHourNow = parseInt(etPartsNow.find(p => p.type === 'hour')?.value ?? '0', 10);
+      const etMinNow = parseInt(etPartsNow.find(p => p.type === 'minute')?.value ?? '0', 10);
       const etDecNow = etHourNow + etMinNow / 60;
       const settling = etDecNow >= 9.5 && etDecNow < 9.75 && Math.abs(overnightChangePct) > 0.3;
 
