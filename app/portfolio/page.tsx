@@ -1357,21 +1357,23 @@ async function loadPositions(): Promise<Position[]> {
     }
   } catch {}
 
- const plBySymbol: Record<string, number> = {};
- try {
-   const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
-   for (const item of plData?.data?.items ?? []) {
-     const sym = item['underlying-symbol']; if (!sym) continue;
-     const qty = parseFloat(item['quantity'] ?? '1');
-     const multiplier = parseFloat(item['multiplier'] ?? '100');
-     const avgOpen = parseFloat(item['average-open-price'] ?? '0');
-     const markRaw = parseFloat(item['mark-price'] ?? '0');
-     const closeRaw = parseFloat(item['close-price'] ?? '0');
-     const mark = markRaw !== 0 ? markRaw : closeRaw;
-     const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
-     plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
-   }
- } catch {}
+  const plBySymbol: Record<string, number> = {};
+  try {
+    const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
+    for (const item of plData?.data?.items ?? []) {
+      const sym = item['underlying-symbol']; if (!sym) continue;
+      const expDate = item['expires-at']?.slice(0, 10) ?? 'unknown';
+      const key = `${sym}::${expDate}`;
+      const qty = parseFloat(item['quantity'] ?? '1');
+      const multiplier = parseFloat(item['multiplier'] ?? '100');
+      const avgOpen = parseFloat(item['average-open-price'] ?? '0');
+      const markRaw = parseFloat(item['mark-price'] ?? '0');
+      const closeRaw = parseFloat(item['close-price'] ?? '0');
+      const mark = markRaw !== 0 ? markRaw : closeRaw;
+      const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
+      plBySymbol[key] = (plBySymbol[key] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
+    }
+  } catch {}
 
   let profitTargets: Record<string, number> = {};
   try { profitTargets = JSON.parse(localStorage.getItem(LS_PROFIT_TARGETS) ?? '{}'); } catch {}
@@ -1434,7 +1436,7 @@ async function loadPositions(): Promise<Position[]> {
       creditReceived: Math.abs(creditReceived),
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, profitTarget, hitTarget,
-      plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
+      plOpen: plBySymbol[key] != null ? Math.round(plBySymbol[key] * 100) / 100 : null,
       maxRisk: calculateMaxRisk(positionLegs, creditReceived, strategy),
       entryDte, entryDate: openedAt, needsClose: entryDte > 21 && dte <= 21, accountNumber,
       ivr: ivrMap[symbol] ?? null,
