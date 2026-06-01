@@ -1372,6 +1372,7 @@ async function loadPositions(): Promise<Position[]> {
       const mark = markRaw !== 0 ? markRaw : closeRaw;
       const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
       plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
+      console.log('PL_DATA_ITEM:', JSON.stringify(item)) 
     }
   } catch {}
 
