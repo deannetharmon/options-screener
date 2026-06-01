@@ -1318,6 +1318,18 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState<number[] | null>(null);
   const [sparkLoading, setSparkLoading] = useState(false);
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showChart) return;
+    const handler = (e: MouseEvent) => {
+      if (popupRef.current && !popupRef.current.contains(e.target as Node)) {
+        setShowChart(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showChart]);
   return (
     <div className="relative">
       <button
@@ -1349,11 +1361,15 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
 
       {showChart && (
         <div
+          ref={popupRef}
           className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
           style={{ width: '280px' }}
           onClick={e => e.stopPropagation()}
         >
-          <div className="mb-2">
+          <div className="flex items-center justify-between mb-2">
+            <span className={`text-[10px] font-bold ${th.textFaint} tracking-widest`}>{symbol}</span>
+            <button onClick={() => setShowChart(false)} className="text-slate-500 hover:text-white transition-colors text-sm leading-none">✕</button>
+          </div>
             {sparkLoading && (
               <div className="flex items-center justify-center h-16">
                 <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
