@@ -115,6 +115,10 @@ interface SpySuggestion {
   spreadWidth: number;
   capitalRequired: number;
   strategy: 'BPS' | 'BCS';
+  rationale: string;
+  shortOccSymbol: string;
+  longOccSymbol: string;
+}
 
 interface EngineData {
   capital: CapitalSummary;
