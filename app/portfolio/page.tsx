@@ -4651,7 +4651,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState<number[] | null>(null);
   const [sparkLoading, setSparkLoading] = useState(false);
-  const chartPopupRef = useRef<HTMLDivElement>(null);
+  const chartPopupRef = useRef(null as HTMLDivElement | null);
 
   useEffect(() => {
     if (!showChart) return;
