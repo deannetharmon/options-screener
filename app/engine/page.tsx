@@ -778,10 +778,31 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 
   // New SPX entry
   if (spxSuggestedEntry) {
-    actions.push({ id: 'spx-new-entry', priority: 'entry', category: 'spx', symbol: 'SPX', title: `New ${spxSuggestedEntry.rationale.startsWith('★') ? '★ ' : ''}BPS ${spxSuggestedEntry.shortStrike}/${spxSuggestedEntry.longStrike}P`, detail: `${spxSuggestedEntry.dte}d · ${spxSuggestedEntry.pop.toFixed(0)}% POP · $${spxSuggestedEntry.credit.toFixed(2)} cr · ${spxSuggestedEntry.contracts} contract${spxSuggestedEntry.contracts > 1 ? 's' : ''} · 25-wide · 1256`, action: 'Enter SPX anchor position', urgency: 'Fill SPX spread allocation' });
+    // Find existing position expiry for context note
+    const existingExpiries = [...spxPositions, ...spyPositions].map(p => p.expiration);
+    const expiryNote = existingExpiries.length > 0 ? ` · ${spxSuggestedEntry.expiration} (different week from ${existingExpiries[0]})` : '';
+    // Determine if SPX is recommended over SPY
+    const spxWins = !spySuggestedEntry || capital.spxAvailable < (spxSuggestedEntry.capitalRequired + (spySuggestedEntry?.capitalRequired ?? 0));
+    const recBadge = spySuggestedEntry && spxWins ? ' · ◈ Recommended over SPY' : '';
+    actions.push({
+      id: 'spx-new-entry', priority: 'entry', category: 'spx', symbol: 'SPX',
+      title: `New ${spxSuggestedEntry.rationale.startsWith('★') ? '★ ' : ''}BPS ${spxSuggestedEntry.shortStrike}/${spxSuggestedEntry.longStrike}P`,
+      detail: `${spxSuggestedEntry.dte}d · ${spxSuggestedEntry.pop.toFixed(0)}% POP · $${spxSuggestedEntry.credit.toFixed(2)} cr · ${spxSuggestedEntry.contracts} contract${spxSuggestedEntry.contracts > 1 ? 's' : ''} · 25-wide · 1256${expiryNote}${recBadge}`,
+      action: 'Enter SPX anchor position',
+      urgency: spxWins && spySuggestedEntry ? 'Recommended over SPY' : 'Fill SPX spread allocation'
+    });
   }
   if (spySuggestedEntry) {
-    actions.push({ id: 'spy-new-entry', priority: 'entry', category: 'spx', symbol: 'SPY', title: `New ${spySuggestedEntry.strategy} ${spySuggestedEntry.shortStrike}/${spySuggestedEntry.longStrike}${spySuggestedEntry.strategy === 'BCS' ? 'C' : 'P'}`, detail: `${spySuggestedEntry.dte}d · ${spySuggestedEntry.pop.toFixed(0)}% POP · $${spySuggestedEntry.credit.toFixed(2)} cr · ${spySuggestedEntry.contracts} contracts · ${spySuggestedEntry.spreadWidth}-wide · ST tax`, action: 'Enter SPY fill position', urgency: 'Deploy remaining spread capital' });
+    const existingExpiries = [...spxPositions, ...spyPositions].map(p => p.expiration);
+    const expiryNote = existingExpiries.length > 0 ? ` · ${spySuggestedEntry.expiration} (different week from ${existingExpiries[0]})` : '';
+    const spxWins = spxSuggestedEntry && capital.spxAvailable < (spxSuggestedEntry.capitalRequired + spySuggestedEntry.capitalRequired);
+    actions.push({
+      id: 'spy-new-entry', priority: 'entry', category: 'spx', symbol: 'SPY',
+      title: `New ${spySuggestedEntry.strategy} ${spySuggestedEntry.shortStrike}/${spySuggestedEntry.longStrike}${spySuggestedEntry.strategy === 'BCS' ? 'C' : 'P'}`,
+      detail: `${spySuggestedEntry.dte}d · ${spySuggestedEntry.pop.toFixed(0)}% POP · $${spySuggestedEntry.credit.toFixed(2)} cr · ${spySuggestedEntry.contracts} contracts · ${spySuggestedEntry.spreadWidth}-wide · ST tax${expiryNote}${spxWins ? ' · See SPX for better trade' : ''}`,
+      action: 'Enter SPY fill position',
+      urgency: spxWins ? 'Secondary — SPX preferred' : 'Deploy remaining spread capital'
+    });
   }
 
   // Wheel actions
@@ -1004,7 +1025,7 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
       const overnightChangePct = esPrevClose > 0 ? ((esPrice - esPrevClose) / esPrevClose) * 100 : 0;
       // Direction bias
       let bias: EsFutures['bias'] = 'neutral';
-      let biasLabel = 'IC';
+      let biasLabel = 'BPS'; // neutral → default to BPS (engine uses BPS not IC in neutral)
       if (overnightChangePct > 0.5) { bias = 'bullish'; biasLabel = 'BPS'; }
       else if (overnightChangePct < -0.5) { bias = 'bearish'; biasLabel = 'BCS'; }
       // Strike anchor note
@@ -1013,7 +1034,7 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
         ? `Overnight low ~${overnightLow.toFixed(0)} — short put strike should clear this by ${bufferPct}% (≥${(overnightLow * (1 - bufferPct / 100)).toFixed(0)})`
         : bias === 'bearish'
         ? `Overnight high ~${overnightHigh.toFixed(0)} — short call strike should clear this by ${bufferPct}% (≤${(overnightHigh * (1 + bufferPct / 100)).toFixed(0)})`
-        : `ES=F flat — IC strikes: puts below ${overnightLow.toFixed(0)}, calls above ${overnightHigh.toFixed(0)}`;
+        : `ES=F flat — BPS conditions · puts below ${overnightLow.toFixed(0)} for best buffer`;
       // Settling: market just opened and ES still moving > 0.3% intraday
       const etHourNow = (new Date().getUTCHours() + 24 - 5) % 24;
       const etMinNow = new Date().getMinutes();
