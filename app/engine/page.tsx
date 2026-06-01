@@ -345,7 +345,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const ask = parseFloat(item.ask ?? '0');
       currentPricesMap[sym] = last > 0 ? last : (bid + ask) / 2;
       const ivrRaw = item['implied-volatility-index-rank'];
-      ivrMap[sym] = ivrRaw != null ? Math.round(parseFloat(ivrRaw) * 100) : null;
+      ivrMap[sym] = ivrRaw != null ? (parseFloat(ivrRaw) > 1 ? Math.round(parseFloat(ivrRaw)) : Math.round(parseFloat(ivrRaw) * 100)) : null;
     }
   } catch {}
 
@@ -721,8 +721,15 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   const IVR_MIN_FOR_NEW_PUT = 30;
 
   const wheelSuggestions: WheelSuggestion[] = [];
-  for (const pos of wheelPositions.filter(p => p.phase === 'idle' || p.phase === 'assigned')) {
-    if (pos.phase === 'idle' && capital.wheelAvailable > 0 && pos.currentPrice) {
+  console.log('[WheelSuggestions] Available capital:', capital.wheelAvailable, 'Positions to scan:', finalWheelPositions.filter(p => p.phase === 'idle' || p.phase === 'assigned').length);
+  for (const pos of finalWheelPositions.filter(p => p.phase === 'idle' || p.phase === 'assigned')) {
+    console.log(`[WheelSuggestions] ${pos.symbol} phase=${pos.phase} price=${pos.currentPrice} ivr=${pos.ivr} capitalAvail=${capital.wheelAvailable}`);
+    if (pos.phase === 'idle' && capital.wheelAvailable > 0) {
+      const price = pos.currentPrice ?? 0;
+      if (!price) {
+        console.log(`[WheelSuggestions] ${pos.symbol} skipped — no price`);
+        continue;
+      }
       const ivr = pos.ivr;
       const ivrStr = ivr != null ? `IVR ${ivr}` : 'IVR unavailable';
       if (ivr != null && ivr < IVR_MIN_FOR_NEW_PUT) {
@@ -733,9 +740,12 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
         });
         continue;
       }
-      const strike = Math.floor(pos.currentPrice * 0.95 / 5) * 5;
+      const strike = Math.floor(price * 0.95 / 5) * 5;
       const capitalReq = strike * 100;
-      if (capitalReq > capital.wheelAvailable) continue;
+      if (capitalReq > capital.wheelAvailable) {
+        console.log(`[WheelSuggestions] ${pos.symbol} skipped — capitalReq ${capitalReq} > available ${capital.wheelAvailable}`);
+        continue;
+      }
       wheelSuggestions.push({
         symbol: pos.symbol,
         action: 'sell-put',
@@ -744,7 +754,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
         pop: 75,
         delta: 0.25,
         capitalRequired: capitalReq,
-        rationale: `${pos.symbol} idle · ${ivrStr} ✓ · Sell ${strike}P ~35 DTE at Δ0.25 · Capital: $${capitalReq.toLocaleString()}`
+        rationale: `${pos.symbol} idle · ${ivrStr} · Sell ${strike}P ~35 DTE at Δ0.25 · Capital: $${capitalReq.toLocaleString()}`
       });
     } else if (pos.phase === 'assigned' && pos.sharesHeld && pos.costBasis && pos.currentPrice) {
       const ivr = pos.ivr;
@@ -2171,7 +2181,7 @@ export default function EnginePage() {
               className={`flex items-center gap-1.5 px-4 py-3 text-xs font-medium tracking-wider border-b-2 transition-colors ${
                 subTab === tab.key
                   ? `text-white border-[var(--accent)]`
-                  : `${th.textFaint} border-transparent hover:${th.textMuted}`
+                  : `${th.textFaint} border-transparent hover:text-white/70`
               }`}>
               <span className="text-sm">{tab.icon}</span>
               {tab.label}
