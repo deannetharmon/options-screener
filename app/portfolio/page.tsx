@@ -4863,12 +4863,18 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-xs font-bold inline-block ${thetaTint(pos.theta)} ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
               </p>
+              <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
+                {pos.theta == null ? '' : pos.theta >= 0.10 ? '★ strong decay' : pos.theta >= 0.05 ? '✓ good decay' : pos.theta >= 0.01 ? '~ light decay' : '✗ paying theta'}
+              </p>
             </div>
 
             <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Delta</p>
               <p className={`text-xs font-bold inline-block ${deltaTint(pos.netDelta)} ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
+              </p>
+              <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
+                {pos.netDelta == null ? '' : Math.abs(pos.netDelta) <= 0.05 ? '✓ neutral' : Math.abs(pos.netDelta) <= 0.10 ? '✓ near neutral' : Math.abs(pos.netDelta) <= 0.15 ? '~ directional' : Math.abs(pos.netDelta) <= 0.25 ? '⚠ exposed' : '✗ high exposure'}
               </p>
             </div>
 
@@ -4877,12 +4883,18 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
               </p>
+              <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
+                {pos.gamma == null ? '' : Math.abs(pos.gamma) <= 0.001 ? '✓ low risk' : Math.abs(pos.gamma) <= 0.003 ? '✓ manageable' : Math.abs(pos.gamma) <= 0.006 ? '~ watch' : Math.abs(pos.gamma) <= 0.010 ? '⚠ elevated' : '✗ high gamma'}
+              </p>
             </div>
 
             <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Vega</p>
               <p className={`text-xs font-bold inline-block ${vegaTint(pos.netVega)} ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
+              </p>
+              <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
+                {pos.netVega == null ? '' : pos.netVega <= -0.10 ? '✓ short vega' : pos.netVega <= -0.05 ? '✓ short vega' : pos.netVega <= -0.01 ? '~ slight short' : '✗ long vega (wrong side)'}
               </p>
             </div>
 
