@@ -53,6 +53,7 @@ interface CapitalSummary {
   spxTarget: number;
   wheelDeployed: number;
   spxDeployed: number;
+  hunterDeployed: number;  // capital in non-SPX/SPY portfolio spreads (QQQ, NVDA, etc.)
   wheelAvailable: number;
   spxAvailable: number;
   deploymentPct: number;
@@ -251,7 +252,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
     reserveTarget: netLiq * (alloc.reserve / 100),
     wheelTarget: netLiq * (alloc.wheel / 100),
     spxTarget: netLiq * (alloc.spx / 100),
-    wheelDeployed: 0, spxDeployed: 0,
+    wheelDeployed: 0, spxDeployed: 0, hunterDeployed: 0,
     wheelAvailable: 0, spxAvailable: 0,
     deploymentPct: 0,
   };
@@ -436,6 +437,30 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   }
   capital.wheelDeployed = wheelDeployed;
   capital.wheelAvailable = Math.max(0, capital.wheelTarget - wheelDeployed);
+
+  // ── Hunter spreads (non-SPX/SPY, non-wheel) ───────────────────────────
+  // These are spreads placed via the Hunter screener on individual stocks/ETFs.
+  // They consume OBP but aren't tracked by either engine bucket.
+  // Capital at risk = spread width × 100 × contracts (no margin assumption).
+  let hunterDeployed = 0;
+  const wheelSymbolSet = new Set(watchlist.map(s => s.toUpperCase()));
+  for (const [key, legs] of Object.entries(canonicalGroups)) {
+    const [symbol] = key.split('::');
+    // Skip SPX/SPXW/SPY (already in spxDeployed) and wheel stocks (in wheelDeployed)
+    if (['SPX', 'SPXW', 'SPY'].includes(symbol)) continue;
+    if (wheelSymbolSet.has(symbol.toUpperCase())) continue;
+    // Must be a defined-risk spread: exactly one short + one long option leg
+    const shortLegs = legs.filter(l => l['quantity-direction'] === 'Short');
+    const longLegs  = legs.filter(l => l['quantity-direction'] === 'Long');
+    if (shortLegs.length !== 1 || longLegs.length !== 1) continue;
+    const shortStrike = parseFloat(shortLegs[0].symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
+    const longStrike  = parseFloat(longLegs[0].symbol?.match(/(\d{8})$/)?.[1] ?? '0') / 1000;
+    const qty = Math.abs(parseInt(shortLegs[0]['quantity'] ?? '1', 10));
+    const spreadWidth = Math.abs(shortStrike - longStrike);
+    if (spreadWidth > 0) hunterDeployed += spreadWidth * 100 * qty;
+  }
+  capital.hunterDeployed = Math.round(hunterDeployed);
+
   capital.deploymentPct = netLiq > 0 ? Math.round(((wheelDeployed + spxDeployed) / (capital.wheelTarget + capital.spxTarget)) * 100) : 0;
 
   // Deduplicate wheelPositions by symbol — keep the most meaningful phase.
@@ -1444,7 +1469,7 @@ function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme
     <div className={`border-b ${th.border} last:border-b-0`}>
       <div className={`flex items-center gap-3 px-4 py-2.5`}>
         <div className="w-32 shrink-0">
-          <p className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.shortStrike}/{pos.longStrike}P</p>
+          <p className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol} {pos.shortStrike}/{pos.longStrike}P</p>
           <p className={`text-[9px] ${th.textFaint}`}>{pos.expiration} · {pos.dte}d</p>
         </div>
         <div className="w-16 shrink-0 text-center">
@@ -2320,9 +2345,14 @@ export default function EnginePage() {
               <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase`}>Option Buying Power</p>
               <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString()}</p>
             </div>
-            <div className="flex-1 grid grid-cols-3 gap-4">
+            <div className="flex-1 grid grid-cols-4 gap-4">
               <CapitalBar label={`Spread Engine · SPX+SPY (${alloc.spx}% · $${formatCurrency(d.capital.spxTarget)})`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
               <CapitalBar label={`Wheel (${alloc.wheel}% · $${formatCurrency(d.capital.wheelTarget)})`} deployed={d.capital.wheelDeployed} target={d.capital.wheelTarget} color="bg-blue-500" />
+              {d.capital.hunterDeployed > 0 ? (
+                <CapitalBar label="Hunter Spreads · closing out" deployed={d.capital.hunterDeployed} target={d.capital.hunterDeployed} color="bg-amber-500" />
+              ) : (
+                <div />
+              )}
               <div>
                 <p className={`text-[9px] ${th.textFaint} mb-1`}>Reserve ({alloc.reserve}% · ${formatCurrency(d.capital.reserveTarget)})</p>
                 <div className="h-1.5 rounded-full bg-slate-700/60 overflow-hidden mb-1">
@@ -2512,7 +2542,7 @@ export default function EnginePage() {
                   {d.spxSuggestedEntry && (
                     <div className={`px-4 py-3 border-b border-emerald-600/20 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'bg-yellow-500/5' : 'bg-emerald-500/5'}`}>
                       <div className="flex items-center gap-3 mb-1.5">
-                        <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold shrink-0">SPX</span>
+                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>SPX</span>
                         <ChartButton symbol="SPX" th={th} />
                         <span className={`text-[8px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'border-yellow-600 text-yellow-300 bg-yellow-500/10' : 'border-emerald-700 text-emerald-400 bg-emerald-500/10'}`}>
                           {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ PRIME' : d.spxSuggestedEntry.strategy}
@@ -2557,7 +2587,7 @@ export default function EnginePage() {
                   {d.spySuggestedEntry && (
                     <div className="px-4 py-3 bg-emerald-500/5">
                       <div className="flex items-center gap-3 mb-1.5">
-                        <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">SPY</span>
+                        <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>SPY</span>
                         <ChartButton symbol="SPY" th={th} />
                         <span className="text-[8px] px-1.5 py-0.5 border border-emerald-700 text-emerald-400 bg-emerald-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.strategy}</span>
                         <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.spreadWidth}-WIDE · ST TAX</span>
