@@ -601,142 +601,122 @@ function MonthlyPnlChart({ trades, th, range }: { trades: ClosedTrade[]; th: typ
   }
 
   const maxAbsPnl = Math.max(...entries.map(e => Math.abs(e.pnl)), 1);
-  const BAR_H  = 120; // px — bar chart area height (taller for labels)
-  const LINE_H =  56; // px — cumulative P&L line area height
 
   // Build cumulative P&L series
   const cumulative: number[] = [];
   let running = 0;
   for (const e of entries) { running += e.pnl; cumulative.push(running); }
-  const cumMin   = Math.min(0, ...cumulative);
-  const cumMax   = Math.max(0, ...cumulative);
+
+  // Single unified SVG — bars in lower 55%, cumulative line in upper 45%, sharing one coordinate space
+  const W = entries.length * 52; // viewBox width — 52px per month column
+  const H = 110;                 // total viewBox height
+  const BAR_TOP = 48;            // bars occupy H from BAR_TOP to H (62px tall)
+  const LINE_BOT = 44;           // line occupies 0 to LINE_BOT (44px tall) with 4px gap
+  const COL = 52;                // column width
+
+  // Bar height for a given P&L value (0..1 mapped to BAR_TOP..H)
+  const barH = (pnl: number) => Math.max((Math.abs(pnl) / maxAbsPnl) * (H - BAR_TOP) * 0.92, 2);
+
+  // Cumulative line Y (0=top of LINE_BOT area, LINE_BOT=bottom)
+  const cumMin = Math.min(0, ...cumulative);
+  const cumMax = Math.max(0, ...cumulative);
   const cumRange = Math.max(cumMax - cumMin, 1);
+  const lineY = (val: number) => LINE_BOT - ((val - cumMin) / cumRange) * (LINE_BOT * 0.82) - LINE_BOT * 0.09;
+  const zeroY = lineY(0);
 
-  const PAD_TOP = 6; const PAD_BOT = 6;
-  const cumY = (val: number) =>
-    PAD_TOP + (LINE_H - PAD_TOP - PAD_BOT) * (1 - (val - cumMin) / cumRange);
-  const zeroLineY = cumY(0);
-  const lastCumVal = cumulative[cumulative.length - 1];
-  const lineColor  = lastCumVal >= 0 ? 'rgba(16,185,129,0.95)' : 'rgba(239,68,68,0.95)';
-
-  // SVG uses a fixed internal width so coordinates are stable
-  const N    = entries.length;
-  const SVG_W = Math.max(N * 60, 300);
-  const colW  = SVG_W / N;
-  const cx    = (i: number) => i * colW + colW / 2;
+  const lastCum = cumulative[cumulative.length - 1];
+  const lineColor = lastCum >= 0 ? 'rgba(16,185,129,0.85)' : 'rgba(239,68,68,0.85)';
+  const linePts = cumulative.map((v, i) => `${i * COL + COL / 2},${lineY(v)}`).join(' ');
 
   return (
-    <div className="space-y-0">
-      {/* Full SVG chart — cumulative line on top, bars below, labels at bottom */}
-      <svg
-        className="w-full overflow-visible"
-        viewBox={`0 0 ${SVG_W} ${LINE_H + BAR_H + 28}`}
-        preserveAspectRatio="none"
-        style={{ display: 'block' }}
-      >
-        {/* ── Cumulative line section ── */}
-        {/* Zero dashed baseline for cumulative area */}
-        <line
-          x1={0} y1={zeroLineY} x2={SVG_W} y2={zeroLineY}
-          stroke="rgba(255,255,255,0.10)" strokeWidth="1" strokeDasharray="4,4"
-        />
+    <div className="space-y-1">
+      <div className="relative w-full group/chart">
+        <svg
+          className="w-full"
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="none"
+          style={{ height: '120px' }}
+        >
+          {/* Zero dashed line for cumulative */}
+          <line x1="0" y1={zeroY} x2={W} y2={zeroY}
+            stroke="rgba(255,255,255,0.07)" strokeWidth="0.8" strokeDasharray="3,2" />
 
-        {/* Cumulative line — no dots */}
-        {N > 1 && (() => {
-          const pts = cumulative.map((val, i) => `${cx(i)},${cumY(val)}`).join(' ');
-          return (
-            <polyline
-              points={pts}
-              fill="none"
-              stroke={lineColor}
-              strokeWidth="2"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-          );
-        })()}
+          {/* Divider between line zone and bar zone */}
+          <line x1="0" y1={BAR_TOP - 2} x2={W} y2={BAR_TOP - 2}
+            stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
 
-        {/* Cumulative label at last point */}
-        {N > 0 && (() => {
-          const lx = cx(N - 1);
-          const ly = cumY(lastCumVal);
-          const label = `${lastCumVal >= 0 ? '+' : ''}$${Math.abs(lastCumVal) >= 1000 ? (lastCumVal / 1000).toFixed(1) + 'k' : lastCumVal.toFixed(0)}`;
-          const anchor = lx > SVG_W * 0.75 ? 'end' : 'start';
-          return (
-            <text
-              x={lx + (anchor === 'end' ? -6 : 6)}
-              y={Math.max(ly - 6, PAD_TOP + 8)}
-              textAnchor={anchor}
-              fontSize="8"
-              fontFamily="'DM Mono', monospace"
-              fill={lastCumVal >= 0 ? '#10b981' : '#ef4444'}
-              opacity="0.9"
-            >{label}</text>
-          );
-        })()}
-
-        {/* ── Bar section ── */}
-        {entries.map((e, i) => {
-          const isPos  = e.pnl >= 0;
-          const barPct = Math.max(Math.abs(e.pnl) / maxAbsPnl, 0.03);
-          const barH   = barPct * (BAR_H - 20); // leave 20px headroom for dollar label
-          const barX   = cx(i) - colW * 0.35;
-          const barW   = colW * 0.70;
-          const barTop = LINE_H + (BAR_H - 20) - barH + 8; // +8 = top padding inside bar area
-          const labelY = barTop - 4;
-          const label  = `${isPos ? '+' : ''}$${Math.abs(e.pnl) >= 1000 ? (e.pnl / 1000).toFixed(1) + 'k' : e.pnl.toFixed(0)}`;
-
-          return (
-            <g key={e.key}>
-              {/* Bar */}
-              <rect
-                x={barX} y={barTop} width={barW} height={barH}
-                rx="2"
-                fill={isPos ? 'rgba(16,185,129,0.55)' : 'rgba(239,68,68,0.50)'}
+          {/* Monthly P&L bars */}
+          {entries.map((e, i) => {
+            const bh = barH(e.pnl);
+            const x = i * COL + 4;
+            const bw = COL - 8;
+            const isPos = e.pnl >= 0;
+            return (
+              <rect key={e.key} x={x} y={H - bh} width={bw} height={bh}
+                fill={isPos ? 'rgba(16,185,129,0.55)' : 'rgba(239,68,68,0.45)'}
+                rx="1"
               />
-              {/* Dollar label above bar */}
-              <text
-                x={cx(i)} y={labelY}
-                textAnchor="middle"
-                fontSize="7.5"
-                fontFamily="'DM Mono', monospace"
-                fill={isPos ? '#10b981' : '#ef4444'}
-                opacity="0.85"
-              >{label}</text>
-            </g>
-          );
-        })}
+            );
+          })}
 
-        {/* ── X-axis: month labels + trade counts ── */}
-        {entries.map((e, i) => (
-          <g key={`lbl-${e.key}`}>
-            <text
-              x={cx(i)} y={LINE_H + BAR_H + 12}
-              textAnchor="middle" fontSize="9"
-              fontFamily="'DM Sans', system-ui, sans-serif"
-              fill="rgba(255,255,255,0.45)"
-            >{e.month}</text>
-            <text
-              x={cx(i)} y={LINE_H + BAR_H + 24}
-              textAnchor="middle" fontSize="7.5"
-              fontFamily="'DM Mono', monospace"
-              fill="rgba(255,255,255,0.22)"
-            >{e.count}t</text>
-          </g>
+          {/* Cumulative P&L line */}
+          {entries.length > 1 && (
+            <polyline points={linePts} fill="none" stroke={lineColor}
+              strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+          )}
+
+          {/* Dots on the line */}
+          {cumulative.map((val, i) => (
+            <circle key={entries[i].key} cx={i * COL + COL / 2} cy={lineY(val)} r="2"
+              fill={val >= 0 ? '#10b981' : '#ef4444'} />
+          ))}
+
+          {/* Invisible hit areas for tooltips — one per column */}
+          {entries.map((e, i) => {
+            const isPos = e.pnl >= 0;
+            const cumVal = cumulative[i];
+            return (
+              <g key={`tip-${e.key}`} className="group/bar">
+                <rect x={i * COL} y={0} width={COL} height={H} fill="transparent" />
+                <foreignObject x={Math.min(i * COL - 10, W - 155)} y={-72} width="155" height="68"
+                  className="hidden group-hover/bar:block overflow-visible pointer-events-none">
+                  <div className={`${th.sidebar} border ${th.border} rounded-lg px-2.5 py-1.5 shadow-xl`}>
+                    <p className={`text-[10px] font-bold ${th.text}`}>{e.month} {e.year}</p>
+                    <p className={`text-[10px] font-bold ${isPos ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {isPos ? '+' : ''}${e.pnl.toFixed(0)} this month
+                    </p>
+                    <p className={`text-[10px] ${cumVal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {cumVal >= 0 ? '+' : ''}${cumVal.toFixed(0)} cumulative
+                    </p>
+                    <p className={`text-[9px] ${th.textFaint}`}>{e.count}T · {e.wins}W/{e.count - e.wins}L · {e.winRate}%</p>
+                  </div>
+                </foreignObject>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* X-axis labels */}
+      <div className="flex" style={{ gap: '0px' }}>
+        {entries.map(e => (
+          <div key={e.key} className="flex flex-col items-center" style={{ width: `${100 / entries.length}%` }}>
+            <span className={`text-[8px] ${th.textFaint}`}>{e.month.slice(0, 1)}</span>
+            <span className={`text-[8px] ${th.textFaint} opacity-40`}>{e.count}</span>
+          </div>
         ))}
-      </svg>
+      </div>
 
       {/* Legend */}
-      <div className={`flex items-center gap-4 pt-2 border-t ${th.borderLight}`}>
+      <div className={`flex items-center gap-4 pt-1 border-t ${th.borderLight}`}>
         <div className="flex items-center gap-1.5">
-          <div className="w-3 h-1.5 rounded-full bg-emerald-500/55" />
+          <div className="w-3 h-2 rounded-sm bg-emerald-500/55" />
           <span className={`text-[9px] ${th.textFaint}`}>Monthly P&L</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <div className="w-4 h-0.5 rounded-full" style={{ backgroundColor: 'rgba(16,185,129,0.9)' }} />
+          <div className="w-3 h-0.5 rounded-full bg-emerald-400/80" />
           <span className={`text-[9px] ${th.textFaint}`}>Cumulative P&L</span>
         </div>
-        <span className={`text-[9px] ${th.textFaint} ml-auto`}>Hover bars for detail</span>
       </div>
     </div>
   );
