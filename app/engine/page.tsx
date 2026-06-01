@@ -47,6 +47,7 @@ interface Allocation { reserve: number; wheel: number; spx: number; }
 
 interface CapitalSummary {
   obp: number;
+  netLiq: number;
   reserveTarget: number;
   wheelTarget: number;
   spxTarget: number;
@@ -237,22 +238,21 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
     ?? balData['net-liquidation-value']
     ?? '0'
   );
-  
+
   const obp = parseFloat(
     balData['derivative-buying-power']
     ?? balData['option-buying-power']
     ?? '0'
   );
-  
+
   const capital: CapitalSummary = {
     obp,
+    netLiq,
     reserveTarget: netLiq * (alloc.reserve / 100),
     wheelTarget: netLiq * (alloc.wheel / 100),
     spxTarget: netLiq * (alloc.spx / 100),
-    wheelDeployed: 0,
-    spxDeployed: 0,
-    wheelAvailable: 0,
-    spxAvailable: 0,
+    wheelDeployed: 0, spxDeployed: 0,
+    wheelAvailable: 0, spxAvailable: 0,
     deploymentPct: 0,
   };
 
@@ -436,7 +436,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   }
   capital.wheelDeployed = wheelDeployed;
   capital.wheelAvailable = Math.max(0, capital.wheelTarget - wheelDeployed);
-  capital.deploymentPct = obp > 0 ? Math.round(((wheelDeployed + spxDeployed) / (capital.wheelTarget + capital.spxTarget)) * 100) : 0;
+  capital.deploymentPct = netLiq > 0 ? Math.round(((wheelDeployed + spxDeployed) / (capital.wheelTarget + capital.spxTarget)) * 100) : 0;
 
   // Deduplicate wheelPositions by symbol — keep the most meaningful phase.
   // Two accounts scanning the same watchlist symbol can create duplicate entries.
