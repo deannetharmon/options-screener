@@ -2428,6 +2428,48 @@ export default function EnginePage() {
                 </div>
               </div>
               {d.wheelPositions.map((pos, i) => <WheelPositionRow key={i} pos={pos} th={th} />)}
+
+              {/* Wheel suggestions — idle capital deployment */}
+              {d.wheelSuggestions.filter(s => s.action !== 'wait').length > 0 && (
+                <div className={`border-t ${th.border} px-4 py-3 bg-blue-500/5`}>
+                  <p className="text-[9px] text-blue-400 font-bold tracking-widest mb-2">◈ SUGGESTED ENTRIES</p>
+                  <div className="space-y-2">
+                    {d.wheelSuggestions.filter(s => s.action !== 'wait').map((sug, i) => (
+                      <div key={i} className={`flex items-start gap-3 py-2 px-3 rounded-lg border ${th.border} ${th.card}`}>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${sug.action === 'sell-put' ? 'text-emerald-400 border-emerald-700 bg-emerald-500/10' : 'text-amber-400 border-amber-700 bg-amber-500/10'}`}>
+                            {sug.action === 'sell-put' ? 'CSP' : 'CC'}
+                          </span>
+                          <div className="flex flex-col">
+                            <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{sug.symbol}</span>
+                            {sug.strike && <span className={`text-[9px] ${th.textFaint}`}>{sug.strike}{sug.action === 'sell-put' ? 'P' : 'C'} · ~{sug.dte}d DTE</span>}
+                          </div>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-[9px] ${th.textMuted} leading-relaxed`}>{sug.rationale}</p>
+                        </div>
+                        {sug.capitalRequired && (
+                          <div className="text-right shrink-0">
+                            <p className={`text-[10px] font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${sug.capitalRequired.toLocaleString()}</p>
+                            <p className={`text-[9px] ${th.textFaint}`}>required</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Waiting symbols — IVR too low */}
+              {d.wheelSuggestions.filter(s => s.action === 'wait').length > 0 && (
+                <div className={`border-t ${th.border} px-4 py-2`}>
+                  <p className={`text-[9px] ${th.textFaint}`}>
+                    <span className="text-amber-400/70 font-bold">WAITING FOR IV: </span>
+                    {d.wheelSuggestions.filter(s => s.action === 'wait').map(s => s.symbol).join(', ')}
+                    <span className="ml-1 opacity-60">— IVR below 30</span>
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* AI summary */}
