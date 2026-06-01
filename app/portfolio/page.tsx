@@ -1357,24 +1357,21 @@ async function loadPositions(): Promise<Position[]> {
     }
   } catch {}
 
-  const plBySymbol: Record<string, number> = {};
-  try {
-    const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
-    for (const item of plData?.data?.items ?? []) {
-      const sym = item['underlying-symbol']; if (!sym) continue;
-      const qty = parseFloat(item['quantity'] ?? '1');
-      const multiplier = parseFloat(item['multiplier'] ?? '100');
-      const avgOpen = parseFloat(item['average-open-price'] ?? '0');
-      // mark-price is only present when include-marks=true returns live data;
-      // fall back to close-price (EOD) if mark is missing or zero
-      const markRaw = parseFloat(item['mark-price'] ?? '0');
-      const closeRaw = parseFloat(item['close-price'] ?? '0');
-      const mark = markRaw !== 0 ? markRaw : closeRaw;
-      const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
-      plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
-      console.log('PL_DATA_ITEM:', JSON.stringify(item)) 
-    }
-  } catch {}
+ const plBySymbol: Record<string, number> = {};
+ try {
+   const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
+   for (const item of plData?.data?.items ?? []) {
+     const sym = item['underlying-symbol']; if (!sym) continue;
+     const qty = parseFloat(item['quantity'] ?? '1');
+     const multiplier = parseFloat(item['multiplier'] ?? '100');
+     const avgOpen = parseFloat(item['average-open-price'] ?? '0');
+     const markRaw = parseFloat(item['mark-price'] ?? '0');
+     const closeRaw = parseFloat(item['close-price'] ?? '0');
+     const mark = markRaw !== 0 ? markRaw : closeRaw;
+     const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
+     plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
+   }
+ } catch {}
 
   let profitTargets: Record<string, number> = {};
   try { profitTargets = JSON.parse(localStorage.getItem(LS_PROFIT_TARGETS) ?? '{}'); } catch {}
