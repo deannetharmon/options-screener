@@ -4649,7 +4649,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [showAnalysis, setShowAnalysis] = useState(false);
   const [showChart, setShowChart] = useState(false);
-  const [sparkData, setSparkData] = useState<number[] | null>(null);
+  const [sparkData, setSparkData] = useState(null as number[] | null);
   const [sparkLoading, setSparkLoading] = useState(false);
   const chartPopupRef = useRef(null as HTMLDivElement | null);
 
