@@ -105,7 +105,7 @@ interface Position {
   buffer: number | null;
   theta: number | null;
   gamma: number | null;
-  earningsDate: string | null; // next earnings within 60 days
+  earningsDate: string | null; // next earnings only if on/before option expiration
 }
 
 interface PositionAnalysis {
@@ -1423,6 +1423,14 @@ async function loadPositions(): Promise<Position[]> {
 
     const stopLoss = classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders);
 
+    // Only treat earnings as relevant if it occurs on or before this position's expiration.
+    // Tastytrade market-metrics can return the next earnings date within ~60 days;
+    // that is NOT the same as "earnings within expiry."
+    const rawEarningsDate = earningsMap[symbol] ?? null;
+    const earningsWithinExpiry = rawEarningsDate && new Date(rawEarningsDate) <= new Date(expDate)
+      ? rawEarningsDate
+      : null;
+
     return {
       key, symbol, expDate, dte, strategy, legs: positionLegs,
       creditReceived: Math.abs(creditReceived),
@@ -1435,7 +1443,7 @@ async function loadPositions(): Promise<Position[]> {
       iv: ivMap[symbol] ?? null,
       hv30: hv30Map[symbol] ?? null,
       beta: betaMap[symbol] ?? null,
-      earningsDate: earningsMap[symbol] ?? null,
+      earningsDate: earningsWithinExpiry,
       hasGtc: (() => {
         // Check both the position symbol and its weekly option variant
         // SPX positions may have SPXW option legs; SPXW positions may have SPXW legs
@@ -1540,90 +1548,50 @@ function isShortDateEntry(pos: Position): boolean {
   return pos.entryDte <= 21;
 }
 
-function getPositionPnlPct(pos: Position): number {
-  return pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
-}
-
-function getBuybackMultiple(pos: Position): number | null {
-  return pos.currentValue != null && pos.creditReceived > 0 ? pos.currentValue / pos.creditReceived : null;
-}
-
-function isShortStrikeBreached(pos: Position): boolean {
-  if (pos.stockPrice == null) return false;
-  const shortLeg = pos.legs.find(l => l.direction === 'Short');
-  if (!shortLeg || shortLeg.strikePrice <= 0) return false;
-  return shortLeg.optionType === 'P'
-    ? pos.stockPrice <= shortLeg.strikePrice
-    : pos.stockPrice >= shortLeg.strikePrice;
-}
-
-function isCriticalBuffer(pos: Position): boolean {
-  return pos.buffer != null && pos.buffer < 2;
-}
-
-function isTightBuffer(pos: Position): boolean {
-  return pos.buffer != null && pos.buffer < 3;
-}
-
 function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
-  const pnlPct = getPositionPnlPct(pos);
+  const pnlPct = pos.pnl != null && pos.creditReceived !== 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
   const targetPct = pos.profitTarget * 100;
-  const buybackMultiple = getBuybackMultiple(pos);
-  const breached = isShortStrikeBreached(pos);
-  const criticalBuffer = isCriticalBuffer(pos);
-  const tightBuffer = isTightBuffer(pos);
   const trendAgainst = trend && ((pos.strategy === 'BPS' && trend.trend === 'downtrend') || (pos.strategy === 'BCS' && trend.trend === 'uptrend'));
   const trendAligns = trend && ((pos.strategy === 'BPS' && trend.trend === 'uptrend') || (pos.strategy === 'BCS' && trend.trend === 'downtrend') || (pos.strategy === 'IC' && trend.trend === 'sideways'));
   const shortDate = isShortDateEntry(pos);
+  const breached = pos.buffer != null && pos.buffer <= 0;
+  const criticalBuffer = pos.buffer != null && pos.buffer < 2;
+  const veryLargeLoss = pnlPct <= -200;
+  const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && pos.currentValue >= (pos.stopLossPrice * 100);
 
-  // If the short strike is already breached, stop treating the position as a normal theta hold.
-  if (breached && pnlPct < 0) {
-    if (pos.dte <= 7 || trendAgainst) return { action: 'CUT_LOSSES', detail: `Short strike breached with ${pos.dte} DTE — exit or roll immediately` };
-    return { action: 'MANAGE', detail: `Short strike breached — manage/roll, but do not treat as a routine hold` };
-  }
-
-  // 21-DTE rule applies only to standard entries. A losing standard entry at 21 DTE is manage/roll first;
-  // only call it cut-loss when the strike is breached or the loss has reached the trader's stop multiple.
+  // needsClose only fires for standard entries (entryDte > 21) — short-dated entries skip this
   if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
-  if (pos.needsClose && pnlPct < 0) {
-    if (buybackMultiple != null && buybackMultiple >= 2.0 && (criticalBuffer || trendAgainst)) {
-      return { action: 'CUT_LOSSES', detail: `${pos.dte} DTE + ${buybackMultiple.toFixed(1)}× credit buyback — follow stop/exit plan` };
-    }
-    return { action: 'MANAGE', detail: `${pos.dte} DTE and losing — review for close/roll, not automatic cut` };
-  }
+  if (pos.needsClose && pnlPct < 0)  return { action: 'MANAGE', detail: `${pos.dte} DTE with loss — review close/roll, don't auto-cut` };
 
-  // Short-dated entry: protect capital, but do not auto-cut solely because mark-to-market is negative.
+  // Hard exits: breached strike, explicit stop breach, or very large loss.
+  if (breached) return { action: 'CUT_LOSSES', detail: `Short strike breached — exit or roll immediately` };
+  if (stopLossBreached) return { action: 'CUT_LOSSES', detail: `Stop threshold reached — follow the risk plan` };
+  if (veryLargeLoss && trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% and trend is adverse — exit or roll` };
+
+  // Short-dated entry: maximize profit, but do not treat ordinary red P/L as a failure.
   if (shortDate) {
     if (pos.hitTarget) return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target hit — take it, no time to wait` };
-    if (pnlPct >= 30 && pos.dte <= 7) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit at ${pos.dte} DTE — take profit now, gamma risk rising` };
-    if (pnlPct >= 40) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — solid capture for short-dated trade` };
-    if (!pos.hasGtc) return { action: 'PLACE_GTC', detail: 'Short-dated trade — place GTC immediately' };
-
-    if (buybackMultiple != null && buybackMultiple >= 2.0) {
-      if (criticalBuffer || trendAgainst || pos.dte <= 7) {
-        return { action: 'CUT_LOSSES', detail: `${buybackMultiple.toFixed(1)}× credit buyback with ${pos.buffer?.toFixed(1) ?? '?'}% buffer — follow stop plan` };
-      }
-      return { action: 'MANAGE', detail: `${buybackMultiple.toFixed(1)}× credit buyback, but strike not breached — review before exiting` };
-    }
-
-    if (pnlPct < -50 && criticalBuffer && trendAgainst) return { action: 'CUT_LOSSES', detail: `Large loss + critical buffer + adverse trend — exit` };
-    if (pnlPct < -25 && (criticalBuffer || trendAgainst)) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — tight setup, manage actively` };
-    if (pos.dte <= 3) return { action: 'TAKE_PROFIT', detail: `${pos.dte} DTE — expiry imminent, close to avoid pin/assignment risk` };
-    if (trendAgainst) return { action: 'MANAGE', detail: `Trend against position with only ${pos.dte} DTE — watch closely` };
-    if (tightBuffer && pnlPct < 0) return { action: 'WATCH', detail: `${pos.buffer?.toFixed(1)}% buffer at ${pos.dte} DTE — tight, but not breached` };
-    return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% P/L — ${pos.dte} DTE, let theta work while buffer holds` };
+    if (pnlPct >= 30 && pos.dte <= 7)  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit at ${pos.dte} DTE — take profit now, gamma risk rising` };
+    if (pnlPct >= 40)                  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — solid capture for short-dated trade` };
+    if (!pos.hasGtc)                   return { action: 'PLACE_GTC', detail: 'Short-dated trade — place GTC immediately' };
+    if (criticalBuffer && pnlPct < 0)  return { action: 'MANAGE', detail: `${pos.buffer?.toFixed(1)}% buffer with ${pos.dte} DTE — manage closely, not automatic cut` };
+    if (pnlPct < -100 && trendAgainst) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend — review exit/roll` };
+    if (pos.dte <= 3)                  return { action: 'TAKE_PROFIT', detail: `${pos.dte} DTE — expiry imminent, close to avoid pin/assignment risk` };
+    if (trendAgainst)                  return { action: 'MANAGE', detail: `Trend against position with only ${pos.dte} DTE — watch closely` };
+    if (pnlPct < 0)                    return { action: 'HOLD', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — ${pos.dte} DTE, monitor buffer/theta` };
+    return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE, short-dated, let theta work` };
   }
 
   // Standard entry
-  if (pos.hitTarget) return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
-  if (!pos.hasGtc) return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
-  if (buybackMultiple != null && buybackMultiple >= 2.0 && (criticalBuffer || trendAgainst)) return { action: 'CUT_LOSSES', detail: `${buybackMultiple.toFixed(1)}× credit buyback + risk flags — follow stop/exit plan` };
-  if (pnlPct < -35 && criticalBuffer && trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + critical buffer + adverse trend — exit` };
-  if (pnlPct < -15) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
-  if (pnlPct >= targetPct) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
-  if (pnlPct < 0 && trendAgainst) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
-  if (trendAligns) return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% P/L` };
-  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% P/L — ${pos.dte} DTE remaining` };
+  if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
+  if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
+  if (pnlPct < -150 && trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend confirms — exit` };
+  if (pnlPct < -50 && trendAgainst)  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — manage actively` };
+  if (pnlPct < -50)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
+  if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
+  if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
+  if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
+  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
 }
 
 // Separate function so getRecommendation stays clean — called in PositionCard render
@@ -1673,7 +1641,7 @@ WHEN TO DEVIATE FROM RULES (apply professional judgment):
 - If a position is at 40% profit but 15 DTE with gamma risk rising sharply, closing early beats waiting for 50%
 - If trend has reversed hard against a spread, cutting losses at 1.5x credit is better than waiting for 2x
 - If IVR just dropped below 30 mid-trade but P&L is positive, holding can still make sense if trend confirms
-- If earnings are within the window but the spread is far OTM with minimal risk, evaluate the actual probability rather than auto-skip
+- Earnings risk only exists if earnings occurs on or before the option expiration; never mention post-expiration earnings as a current-position risk
 - Sometimes doing nothing is the hardest but best trade
 
 ANALYSIS PRINCIPLES:
@@ -4681,38 +4649,35 @@ function vegaTint(vega: number | null): string {
 // ── Buffer Color Helpers ──────────────────────────────────────────────────
 function bufferColor(buffer: number | null, dte: number): string {
   if (buffer == null) return 'text-[#808080]';
-  // < 7 DTE — theta acceleration, very relaxed thresholds
-  if (dte < 7) {
-    if (buffer < 2)  return 'text-yellow-400';
+
+  // Breached or effectively at the short strike is the only true red condition.
+  if (buffer <= 0) return 'text-red-400';
+
+  // DTE-aware coloring: the same buffer is less dangerous with fewer days remaining.
+  // Short-dated positions should warn, not panic, unless the strike is breached.
+  if (dte <= 7) {
+    if (buffer < 1) return 'text-orange-400';
+    if (buffer < 2) return 'text-yellow-400';
     return 'text-emerald-400';
   }
-  // 7-14 DTE
-  if (dte < 14) {
-    if (buffer < 2)  return 'text-yellow-400';
-    if (buffer < 3)  return 'text-yellow-400';
-    if (buffer < 5)  return 'text-emerald-400';
+  if (dte <= 21) {
+    if (buffer < 1) return 'text-orange-400';
+    if (buffer < 2) return 'text-yellow-400';
+    if (buffer < 3) return 'text-yellow-400';
     return 'text-emerald-400';
   }
-  // 14-21 DTE
-  if (dte < 21) {
-    if (buffer < 2)  return 'text-orange-400';
-    if (buffer < 3)  return 'text-yellow-400';
-    if (buffer < 5)  return 'text-emerald-400';
+  if (dte <= 30) {
+    if (buffer < 1) return 'text-red-400';
+    if (buffer < 2) return 'text-orange-400';
+    if (buffer < 3) return 'text-yellow-400';
+    if (buffer < 5) return 'text-yellow-400';
     return 'text-emerald-400';
   }
-  // 21-30 DTE
-  if (dte < 30) {
-    if (buffer < 2)  return 'text-red-400';
-    if (buffer < 3)  return 'text-orange-400';
-    if (buffer < 5)  return 'text-yellow-400';
-    if (buffer < 8)  return 'text-emerald-400';
-    return 'text-emerald-400';
-  }
-  // > 30 DTE
-  if (buffer < 2)  return 'text-red-400';
-  if (buffer < 3)  return 'text-orange-400';
-  if (buffer < 5)  return 'text-yellow-400';
-  if (buffer < 8)  return 'text-emerald-400';
+
+  // Longer-dated positions need a wider cushion because there is more time to move.
+  if (buffer < 1) return 'text-red-400';
+  if (buffer < 2) return 'text-orange-400';
+  if (buffer < 5) return 'text-yellow-400';
   return 'text-emerald-400';
 }
 
@@ -5195,15 +5160,14 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             // TAKE_PROFIT — only show when profit target hit (≥50%) or AI recommends it
             if (action === 'TAKE_PROFIT' && !pos.hitTarget && rec.action !== 'TAKE_PROFIT') return null;
 
-            // CUT_LOSSES — only show for true exit conditions, not normal mark-to-market noise.
-            // The dashboard should recommend Manage/Watch for losing but unbreached spreads.
+            // CUT_LOSSES — only show for a true hard-exit situation.
+            // Ordinary red P/L on a credit spread is mark-to-market noise unless the
+            // short strike is breached, the stop threshold is reached, or loss is extreme.
             if (action === 'CUT_LOSSES') {
-              const buybackMultiple = getBuybackMultiple(pos);
-              const breached = isShortStrikeBreached(pos);
-              const criticalRisk = isCriticalBuffer(pos) || Boolean(trend && ((pos.strategy === 'BPS' && trend.trend === 'downtrend') || (pos.strategy === 'BCS' && trend.trend === 'uptrend')));
-              const stopMultipleHit = buybackMultiple != null && buybackMultiple >= 2.0 && criticalRisk;
-              const nearExpiryBreached = pos.dte <= 7 && breached && pnlPct != null && pnlPct < 0;
-              if (!stopMultipleHit && !nearExpiryBreached && rec.action !== 'CUT_LOSSES') return null;
+              const breached = pos.buffer != null && pos.buffer <= 0;
+              const atExtremeLoss = pnlPct != null && pnlPct <= -200;
+              const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && pos.currentValue >= (pos.stopLossPrice * 100);
+              if (!breached && !atExtremeLoss && !stopLossBreached && rec.action !== 'CUT_LOSSES') return null;
             }
 
             // PLACE_GTC — hide when already has GTC
