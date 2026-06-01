@@ -1,5 +1,4 @@
 // app/engine/page.tsx
-
 'use client';
 import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -147,7 +146,7 @@ interface SpxSuggestion {
   rationale: string;
   shortOccSymbol: string;
   longOccSymbol: string;
-  strategy: 'BPS' | 'BCS';
+  strategy: 'BPS' | 'BCS' | 'IC';
 }
 
 interface WheelSuggestion {
@@ -2081,7 +2080,7 @@ export default function EnginePage() {
                         <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.spreadWidth}-WIDE · ST TAX</span>
                         <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
                         <button
-                          onClick={() => setOrderEntry({ symbol: 'SPY', shortOccSymbol: d.spySuggestedEntry!.shortOccSymbol, longOccSymbol: d.spySuggestedEntry!.longOccSymbol, credit: d.spySuggestedEntry!.credit, contracts: d.spySuggestedEntry!.contracts, strategy: d.spySuggestedEntry!.strategy as 'BPS' | 'BCS', dte: d.spySuggestedEntry!.dte, shortStrike: d.spySuggestedEntry!.shortStrike, longStrike: d.spySuggestedEntry!.longStrike, spreadWidth: d.spySuggestedEntry!.spreadWidth })}
+                          onClick={() => setOrderEntry({ symbol: 'SPY', shortOccSymbol: d.spySuggestedEntry!.shortOccSymbol, longOccSymbol: d.spySuggestedEntry!.longOccSymbol, credit: d.spySuggestedEntry!.credit, contracts: d.spySuggestedEntry!.contracts, strategy: d.spySuggestedEntry!.strategy === 'IC' ? 'BPS' : d.spySuggestedEntry!.strategy, dte: d.spySuggestedEntry!.dte, shortStrike: d.spySuggestedEntry!.shortStrike, longStrike: d.spySuggestedEntry!.longStrike, spreadWidth: d.spySuggestedEntry!.spreadWidth })}
                           className="text-[9px] px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold shrink-0 transition-colors">
                           Place Order
                         </button>
