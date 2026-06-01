@@ -487,26 +487,29 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
               const shortMatch = item.symbol?.match(/(\d{8})$/);
               if (!shortMatch) continue;
               const shortStrike = parseInt(shortMatch[1]) / 1000;
-              // For BPS: long strike below short; for BCS: long strike above short
               const longStrike = strategy === 'BCS' ? shortStrike + SPREAD_WIDTH : shortStrike - SPREAD_WIDTH;
 
-              // ES=F strike anchor check — short strike must clear overnight S/R by 0.5% buffer
-              if (esFuturesSignal) {
+              // ES=F strike anchor — advisory warning only, not a hard gate
+              // (overnight H/L from 2-day fetch can be imprecise outside market hours)
+              const esAnchorNote = (() => {
+                if (!esFuturesSignal) return '';
                 const buffer = 0.005;
-                if (strategy === 'BPS' && shortStrike > esFuturesSignal.overnightLow * (1 - buffer)) continue;
-                if (strategy === 'BCS' && shortStrike < esFuturesSignal.overnightHigh * (1 + buffer)) continue;
-              }
+                if (strategy === 'BPS' && shortStrike > esFuturesSignal.overnightLow * (1 - buffer))
+                  return ` ⚠ Near overnight low ${esFuturesSignal.overnightLow.toFixed(0)}`;
+                if (strategy === 'BCS' && shortStrike < esFuturesSignal.overnightHigh * (1 + buffer))
+                  return ` ⚠ Near overnight high ${esFuturesSignal.overnightHigh.toFixed(0)}`;
+                return '';
+              })();
 
               const shortMid = (parseFloat(item.bid ?? '0') + parseFloat(item.ask ?? '0')) / 2;
               if (shortMid <= 0) continue;
 
-              // Build exact long leg OCC symbol by replacing strike digits in short leg symbol
-              // OCC format: SYMBOL  YYMMDD C/P STRIKE(8 digits, price × 1000, zero-padded)
+              // Build exact long leg OCC symbol
               const longStrikeDigits = Math.round(longStrike * 1000).toString().padStart(8, '0');
               const longOccSymbol: string = (item.symbol ?? '').replace(/(\d{8})$/, longStrikeDigits);
               const shortOccSymbol: string = item.symbol ?? '';
 
-              // Find long leg in current batch — if missing, fetch it explicitly
+              // Find long leg in current batch — fetch explicitly if missing
               let longItem = greeksData?.data?.items?.find((gi: any) => gi.symbol === longOccSymbol);
               if (!longItem && longOccSymbol) {
                 try {
@@ -518,18 +521,19 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
                 ? (parseFloat(longItem.bid ?? '0') + parseFloat(longItem.ask ?? '0')) / 2
                 : null;
 
-              // Use real net credit if long leg found, otherwise skip this candidate
-              if (longMid == null) continue;
+              if (longMid == null) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — long leg not found (${longOccSymbol})`); continue; }
               const credit = Math.max(0, shortMid - longMid);
-              if (credit <= 0) continue;
+              if (credit <= 0) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — zero credit (short ${shortMid} long ${longMid})`); continue; }
 
               const creditRatio = credit / SPREAD_WIDTH;
-              if (creditRatio < etfRules.CREDIT_RATIO_MIN) continue;
+              if (creditRatio < etfRules.CREDIT_RATIO_MIN) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — credit ratio ${(creditRatio*100).toFixed(1)}% < min ${(etfRules.CREDIT_RATIO_MIN*100).toFixed(0)}%`); continue; }
               const maxLoss = SPREAD_WIDTH - credit;
               const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
-              if (roc < etfRules.ROC_MIN_SPREAD) continue;
+              if (roc < etfRules.ROC_MIN_SPREAD) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — ROC ${roc.toFixed(1)}% < min ${etfRules.ROC_MIN_SPREAD}%`); continue; }
               const pop = (1 - delta) * 100;
-              if (pop < Math.max(etfRules.POP_MIN, 70)) continue;
+              if (pop < Math.max(etfRules.POP_MIN, 70)) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — POP ${pop.toFixed(0)}% < min 70%`); continue; }
+
+              console.log(`[SPX screener] ✓ ${shortStrike}/${longStrike} — POP ${pop.toFixed(0)}% credit $${credit.toFixed(2)} ratio ${(creditRatio*100).toFixed(0)}%${esAnchorNote}`);
 
               const maxContracts = Math.floor(capital.spxAvailable / MAX_LOSS_PER_CONTRACT);
               const contracts = Math.max(1, Math.min(maxContracts, 3));
@@ -1360,10 +1364,11 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
   const [error, setError] = useState('');
   const [orderId, setOrderId] = useState('');
 
+  const isIC = entry.strategy === 'IC';
   const gtcBuyback = parseFloat((entryLimit * (1 - gtcPct / 100)).toFixed(2));
   const totalCredit = entryLimit * contracts;
   const maxLoss = (entry.spreadWidth - entryLimit) * contracts * 100;
-  const hasOcc = entry.shortOccSymbol && entry.longOccSymbol;
+  const hasOcc = entry.shortOccSymbol && entry.longOccSymbol && !isIC;
 
   const placeOrder = async () => {
     setPhase('placing'); setError('');
@@ -1428,9 +1433,17 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
           </div>
         ) : (
           <div className="space-y-4">
-            {!hasOcc && (
+            {!hasOcc && !isIC && (
               <div className="bg-amber-500/10 border border-amber-600/30 rounded-lg px-3 py-2">
                 <p className="text-[10px] text-amber-400">OCC symbols not available — market may be closed. Orders can only be placed during market hours when live chain data is available.</p>
+              </div>
+            )}
+
+            {isIC && (
+              <div className="bg-blue-500/10 border border-blue-600/30 rounded-lg px-3 py-2">
+                <p className="text-[10px] text-blue-400 font-bold mb-1">Iron Condor — Manual Entry Required</p>
+                <p className="text-[10px] text-blue-400/80">IC orders require 4 legs (put spread + call spread). Place this in TastyTrade directly using the strikes shown. The engine has identified the put spread side only — you'll need to select the call spread side manually.</p>
+                <p className="text-[10px] text-blue-400/80 mt-1">Put spread: {entry.shortStrike}/{entry.longStrike}P · Target delta 0.16–0.20 on call side</p>
               </div>
             )}
 
