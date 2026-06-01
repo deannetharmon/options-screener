@@ -600,61 +600,89 @@ function MonthlyPnlChart({ trades, th, range }: { trades: ClosedTrade[]; th: typ
     );
   }
 
-  const maxAbsPnl = Math.max(...entries.map(e => Math.abs(e.pnl)), 1);
-
   // Build cumulative P&L series
   const cumulative: number[] = [];
   let running = 0;
   for (const e of entries) { running += e.pnl; cumulative.push(running); }
 
-  // Single unified SVG — bars in lower 55%, cumulative line in upper 45%, sharing one coordinate space
-  const W = entries.length * 52; // viewBox width — 52px per month column
-  const H = 110;                 // total viewBox height
-  const BAR_TOP = 48;            // bars occupy H from BAR_TOP to H (62px tall)
-  const LINE_BOT = 44;           // line occupies 0 to LINE_BOT (44px tall) with 4px gap
-  const COL = 52;                // column width
+  // Unified scale — bars and line share the same y-axis so they're directly comparable
+  const allValues = [...entries.map(e => e.pnl), ...cumulative, 0];
+  const dataMin = Math.min(...allValues);
+  const dataMax = Math.max(...allValues);
+  const pad = Math.max((dataMax - dataMin) * 0.15, 50); // 15% padding, min $50
+  const yMin = dataMin - pad;
+  const yMax = dataMax + pad;
+  const yRange = yMax - yMin;
 
-  // Bar height for a given P&L value (0..1 mapped to BAR_TOP..H)
-  const barH = (pnl: number) => Math.max((Math.abs(pnl) / maxAbsPnl) * (H - BAR_TOP) * 0.92, 2);
+  // Chart dimensions — using a fixed viewBox with a left gutter for y-axis labels
+  const GUTTER = 52;  // left gutter for y-axis labels
+  const CHART_W = 600; // viewBox chart area width (scales with container)
+  const CHART_H = 160; // viewBox chart area height
+  const TOTAL_W = GUTTER + CHART_W;
+  const COL_W = CHART_W / entries.length;
 
-  // Cumulative line Y (0=top of LINE_BOT area, LINE_BOT=bottom)
-  const cumMin = Math.min(0, ...cumulative);
-  const cumMax = Math.max(0, ...cumulative);
-  const cumRange = Math.max(cumMax - cumMin, 1);
-  const lineY = (val: number) => LINE_BOT - ((val - cumMin) / cumRange) * (LINE_BOT * 0.82) - LINE_BOT * 0.09;
-  const zeroY = lineY(0);
+  // Convert a $ value to a y coordinate (SVG: 0=top, CHART_H=bottom)
+  const toY = (val: number) => CHART_H - ((val - yMin) / yRange) * CHART_H;
+  const zeroY = toY(0);
+
+  // Nice y-axis ticks — 4-5 labels
+  const rawStep = (yMax - yMin) / 4;
+  const mag = Math.pow(10, Math.floor(Math.log10(Math.abs(rawStep) || 1)));
+  const niceStep = Math.ceil(rawStep / mag) * mag;
+  const tickStart = Math.ceil(yMin / niceStep) * niceStep;
+  const ticks: number[] = [];
+  for (let v = tickStart; v <= yMax + niceStep * 0.1; v += niceStep) ticks.push(Math.round(v));
 
   const lastCum = cumulative[cumulative.length - 1];
-  const lineColor = lastCum >= 0 ? 'rgba(16,185,129,0.85)' : 'rgba(239,68,68,0.85)';
-  const linePts = cumulative.map((v, i) => `${i * COL + COL / 2},${lineY(v)}`).join(' ');
+  const lineColor = lastCum >= 0 ? '#34d399' : '#f87171';
+  const linePts = cumulative.map((v, i) => `${GUTTER + i * COL_W + COL_W / 2},${toY(v)}`).join(' ');
+
+  // Hover state
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   return (
-    <div className="space-y-1">
-      <div className="relative w-full group/chart">
+    <div className="space-y-2">
+      <div className="relative select-none">
         <svg
-          className="w-full"
-          viewBox={`0 0 ${W} ${H}`}
-          preserveAspectRatio="none"
-          style={{ height: '120px' }}
+          viewBox={`0 0 ${TOTAL_W} ${CHART_H + 2}`}
+          preserveAspectRatio="xMidYMid meet"
+          className="w-full overflow-visible"
+          style={{ height: '180px' }}
         >
-          {/* Zero dashed line for cumulative */}
-          <line x1="0" y1={zeroY} x2={W} y2={zeroY}
-            stroke="rgba(255,255,255,0.07)" strokeWidth="0.8" strokeDasharray="3,2" />
-
-          {/* Divider between line zone and bar zone */}
-          <line x1="0" y1={BAR_TOP - 2} x2={W} y2={BAR_TOP - 2}
-            stroke="rgba(255,255,255,0.04)" strokeWidth="0.5" />
-
-          {/* Monthly P&L bars */}
-          {entries.map((e, i) => {
-            const bh = barH(e.pnl);
-            const x = i * COL + 4;
-            const bw = COL - 8;
-            const isPos = e.pnl >= 0;
+          {/* Y-axis grid lines + labels */}
+          {ticks.map(tick => {
+            const y = toY(tick);
+            if (y < 0 || y > CHART_H) return null;
+            const isZero = tick === 0;
             return (
-              <rect key={e.key} x={x} y={H - bh} width={bw} height={bh}
-                fill={isPos ? 'rgba(16,185,129,0.55)' : 'rgba(239,68,68,0.45)'}
-                rx="1"
+              <g key={tick}>
+                <line x1={GUTTER} y1={y} x2={TOTAL_W} y2={y}
+                  stroke={isZero ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)'}
+                  strokeWidth={isZero ? 1 : 0.5}
+                  strokeDasharray={isZero ? '4,3' : undefined}
+                />
+                <text x={GUTTER - 4} y={y + 3.5} textAnchor="end"
+                  fontSize="9" fill="rgba(255,255,255,0.3)" fontFamily="DM Mono, monospace">
+                  {tick >= 0 ? `$${tick >= 1000 ? (tick/1000).toFixed(1)+'k' : tick}` : `-$${Math.abs(tick) >= 1000 ? (Math.abs(tick)/1000).toFixed(1)+'k' : Math.abs(tick)}`}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Monthly P&L bars — anchored at zero line */}
+          {entries.map((e, i) => {
+            const x = GUTTER + i * COL_W + COL_W * 0.1;
+            const bw = COL_W * 0.8;
+            const isPos = e.pnl >= 0;
+            const barTop = isPos ? toY(e.pnl) : zeroY;
+            const barBot = isPos ? zeroY : toY(e.pnl);
+            const bh = Math.max(barBot - barTop, 1);
+            const isHov = hoveredIdx === i;
+            return (
+              <rect key={e.key} x={x} y={barTop} width={bw} height={bh} rx="1.5"
+                fill={isPos
+                  ? (isHov ? 'rgba(16,185,129,0.80)' : 'rgba(16,185,129,0.50)')
+                  : (isHov ? 'rgba(239,68,68,0.75)' : 'rgba(239,68,68,0.45)')}
               />
             );
           })}
@@ -662,59 +690,81 @@ function MonthlyPnlChart({ trades, th, range }: { trades: ClosedTrade[]; th: typ
           {/* Cumulative P&L line */}
           {entries.length > 1 && (
             <polyline points={linePts} fill="none" stroke={lineColor}
-              strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+              strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" opacity="0.9" />
           )}
 
-          {/* Dots on the line */}
+          {/* Dots on cumulative line */}
           {cumulative.map((val, i) => (
-            <circle key={entries[i].key} cx={i * COL + COL / 2} cy={lineY(val)} r="2"
-              fill={val >= 0 ? '#10b981' : '#ef4444'} />
+            <circle key={entries[i].key}
+              cx={GUTTER + i * COL_W + COL_W / 2} cy={toY(val)} r={hoveredIdx === i ? 3.5 : 2.5}
+              fill={val >= 0 ? '#34d399' : '#f87171'}
+              stroke={hoveredIdx === i ? 'rgba(255,255,255,0.4)' : 'none'} strokeWidth="1"
+            />
           ))}
 
-          {/* Invisible hit areas for tooltips — one per column */}
-          {entries.map((e, i) => {
+          {/* Hover tooltip */}
+          {hoveredIdx !== null && (() => {
+            const e = entries[hoveredIdx];
+            const cumVal = cumulative[hoveredIdx];
             const isPos = e.pnl >= 0;
-            const cumVal = cumulative[i];
+            const cx = GUTTER + hoveredIdx * COL_W + COL_W / 2;
+            const tipW = 148;
+            const tipH = 62;
+            const tipX = Math.min(Math.max(cx - tipW / 2, GUTTER), TOTAL_W - tipW);
+            const tipY = Math.max(toY(Math.max(e.pnl, cumVal)) - tipH - 10, 2);
             return (
-              <g key={`tip-${e.key}`} className="group/bar">
-                <rect x={i * COL} y={0} width={COL} height={H} fill="transparent" />
-                <foreignObject x={Math.min(i * COL - 10, W - 155)} y={-72} width="155" height="68"
-                  className="hidden group-hover/bar:block overflow-visible pointer-events-none">
-                  <div className={`${th.sidebar} border ${th.border} rounded-lg px-2.5 py-1.5 shadow-xl`}>
-                    <p className={`text-[10px] font-bold ${th.text}`}>{e.month} {e.year}</p>
-                    <p className={`text-[10px] font-bold ${isPos ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {isPos ? '+' : ''}${e.pnl.toFixed(0)} this month
-                    </p>
-                    <p className={`text-[10px] ${cumVal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {cumVal >= 0 ? '+' : ''}${cumVal.toFixed(0)} cumulative
-                    </p>
-                    <p className={`text-[9px] ${th.textFaint}`}>{e.count}T · {e.wins}W/{e.count - e.wins}L · {e.winRate}%</p>
-                  </div>
-                </foreignObject>
+              <g>
+                <line x1={cx} y1={0} x2={cx} y2={CHART_H} stroke="rgba(255,255,255,0.08)" strokeWidth="1" strokeDasharray="3,2" />
+                <rect x={tipX} y={tipY} width={tipW} height={tipH} rx="6"
+                  fill="rgba(15,15,20,0.96)" stroke="rgba(255,255,255,0.12)" strokeWidth="0.75" />
+                <text x={tipX + 10} y={tipY + 16} fontSize="9.5" fontWeight="600" fill="rgba(255,255,255,0.85)" fontFamily="DM Sans, sans-serif">
+                  {e.month} {e.year}
+                </text>
+                <text x={tipX + 10} y={tipY + 30} fontSize="9" fontWeight="700"
+                  fill={isPos ? '#34d399' : '#f87171'} fontFamily="DM Mono, monospace">
+                  {isPos ? '+' : ''}${e.pnl.toFixed(0)} this month
+                </text>
+                <text x={tipX + 10} y={tipY + 43} fontSize="9"
+                  fill={cumVal >= 0 ? '#34d399' : '#f87171'} fontFamily="DM Mono, monospace">
+                  {cumVal >= 0 ? '+' : ''}${cumVal.toFixed(0)} cumulative
+                </text>
+                <text x={tipX + 10} y={tipY + 56} fontSize="8.5" fill="rgba(255,255,255,0.35)" fontFamily="DM Sans, sans-serif">
+                  {e.count} trades · {e.wins}W/{e.count - e.wins}L · {e.winRate}% win
+                </text>
               </g>
             );
-          })}
-        </svg>
-      </div>
+          })()}
 
-      {/* X-axis labels */}
-      <div className="flex" style={{ gap: '0px' }}>
-        {entries.map(e => (
-          <div key={e.key} className="flex flex-col items-center" style={{ width: `${100 / entries.length}%` }}>
-            <span className={`text-[8px] ${th.textFaint}`}>{e.month.slice(0, 1)}</span>
-            <span className={`text-[8px] ${th.textFaint} opacity-40`}>{e.count}</span>
-          </div>
-        ))}
+          {/* Invisible hit areas — one per column */}
+          {entries.map((_, i) => (
+            <rect key={`hit-${i}`}
+              x={GUTTER + i * COL_W} y={0} width={COL_W} height={CHART_H}
+              fill="transparent" style={{ cursor: 'crosshair' }}
+              onMouseEnter={() => setHoveredIdx(i)}
+              onMouseLeave={() => setHoveredIdx(null)}
+            />
+          ))}
+        </svg>
+
+        {/* X-axis labels — outside SVG for reliable text rendering */}
+        <div className="flex pl-[52px]" style={{ marginTop: '-2px' }}>
+          {entries.map(e => (
+            <div key={e.key} className="flex flex-col items-center" style={{ width: `${100 / entries.length}%` }}>
+              <span className={`text-[9px] ${th.textFaint}`}>{e.month} {entries.length <= 6 ? e.year.slice(2) : ''}</span>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Legend */}
-      <div className={`flex items-center gap-4 pt-1 border-t ${th.borderLight}`}>
+      <div className={`flex items-center gap-5 pt-1.5 border-t ${th.borderLight}`}>
         <div className="flex items-center gap-1.5">
-          <div className="w-3 h-2 rounded-sm bg-emerald-500/55" />
+          <div className="w-3 h-3 rounded-sm bg-emerald-500/50" />
           <span className={`text-[9px] ${th.textFaint}`}>Monthly P&L</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <div className="w-3 h-0.5 rounded-full bg-emerald-400/80" />
+          <div className="w-4 h-0.5 rounded-full" style={{ backgroundColor: lineColor }} />
+          <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: lineColor }} />
           <span className={`text-[9px] ${th.textFaint}`}>Cumulative P&L</span>
         </div>
       </div>
