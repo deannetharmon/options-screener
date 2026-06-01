@@ -2513,6 +2513,7 @@ export default function EnginePage() {
                     <div className={`px-4 py-3 border-b border-emerald-600/20 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'bg-yellow-500/5' : 'bg-emerald-500/5'}`}>
                       <div className="flex items-center gap-3 mb-1.5">
                         <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold shrink-0">SPX</span>
+                        <ChartButton symbol="SPX" th={th} />
                         <span className={`text-[8px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'border-yellow-600 text-yellow-300 bg-yellow-500/10' : 'border-emerald-700 text-emerald-400 bg-emerald-500/10'}`}>
                           {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ PRIME' : d.spxSuggestedEntry.strategy}
                         </span>
@@ -2557,6 +2558,7 @@ export default function EnginePage() {
                     <div className="px-4 py-3 bg-emerald-500/5">
                       <div className="flex items-center gap-3 mb-1.5">
                         <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">SPY</span>
+                        <ChartButton symbol="SPY" th={th} />
                         <span className="text-[8px] px-1.5 py-0.5 border border-emerald-700 text-emerald-400 bg-emerald-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.strategy}</span>
                         <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.spreadWidth}-WIDE · ST TAX</span>
                         <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
@@ -2629,7 +2631,10 @@ export default function EnginePage() {
                             {sug.action === 'sell-put' ? 'CSP' : 'CC'}
                           </span>
                           <div className="flex flex-col">
-                            <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{sug.symbol}</span>
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{sug.symbol}</span>
+                              <ChartButton symbol={sug.symbol} th={th} />
+                            </div>
                             {sug.strike && <span className={`text-[9px] ${th.textFaint}`}>{sug.strike}{sug.action === 'sell-put' ? 'P' : 'C'} · ~{sug.dte}d DTE</span>}
                           </div>
                         </div>
