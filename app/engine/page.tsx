@@ -457,9 +457,14 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const nested = await ttFetch('/option-chains/SPX/nested', token);
       const expirations = nested?.data?.items?.[0]?.expirations ?? [];
       // Friday expirations only — most liquid, best fills, matches what you already trade
+      // Use UTC date parsing to avoid timezone offset shifting the day
+      const isFriday = (dateStr: string) => {
+        const parts = dateStr.split('-');
+        return new Date(Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]))).getUTCDay() === 5;
+      };
       const validExps = expirations
         .map((e: any) => ({ date: e['expiration-date'], dte: daysUntil(e['expiration-date']), strikes: e.strikes }))
-        .filter((e: any) => e.dte >= 28 && e.dte <= 48 && new Date(e.date).getDay() === 5)
+        .filter((e: any) => e.dte >= 28 && e.dte <= 48 && isFriday(e.date))
         .sort((a: any, b: any) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
 
       // Strategy: BPS when bullish or neutral, BCS when bearish
@@ -473,10 +478,11 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
         // Skip expiries in the same calendar week (Mon-Sun) as any existing position
         // Same-week expiries share gamma risk, macro events, and Friday risk
         const getWeekStart = (dateStr: string) => {
-          const d = new Date(dateStr);
-          const day = d.getDay(); // 0=Sun
+          const parts = dateStr.split('-');
+          const d = new Date(Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])));
+          const day = d.getUTCDay(); // 0=Sun
           const diff = day === 0 ? -6 : 1 - day; // Monday of that week
-          d.setDate(d.getDate() + diff);
+          d.setUTCDate(d.getUTCDate() + diff);
           return d.toISOString().slice(0, 10);
         };
         const expWeek = getWeekStart(exp.date);
@@ -504,7 +510,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 
               const shortMatch = item.symbol?.match(/(\d{8})$/);
               if (!shortMatch) continue;
-              const shortStrike = parseInt(shortMatch[1]) / 1000;
+              const shortStrike = parseInt(shortMatch[1], 10) / 1000;
               const longStrike = strategy === 'BCS' ? shortStrike + SPREAD_WIDTH : shortStrike - SPREAD_WIDTH;
 
               // ES=F strike anchor — advisory warning only, not a hard gate
@@ -606,10 +612,11 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 
       for (const exp of validExps.slice(0, 5)) {
         const getWeekStartSpy = (dateStr: string) => {
-          const d = new Date(dateStr);
-          const day = d.getDay();
+          const parts = dateStr.split('-');
+          const d = new Date(Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])));
+          const day = d.getUTCDay();
           const diff = day === 0 ? -6 : 1 - day;
-          d.setDate(d.getDate() + diff);
+          d.setUTCDate(d.getUTCDate() + diff);
           return d.toISOString().slice(0, 10);
         };
         const expWeekSpy = getWeekStartSpy(exp.date);
@@ -637,7 +644,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 
               const shortMatch = item.symbol?.match(/(\d{8})$/);
               if (!shortMatch) continue;
-              const shortStrike = parseInt(shortMatch[1]) / 1000;
+              const shortStrike = parseInt(shortMatch[1], 10) / 1000;
               const longStrike = strategy === 'BCS' ? shortStrike + SPY_WIDTH : shortStrike - SPY_WIDTH;
 
               // ES=F strike anchor (scaled to SPY price — SPY ≈ SPX ÷ 10)
@@ -1138,7 +1145,7 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
   // ── FOMC ──────────────────────────────────────────────────────────────
   const isFomcDay = FOMC_DATES_2026.includes(todayStr);
   const nextFomc = FOMC_DATES_2026.find(d => d >= todayStr);
-  const daysToFomc = nextFomc ? Math.round((new Date(nextFomc).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 999;
+  const daysToFomc = nextFomc ? Math.round((new Date(Date.UTC(...nextFomc.split('-').map(Number) as [number,number,number])).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 999;
   const fomcThisWeek = daysToFomc <= 3 && daysToFomc >= 0;
   if (isFomcDay) {
     score -= 25;
