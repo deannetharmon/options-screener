@@ -230,15 +230,29 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 
   const balanceData = await ttFetch(`/accounts/${accountNumber}/balances`, token);
   const balData = balanceData?.data ?? {};
-  const obp = parseFloat(balData['derivative-buying-power'] ?? balData['option-buying-power'] ?? '0');
 
+  const netLiq = parseFloat(
+    balData['net-liquidating-value']
+    ?? balData['net-liq']
+    ?? balData['net-liquidation-value']
+    ?? '0'
+  );
+  
+  const obp = parseFloat(
+    balData['derivative-buying-power']
+    ?? balData['option-buying-power']
+    ?? '0'
+  );
+  
   const capital: CapitalSummary = {
     obp,
-    reserveTarget: obp * (alloc.reserve / 100),
-    wheelTarget: obp * (alloc.wheel / 100),
-    spxTarget: obp * (alloc.spx / 100),
-    wheelDeployed: 0, spxDeployed: 0,
-    wheelAvailable: 0, spxAvailable: 0,
+    reserveTarget: netLiq * (alloc.reserve / 100),
+    wheelTarget: netLiq * (alloc.wheel / 100),
+    spxTarget: netLiq * (alloc.spx / 100),
+    wheelDeployed: 0,
+    spxDeployed: 0,
+    wheelAvailable: 0,
+    spxAvailable: 0,
     deploymentPct: 0,
   };
 
