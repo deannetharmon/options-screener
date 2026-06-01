@@ -1422,7 +1422,9 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
       )}
     </div>
   );
-}({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme] }) {
+}
+
+function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme] }) {
   const statusColors = { hold: 'text-emerald-400', watch: 'text-amber-400', close: 'text-blue-400', manage: 'text-red-400' };
   const statusBg = { hold: 'bg-emerald-500/10 border-emerald-700', watch: 'bg-amber-500/10 border-amber-700', close: 'bg-blue-500/10 border-blue-700', manage: 'bg-red-500/10 border-red-700' };
   return (
