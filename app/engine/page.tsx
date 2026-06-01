@@ -1316,7 +1316,7 @@ function ActionCard({ item, th }: { item: ActionItem; th: typeof THEMES[Theme] }
 // ── Reusable chart button — sparkline popup + TradingView link ─────────────
 function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] }) {
   const [showChart, setShowChart] = useState(false);
-  const [sparkData, setSparkData] = useState<number[] | null>(null);
+  const [sparkData, setSparkData] = useState(null as number[] | null);
   const [sparkLoading, setSparkLoading] = useState(false);
 
   return (
