@@ -1,4 +1,5 @@
 // app/engine/page.tsx
+
 'use client';
 import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -499,14 +500,31 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 
               const shortMid = (parseFloat(item.bid ?? '0') + parseFloat(item.ask ?? '0')) / 2;
               if (shortMid <= 0) continue;
-              const credit = shortMid * 0.6; // approximate net credit after long leg cost
+
+              // Build exact long leg OCC symbol by replacing strike digits in short leg symbol
+              // OCC format: SYMBOL  YYMMDD C/P STRIKE(8 digits, price × 1000, zero-padded)
+              const longStrikeDigits = Math.round(longStrike * 1000).toString().padStart(8, '0');
+              const longOccSymbol: string = (item.symbol ?? '').replace(/(\d{8})$/, longStrikeDigits);
+              const shortOccSymbol: string = item.symbol ?? '';
+
+              // Find long leg in current batch for real mid price
+              const longItem = greeksData?.data?.items?.find((gi: any) => gi.symbol === longOccSymbol);
+              const longMid = longItem
+                ? (parseFloat(longItem.bid ?? '0') + parseFloat(longItem.ask ?? '0')) / 2
+                : null;
+
+              // Use real net credit if long leg found, otherwise skip this candidate
+              if (longMid == null) continue;
+              const credit = Math.max(0, shortMid - longMid);
+              if (credit <= 0) continue;
+
               const creditRatio = credit / SPREAD_WIDTH;
               if (creditRatio < etfRules.CREDIT_RATIO_MIN) continue;
               const maxLoss = SPREAD_WIDTH - credit;
               const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
               if (roc < etfRules.ROC_MIN_SPREAD) continue;
               const pop = (1 - delta) * 100;
-              if (pop < Math.max(etfRules.POP_MIN, 70)) continue; // enforce 70% floor for SPX
+              if (pop < Math.max(etfRules.POP_MIN, 70)) continue;
 
               const maxContracts = Math.floor(capital.spxAvailable / MAX_LOSS_PER_CONTRACT);
               const contracts = Math.max(1, Math.min(maxContracts, 3));
@@ -521,13 +539,6 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
               const anchorNote = trendContext?.reversalAnchorPrice
                 ? ` Reversal anchor: ${trendContext.reversalAnchorPrice.toFixed(0)}.`
                 : '';
-              const shortOccSymbol: string = item.symbol ?? '';
-              // Find long leg OCC symbol from same batch
-              const longItem = greeksData?.data?.items?.find((gi: any) => {
-                const m = gi.symbol?.match(/(\d{8})$/);
-                return m && Math.abs(parseInt(m[1]) / 1000 - longStrike) < 0.5;
-              });
-              const longOccSymbol: string = longItem?.symbol ?? '';
 
               spxSuggestedEntry = {
                 shortStrike, longStrike, expiration: exp.date, dte: exp.dte,
@@ -596,7 +607,22 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
 
               const shortMid = (parseFloat(item.bid ?? '0') + parseFloat(item.ask ?? '0')) / 2;
               if (shortMid <= 0) continue;
-              const credit = shortMid * 0.65; // SPY fills slightly better than SPX
+
+              // Build exact long leg OCC symbol
+              const longStrikeDigitsSpy = Math.round(longStrike * 1000).toString().padStart(8, '0');
+              const longOccSymbolSpy: string = (item.symbol ?? '').replace(/(\d{8})$/, longStrikeDigitsSpy);
+              const shortOccSymbolSpy: string = item.symbol ?? '';
+
+              // Find long leg in current batch for real mid price
+              const longItemSpy = greeksData?.data?.items?.find((gi: any) => gi.symbol === longOccSymbolSpy);
+              const longMidSpy = longItemSpy
+                ? (parseFloat(longItemSpy.bid ?? '0') + parseFloat(longItemSpy.ask ?? '0')) / 2
+                : null;
+
+              if (longMidSpy == null) continue;
+              const credit = Math.max(0, shortMid - longMidSpy);
+              if (credit <= 0) continue;
+
               const creditRatio = credit / SPY_WIDTH;
               if (creditRatio < etfRules.CREDIT_RATIO_MIN) continue;
               const maxLoss = SPY_WIDTH - credit;
@@ -611,12 +637,6 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
                 ? `ES=F ${esFuturesSignal.overnightChangePct >= 0 ? '+' : ''}${esFuturesSignal.overnightChangePct.toFixed(2)}% → ${strategy}. `
                 : '';
               const taxNote = 'Short-term tax treatment.';
-              const shortOccSymbolSpy: string = item.symbol ?? '';
-              const longItemSpy = greeksData?.data?.items?.find((gi: any) => {
-                const m = gi.symbol?.match(/(\d{8})$/);
-                return m && Math.abs(parseInt(m[1]) / 1000 - longStrike) < 0.5;
-              });
-              const longOccSymbolSpy: string = longItemSpy?.symbol ?? '';
 
               spySuggestedEntry = {
                 shortStrike, longStrike, expiration: exp.date, dte: exp.dte,
