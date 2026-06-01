@@ -1557,7 +1557,12 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   const breached = pos.buffer != null && pos.buffer <= 0;
   const criticalBuffer = pos.buffer != null && pos.buffer < 2;
   const veryLargeLoss = pnlPct <= -200;
-  const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && pos.currentValue >= (pos.stopLossPrice * 100);
+  const shortQty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
+  // stopLossPrice is a per-spread/per-contract option price (e.g. 1.56 = $156 per contract).
+  // currentValue is the total buyback value for the whole position, so scale the stop by contracts.
+  const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && shortQty > 0
+    ? pos.currentValue >= (pos.stopLossPrice * 100 * shortQty)
+    : false;
 
   // needsClose only fires for standard entries (entryDte > 21) — short-dated entries skip this
   if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
@@ -5166,7 +5171,11 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             if (action === 'CUT_LOSSES') {
               const breached = pos.buffer != null && pos.buffer <= 0;
               const atExtremeLoss = pnlPct != null && pnlPct <= -200;
-              const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && pos.currentValue >= (pos.stopLossPrice * 100);
+              const shortQty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
+              // stopLossPrice is per contract; currentValue is total position buyback value.
+              const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && shortQty > 0
+                ? pos.currentValue >= (pos.stopLossPrice * 100 * shortQty)
+                : false;
               if (!breached && !atExtremeLoss && !stopLossBreached && rec.action !== 'CUT_LOSSES') return null;
             }
 
