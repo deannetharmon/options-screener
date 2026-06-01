@@ -1638,7 +1638,7 @@ function SpreadComparisonPanel({ spx, spy, available, th }: {
           </div>
         </div>
       </div>
-      <p className={`text-[10px] ${recColor} leading-relaxed`}>{rec}</p>
+      <p className={`text-[10px] font-bold ${recColor} leading-relaxed`}>{rec}</p>
     </div>
   );
 }
