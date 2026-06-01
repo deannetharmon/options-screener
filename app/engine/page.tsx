@@ -454,12 +454,12 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const SPREAD_WIDTH = 25; // 25-wide SPX spreads — liquid, manageable, standard
       const MAX_LOSS_PER_CONTRACT = SPREAD_WIDTH * 100; // $2,500
 
-      const nested = await ttFetch('/option-chains/SPXW/nested', token);
+      const nested = await ttFetch('/option-chains/SPX/nested', token);
       const expirations = nested?.data?.items?.[0]?.expirations ?? [];
-      // Find best 30-45 DTE expiration
+      // Friday expirations only — most liquid, best fills, matches what you already trade
       const validExps = expirations
         .map((e: any) => ({ date: e['expiration-date'], dte: daysUntil(e['expiration-date']), strikes: e.strikes }))
-        .filter((e: any) => e.dte >= 28 && e.dte <= 48)
+        .filter((e: any) => e.dte >= 28 && e.dte <= 48 && new Date(e.date).getDay() === 5)
         .sort((a: any, b: any) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
 
       // Strategy: BPS when bullish or neutral, BCS when bearish
