@@ -2656,7 +2656,7 @@ export default function EnginePage() {
                             longStrike: undefined,
                             spreadWidth: 0,
                             optionType: sug.action === 'sell-call' ? 'C' : 'P',
-                            action: sug.action,
+                            action: sug.action === 'sell-call' ? 'sell-call' : 'sell-put',
                             capitalRequired: sug.capitalRequired,
                           })}
                           disabled={!sug.strike}
