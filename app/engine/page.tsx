@@ -1996,17 +1996,29 @@ export default function EnginePage() {
   };
 
   const saveAlloc = (a: Allocation) => {
-    // Normalize to sum to 100
+    // Normalize to sum to 100. Return the normalized value so callers do not
+    // accidentally rerun the engine with stale state.
     const total = a.reserve + a.wheel + a.spx;
-    const normalized = { reserve: Math.round(a.reserve / total * 100), wheel: Math.round(a.wheel / total * 100), spx: 100 - Math.round(a.reserve / total * 100) - Math.round(a.wheel / total * 100) };
+    const reserve = Math.round((a.reserve / total) * 100);
+    const wheel = Math.round((a.wheel / total) * 100);
+    const normalized: Allocation = {
+      reserve,
+      wheel,
+      spx: 100 - reserve - wheel,
+    };
+
+    setEngineData(null); // prevent stale target denominators while reloading
     setAlloc(normalized);
     try { localStorage.setItem(LS_ENGINE_ALLOC, JSON.stringify(normalized)); } catch {}
+    return normalized;
   };
 
   const saveWatchlist = (input: string) => {
     const list = input.toUpperCase().split(/[,\s]+/).map(s => s.trim()).filter(s => /^[A-Z]{1,5}$/.test(s));
+    setEngineData(null); // prevent stale dashboard data while reloading
     setWatchlist(list);
     try { localStorage.setItem(LS_ENGINE_WATCHLIST, JSON.stringify(list)); } catch {}
+    return list;
   };
 
   const runEngine = useCallback(async () => {
@@ -2043,7 +2055,7 @@ export default function EnginePage() {
     }
   }, [watchlist, alloc]);
 
-  useEffect(() => { runEngine(); }, []);
+  useEffect(() => { runEngine(); }, [runEngine]);
 
   const d = engineData;
 
@@ -2129,7 +2141,7 @@ export default function EnginePage() {
                   <div className={`text-[9px] ${editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx === 100 ? 'text-emerald-400' : 'text-amber-400'}`}>
                     Total: {editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx}% {editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx !== 100 && '(will normalize to 100%)'}
                   </div>
-                  <button onClick={() => { saveAlloc(editingAlloc); setShowSettings(false); runEngine(); }}
+                  <button onClick={() => { saveAlloc(editingAlloc); setShowSettings(false); }}
                     className="text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors">
                     Apply & Reload
                   </button>
@@ -2141,7 +2153,7 @@ export default function EnginePage() {
                 <textarea value={watchlistInput} onChange={e => setWatchlistInput(e.target.value)}
                   className={`w-full ${th.input} border ${th.inputBorder} rounded-lg p-2 text-xs ${th.text} h-20 resize-none focus:outline-none focus:border-blue-500`}
                   placeholder="AAPL, MSFT, GOOGL..." />
-                <button onClick={() => { saveWatchlist(watchlistInput); setShowSettings(false); runEngine(); }}
+                <button onClick={() => { saveWatchlist(watchlistInput); setShowSettings(false); }}
                   className="mt-2 text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors">
                   Save & Reload
                 </button>
@@ -2447,7 +2459,14 @@ export default function EnginePage() {
                   <span className={th.textFaint}>{d.wheelPositions.filter(p => p.phase !== 'idle').length} active / {watchlist.length} stocks</span>
                 </div>
               </div>
-              {d.wheelPositions.map((pos, i) => <WheelPositionRow key={i} pos={pos} th={th} />)}
+              {[...d.wheelPositions]
+                .sort((a, b) => {
+                  const aActive = a.phase !== 'idle';
+                  const bActive = b.phase !== 'idle';
+                  if (aActive === bActive) return 0;
+                  return aActive ? -1 : 1;
+                })
+                .map((pos, i) => <WheelPositionRow key={i} pos={pos} th={th} />)}
 
               {/* Wheel suggestions — idle capital deployment */}
               {d.wheelSuggestions.filter(s => s.action !== 'wait').length > 0 && (
