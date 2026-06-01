@@ -1318,7 +1318,7 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState<number[] | null>(null);
   const [sparkLoading, setSparkLoading] = useState(false);
-  const popupRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef(null as HTMLDivElement | null);
 
   useEffect(() => {
     if (!showChart) return;
