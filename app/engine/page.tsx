@@ -1,5 +1,4 @@
 // app/engine/page.tsx
-
 'use client';
 import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -507,8 +506,14 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
               const longOccSymbol: string = (item.symbol ?? '').replace(/(\d{8})$/, longStrikeDigits);
               const shortOccSymbol: string = item.symbol ?? '';
 
-              // Find long leg in current batch for real mid price
-              const longItem = greeksData?.data?.items?.find((gi: any) => gi.symbol === longOccSymbol);
+              // Find long leg in current batch — if missing, fetch it explicitly
+              let longItem = greeksData?.data?.items?.find((gi: any) => gi.symbol === longOccSymbol);
+              if (!longItem && longOccSymbol) {
+                try {
+                  const longData = await ttFetch(`/market-data/by-type?equity-option=${encodeURIComponent(longOccSymbol)}`, token);
+                  longItem = longData?.data?.items?.[0];
+                } catch {}
+              }
               const longMid = longItem
                 ? (parseFloat(longItem.bid ?? '0') + parseFloat(longItem.ask ?? '0')) / 2
                 : null;
@@ -608,13 +613,23 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
               const shortMid = (parseFloat(item.bid ?? '0') + parseFloat(item.ask ?? '0')) / 2;
               if (shortMid <= 0) continue;
 
+              // OI filter — short leg must have meaningful liquidity
+              const shortOI = parseInt(item['open-interest'] ?? item['oi'] ?? '0', 10);
+              if (shortOI < 100) continue;
+
               // Build exact long leg OCC symbol
               const longStrikeDigitsSpy = Math.round(longStrike * 1000).toString().padStart(8, '0');
               const longOccSymbolSpy: string = (item.symbol ?? '').replace(/(\d{8})$/, longStrikeDigitsSpy);
               const shortOccSymbolSpy: string = item.symbol ?? '';
 
-              // Find long leg in current batch for real mid price
-              const longItemSpy = greeksData?.data?.items?.find((gi: any) => gi.symbol === longOccSymbolSpy);
+              // Find long leg in current batch — fetch explicitly if missing
+              let longItemSpy = greeksData?.data?.items?.find((gi: any) => gi.symbol === longOccSymbolSpy);
+              if (!longItemSpy && longOccSymbolSpy) {
+                try {
+                  const longDataSpy = await ttFetch(`/market-data/by-type?equity-option=${encodeURIComponent(longOccSymbolSpy)}`, token);
+                  longItemSpy = longDataSpy?.data?.items?.[0];
+                } catch {}
+              }
               const longMidSpy = longItemSpy
                 ? (parseFloat(longItemSpy.bid ?? '0') + parseFloat(longItemSpy.ask ?? '0')) / 2
                 : null;
