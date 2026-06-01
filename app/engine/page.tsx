@@ -117,6 +117,8 @@ interface SpySuggestion {
   capitalRequired: number;
   strategy: 'BPS' | 'BCS' | 'IC';
   rationale: string;
+  shortOccSymbol: string;
+  longOccSymbol: string;
 }
 
 interface EngineData {
@@ -143,6 +145,9 @@ interface SpxSuggestion {
   contracts: number;
   capitalRequired: number;
   rationale: string;
+  shortOccSymbol: string;
+  longOccSymbol: string;
+  strategy: 'BPS' | 'BCS';
 }
 
 interface WheelSuggestion {
@@ -517,10 +522,19 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
               const anchorNote = trendContext?.reversalAnchorPrice
                 ? ` Reversal anchor: ${trendContext.reversalAnchorPrice.toFixed(0)}.`
                 : '';
+              const shortOccSymbol: string = item.symbol ?? '';
+              // Find long leg OCC symbol from same batch
+              const longItem = greeksData?.data?.items?.find((gi: any) => {
+                const m = gi.symbol?.match(/(\d{8})$/);
+                return m && Math.abs(parseInt(m[1]) / 1000 - longStrike) < 0.5;
+              });
+              const longOccSymbol: string = longItem?.symbol ?? '';
+
               spxSuggestedEntry = {
                 shortStrike, longStrike, expiration: exp.date, dte: exp.dte,
                 pop, credit, creditRatio, roc,
                 contracts, capitalRequired: MAX_LOSS_PER_CONTRACT * contracts,
+                shortOccSymbol, longOccSymbol, strategy,
                 rationale: `${primeNote}${biasNote}${exp.dte}d DTE · ${pop.toFixed(0)}% POP · ${(creditRatio * 100).toFixed(0)}% credit ratio · 25-wide · 1256 tax treatment.${anchorNote}`
               };
               break;
@@ -598,12 +612,21 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
                 ? `ES=F ${esFuturesSignal.overnightChangePct >= 0 ? '+' : ''}${esFuturesSignal.overnightChangePct.toFixed(2)}% → ${strategy}. `
                 : '';
               const taxNote = 'Short-term tax treatment.';
+              const shortOccSymbolSpy: string = item.symbol ?? '';
+              const longItemSpy = greeksData?.data?.items?.find((gi: any) => {
+                const m = gi.symbol?.match(/(\d{8})$/);
+                return m && Math.abs(parseInt(m[1]) / 1000 - longStrike) < 0.5;
+              });
+              const longOccSymbolSpy: string = longItemSpy?.symbol ?? '';
+
               spySuggestedEntry = {
                 shortStrike, longStrike, expiration: exp.date, dte: exp.dte,
                 pop, credit, creditRatio, roc, contracts,
                 spreadWidth: SPY_WIDTH,
                 capitalRequired: SPY_MAX_LOSS * contracts,
                 strategy,
+                shortOccSymbol: shortOccSymbolSpy,
+                longOccSymbol: longOccSymbolSpy,
                 rationale: `${biasNote}${exp.dte}d DTE · ${pop.toFixed(0)}% POP · ${(creditRatio * 100).toFixed(0)}% credit ratio · ${SPY_WIDTH}-wide · ${contracts} contracts · ${taxNote}`
               };
               break;
@@ -1281,7 +1304,185 @@ function TimelineBar({ startDte, endDte, totalDays, color, label, status }: { st
 }
 
 
-// ── Market Conditions Panel ────────────────────────────────────────────────
+// ── Engine Order Modal ─────────────────────────────────────────────────────
+interface EngineOrderEntry {
+  symbol: string;
+  shortOccSymbol: string;
+  longOccSymbol: string;
+  credit: number;
+  contracts: number;
+  strategy: 'BPS' | 'BCS' | 'IC';
+  dte: number;
+  shortStrike: number;
+  longStrike: number;
+  spreadWidth: number;
+}
+
+function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th: typeof THEMES[Theme]; onClose: () => void }) {
+  const [phase, setPhase] = useState<'confirm' | 'placing' | 'done' | 'error'>('confirm');
+  const [contracts, setContracts] = useState(entry.contracts);
+  const [entryLimit, setEntryLimit] = useState(parseFloat(entry.credit.toFixed(2)));
+  const [gtcPct, setGtcPct] = useState(50);
+  const [error, setError] = useState('');
+  const [orderId, setOrderId] = useState('');
+
+  const gtcBuyback = parseFloat((entryLimit * (1 - gtcPct / 100)).toFixed(2));
+  const totalCredit = entryLimit * contracts;
+  const maxLoss = (entry.spreadWidth - entryLimit) * contracts * 100;
+  const hasOcc = entry.shortOccSymbol && entry.longOccSymbol;
+
+  const placeOrder = async () => {
+    setPhase('placing'); setError('');
+    try {
+      const token = await getAccessToken();
+      const accountsData = await ttFetch('/customers/me/accounts', token);
+      const account = accountsData?.data?.items?.find((a: any) => a.account['account-number'] === '5WI51392')
+        ?? accountsData?.data?.items?.[0];
+      const accountNumber = account?.account?.['account-number'];
+      if (!accountNumber) throw new Error('No account found');
+
+      const legs = [
+        { 'instrument-type': 'Equity Option', symbol: entry.shortOccSymbol, quantity: contracts, action: 'Sell to Open' },
+        { 'instrument-type': 'Equity Option', symbol: entry.longOccSymbol,  quantity: contracts, action: 'Buy to Open'  },
+      ];
+      const closingLegs = legs.map(l => ({ ...l, action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close' }));
+
+      const payload = {
+        type: 'OTOCO',
+        'trigger-order': {
+          'time-in-force': 'GTC', 'order-type': 'Limit',
+          price: entryLimit.toFixed(2), 'price-effect': 'Credit', legs,
+        },
+        orders: [{
+          'time-in-force': 'GTC', 'order-type': 'Limit',
+          price: gtcBuyback.toFixed(2), 'price-effect': 'Debit', legs: closingLegs,
+        }],
+      };
+
+      const res = await fetch(`https://api.tastytrade.com/accounts/${accountNumber}/complex-orders`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message ?? data?.errors?.[0]?.message ?? `Order failed (${res.status})`);
+      setOrderId(data?.data?.['complex-order']?.id ?? data?.data?.order?.id ?? 'submitted');
+      setPhase('done');
+    } catch (e: any) { setError(e.message); setPhase('error'); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[70] p-4" onClick={onClose}>
+      <div className={`${th.sidebar} border ${th.border} rounded-2xl p-6 w-full max-w-md`} onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-5">
+          <h2 className={`text-sm font-bold ${th.text} tracking-widest`}>PLACE ORDER — {entry.symbol}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-xl leading-none">✕</button>
+        </div>
+
+        {phase === 'done' ? (
+          <div className="text-center py-4 space-y-2">
+            <p className="text-2xl">✓</p>
+            <p className="text-emerald-400 font-bold text-sm">Order submitted</p>
+            <p className={`text-[10px] ${th.textFaint}`}>OTOCO ID: {orderId}</p>
+            <p className={`text-[10px] ${th.textFaint}`}>Entry GTC + {gtcPct}% profit target GTC submitted as bracket order.</p>
+            <button onClick={onClose} className="mt-3 text-xs px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg">Done</button>
+          </div>
+        ) : phase === 'error' ? (
+          <div className="space-y-3">
+            <p className="text-red-400 text-sm">{error}</p>
+            <button onClick={() => setPhase('confirm')} className={`text-xs px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted}`}>Back</button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {!hasOcc && (
+              <div className="bg-amber-500/10 border border-amber-600/30 rounded-lg px-3 py-2">
+                <p className="text-[10px] text-amber-400">OCC symbols not available — market may be closed. Orders can only be placed during market hours when live chain data is available.</p>
+              </div>
+            )}
+
+            {/* Position summary */}
+            <div className={`${th.card} border ${th.border} rounded-xl p-4 space-y-2`}>
+              <div className="flex justify-between">
+                <span className={`text-[10px] ${th.textFaint}`}>Strategy</span>
+                <span className={`text-[10px] font-bold ${th.text}`}>{entry.strategy} · {entry.symbol}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className={`text-[10px] ${th.textFaint}`}>Strikes</span>
+                <span className={`text-[10px] font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{entry.shortStrike}/{entry.longStrike}{entry.strategy === 'BCS' ? 'C' : 'P'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className={`text-[10px] ${th.textFaint}`}>DTE</span>
+                <span className={`text-[10px] ${th.text}`}>{entry.dte}d</span>
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <span className={`text-[10px] ${th.textFaint} shrink-0`}>Contracts</span>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setContracts(Math.max(1, contracts - 1))} className={`w-6 h-6 rounded border ${th.border} ${th.textMuted} hover:text-white flex items-center justify-center text-sm`}>−</button>
+                  <span className={`text-sm font-bold ${th.text} w-6 text-center`}>{contracts}</span>
+                  <button onClick={() => setContracts(contracts + 1)} className={`w-6 h-6 rounded border ${th.border} ${th.textMuted} hover:text-white flex items-center justify-center text-sm`}>+</button>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className={`text-[10px] ${th.textFaint} shrink-0`}>Entry limit (credit)</span>
+                <div className="flex items-center gap-1">
+                  <span className={`text-[10px] ${th.textFaint}`}>$</span>
+                  <input type="number" step="0.05" min="0.01" value={entryLimit}
+                    onChange={e => setEntryLimit(parseFloat(e.target.value) || 0)}
+                    className={`w-20 text-right text-sm font-bold ${th.text} ${th.input} border ${th.inputBorder} rounded px-2 py-1 focus:outline-none focus:border-emerald-500`} />
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <span className={`text-[10px] ${th.textFaint} shrink-0`}>GTC profit target</span>
+                <div className="flex items-center gap-2">
+                  {[40, 50, 60].map(pct => (
+                    <button key={pct} onClick={() => setGtcPct(pct)}
+                      className={`text-[10px] px-2 py-1 rounded border transition-colors ${gtcPct === pct ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10' : `${th.border} ${th.textFaint} hover:text-white`}`}>
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Summary */}
+            <div className={`${th.sidebar} rounded-xl p-3 space-y-1.5 border ${th.border}`}>
+              <div className="flex justify-between">
+                <span className={`text-[9px] ${th.textFaint}`}>Total credit received</span>
+                <span className="text-[9px] text-emerald-400 font-bold">${totalCredit.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className={`text-[9px] ${th.textFaint}`}>GTC closes at</span>
+                <span className={`text-[9px] ${th.text}`}>${gtcBuyback.toFixed(2)} debit ({gtcPct}% profit)</span>
+              </div>
+              <div className="flex justify-between">
+                <span className={`text-[9px] ${th.textFaint}`}>Max loss</span>
+                <span className="text-[9px] text-red-400">${maxLoss.toLocaleString()}</span>
+              </div>
+            </div>
+
+            {contracts > 1 && entry.symbol === 'SPX' && (
+              <div className="bg-amber-500/10 border border-amber-600/30 rounded-lg px-3 py-2">
+                <p className="text-[10px] text-amber-400">⚠ Multiple SPX contracts on a single expiry concentrates risk. Consider spreading across expiries.</p>
+              </div>
+            )}
+
+            <button onClick={placeOrder} disabled={!hasOcc || phase === 'placing'}
+              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-bold rounded-xl transition-colors">
+              {phase === 'placing' ? '⟳ Placing order...' : `Place OTOCO Order · ${contracts} contract${contracts > 1 ? 's' : ''}`}
+            </button>
+            <p className={`text-[9px] ${th.textFaint} text-center`}>Entry GTC + {gtcPct}% profit target GTC submitted as bracket order</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 function MarketConditionsPanel({ mc, th, loading }: { mc: MarketConditions | null; th: typeof THEMES[Theme]; loading: boolean }) {
   const [expanded, setExpanded] = useState(true);
 
@@ -1480,6 +1681,7 @@ export default function EnginePage() {
   const [marketConditions, setMarketConditions] = useState<MarketConditions | null>(null);
   const [mcLoading, setMcLoading] = useState(false);
   const [editingAlloc, setEditingAlloc] = useState({ ...alloc });
+  const [orderEntry, setOrderEntry] = useState<EngineOrderEntry | null>(null);
 
   const saveSubTab = (t: SubTab) => {
     setSubTab(t);
@@ -1550,6 +1752,8 @@ export default function EnginePage() {
 
   return (
     <div className={`min-h-screen ${th.bg} transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+      {/* Order modal */}
+      {orderEntry && <EngineOrderModal entry={orderEntry} th={th} onClose={() => setOrderEntry(null)} />}
       {/* ── Header ── */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
         <div className="flex items-center gap-4">
@@ -1834,7 +2038,12 @@ export default function EnginePage() {
                           {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ PRIME ENTRY' : 'NEW SPX POSITION'}
                         </span>
                         <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold shrink-0">25-WIDE · 1256 TAX</span>
-                        <span className={`text-[9px] ${th.textFaint}`}>Not yet placed — review and enter in TastyTrade</span>
+                        <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
+                        <button
+                          onClick={() => setOrderEntry({ symbol: 'SPX', shortOccSymbol: d.spxSuggestedEntry!.shortOccSymbol, longOccSymbol: d.spxSuggestedEntry!.longOccSymbol, credit: d.spxSuggestedEntry!.credit, contracts: d.spxSuggestedEntry!.contracts, strategy: d.spxSuggestedEntry!.strategy, dte: d.spxSuggestedEntry!.dte, shortStrike: d.spxSuggestedEntry!.shortStrike, longStrike: d.spxSuggestedEntry!.longStrike, spreadWidth: 25 })}
+                          className="text-[9px] px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold shrink-0 transition-colors">
+                          Place Order
+                        </button>
                       </div>
                       <div className="flex items-center gap-6 px-1">
                         <div>
@@ -1870,7 +2079,12 @@ export default function EnginePage() {
                       <div className="flex items-center gap-3 mb-1.5">
                         <span className="text-[8px] px-2 py-0.5 border border-emerald-700 text-emerald-400 bg-emerald-500/10 rounded font-bold shrink-0">NEW SPY POSITION</span>
                         <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.spreadWidth}-WIDE · ST TAX</span>
-                        <span className={`text-[9px] ${th.textFaint}`}>Not yet placed — review and enter in TastyTrade</span>
+                        <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
+                        <button
+                          onClick={() => setOrderEntry({ symbol: 'SPY', shortOccSymbol: d.spySuggestedEntry!.shortOccSymbol, longOccSymbol: d.spySuggestedEntry!.longOccSymbol, credit: d.spySuggestedEntry!.credit, contracts: d.spySuggestedEntry!.contracts, strategy: d.spySuggestedEntry!.strategy as 'BPS' | 'BCS', dte: d.spySuggestedEntry!.dte, shortStrike: d.spySuggestedEntry!.shortStrike, longStrike: d.spySuggestedEntry!.longStrike, spreadWidth: d.spySuggestedEntry!.spreadWidth })}
+                          className="text-[9px] px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold shrink-0 transition-colors">
+                          Place Order
+                        </button>
                       </div>
                       <div className="flex items-center gap-6 px-1">
                         <div>
