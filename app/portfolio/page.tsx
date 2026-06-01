@@ -937,6 +937,81 @@ function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: n
   return { optionType: match[3] as 'P' | 'C', strikePrice: parseInt(match[4], 10) / 1000 };
 }
 
+
+function calculateSpreadCredit(legs: Pick<PositionLeg, 'direction' | 'quantity' | 'avgOpenPrice'>[]): number {
+  // Returns the actual net opening credit for the whole position in dollars.
+  // TT leg prices are per-share option prices; multiply by contracts * 100.
+  const net = legs.reduce((sum, leg) => {
+    const qty = Math.abs(Number(leg.quantity) || 0);
+    const price = Number(leg.avgOpenPrice) || 0;
+    return sum + (leg.direction === 'Short' ? price * qty : -price * qty);
+  }, 0);
+  return Math.max(0, Math.round(net * 100 * 100) / 100);
+}
+
+function sideGrossRisk(
+  shorts: PositionLeg[],
+  longs: PositionLeg[],
+  side: 'P' | 'C'
+): number {
+  // Gross risk before credit for verticals on one side, in dollars.
+  // For puts: short strike should be above long strike. For calls: short strike should be below long strike.
+  const availableLongs = longs
+    .filter(l => l.optionType === side && l.strikePrice > 0 && l.quantity > 0)
+    .map(l => ({ ...l, remainingQty: Math.abs(l.quantity) }))
+    .sort((a, b) => side === 'P' ? b.strikePrice - a.strikePrice : a.strikePrice - b.strikePrice);
+
+  let gross = 0;
+  const orderedShorts = shorts
+    .filter(s => s.optionType === side && s.strikePrice > 0 && s.quantity > 0)
+    .sort((a, b) => side === 'P' ? b.strikePrice - a.strikePrice : a.strikePrice - b.strikePrice);
+
+  for (const short of orderedShorts) {
+    let remainingShortQty = Math.abs(short.quantity);
+    for (const long of availableLongs) {
+      if (remainingShortQty <= 0) break;
+      if (long.remainingQty <= 0) continue;
+      const protects = side === 'P'
+        ? long.strikePrice < short.strikePrice
+        : long.strikePrice > short.strikePrice;
+      if (!protects) continue;
+
+      const matchedQty = Math.min(remainingShortQty, long.remainingQty);
+      gross += Math.abs(short.strikePrice - long.strikePrice) * 100 * matchedQty;
+      remainingShortQty -= matchedQty;
+      long.remainingQty -= matchedQty;
+    }
+
+    // If any short contracts are unprotected, treat them as naked risk for margin display.
+    // This keeps the number conservative instead of incorrectly showing $0 risk.
+    if (remainingShortQty > 0) gross += short.strikePrice * 100 * remainingShortQty;
+  }
+
+  return gross;
+}
+
+function calculateMaxRisk(legs: PositionLeg[], creditReceived: number, strategy: string): number {
+  const shorts = legs.filter(l => l.direction === 'Short');
+  const longs = legs.filter(l => l.direction === 'Long');
+
+  const putGross = sideGrossRisk(shorts, longs, 'P');
+  const callGross = sideGrossRisk(shorts, longs, 'C');
+
+  let grossRisk = 0;
+  if (strategy === 'IC') {
+    // An iron condor can only lose on one side at expiration, so use the larger side, not both.
+    grossRisk = Math.max(putGross, callGross);
+  } else if (strategy === 'BPS' || strategy === 'PUT') {
+    grossRisk = putGross;
+  } else if (strategy === 'BCS' || strategy === 'CALL') {
+    grossRisk = callGross;
+  } else {
+    grossRisk = putGross + callGross;
+  }
+
+  return Math.max(0, Math.round((grossRisk - Math.abs(creditReceived)) * 100) / 100);
+}
+
 function normalizeOccSymbol(symbol: string): string { return String(symbol ?? '').replace(/\s+/g, '').trim(); }
 function normalizeOrderAction(action: string): string { return String(action ?? '').replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase(); }
 function isBuyToCloseAction(action: string): boolean { const n = normalizeOrderAction(action); return n === 'buy to close' || n === 'btc'; }
@@ -1318,13 +1393,18 @@ async function loadPositions(): Promise<Position[]> {
     else if (putLegs.length === 1) strategy = 'PUT';
     else if (callLegs.length === 1) strategy = 'CALL';
 
-    let creditReceived = 0;
-    for (const leg of legs) {
-      const qty = parseInt(leg['quantity'] ?? '1', 10);
-      const avgPrice = parseFloat(leg['average-open-price'] ?? '0');
-      creditReceived += leg['quantity-direction'] === 'Short' ? avgPrice * qty : -(avgPrice * qty);
-    }
-    creditReceived = creditReceived * 100;
+    const positionLegs: PositionLeg[] = legs.map((l: any) => {
+      const parsed = parseOptionSymbol(l.symbol);
+      return {
+        symbol: l.symbol, optionType: parsed.optionType, strikePrice: parsed.strikePrice,
+        direction: l['quantity-direction'] as 'Short' | 'Long',
+        quantity: parseInt(l['quantity'] ?? '1', 10),
+        avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
+        currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
+      };
+    });
+
+    const creditReceived = calculateSpreadCredit(positionLegs);
 
     let currentValue = 0; let hasCurrentPrices = true;
     for (const leg of legs) {
@@ -1341,17 +1421,6 @@ async function loadPositions(): Promise<Position[]> {
     const targetPrice = Math.abs(creditReceived) * profitTarget;
     const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * profitTarget;
 
-    const positionLegs: PositionLeg[] = legs.map((l: any) => {
-      const parsed = parseOptionSymbol(l.symbol);
-      return {
-        symbol: l.symbol, optionType: parsed.optionType, strikePrice: parsed.strikePrice,
-        direction: l['quantity-direction'] as 'Short' | 'Long',
-        quantity: parseInt(l['quantity'] ?? '1', 10),
-        avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
-        currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
-      };
-    });
-
     const stopLoss = classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders);
 
     return {
@@ -1360,15 +1429,7 @@ async function loadPositions(): Promise<Position[]> {
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, profitTarget, hitTarget,
       plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
-      maxRisk: (() => {
-        const shorts = legs.filter((l: any) => l['quantity-direction'] === 'Short');
-        const longs  = legs.filter((l: any) => l['quantity-direction'] === 'Long');
-        if (shorts[0] && longs[0]) {
-          const w = Math.abs(parseOptionSymbol(shorts[0].symbol).strikePrice - parseOptionSymbol(longs[0].symbol).strikePrice);
-          return Math.max(0, (w * 100 * parseInt(shorts[0]['quantity'] ?? '1', 10)) - Math.abs(creditReceived));
-        }
-        return 0;
-      })(),
+      maxRisk: calculateMaxRisk(positionLegs, creditReceived, strategy),
       entryDte, entryDate: openedAt, needsClose: entryDte > 21 && dte <= 21, accountNumber,
       ivr: ivrMap[symbol] ?? null,
       iv: ivMap[symbol] ?? null,
@@ -2990,15 +3051,7 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
   const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
   const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
   const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
-  const totalAtRisk = positions.reduce((s, p) => {
-    const shorts = p.legs.filter(l => l.direction === 'Short');
-    const longs  = p.legs.filter(l => l.direction === 'Long' && l.optionType === shorts[0]?.optionType);
-    if (shorts[0] && longs[0]) {
-      const width = Math.abs(shorts[0].strikePrice - longs[0].strikePrice);
-      return s + Math.max(0, (width * 100 * shorts[0].quantity) - p.creditReceived);
-    }
-    return s;
-  }, 0);
+  const totalAtRisk = positions.reduce((s, p) => s + p.maxRisk, 0);
   const totalTheta = positions.reduce((s, p) => {
     if (p.currentValue != null && p.dte > 0) return s + p.currentValue / p.dte;
     if (p.dte > 0) return s + p.creditReceived / p.dte;
