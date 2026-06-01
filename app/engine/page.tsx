@@ -526,13 +526,14 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
               const credit = Math.max(0, shortMid - longMid);
               if (credit <= 0) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — zero credit (short ${shortMid} long ${longMid})`); continue; }
 
+              const SPX_CREDIT_RATIO_MIN = 0.15; // SPX index spreads — lower threshold than ETF/stock rule
               const creditRatio = credit / SPREAD_WIDTH;
-              if (creditRatio < etfRules.CREDIT_RATIO_MIN) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — credit ratio ${(creditRatio*100).toFixed(1)}% < min ${(etfRules.CREDIT_RATIO_MIN*100).toFixed(0)}%`); continue; }
+              if (creditRatio < SPX_CREDIT_RATIO_MIN) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — credit ratio ${(creditRatio*100).toFixed(1)}% < min ${(SPX_CREDIT_RATIO_MIN*100).toFixed(0)}%`); continue; }
               const maxLoss = SPREAD_WIDTH - credit;
               const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
               if (roc < etfRules.ROC_MIN_SPREAD) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — ROC ${roc.toFixed(1)}% < min ${etfRules.ROC_MIN_SPREAD}%`); continue; }
               const pop = (1 - delta) * 100;
-              if (pop < Math.max(etfRules.POP_MIN, 70)) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — POP ${pop.toFixed(0)}% < min 70%`); continue; }
+              if (pop < 68) { console.log(`[SPX screener] ${shortStrike}/${longStrike} — POP ${pop.toFixed(0)}% < min 68%`); continue; }
 
               console.log(`[SPX screener] ✓ ${shortStrike}/${longStrike} — POP ${pop.toFixed(0)}% credit $${credit.toFixed(2)} ratio ${(creditRatio*100).toFixed(0)}%${esAnchorNote}`);
 
@@ -2073,15 +2074,16 @@ export default function EnginePage() {
                   {d.spxSuggestedEntry && (
                     <div className={`px-4 py-3 border-b border-emerald-600/20 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'bg-yellow-500/5' : 'bg-emerald-500/5'}`}>
                       <div className="flex items-center gap-3 mb-1.5">
-                        <span className={`text-[8px] px-2 py-0.5 border rounded font-bold shrink-0 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'border-yellow-600 text-yellow-300 bg-yellow-500/10' : 'border-emerald-700 text-emerald-400 bg-emerald-500/10'}`}>
-                          {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ PRIME ENTRY' : 'NEW SPX POSITION'}
+                        <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold shrink-0">SPX</span>
+                        <span className={`text-[8px] px-1.5 py-0.5 border rounded font-bold shrink-0 ${d.spxSuggestedEntry.rationale.startsWith('★') ? 'border-yellow-600 text-yellow-300 bg-yellow-500/10' : 'border-emerald-700 text-emerald-400 bg-emerald-500/10'}`}>
+                          {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ PRIME' : d.spxSuggestedEntry.strategy}
                         </span>
                         <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold shrink-0">25-WIDE · 1256 TAX</span>
                         <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
                         <button
                           onClick={() => setOrderEntry({ symbol: 'SPX', shortOccSymbol: d.spxSuggestedEntry!.shortOccSymbol, longOccSymbol: d.spxSuggestedEntry!.longOccSymbol, credit: d.spxSuggestedEntry!.credit, contracts: d.spxSuggestedEntry!.contracts, strategy: d.spxSuggestedEntry!.strategy, dte: d.spxSuggestedEntry!.dte, shortStrike: d.spxSuggestedEntry!.shortStrike, longStrike: d.spxSuggestedEntry!.longStrike, spreadWidth: 25 })}
                           className="text-[9px] px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold shrink-0 transition-colors">
-                          Place Order
+                          New Position
                         </button>
                       </div>
                       <div className="flex items-center gap-6 px-1">
@@ -2116,13 +2118,14 @@ export default function EnginePage() {
                   {d.spySuggestedEntry && (
                     <div className="px-4 py-3 bg-emerald-500/5">
                       <div className="flex items-center gap-3 mb-1.5">
-                        <span className="text-[8px] px-2 py-0.5 border border-emerald-700 text-emerald-400 bg-emerald-500/10 rounded font-bold shrink-0">NEW SPY POSITION</span>
+                        <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">SPY</span>
+                        <span className="text-[8px] px-1.5 py-0.5 border border-emerald-700 text-emerald-400 bg-emerald-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.strategy}</span>
                         <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.spreadWidth}-WIDE · ST TAX</span>
                         <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
                         <button
                           onClick={() => setOrderEntry({ symbol: 'SPY', shortOccSymbol: d.spySuggestedEntry!.shortOccSymbol, longOccSymbol: d.spySuggestedEntry!.longOccSymbol, credit: d.spySuggestedEntry!.credit, contracts: d.spySuggestedEntry!.contracts, strategy: d.spySuggestedEntry!.strategy, dte: d.spySuggestedEntry!.dte, shortStrike: d.spySuggestedEntry!.shortStrike, longStrike: d.spySuggestedEntry!.longStrike, spreadWidth: d.spySuggestedEntry!.spreadWidth })}
                           className="text-[9px] px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold shrink-0 transition-colors">
-                          Place Order
+                          New Position
                         </button>
                       </div>
                       <div className="flex items-center gap-6 px-1">
