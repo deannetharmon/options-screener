@@ -469,7 +469,12 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const deltaMin = etfRules.SPREAD_DELTA_MIN;
       const deltaMax = etfRules.SPREAD_DELTA_MAX;
 
-      for (const exp of validExps.slice(0, 3)) {
+      for (const exp of validExps.slice(0, 5)) {
+        // Skip expiries that already have an open position — always spread across expiries
+        if (spxPositions.some(p => p.expiration === exp.date) || spyPositions.some(p => p.expiration === exp.date)) {
+          console.log(`[SPX screener] Skipping ${exp.date} — already have open position on this expiry`);
+          continue;
+        }
         const allSymbols: string[] = [];
         for (const s of exp.strikes ?? []) {
           if (strategy === 'BCS' && s.call) allSymbols.push(s.call);
@@ -587,7 +592,12 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       const esBias = esFuturesSignal?.bias ?? 'bullish';
       const strategy: 'BPS' | 'BCS' = esBias === 'bearish' ? 'BCS' : 'BPS';
 
-      for (const exp of validExps.slice(0, 3)) {
+      for (const exp of validExps.slice(0, 5)) {
+        // Skip expiries already used by SPX or SPY positions
+        if (spxPositions.some(p => p.expiration === exp.date) || spyPositions.some(p => p.expiration === exp.date)) {
+          console.log(`[SPY screener] Skipping ${exp.date} — already have open position on this expiry`);
+          continue;
+        }
         const allSymbols: string[] = [];
         for (const s of exp.strikes ?? []) {
           if (strategy === 'BCS' && s.call) allSymbols.push(s.call);
