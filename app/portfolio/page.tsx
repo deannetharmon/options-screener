@@ -4972,8 +4972,23 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
         <div className="flex items-center gap-1.5 flex-wrap">
           {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).map(action => {
             const meta = ACTION_META[action];
+            const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : null;
+
+            // TAKE_PROFIT — only show when profit target hit (≥50%) or AI recommends it
             if (action === 'TAKE_PROFIT' && !pos.hitTarget && rec.action !== 'TAKE_PROFIT') return null;
+
+            // CUT_LOSSES — only show when position is losing meaningfully
+            // Conditions: loss > 100% of credit, OR buffer < 3% with any loss, OR DTE < 7 with any loss
+            if (action === 'CUT_LOSSES') {
+              const atSignificantLoss = pnlPct != null && pnlPct < -100;
+              const tightBufferWithLoss = pos.buffer != null && pos.buffer < 3 && pnlPct != null && pnlPct < 0;
+              const nearExpiryWithLoss = pos.dte < 7 && pnlPct != null && pnlPct < 0;
+              if (!atSignificantLoss && !tightBufferWithLoss && !nearExpiryWithLoss && rec.action !== 'CUT_LOSSES') return null;
+            }
+
+            // PLACE_GTC — hide when already has GTC
             if (action === 'PLACE_GTC' && pos.hasGtc) return null;
+
             return (
               <button key={action}
                 onClick={e => { e.stopPropagation(); onExecute(pos, action); }}
@@ -4982,8 +4997,17 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </button>
             );
           })}
-          <ExtendProfitButton pos={pos} th={th} />
+          {/* Extend Profit — only show when profit ≥50% AND DTE ≥ 14 */}
+          {(() => {
+            const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : null;
+            const canExtend = pnlPct != null && pnlPct >= 50 && pos.dte >= 14;
+            return canExtend ? <ExtendProfitButton pos={pos} th={th} /> : null;
+          })()}
           <SetStopLossButton pos={pos} th={th} />
+          {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(rec.action) && (
+            <span className={`text-[9px] ${th.textFaint} ml-1`}>← suggested</span>
+          )}
+        </div>
           {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(rec.action) && (
             <span className={`text-[9px] ${th.textFaint} ml-1`}>← suggested</span>
           )}
