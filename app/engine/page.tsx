@@ -1545,16 +1545,21 @@ function TimelineBar({ startDte, endDte, totalDays, color, label, status }: { st
 
 // ── Engine Order Modal ─────────────────────────────────────────────────────
 interface EngineOrderEntry {
+  mode?: 'spread' | 'wheel';
   symbol: string;
-  shortOccSymbol: string;
-  longOccSymbol: string;
+  shortOccSymbol?: string;
+  longOccSymbol?: string;
   credit: number;
   contracts: number;
-  strategy: 'BPS' | 'BCS';
+  strategy: 'BPS' | 'BCS' | 'CSP' | 'CC';
   dte: number;
   shortStrike: number;
-  longStrike: number;
+  longStrike?: number;
   spreadWidth: number;
+  expiration?: string;
+  optionType?: 'P' | 'C';
+  action?: 'sell-put' | 'sell-call';
+  capitalRequired?: number;
 }
 
 function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th: typeof THEMES[Theme]; onClose: () => void }) {
@@ -1565,17 +1570,90 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
   const [error, setError] = useState('');
   const [orderId, setOrderId] = useState('');
 
+  const isWheelEntry = entry.mode === 'wheel' || entry.strategy === 'CSP' || entry.strategy === 'CC';
+  const [resolvedOcc, setResolvedOcc] = useState(entry.shortOccSymbol ?? '');
+  const [resolvedExpiration, setResolvedExpiration] = useState(entry.expiration ?? '');
+  const [resolvedBidAsk, setResolvedBidAsk] = useState<{ bid: number; ask: number; mid: number; delta: number | null; oi: number | null } | null>(null);
+  const [resolvingOption, setResolvingOption] = useState(false);
+
   const gtcBuyback = parseFloat((entryLimit * (1 - gtcPct / 100)).toFixed(2));
   const totalCredit = entryLimit * contracts * 100;
-  const maxLoss = Math.max(0, (entry.spreadWidth - entryLimit) * contracts * 100);
-  const hasOcc = Boolean(entry.shortOccSymbol && entry.longOccSymbol);
+  const maxLoss = isWheelEntry
+    ? entry.strategy === 'CSP'
+      ? Math.max(0, (entry.shortStrike * 100 * contracts) - totalCredit)
+      : 0
+    : Math.max(0, (entry.spreadWidth - entryLimit) * contracts * 100);
+  const hasOcc = isWheelEntry ? Boolean(resolvedOcc) : Boolean(entry.shortOccSymbol && entry.longOccSymbol);
   const engineInstrumentType = (symbol: string): 'Equity Option' | 'Index Option' => {
     const normalized = String(symbol ?? '').replace(/\s+/g, '').toUpperCase();
     return normalized.startsWith('SPX') || normalized.startsWith('NDX') || normalized.startsWith('RUT') || normalized.startsWith('VIX')
       ? 'Index Option'
       : 'Equity Option';
   };
-  const legInstrumentType = engineInstrumentType(entry.shortOccSymbol || entry.symbol);
+  const legInstrumentType = isWheelEntry ? 'Equity Option' : engineInstrumentType(entry.shortOccSymbol || entry.symbol);
+
+  const resolveWheelOption = useCallback(async () => {
+    if (!isWheelEntry) return;
+    setResolvingOption(true); setError('');
+    try {
+      const token = await getAccessToken();
+      const nested = await ttFetch(`/option-chains/${encodeURIComponent(entry.symbol)}/nested`, token);
+      const expirations = nested?.data?.items?.[0]?.expirations ?? [];
+      const desiredDte = entry.dte || 35;
+      const optionSide = entry.optionType ?? (entry.strategy === 'CC' ? 'C' : 'P');
+      const ranked = expirations
+        .map((e: any) => ({ date: e['expiration-date'], dte: daysUntil(e['expiration-date']), strikes: e.strikes ?? [] }))
+        .filter((e: any) => e.dte >= 21 && e.dte <= 55)
+        .sort((a: any, b: any) => Math.abs(a.dte - desiredDte) - Math.abs(b.dte - desiredDte));
+
+      let found: any = null;
+      let foundExp: any = null;
+      for (const exp of ranked) {
+        const strikes = [...exp.strikes].sort((a: any, b: any) => Math.abs(parseFloat(a['strike-price']) - entry.shortStrike) - Math.abs(parseFloat(b['strike-price']) - entry.shortStrike));
+        for (const strikeRow of strikes) {
+          const strike = parseFloat(strikeRow['strike-price']);
+          if (Math.abs(strike - entry.shortStrike) > 2.51) continue;
+          const rawLeg = optionSide === 'P' ? strikeRow.put : strikeRow.call;
+          const legSymbol = typeof rawLeg === 'string' ? rawLeg : rawLeg?.symbol;
+          if (!legSymbol) continue;
+          found = { ...(typeof rawLeg === 'object' ? rawLeg : {}), symbol: legSymbol, strike };
+          foundExp = exp;
+          break;
+        }
+        if (found) break;
+      }
+
+      if (!found || !foundExp) throw new Error(`Could not resolve a live ${entry.symbol} ${entry.shortStrike}${optionSide} option around ${desiredDte} DTE. Refresh during market hours or choose another strike.`);
+
+      let bid = parseFloat(found.bid ?? '0');
+      let ask = parseFloat(found.ask ?? '0');
+      let deltaRaw = found.delta != null ? parseFloat(found.delta) : NaN;
+      let oiRaw = found['open-interest'] ?? found.oi;
+      if ((!bid && !ask) || bid < 0 || ask < 0) {
+        const qs = `equity-option=${encodeURIComponent(found.symbol)}`;
+        const md = await ttFetch(`/market-data/by-type?${qs}`, token);
+        const item = md?.data?.items?.[0];
+        if (item) {
+          bid = parseFloat(item.bid ?? '0');
+          ask = parseFloat(item.ask ?? '0');
+          deltaRaw = item.delta != null ? parseFloat(item.delta) : deltaRaw;
+          oiRaw = item['open-interest'] ?? item.oi ?? oiRaw;
+        }
+      }
+      const mid = parseFloat((((bid + ask) / 2) || 0).toFixed(2));
+      const oi = oiRaw != null ? parseInt(oiRaw, 10) : null;
+      setResolvedOcc(found.symbol);
+      setResolvedExpiration(foundExp.date);
+      setResolvedBidAsk({ bid, ask, mid, delta: isNaN(deltaRaw) ? null : deltaRaw, oi });
+      if ((!entry.credit || entry.credit <= 0) && mid > 0) setEntryLimit(mid);
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not resolve option contract.');
+    } finally {
+      setResolvingOption(false);
+    }
+  }, [entry.symbol, entry.shortStrike, entry.dte, entry.optionType, entry.strategy, entry.credit, isWheelEntry]);
+
+  useEffect(() => { resolveWheelOption(); }, [resolveWheelOption]);
 
   const placeOrder = async () => {
     setPhase('placing'); setError('');
@@ -1587,14 +1665,16 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
       const accountNumber = account?.account?.['account-number'];
       if (!accountNumber) throw new Error('No account found');
 
-      if (!hasOcc) throw new Error('Missing OCC option symbols. Refresh the engine during market hours and try again.');
+      if (!hasOcc) throw new Error('Missing OCC option symbol(s). Refresh the engine during market hours and try again.');
       if (entryLimit <= 0) throw new Error('Entry credit must be greater than $0.00.');
-      if (entryLimit >= entry.spreadWidth) throw new Error(`Entry credit $${entryLimit.toFixed(2)} cannot be greater than/equal to spread width $${entry.spreadWidth.toFixed(2)}.`);
+      if (!isWheelEntry && entryLimit >= entry.spreadWidth) throw new Error(`Entry credit $${entryLimit.toFixed(2)} cannot be greater than/equal to spread width $${entry.spreadWidth.toFixed(2)}.`);
 
-      const legs = [
-        { 'instrument-type': legInstrumentType, symbol: entry.shortOccSymbol, quantity: contracts, action: 'Sell to Open' },
-        { 'instrument-type': legInstrumentType, symbol: entry.longOccSymbol,  quantity: contracts, action: 'Buy to Open'  },
-      ];
+      const legs = isWheelEntry
+        ? [{ 'instrument-type': legInstrumentType, symbol: resolvedOcc, quantity: contracts, action: 'Sell to Open' }]
+        : [
+            { 'instrument-type': legInstrumentType, symbol: entry.shortOccSymbol!, quantity: contracts, action: 'Sell to Open' },
+            { 'instrument-type': legInstrumentType, symbol: entry.longOccSymbol!,  quantity: contracts, action: 'Buy to Open'  },
+          ];
       const closingLegs = legs.map(l => ({
         ...l,
         action: l.action === 'Sell to Open' ? 'Buy to Close' : 'Sell to Close',
@@ -1658,7 +1738,7 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
           <div className="space-y-4">
             {!hasOcc && (
               <div className="bg-amber-500/10 border border-amber-600/30 rounded-lg px-3 py-2">
-                <p className="text-[10px] text-amber-400">OCC symbols not available — market may be closed. Orders can only be placed during market hours when live chain data is available.</p>
+                <p className="text-[10px] text-amber-400">OCC symbol not available yet — refreshing live option chain. Orders require live chain data.</p>
               </div>
             )}
 
@@ -1670,12 +1750,26 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
               </div>
               <div className="flex justify-between">
                 <span className={`text-[10px] ${th.textFaint}`}>Strikes</span>
-                <span className={`text-[10px] font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{entry.shortStrike}/{entry.longStrike}{entry.strategy === 'BCS' ? 'C' : 'P'}</span>
+                <span className={`text-[10px] font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                  {isWheelEntry ? `${entry.shortStrike}${entry.strategy === 'CC' ? 'C' : 'P'}` : `${entry.shortStrike}/${entry.longStrike}${entry.strategy === 'BCS' ? 'C' : 'P'}`}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className={`text-[10px] ${th.textFaint}`}>DTE</span>
-                <span className={`text-[10px] ${th.text}`}>{entry.dte}d</span>
+                <span className={`text-[10px] ${th.text}`}>{isWheelEntry && resolvedExpiration ? `${daysUntil(resolvedExpiration)}d (${resolvedExpiration})` : `${entry.dte}d`}</span>
               </div>
+              {isWheelEntry && (
+                <div className="flex justify-between gap-3">
+                  <span className={`text-[10px] ${th.textFaint}`}>Resolved contract</span>
+                  <span className={`text-[10px] ${th.text} text-right`} style={{ fontFamily: "'DM Mono', monospace" }}>{resolvingOption ? 'Resolving...' : resolvedOcc || 'Not resolved'}</span>
+                </div>
+              )}
+              {isWheelEntry && resolvedBidAsk && (
+                <div className="flex justify-between">
+                  <span className={`text-[10px] ${th.textFaint}`}>Bid / Ask / Mid</span>
+                  <span className={`text-[10px] ${th.text}`}>${resolvedBidAsk.bid.toFixed(2)} / ${resolvedBidAsk.ask.toFixed(2)} / ${resolvedBidAsk.mid.toFixed(2)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className={`text-[10px] ${th.textFaint}`}>Instrument type</span>
                 <span className={`text-[10px] ${th.text}`}>{legInstrumentType}</span>
@@ -1736,9 +1830,9 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
               </div>
             )}
 
-            <button onClick={placeOrder} disabled={!hasOcc || phase === 'placing'}
+            <button onClick={placeOrder} disabled={!hasOcc || phase === 'placing' || resolvingOption || entryLimit <= 0}
               className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-bold rounded-xl transition-colors">
-              {phase === 'placing' ? '⟳ Placing order...' : `Place OTOCO Order · ${contracts} contract${contracts > 1 ? 's' : ''}`}
+              {phase === 'placing' ? '⟳ Placing order...' : resolvingOption ? 'Resolving option...' : `Place OTOCO Order · ${contracts} contract${contracts > 1 ? 's' : ''}`}
             </button>
             <p className={`text-[9px] ${th.textFaint} text-center`}>Entry GTC + {gtcPct}% profit target GTC submitted as bracket order</p>
           </div>
@@ -2425,7 +2519,7 @@ export default function EnginePage() {
                         <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold shrink-0">25-WIDE · 1256 TAX</span>
                         <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
                         <button
-                          onClick={() => setOrderEntry({ symbol: 'SPX', shortOccSymbol: d.spxSuggestedEntry!.shortOccSymbol, longOccSymbol: d.spxSuggestedEntry!.longOccSymbol, credit: d.spxSuggestedEntry!.credit, contracts: d.spxSuggestedEntry!.contracts, strategy: d.spxSuggestedEntry!.strategy, dte: d.spxSuggestedEntry!.dte, shortStrike: d.spxSuggestedEntry!.shortStrike, longStrike: d.spxSuggestedEntry!.longStrike, spreadWidth: 25 })}
+                          onClick={() => setOrderEntry({ mode: 'spread', symbol: 'SPX', shortOccSymbol: d.spxSuggestedEntry!.shortOccSymbol, longOccSymbol: d.spxSuggestedEntry!.longOccSymbol, credit: d.spxSuggestedEntry!.credit, contracts: d.spxSuggestedEntry!.contracts, strategy: d.spxSuggestedEntry!.strategy, dte: d.spxSuggestedEntry!.dte, shortStrike: d.spxSuggestedEntry!.shortStrike, longStrike: d.spxSuggestedEntry!.longStrike, spreadWidth: 25 })}
                           className="text-[9px] px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold shrink-0 transition-colors">
                           New Position
                         </button>
@@ -2467,7 +2561,7 @@ export default function EnginePage() {
                         <span className="text-[8px] px-1.5 py-0.5 border border-cyan-700 text-cyan-400 bg-cyan-500/10 rounded font-bold shrink-0">{d.spySuggestedEntry.spreadWidth}-WIDE · ST TAX</span>
                         <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
                         <button
-                          onClick={() => setOrderEntry({ symbol: 'SPY', shortOccSymbol: d.spySuggestedEntry!.shortOccSymbol, longOccSymbol: d.spySuggestedEntry!.longOccSymbol, credit: d.spySuggestedEntry!.credit, contracts: d.spySuggestedEntry!.contracts, strategy: d.spySuggestedEntry!.strategy, dte: d.spySuggestedEntry!.dte, shortStrike: d.spySuggestedEntry!.shortStrike, longStrike: d.spySuggestedEntry!.longStrike, spreadWidth: d.spySuggestedEntry!.spreadWidth })}
+                          onClick={() => setOrderEntry({ mode: 'spread', symbol: 'SPY', shortOccSymbol: d.spySuggestedEntry!.shortOccSymbol, longOccSymbol: d.spySuggestedEntry!.longOccSymbol, credit: d.spySuggestedEntry!.credit, contracts: d.spySuggestedEntry!.contracts, strategy: d.spySuggestedEntry!.strategy, dte: d.spySuggestedEntry!.dte, shortStrike: d.spySuggestedEntry!.shortStrike, longStrike: d.spySuggestedEntry!.longStrike, spreadWidth: d.spySuggestedEntry!.spreadWidth })}
                           className="text-[9px] px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold shrink-0 transition-colors">
                           New Position
                         </button>
@@ -2548,6 +2642,27 @@ export default function EnginePage() {
                             <p className={`text-[9px] ${th.textFaint}`}>required</p>
                           </div>
                         )}
+                        <button
+                          onClick={() => setOrderEntry({
+                            mode: 'wheel',
+                            symbol: sug.symbol,
+                            shortOccSymbol: '',
+                            longOccSymbol: '',
+                            credit: sug.credit ?? 0,
+                            contracts: 1,
+                            strategy: sug.action === 'sell-call' ? 'CC' : 'CSP',
+                            dte: sug.dte ?? 35,
+                            shortStrike: sug.strike ?? 0,
+                            longStrike: undefined,
+                            spreadWidth: 0,
+                            optionType: sug.action === 'sell-call' ? 'C' : 'P',
+                            action: sug.action,
+                            capitalRequired: sug.capitalRequired,
+                          })}
+                          disabled={!sug.strike}
+                          className="text-[9px] px-3 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-bold shrink-0 transition-colors">
+                          New Position
+                        </button>
                       </div>
                     ))}
                   </div>
