@@ -1318,18 +1318,7 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState<number[] | null>(null);
   const [sparkLoading, setSparkLoading] = useState(false);
-  const popupRef = useRef(null as HTMLDivElement | null);
 
-  useEffect(() => {
-    if (!showChart) return;
-    const handler = (e: MouseEvent) => {
-      if (popupRef.current && !popupRef.current.contains(e.target as Node)) {
-        setShowChart(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [showChart]);
   return (
     <div className="relative">
       <button
@@ -1360,12 +1349,13 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
       </button>
 
       {showChart && (
-        <div
-          ref={popupRef}
-          className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
-          style={{ width: '280px' }}
-          onClick={e => e.stopPropagation()}
-        >
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setShowChart(false)} />
+          <div
+            className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
+            style={{ width: '280px' }}
+            onClick={e => e.stopPropagation()}
+          >
           <div className="flex items-center justify-between mb-2">
             <span className={`text-[10px] font-bold ${th.textFaint} tracking-widest`}>{symbol}</span>
             <button onClick={() => setShowChart(false)} className="text-slate-500 hover:text-white transition-colors text-sm leading-none">✕</button>
@@ -1428,12 +1418,11 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
             Open in TradingView
           </a>
         </div>
+        </>
       )}
     </div>
   );
-}
-
-function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme] }) {
+}({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme] }) {
   const statusColors = { hold: 'text-emerald-400', watch: 'text-amber-400', close: 'text-blue-400', manage: 'text-red-400' };
   const statusBg = { hold: 'bg-emerald-500/10 border-emerald-700', watch: 'bg-amber-500/10 border-amber-700', close: 'bg-blue-500/10 border-blue-700', manage: 'bg-red-500/10 border-red-700' };
   return (
