@@ -602,52 +602,73 @@ function MonthlyPnlChart({ trades, th, range }: { trades: ClosedTrade[]; th: typ
 
   const maxAbsPnl = Math.max(...entries.map(e => Math.abs(e.pnl)), 1);
   const BAR_H = 80; // px — bar chart area height
-  const LINE_H = 32; // px — win rate line area height
+  const LINE_H = 40; // px — cumulative P&L line area height
+
+  // Build cumulative P&L series — one point per month ending
+  const cumulative: number[] = [];
+  let running = 0;
+  for (const e of entries) { running += e.pnl; cumulative.push(running); }
+  const cumMin = Math.min(0, ...cumulative);
+  const cumMax = Math.max(0, ...cumulative);
+  const cumRange = Math.max(cumMax - cumMin, 1);
+
+  // Map a cumulative value to a y-coordinate within LINE_H (higher value = lower y = higher on screen)
+  const cumY = (val: number) => LINE_H - ((val - cumMin) / cumRange) * (LINE_H * 0.85) - LINE_H * 0.075;
+  // Zero line y position
+  const zeroY = cumY(0);
 
   return (
     <div className="space-y-1">
-      {/* Win rate line + P&L bars combined */}
+      {/* Cumulative P&L line + monthly P&L bars */}
       <div className="relative w-full" style={{ height: `${BAR_H + LINE_H + 24}px` }}>
-        {/* Win rate sparkline — positioned at top */}
+
+        {/* Cumulative P&L sparkline — top section */}
         <svg
           className="absolute top-0 left-0 w-full overflow-visible"
           style={{ height: `${LINE_H}px` }}
           preserveAspectRatio="none"
           viewBox={`0 0 ${entries.length * 60} ${LINE_H}`}
         >
+          {/* Zero baseline */}
+          <line x1="0" y1={zeroY} x2={entries.length * 60} y2={zeroY}
+            stroke="rgba(255,255,255,0.08)" strokeWidth="1" strokeDasharray="3,3" />
+
           {entries.length > 1 && (() => {
-            const pts = entries.map((e, i) => `${i * 60 + 30},${LINE_H - (e.winRate / 100) * LINE_H}`).join(' ');
+            const pts = cumulative.map((val, i) => `${i * 60 + 30},${cumY(val)}`).join(' ');
+            const lastVal = cumulative[cumulative.length - 1];
+            const lineColor = lastVal >= 0 ? 'rgba(16,185,129,0.9)' : 'rgba(239,68,68,0.9)';
             return (
               <>
-                <polyline points={pts} fill="none" stroke="rgba(99,102,241,0.6)" strokeWidth="1.5" strokeLinejoin="round" />
-                {entries.map((e, i) => (
-                  <circle key={e.key} cx={i * 60 + 30} cy={LINE_H - (e.winRate / 100) * LINE_H} r="2.5"
-                    fill={e.winRate >= 60 ? '#10b981' : e.winRate >= 45 ? '#eab308' : '#ef4444'} />
+                <polyline points={pts} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+                {cumulative.map((val, i) => (
+                  <circle key={entries[i].key} cx={i * 60 + 30} cy={cumY(val)} r="2.5"
+                    fill={val >= 0 ? '#10b981' : '#ef4444'} />
                 ))}
               </>
             );
           })()}
         </svg>
 
-        {/* P&L bars — positioned below win rate line */}
+        {/* Monthly P&L bars — positioned below the line */}
         <div className="absolute left-0 right-0 flex items-end gap-1"
           style={{ top: `${LINE_H + 4}px`, height: `${BAR_H}px` }}>
-          {entries.map((e) => {
+          {entries.map((e, i) => {
             const pct = Math.max((Math.abs(e.pnl) / maxAbsPnl) * 100, 3);
             const isPos = e.pnl >= 0;
+            const cumVal = cumulative[i];
             return (
               <div key={e.key} className="flex-1 flex flex-col items-center justify-end h-full group relative" style={{ minWidth: '32px' }}>
                 {/* Tooltip */}
                 <div className={`absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:flex flex-col gap-0.5 z-20 ${th.sidebar} border ${th.border} rounded-lg px-3 py-2 shadow-xl`}
-                  style={{ minWidth: '130px' }}>
+                  style={{ minWidth: '145px' }}>
                   <p className={`text-[10px] font-bold ${th.text}`}>{e.month} {e.year}</p>
                   <p className={`text-[10px] ${isPos ? 'text-emerald-400' : 'text-red-400'} font-bold`}>
-                    {isPos ? '+' : ''}${e.pnl.toFixed(0)} P&L
+                    {isPos ? '+' : ''}${e.pnl.toFixed(0)} this month
                   </p>
-                  <p className={`text-[10px] ${e.winRate >= 60 ? 'text-emerald-400' : e.winRate >= 45 ? 'text-yellow-400' : 'text-red-400'}`}>
-                    {e.winRate}% win rate
+                  <p className={`text-[10px] ${cumVal >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {cumVal >= 0 ? '+' : ''}${cumVal.toFixed(0)} cumulative
                   </p>
-                  <p className={`text-[9px] ${th.textFaint}`}>{e.count} trade{e.count !== 1 ? 's' : ''} · {e.wins}W/{e.count - e.wins}L</p>
+                  <p className={`text-[9px] ${th.textFaint}`}>{e.count} trade{e.count !== 1 ? 's' : ''} · {e.wins}W/{e.count - e.wins}L · {e.winRate}% win</p>
                 </div>
                 <div
                   className={`w-full rounded-t-sm transition-all ${isPos ? 'bg-emerald-500/60 hover:bg-emerald-500/80' : 'bg-red-500/50 hover:bg-red-500/70'}`}
@@ -664,7 +685,7 @@ function MonthlyPnlChart({ trades, th, range }: { trades: ClosedTrade[]; th: typ
         {entries.map(e => (
           <div key={e.key} className="flex-1 flex flex-col items-center" style={{ minWidth: '32px' }}>
             <span className={`text-[8px] ${th.textFaint}`}>{e.month.slice(0,1)}</span>
-            <span className={`text-[8px] text-indigo-400/60`}>{e.count}</span>
+            <span className={`text-[8px] ${th.textFaint} opacity-50`}>{e.count}</span>
           </div>
         ))}
       </div>
@@ -673,15 +694,15 @@ function MonthlyPnlChart({ trades, th, range }: { trades: ClosedTrade[]; th: typ
       <div className={`flex items-center gap-4 pt-1 border-t ${th.borderLight}`}>
         <div className="flex items-center gap-1.5">
           <div className="w-3 h-1.5 rounded-full bg-emerald-500/60" />
-          <span className={`text-[9px] ${th.textFaint}`}>P&L</span>
+          <span className={`text-[9px] ${th.textFaint}`}>Monthly P&L</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <div className="w-3 h-0.5 rounded-full bg-indigo-400/60" />
-          <span className={`text-[9px] ${th.textFaint}`}>Win rate</span>
+          <div className="w-3 h-0.5 rounded-full bg-emerald-400/80" />
+          <span className={`text-[9px] ${th.textFaint}`}>Cumulative P&L</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className={`text-[9px] text-indigo-400/60`}>3</span>
-          <span className={`text-[9px] ${th.textFaint}`}>Trade count (below label)</span>
+          <span className={`text-[9px] ${th.textFaint} opacity-50`}>3</span>
+          <span className={`text-[9px] ${th.textFaint}`}>Trade count</span>
         </div>
       </div>
     </div>
