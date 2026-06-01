@@ -114,11 +114,7 @@ interface SpySuggestion {
   contracts: number;
   spreadWidth: number;
   capitalRequired: number;
-  strategy: 'BPS' | 'BCS' | 'IC';
-  rationale: string;
-  shortOccSymbol: string;
-  longOccSymbol: string;
-}
+  strategy: 'BPS' | 'BCS';
 
 interface EngineData {
   capital: CapitalSummary;
@@ -146,7 +142,7 @@ interface SpxSuggestion {
   rationale: string;
   shortOccSymbol: string;
   longOccSymbol: string;
-  strategy: 'BPS' | 'BCS' | 'IC';
+  strategy: 'BPS' | 'BCS';
 }
 
 interface WheelSuggestion {
@@ -462,9 +458,10 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
         .filter((e: any) => e.dte >= 28 && e.dte <= 48)
         .sort((a: any, b: any) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
 
-      // Determine strategy from ES=F bias — default BPS if no signal
+      // Strategy: BPS when bullish or neutral, BCS when bearish
+      // IC conditions (neutral) → still use BPS — simpler, more liquid, puts have better credit
       const esBias = esFuturesSignal?.bias ?? 'bullish';
-      const strategy: 'BPS' | 'BCS' | 'IC' = esBias === 'bearish' ? 'BCS' : esBias === 'neutral' ? 'IC' : 'BPS';
+      const strategy: 'BPS' | 'BCS' = esBias === 'bearish' ? 'BCS' : 'BPS';
       const deltaMin = etfRules.SPREAD_DELTA_MIN;
       const deltaMax = etfRules.SPREAD_DELTA_MAX;
 
@@ -583,7 +580,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
         .sort((a: any, b: any) => Math.abs(a.dte - 38) - Math.abs(b.dte - 38));
 
       const esBias = esFuturesSignal?.bias ?? 'bullish';
-      const strategy: 'BPS' | 'BCS' | 'IC' = esBias === 'bearish' ? 'BCS' : esBias === 'neutral' ? 'IC' : 'BPS';
+      const strategy: 'BPS' | 'BCS' = esBias === 'bearish' ? 'BCS' : 'BPS';
 
       for (const exp of validExps.slice(0, 3)) {
         const allSymbols: string[] = [];
@@ -1349,7 +1346,7 @@ interface EngineOrderEntry {
   longOccSymbol: string;
   credit: number;
   contracts: number;
-  strategy: 'BPS' | 'BCS' | 'IC';
+  strategy: 'BPS' | 'BCS';
   dte: number;
   shortStrike: number;
   longStrike: number;
