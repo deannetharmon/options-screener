@@ -1791,6 +1791,7 @@ EXTEND_PROFIT (e.g. moving 50% target to 70%):
 - DTE: if < 21, gamma risk makes holding dangerous. If > 30, extension is more reasonable.
 - Trend: if trend is confirmed aligned, extension has merit. If trend is uncertain or against, don't be greedy.
 - Earnings approaching: never extend through an earnings event for extra premium.
+- CRITICAL: If a position's earningsDate field is null or not provided, DO NOT guess, assume, or speculate about earnings timing. Instead use web search to look up the actual next earnings date for that ticker before giving any earnings-related advice. Never hallucinate earnings dates.
 - Buffer: if buffer < 5%, don't extend — protect the capital.
 
 CLOSE_ROLL (closing and re-entering):
@@ -1933,8 +1934,9 @@ async function callAIWithHistory(messages: ChatMessage[], systemOverride?: strin
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'gpt-4o-search-preview',
       max_tokens: 1200,
+      web_search: true,
       system: systemOverride ?? TRADING_SYSTEM_PROMPT,
       messages,
     }),
