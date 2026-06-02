@@ -687,12 +687,19 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
               const longStrike = strategy === 'BCS' ? shortStrike + SPY_WIDTH : shortStrike - SPY_WIDTH;
 
               // ES=F strike anchor (scaled to SPY price — SPY ≈ SPX ÷ 10)
-              if (esFuturesSignal) {
+              // Advisory only — logs a warning but does NOT filter strikes (same as SPX behavior).
+              // Hard-gating here produced strikes far below current price when overnight range
+              // was used as a floor, causing badly OTM suggestions with stale-looking credits.
+              const spyEsAnchorNote = (() => {
+                if (!esFuturesSignal) return '';
                 const buffer = 0.005;
                 const spyOvernight = { low: esFuturesSignal.overnightLow / 10, high: esFuturesSignal.overnightHigh / 10 };
-                if (strategy === 'BPS' && shortStrike > spyOvernight.low * (1 - buffer)) continue;
-                if (strategy === 'BCS' && shortStrike < spyOvernight.high * (1 + buffer)) continue;
-              }
+                if (strategy === 'BPS' && shortStrike > spyOvernight.low * (1 - buffer))
+                  return ` ⚠ Near SPY overnight low ${spyOvernight.low.toFixed(1)}`;
+                if (strategy === 'BCS' && shortStrike < spyOvernight.high * (1 + buffer))
+                  return ` ⚠ Near SPY overnight high ${spyOvernight.high.toFixed(1)}`;
+                return '';
+              })();
 
               const shortMid = (parseFloat(item.bid ?? '0') + parseFloat(item.ask ?? '0')) / 2;
               if (shortMid <= 0) continue;
@@ -737,6 +744,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
                 : '';
               const taxNote = 'Short-term tax treatment.';
 
+              console.log(`[SPY screener] ✓ ${shortStrike}/${longStrike} — POP ${pop.toFixed(0)}% credit $${credit.toFixed(2)} ratio ${(creditRatio*100).toFixed(0)}%${spyEsAnchorNote}`);
               spySuggestedEntry = {
                 shortStrike, longStrike, expiration: exp.date, dte: exp.dte,
                 pop, credit, creditRatio, roc, contracts,
@@ -745,7 +753,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
                 strategy,
                 shortOccSymbol: shortOccSymbolSpy,
                 longOccSymbol: longOccSymbolSpy,
-                rationale: `${biasNote}${exp.dte}d DTE · ${pop.toFixed(0)}% POP · ${(creditRatio * 100).toFixed(0)}% credit ratio · ${SPY_WIDTH}-wide · ${contracts} contracts · ${taxNote}`
+                rationale: `${biasNote}${exp.dte}d DTE · ${pop.toFixed(0)}% POP · ${(creditRatio * 100).toFixed(0)}% credit ratio · ${SPY_WIDTH}-wide · ${contracts} contracts · ${taxNote}${spyEsAnchorNote}`
               };
               break;
             }
@@ -1604,9 +1612,11 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
 
   const isWheelEntry = entry.mode === 'wheel' || entry.strategy === 'CSP' || entry.strategy === 'CC';
   const [resolvedOcc, setResolvedOcc] = useState(entry.shortOccSymbol ?? '');
+  const [resolvedLongOcc, setResolvedLongOcc] = useState(entry.longOccSymbol ?? '');
   const [resolvedExpiration, setResolvedExpiration] = useState(entry.expiration ?? '');
   const [resolvedBidAsk, setResolvedBidAsk] = useState<{ bid: number; ask: number; mid: number; delta: number | null; oi: number | null } | null>(null);
   const [resolvingOption, setResolvingOption] = useState(false);
+  const [liveRefreshNote, setLiveRefreshNote] = useState<string>('');
 
   const gtcBuyback = parseFloat((entryLimit * (1 - gtcPct / 100)).toFixed(2));
   const totalCredit = entryLimit * contracts * 100;
@@ -1615,14 +1625,61 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
       ? Math.max(0, (entry.shortStrike * 100 * contracts) - totalCredit)
       : 0
     : Math.max(0, (entry.spreadWidth - entryLimit) * contracts * 100);
-  const hasOcc = isWheelEntry ? Boolean(resolvedOcc) : Boolean(entry.shortOccSymbol && entry.longOccSymbol);
+  const hasOcc = isWheelEntry ? Boolean(resolvedOcc) : Boolean(resolvedOcc && resolvedLongOcc);
   const engineInstrumentType = (symbol: string): 'Equity Option' | 'Index Option' => {
     const normalized = String(symbol ?? '').replace(/\s+/g, '').toUpperCase();
     return normalized.startsWith('SPX') || normalized.startsWith('NDX') || normalized.startsWith('RUT') || normalized.startsWith('VIX')
       ? 'Index Option'
       : 'Equity Option';
   };
-  const legInstrumentType = isWheelEntry ? 'Equity Option' : engineInstrumentType(entry.shortOccSymbol || entry.symbol);
+  const legInstrumentType = isWheelEntry ? 'Equity Option' : engineInstrumentType(resolvedOcc || entry.symbol);
+
+  // ── Live spread re-fetch (spread entries only) ─────────────────────────
+  // Fetches current bid/ask for both legs on modal open. Updates entry limit
+  // to live mid price so the credit shown matches what TastyTrade will show.
+  const resolveSpreadLive = useCallback(async () => {
+    if (isWheelEntry) return;
+    if (!entry.shortOccSymbol || !entry.longOccSymbol) return;
+    setResolvingOption(true); setLiveRefreshNote(''); setError('');
+    try {
+      const token = await getAccessToken();
+      const qs = [
+        `equity-option=${encodeURIComponent(entry.shortOccSymbol)}`,
+        `equity-option=${encodeURIComponent(entry.longOccSymbol)}`,
+      ].join('&');
+      const md = await ttFetch(`/market-data/by-type?${qs}`, token);
+      const items: any[] = md?.data?.items ?? [];
+      const shortItem = items.find((i: any) => i.symbol === entry.shortOccSymbol);
+      const longItem  = items.find((i: any) => i.symbol === entry.longOccSymbol);
+      if (!shortItem || !longItem) {
+        setLiveRefreshNote('Live price unavailable — using scan price. Verify in TastyTrade before placing.');
+        return;
+      }
+      const shortMid = (parseFloat(shortItem.bid ?? '0') + parseFloat(shortItem.ask ?? '0')) / 2;
+      const longMid  = (parseFloat(longItem.bid  ?? '0') + parseFloat(longItem.ask  ?? '0')) / 2;
+      const liveMid  = parseFloat(Math.max(0, shortMid - longMid).toFixed(2));
+      const staleCredit = parseFloat(entry.credit.toFixed(2));
+      const drift = staleCredit > 0 ? Math.abs(liveMid - staleCredit) / staleCredit : 0;
+      // Always update to live price
+      if (liveMid > 0) {
+        setEntryLimit(liveMid);
+        setResolvedOcc(entry.shortOccSymbol);
+        setResolvedLongOcc(entry.longOccSymbol);
+        if (drift > 0.05) {
+          setLiveRefreshNote(`Live mid $${liveMid.toFixed(2)} (scan was $${staleCredit.toFixed(2)}, ${(drift * 100).toFixed(0)}% drift) — entry limit updated.`);
+        } else {
+          setLiveRefreshNote(`Live mid $${liveMid.toFixed(2)} — confirmed current.`);
+        }
+      } else {
+        setLiveRefreshNote('Live mid is $0.00 — market may be closed. Verify before placing.');
+      }
+    } catch (e: any) {
+      setLiveRefreshNote('Live price fetch failed — using scan price. Verify in TastyTrade before placing.');
+      console.warn('[EngineOrderModal] spread live re-fetch failed:', e?.message);
+    } finally {
+      setResolvingOption(false);
+    }
+  }, [isWheelEntry, entry.shortOccSymbol, entry.longOccSymbol, entry.credit]);
 
   const resolveWheelOption = useCallback(async () => {
     if (!isWheelEntry) return;
@@ -1685,7 +1742,10 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
     }
   }, [entry.symbol, entry.shortStrike, entry.dte, entry.optionType, entry.strategy, entry.credit, isWheelEntry]);
 
-  useEffect(() => { resolveWheelOption(); }, [resolveWheelOption]);
+  useEffect(() => {
+    if (isWheelEntry) resolveWheelOption();
+    else resolveSpreadLive();
+  }, [isWheelEntry, resolveWheelOption, resolveSpreadLive]);
 
   const placeOrder = async () => {
     setPhase('placing'); setError('');
@@ -1704,8 +1764,8 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
       const legs = isWheelEntry
         ? [{ 'instrument-type': legInstrumentType, symbol: resolvedOcc, quantity: contracts, action: 'Sell to Open' }]
         : [
-            { 'instrument-type': legInstrumentType, symbol: entry.shortOccSymbol!, quantity: contracts, action: 'Sell to Open' },
-            { 'instrument-type': legInstrumentType, symbol: entry.longOccSymbol!,  quantity: contracts, action: 'Buy to Open'  },
+            { 'instrument-type': legInstrumentType, symbol: resolvedOcc,    quantity: contracts, action: 'Sell to Open' },
+            { 'instrument-type': legInstrumentType, symbol: resolvedLongOcc, quantity: contracts, action: 'Buy to Open'  },
           ];
       const closingLegs = legs.map(l => ({
         ...l,
@@ -1796,6 +1856,14 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
                   <span className={`text-[10px] ${th.text} text-right`} style={{ fontFamily: "'DM Mono', monospace" }}>{resolvingOption ? 'Resolving...' : resolvedOcc || 'Not resolved'}</span>
                 </div>
               )}
+              {!isWheelEntry && (
+                <div className="flex justify-between gap-3">
+                  <span className={`text-[10px] ${th.textFaint}`}>Live OCC symbols</span>
+                  <span className={`text-[10px] ${th.text} text-right`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                    {resolvingOption ? 'Fetching live price...' : resolvedOcc ? `${resolvedOcc.trim()} / ${resolvedLongOcc.trim()}` : 'Pending'}
+                  </span>
+                </div>
+              )}
               {isWheelEntry && resolvedBidAsk && (
                 <div className="flex justify-between">
                   <span className={`text-[10px] ${th.textFaint}`}>Bid / Ask / Mid</span>
@@ -1807,6 +1875,14 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
                 <span className={`text-[10px] ${th.text}`}>{legInstrumentType}</span>
               </div>
             </div>
+
+            {liveRefreshNote && (
+              <div className={`rounded-lg px-3 py-2 border ${liveRefreshNote.includes('drift') || liveRefreshNote.includes('failed') || liveRefreshNote.includes('unavailable') ? 'bg-amber-500/10 border-amber-600/30' : 'bg-emerald-500/10 border-emerald-700/30'}`}>
+                <p className={`text-[10px] ${liveRefreshNote.includes('drift') || liveRefreshNote.includes('failed') || liveRefreshNote.includes('unavailable') ? 'text-amber-400' : 'text-emerald-400'}`}>
+                  ◎ {liveRefreshNote}
+                </p>
+              </div>
+            )}
 
             {/* Controls */}
             <div className="space-y-3">
