@@ -1421,7 +1421,12 @@ async function loadPositions(): Promise<Position[]> {
     const targetPrice = Math.abs(creditReceived) * profitTarget;
     const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * profitTarget;
 
-    const stopLoss = classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders);
+    // Stop loss tracking only applies to defined-risk spreads (BPS/BCS/IC).
+    // CSPs and single-leg positions (PUT/CALL) have no spread width to stop out of.
+    const isSpread = strategy === 'BPS' || strategy === 'BCS' || strategy === 'IC';
+    const stopLoss = isSpread
+      ? classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders)
+      : { status: 'unknown' as const, price: null };
 
     // Only treat earnings as relevant if it occurs on or before this position's expiration.
     // Tastytrade market-metrics can return the next earnings date within ~60 days;
@@ -5270,7 +5275,9 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
             <div className="border-t-2 border-amber-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
-              {(() => {
+              {(pos.strategy !== 'BPS' && pos.strategy !== 'BCS' && pos.strategy !== 'IC') ? (
+                <p className={`text-xs font-bold ${th.textFaint}`}>— N/A</p>
+              ) : (() => {
                 const cfg =
                   pos.stopLossStatus === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-400' } :
                   pos.stopLossStatus === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
@@ -5340,7 +5347,10 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             const canExtend = pnlPct != null && pnlPct >= 50 && pos.dte >= 14;
             return canExtend ? <ExtendProfitButton pos={pos} th={th} /> : null;
           })()}
-          <SetStopLossButton pos={pos} th={th} />
+          {/* Stop only applies to defined-risk spreads — not CSPs or single-leg positions */}
+          {(pos.strategy === 'BPS' || pos.strategy === 'BCS' || pos.strategy === 'IC') && (
+            <SetStopLossButton pos={pos} th={th} />
+          )}
           {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(rec.action) && (
             <span className={`text-[9px] ${th.textFaint} ml-1`}>← suggested</span>
           )}
