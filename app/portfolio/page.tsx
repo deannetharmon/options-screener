@@ -4422,7 +4422,23 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
           'price-effect': 'Debit',
           legs,
         };
-        const res = await ttPost(`/accounts/${pos.accountNumber}/orders`, token, stopBody);
+        console.log('STOP ORDER PAYLOAD:', JSON.stringify(stopBody, null, 2));
+        const stopRes = await fetch(`${BASE}/accounts/${pos.accountNumber}/orders`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(stopBody),
+        });
+        const stopData = await stopRes.json().catch(() => ({}));
+        console.log('STOP ORDER RESPONSE status:', stopRes.status);
+        console.log('STOP ORDER RESPONSE body:', JSON.stringify(stopData, null, 2));
+        if (!stopRes.ok) {
+          const detail = stopData?.error?.message
+            ?? stopData?.['error-message']
+            ?? stopData?.errors?.map((e: any) => `${e.field ?? ''}: ${e.message ?? e.reason ?? JSON.stringify(e)}`).join('; ')
+            ?? JSON.stringify(stopData).slice(0, 600);
+          throw new Error(`TastyTrade rejected stop order (${stopRes.status}): ${detail}`);
+        }
+        const res = stopData;
         const orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
         setResult('success');
         setResultMsg(`Stop Limit placed @ $${stopTrigger.toFixed(2)} (ID #${orderId})`);
