@@ -1355,6 +1355,8 @@ function ActionCard({ item, th }: { item: ActionItem; th: typeof THEMES[Theme] }
 // ── Reusable chart button — sparkline popup + TradingView link ─────────────
 function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] }) {
   const [showChart, setShowChart] = useState(false);
+  const [popupPos, setPopupPos] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const [sparkData, setSparkData] = useState(null as number[] | null);
   const [sparkLoading, setSparkLoading] = useState(false);
 
@@ -1364,6 +1366,10 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
         onClick={e => {
           e.stopPropagation();
           if (!showChart) {
+            if (buttonRef.current) {
+              const r = buttonRef.current.getBoundingClientRect();
+              setPopupPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX });
+            }
             setShowChart(true);
             if (!sparkData) {
               setSparkLoading(true);
@@ -1378,6 +1384,7 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
             }
           } else { setShowChart(false); }
         }}
+        ref={buttonRef}
         className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 hover:text-blue-400'}`}
         title="Quick chart"
       >
@@ -1391,8 +1398,8 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
         <>
           <div className="fixed inset-0 z-30" onClick={() => setShowChart(false)} />
           <div
-            className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
-            style={{ width: '280px' }}
+            className={`fixed z-[9999] ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
+            style={{ width: '280px', top: popupPos?.top ?? 0, left: popupPos?.left ?? 0 }}
             onClick={e => e.stopPropagation()}
           >
           <div className="flex items-center justify-between mb-2">
