@@ -4375,7 +4375,6 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       if (needsOco) {
         setPhase('Cancelling existing GTC order...');
         console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
-        // Cancel via complex order endpoint if this is part of an OCO
         const complexId = (pos as any).gtcComplexOrderId;
         console.log(`PLACE_GTC CANCEL: orderId=${pos.gtcOrderId} complexId=${complexId}`);
         if (complexId) {
@@ -4403,7 +4402,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
               'order-type': 'Stop Limit',
               'time-in-force': 'GTC',
               'stop-trigger': stopTrigger.toFixed(2),
-              price: parseFloat((stopTrigger * 1.10).toFixed(2)).toFixed(2),  // 10% above trigger for fill room
+              price: stopTrigger.toFixed(2),  // limit = trigger for spreads; 10% overage caused validation errors
               'price-effect': 'Debit',
               legs,
             },
@@ -4419,14 +4418,14 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
           'order-type': 'Stop Limit',
           'time-in-force': 'GTC',
           'stop-trigger': stopTrigger.toFixed(2),
-          price: parseFloat((stopTrigger * 1.10).toFixed(2)).toFixed(2),
+          price: stopTrigger.toFixed(2),  // limit = trigger for spreads
           'price-effect': 'Debit',
           legs,
         };
         const res = await ttPost(`/accounts/${pos.accountNumber}/orders`, token, stopBody);
         const orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
         setResult('success');
-        setResultMsg(`Stop Limit placed @ trigger $${stopTrigger.toFixed(2)} (ID #${orderId})`);
+        setResultMsg(`Stop Limit placed @ $${stopTrigger.toFixed(2)} (ID #${orderId})`);
       }
       setOpen(false);
       setConfirming(false);
