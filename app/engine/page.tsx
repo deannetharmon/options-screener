@@ -1863,10 +1863,6 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
           </div>
         )}
 
-        {/* ── ADVISOR TAB ── */}
-        {status === 'ready' && d && subTab === 'advisor' && (
-          <EngineAdvisor data={d} watchlist={watchlist} th={th} />
-        )}
       </div>
     </div>
   );
@@ -3084,6 +3080,11 @@ export default function EnginePage() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* ── ADVISOR TAB ── */}
+        {status === 'ready' && d && subTab === 'advisor' && (
+          <EngineAdvisor data={d} watchlist={watchlist} th={th} />
         )}
       </div>
     </div>
