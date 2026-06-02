@@ -4365,11 +4365,21 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       }
 
       const itype = instrType(pos.symbol);
-      const legs = pos.legs.map(leg => ({
+      // Simple /orders endpoint only accepts 'Equity Option' as instrument-type on legs,
+      // even for index options (SPX/SPXW). 'Index Option' is only valid on /complex-orders.
+      const simpleItype = 'Equity Option' as const;
+      const complexItype = itype;
+      const legsForSimple = pos.legs.map(leg => ({
         symbol: leg.symbol,
         quantity: leg.quantity,
         action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as 'Buy to Close' | 'Sell to Close',
-        'instrument-type': itype,
+        'instrument-type': simpleItype,
+      }));
+      const legsForComplex = pos.legs.map(leg => ({
+        symbol: leg.symbol,
+        quantity: leg.quantity,
+        action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as 'Buy to Close' | 'Sell to Close',
+        'instrument-type': complexItype,
       }));
 
       if (needsOco) {
@@ -4396,15 +4406,15 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
               'time-in-force': 'GTC',
               price: gtcLimit.toFixed(2),
               'price-effect': 'Debit',
-              legs,
+              legs: legsForComplex,
             },
             {
               'order-type': 'Stop Limit',
               'time-in-force': 'GTC',
               'stop-trigger': stopTrigger.toFixed(2),
-              price: stopTrigger.toFixed(2),  // limit = trigger for spreads; 10% overage caused validation errors
+              price: stopTrigger.toFixed(2),
               'price-effect': 'Debit',
-              legs,
+              legs: legsForComplex,
             },
           ],
         };
@@ -4420,7 +4430,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
           'stop-trigger': stopTrigger.toFixed(2),
           price: stopTrigger.toFixed(2),  // limit = trigger for spreads
           'price-effect': 'Debit',
-          legs,
+          legs: legsForSimple,
         };
         console.log('STOP ORDER PAYLOAD:', JSON.stringify(stopBody, null, 2));
         const stopRes = await fetch(`${BASE}/accounts/${pos.accountNumber}/orders`, {
