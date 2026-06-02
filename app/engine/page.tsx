@@ -1877,10 +1877,10 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
 
 
 // ── Engine Advisor ─────────────────────────────────────────────────────────
-interface AdvisorMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
+interface AdvisorMessagePart { type: 'text'; text: string; }
+interface AdvisorImagePart { type: 'image'; source: { type: 'base64'; media_type: string; data: string }; }
+type AdvisorContentPart = AdvisorMessagePart | AdvisorImagePart;
+interface AdvisorMessage { role: 'user' | 'assistant'; content: string | AdvisorContentPart[]; }
 
 function buildAdvisorSystemPrompt(data: EngineData, watchlist: string[]): string {
   const capital = data.capital;
@@ -1971,9 +1971,11 @@ You can answer questions about: whether to enter the suggested trades, strike se
 function EngineAdvisor({ data, watchlist, th }: { data: EngineData; watchlist: string[]; th: typeof THEMES[Theme] }) {
   const [messages, setMessages] = useState<AdvisorMessage[]>([]);
   const [input, setInput] = useState('');
+  const [pendingImage, setPendingImage] = useState<{ base64: string; mediaType: string; preview: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const systemPrompt = buildAdvisorSystemPrompt(data, watchlist);
 
@@ -1981,11 +1983,29 @@ function EngineAdvisor({ data, watchlist, th }: { data: EngineData; watchlist: s
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const [meta, base64] = dataUrl.split(',');
+      const mediaType = meta.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
+      setPendingImage({ base64, mediaType, preview: dataUrl });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   const send = async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text && !pendingImage || loading) return;
     setInput('');
-    const userMsg: AdvisorMessage = { role: 'user', content: text };
+    const parts: AdvisorContentPart[] = [];
+    if (pendingImage) parts.push({ type: 'image', source: { type: 'base64', media_type: pendingImage.mediaType, data: pendingImage.base64 } });
+    if (text) parts.push({ type: 'text', text });
+    const userMsg: AdvisorMessage = { role: 'user', content: parts.length === 1 && !pendingImage ? text : parts };
+    setPendingImage(null);
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setLoading(true);
@@ -1994,7 +2014,7 @@ function EngineAdvisor({ data, watchlist, th }: { data: EngineData; watchlist: s
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'gpt-4o',
+          model: 'claude-sonnet-4-20250514',
           max_tokens: 800,
           system: systemPrompt,
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
@@ -2070,7 +2090,16 @@ function EngineAdvisor({ data, watchlist, th }: { data: EngineData; watchlist: s
               {msg.role === 'assistant' && (
                 <p className="text-[8px] text-violet-400 font-bold tracking-widest mb-1.5">◈ ADVISOR</p>
               )}
-              <p className={`text-[11px] ${th.textMuted} leading-relaxed whitespace-pre-wrap`}>{msg.content}</p>
+              {(() => {
+                const imgSrc = typeof msg.content !== 'string'
+                  ? (() => { const img = msg.content.find((p: any) => p.type === 'image'); return img ? `data:${(img as any).source.media_type};base64,${(img as any).source.data}` : null; })()
+                  : null;
+                const txt = typeof msg.content === 'string' ? msg.content : msg.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join(' ');
+                return (<>
+                  {imgSrc && <img src={imgSrc} alt="attachment" className="rounded-lg max-w-full mb-1.5" style={{ maxHeight: '180px', objectFit: 'contain' }} />}
+                  {txt && <p className={`text-[11px] ${th.textMuted} leading-relaxed whitespace-pre-wrap`}>{txt}</p>}
+                </>);
+              })()}
             </div>
           </div>
         ))}
@@ -2091,8 +2120,28 @@ function EngineAdvisor({ data, watchlist, th }: { data: EngineData; watchlist: s
       </div>
 
       {/* Input */}
-      <div className={`border ${th.border} rounded-b-xl px-3 py-3 shrink-0 ${th.card}`}>
+      <div className={`border ${th.border} rounded-b-xl px-3 py-3 shrink-0 ${th.card} space-y-2`}>
+        {/* Image preview */}
+        {pendingImage && (
+          <div className="relative inline-block">
+            <img src={pendingImage.preview} alt="pending" className="rounded-lg max-h-24 object-contain border border-violet-500/40" />
+            <button onClick={() => setPendingImage(null)}
+              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-slate-700 border border-slate-500 text-slate-300 text-[9px] flex items-center justify-center hover:bg-red-600 transition-colors">
+              ✕
+            </button>
+          </div>
+        )}
         <div className="flex items-end gap-2">
+          {/* Hidden file input */}
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
+          {/* Attach button */}
+          <button onClick={() => fileInputRef.current?.click()} disabled={loading}
+            title="Attach image"
+            className={`shrink-0 w-8 h-8 rounded-lg border ${th.border} ${th.textFaint} hover:border-violet-500 hover:text-violet-400 disabled:opacity-40 flex items-center justify-center transition-colors`}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
           <textarea
             ref={inputRef}
             value={input}
@@ -2103,12 +2152,12 @@ function EngineAdvisor({ data, watchlist, th }: { data: EngineData; watchlist: s
             className={`flex-1 resize-none ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-[11px] ${th.text} focus:outline-none focus:border-violet-500`}
             style={{ fontFamily: "'DM Sans', sans-serif" }}
           />
-          <button onClick={send} disabled={!input.trim() || loading}
+          <button onClick={send} disabled={(!input.trim() && !pendingImage) || loading}
             className="shrink-0 px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-lg transition-colors">
             {loading ? '...' : 'Send'}
           </button>
         </div>
-        <p className={`text-[8px] ${th.textFaint} mt-1.5`}>Enter to send · Shift+Enter for new line</p>
+        <p className={`text-[8px] ${th.textFaint}`}>Enter to send · Shift+Enter for new line</p>
       </div>
     </div>
   );
