@@ -1427,7 +1427,9 @@ async function loadPositions(): Promise<Position[]> {
     // Tastytrade market-metrics can return the next earnings date within ~60 days;
     // that is NOT the same as "earnings within expiry."
     const rawEarningsDate = earningsMap[symbol] ?? null;
-    const earningsWithinExpiry = rawEarningsDate && new Date(rawEarningsDate) <= new Date(expDate)
+    // Use string comparison (YYYY-MM-DD) — avoids UTC midnight timezone shifts
+    // that cause new Date() comparisons to misclassify same-day or next-day earnings
+    const earningsWithinExpiry = rawEarningsDate && rawEarningsDate <= expDate
       ? rawEarningsDate
       : null;
 
@@ -4726,6 +4728,8 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   const [sparkData, setSparkData] = useState(null as number[] | null);
   const [sparkLoading, setSparkLoading] = useState(false);
   const chartPopupRef = useRef(null as HTMLDivElement | null);
+  const chartButtonRef = useRef<HTMLButtonElement>(null);
+  const [chartPopupPos, setChartPopupPos] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!showChart) return;
@@ -4846,7 +4850,8 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                       }
                     } else { setShowChart(false); }
                   }}
-                  className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 hover:text-blue-400'}`}
+                  ref={chartButtonRef}
+                className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 hover:text-blue-400'}`}
                   title="Quick chart"
                 >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -4858,8 +4863,8 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                 {showChart && (
                   <div
                     ref={chartPopupRef}
-                    className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
-                    style={{ width: '280px' }}
+                    className={`fixed z-[9999] ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
+                    style={{ width: '280px', top: chartPopupPos?.top ?? 0, left: chartPopupPos?.left ?? 0 }}
                     onClick={e => e.stopPropagation()}
                   >
                     <div className="flex items-center justify-between mb-2">
