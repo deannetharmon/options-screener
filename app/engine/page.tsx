@@ -37,13 +37,13 @@ function getSavedEtfRules(): EtfRules {
   } catch { return { ...DEFAULT_ETF_RULES }; }
 }
 
-const DEFAULT_ALLOC = { reserve: 20, wheel: 50, spx: 30 };
+const DEFAULT_ALLOC = { reserve: 5, wheel: 51, spx: 30, hunter: 7, longBook: 7 };
 
 type SubTab = 'actions' | 'dashboard' | 'timeline' | 'advisor';
 type ActionPriority = 'urgent' | 'review' | 'entry' | 'hold';
 type EngineStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-interface Allocation { reserve: number; wheel: number; spx: number; }
+interface Allocation { reserve: number; wheel: number; spx: number; hunter: number; longBook: number; }
 
 interface CapitalSummary {
   obp: number;
@@ -2530,18 +2530,16 @@ export default function EnginePage() {
   };
 
   const saveAlloc = (a: Allocation) => {
-    // Normalize to sum to 100. Return the normalized value so callers do not
-    // accidentally rerun the engine with stale state.
-    const total = a.reserve + a.wheel + a.spx;
-    const reserve = Math.round((a.reserve / total) * 100);
-    const wheel = Math.round((a.wheel / total) * 100);
+    const total = a.reserve + a.wheel + a.spx + a.hunter + a.longBook;
+    const reserve  = Math.round((a.reserve  / total) * 100);
+    const wheel    = Math.round((a.wheel    / total) * 100);
+    const spx      = Math.round((a.spx      / total) * 100);
+    const hunter   = Math.round((a.hunter   / total) * 100);
     const normalized: Allocation = {
-      reserve,
-      wheel,
-      spx: 100 - reserve - wheel,
+      reserve, wheel, spx, hunter,
+      longBook: 100 - reserve - wheel - spx - hunter,
     };
-
-    setEngineData(null); // prevent stale target denominators while reloading
+    setEngineData(null);
     setAlloc(normalized);
     try { localStorage.setItem(LS_ENGINE_ALLOC, JSON.stringify(normalized)); } catch {}
     return normalized;
@@ -2630,6 +2628,7 @@ export default function EnginePage() {
             <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</a>
             <a href="/trade-log" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
             <a href="/performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
+            <a href="/long-book" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">LONG BOOK</a>
           </nav>
         </div>
         <div className="flex items-center gap-3">
@@ -2672,19 +2671,23 @@ export default function EnginePage() {
               <div>
                 <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold mb-3`}>Capital Allocation</p>
                 <div className="space-y-3">
-                  {(['reserve', 'wheel', 'spx'] as const).map(key => (
-                    <div key={key} className="flex items-center gap-3">
-                      <span className={`text-[10px] ${th.textMuted} w-16 shrink-0 capitalize`}>{key}</span>
-                      <input type="range" min={5} max={60} step={5} value={editingAlloc[key]}
-                        onChange={e => setEditingAlloc(prev => ({ ...prev, [key]: parseInt(e.target.value) }))}
-                        className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-blue-500" />
-                      <span className={`text-[10px] font-bold ${th.text} w-24 text-right`}>
-                        {editingAlloc[key]}% <span className={th.textFaint}>({allocationLabel(editingAlloc[key])})</span>
-                      </span>
-                    </div>
-                  ))}
-                  <div className={`text-[9px] ${editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx === 100 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    Total: {editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx}% {editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx !== 100 && '(will normalize to 100%)'}
+                  {(['reserve', 'wheel', 'spx', 'hunter', 'longBook'] as const).map(key => {
+                    const labels: Record<string, string> = { reserve: 'Reserve', wheel: 'Wheel', spx: 'SPX Engine', hunter: 'Hunter', longBook: 'Long Book' };
+                    const colors: Record<string, string> = { reserve: 'text-slate-400', wheel: 'text-blue-400', spx: 'text-violet-400', hunter: 'text-amber-400', longBook: 'text-emerald-400' };
+                    return (
+                      <div key={key} className="flex items-center gap-3">
+                        <span className={`text-[10px] w-24 shrink-0 ${colors[key]} font-medium`}>{labels[key]}</span>
+                        <input type="range" min={2} max={70} step={1} value={editingAlloc[key]}
+                          onChange={e => setEditingAlloc(prev => ({ ...prev, [key]: parseInt(e.target.value) }))}
+                          className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-blue-500" />
+                        <span className={`text-[10px] font-bold ${th.text} w-24 text-right`}>
+                          {editingAlloc[key]}% <span className={th.textFaint}>({allocationLabel(editingAlloc[key])})</span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <div className={`text-[9px] ${editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx + editingAlloc.hunter + editingAlloc.longBook === 100 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    Total: {editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx + editingAlloc.hunter + editingAlloc.longBook}% {editingAlloc.reserve + editingAlloc.wheel + editingAlloc.spx + editingAlloc.hunter + editingAlloc.longBook !== 100 && '(will normalize to 100%)'}
                   </div>
                   <div className={`text-[9px] ${th.textFaint}`}>
                     Dollar amounts are based on current option buying power: {d?.capital?.obp ? `$${formatCurrency(d.capital.obp)}` : 'not loaded'}.
