@@ -39,7 +39,7 @@ function getSavedEtfRules(): EtfRules {
 
 const DEFAULT_ALLOC = { reserve: 20, wheel: 50, spx: 30 };
 
-type SubTab = 'actions' | 'dashboard' | 'timeline';
+type SubTab = 'actions' | 'dashboard' | 'timeline' | 'advisor';
 type ActionPriority = 'urgent' | 'review' | 'entry' | 'hold';
 type EngineStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -1862,6 +1862,250 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
             <p className={`text-[9px] ${th.textFaint} text-center`}>Entry GTC + {gtcPct}% profit target GTC submitted as bracket order</p>
           </div>
         )}
+
+        {/* ── ADVISOR TAB ── */}
+        {status === 'ready' && d && subTab === 'advisor' && (
+          <EngineAdvisor data={d} watchlist={watchlist} th={th} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+// ── Engine Advisor ─────────────────────────────────────────────────────────
+interface AdvisorMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+function buildAdvisorSystemPrompt(data: EngineData, watchlist: string[]): string {
+  const capital = data.capital;
+
+  const spxBlock = data.spxPositions.length > 0
+    ? data.spxPositions.map(p =>
+        `  • SPX ${p.shortStrike}/${p.longStrike}P | exp ${p.expiration} (${p.dte}d DTE) | POP ${p.pop.toFixed(0)}% | P&L ${p.pnlPct != null ? (p.pnlPct >= 0 ? '+' : '') + p.pnlPct.toFixed(0) + '%' : '?'} ($${p.pnl?.toFixed(0) ?? '?'}) | ${p.contracts} contracts | capital at risk $${p.capitalAtRisk.toLocaleString()} | status: ${p.status.toUpperCase()}`
+      ).join('\n')
+    : '  None';
+
+  const spyBlock = data.spyPositions.length > 0
+    ? data.spyPositions.map(p =>
+        `  • SPY ${p.shortStrike}/${p.longStrike}P | exp ${p.expiration} (${p.dte}d DTE) | POP ${p.pop.toFixed(0)}% | P&L ${p.pnlPct != null ? (p.pnlPct >= 0 ? '+' : '') + p.pnlPct.toFixed(0) + '%' : '?'} ($${p.pnl?.toFixed(0) ?? '?'}) | ${p.contracts} contracts | status: ${p.status.toUpperCase()}`
+      ).join('\n')
+    : '  None';
+
+  const spxEntryBlock = data.spxSuggestedEntry
+    ? `  SPX ${data.spxSuggestedEntry.strategy} ${data.spxSuggestedEntry.shortStrike}/${data.spxSuggestedEntry.longStrike}P | exp ${data.spxSuggestedEntry.expiration} (${data.spxSuggestedEntry.dte}d) | POP ${data.spxSuggestedEntry.pop.toFixed(0)}% | credit $${data.spxSuggestedEntry.credit.toFixed(2)} | ratio ${(data.spxSuggestedEntry.creditRatio * 100).toFixed(0)}% | ROC ${data.spxSuggestedEntry.roc.toFixed(0)}% | ${data.spxSuggestedEntry.contracts} contracts | capital req $${data.spxSuggestedEntry.capitalRequired.toLocaleString()}\n  Rationale: ${data.spxSuggestedEntry.rationale}`
+    : '  No qualifying entry found (capital unavailable or no strikes pass rules)';
+
+  const spyEntryBlock = data.spySuggestedEntry
+    ? `  SPY ${data.spySuggestedEntry.strategy} ${data.spySuggestedEntry.shortStrike}/${data.spySuggestedEntry.longStrike}P | exp ${data.spySuggestedEntry.expiration} (${data.spySuggestedEntry.dte}d) | POP ${data.spySuggestedEntry.pop.toFixed(0)}% | credit $${data.spySuggestedEntry.credit.toFixed(2)} | ratio ${(data.spySuggestedEntry.creditRatio * 100).toFixed(0)}% | ${data.spySuggestedEntry.contracts} contracts | capital req $${data.spySuggestedEntry.capitalRequired.toLocaleString()}\n  Rationale: ${data.spySuggestedEntry.rationale}`
+    : '  No qualifying SPY entry found';
+
+  const wheelBlock = data.wheelPositions.map(p => {
+    if (p.phase === 'cash-secured-put')
+      return `  • ${p.symbol} [CSP] ${p.strike}P | exp ${p.expiration} (${p.dte}d) | POP ${p.pop?.toFixed(0) ?? '?'}% | IVR ${p.ivr ?? '?'} | P&L ${p.pnlPct != null ? (p.pnlPct >= 0 ? '+' : '') + p.pnlPct.toFixed(0) + '%' : '?'} | status: ${p.status.toUpperCase()} | capital req $${p.capitalRequired?.toLocaleString() ?? '?'}`;
+    if (p.phase === 'assigned')
+      return `  • ${p.symbol} [ASSIGNED] ${p.sharesHeld} shares @ $${p.costBasis?.toFixed(2)} | current $${p.currentPrice?.toFixed(2) ?? '?'} | IVR ${p.ivr ?? '?'}`;
+    if (p.phase === 'covered-call')
+      return `  • ${p.symbol} [COVERED CALL] ${p.strike}C | exp ${p.expiration} (${p.dte}d) | IVR ${p.ivr ?? '?'}`;
+    return `  • ${p.symbol} [IDLE] | price $${p.currentPrice?.toFixed(2) ?? '?'} | IVR ${p.ivr ?? '?'}${p.ivr != null && p.ivr < 30 ? ' <- IVR too low, wait' : ''}`;
+  }).join('\n') || '  None';
+
+  const wheelSugBlock = data.wheelSuggestions.filter(s => s.action !== 'wait').map(s =>
+    `  • ${s.symbol} -> ${s.action === 'sell-put' ? `Sell ${s.strike}P ~${s.dte}d DTE | capital $${s.capitalRequired?.toLocaleString()}` : `Sell ${s.strike}C ~${s.dte}d DTE`} | ${s.rationale}`
+  ).join('\n') || '  None';
+
+  return `You are an expert options trading advisor embedded in the Income Engine of Options Hunter, a premium-selling trading platform.
+
+You have full real-time context of the trader's portfolio and current opportunities. Be direct, specific, and concise. No disclaimers. No hedging. Answer as a senior options trader would.
+
+TRADING RULES (Prosper Trading Academy methodology):
+- IVR >= 30 required before selling premium
+- Entry DTE: 30-45 days
+- Short put delta: -0.20 to -0.30
+- Credit >= 15% of spread width for SPX index spreads
+- Credit >= 20% of spread width for ETFs/stocks
+- POP >= 68% for index spreads
+- OI >= 500 per leg
+- No earnings within expiry window
+- GTC close order at 50% profit placed at entry
+- Close or roll at 21 DTE
+- SPX: 25-wide spreads, Friday expirations only, 1256 tax treatment
+- SPY: flexible width, fills vehicle when SPX capital insufficient
+- Wheel: CSP -> assignment -> covered call cycle
+- Reserve bucket is UNTOUCHABLE - never deploy reserve capital
+
+CAPITAL SUMMARY:
+- Net Liquidating Value: $${capital.netLiq.toLocaleString()}
+- Option Buying Power (OBP): $${capital.obp.toLocaleString()}
+- SPX/Spread bucket: target $${capital.spxTarget.toLocaleString()} | deployed $${capital.spxDeployed.toLocaleString()} | available $${capital.spxAvailable.toLocaleString()}
+- Wheel bucket: target $${capital.wheelTarget.toLocaleString()} | deployed $${capital.wheelDeployed.toLocaleString()} | available $${capital.wheelAvailable.toLocaleString()}
+- Reserve: $${capital.reserveTarget.toLocaleString()} (protected, do not touch)
+- Overall deployment: ${capital.deploymentPct}% of target
+
+OPEN SPX POSITIONS:
+${spxBlock}
+
+OPEN SPY POSITIONS:
+${spyBlock}
+
+SUGGESTED SPX ENTRY:
+${spxEntryBlock}
+
+SUGGESTED SPY ENTRY:
+${spyEntryBlock}
+
+WHEEL POSITIONS (watchlist: ${watchlist.join(', ')}):
+${wheelBlock}
+
+WHEEL SUGGESTIONS (actionable):
+${wheelSugBlock}
+
+You can answer questions about: whether to enter the suggested trades, strike selection rationale, risk assessment, position sizing, roll decisions, closing logic, capital allocation, market conditions, and anything else related to managing this specific portfolio. Reference the actual numbers above in your answers.`;
+}
+
+function EngineAdvisor({ data, watchlist, th }: { data: EngineData; watchlist: string[]; th: typeof THEMES[Theme] }) {
+  const [messages, setMessages] = useState<AdvisorMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const systemPrompt = buildAdvisorSystemPrompt(data, watchlist);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput('');
+    const userMsg: AdvisorMessage = { role: 'user', content: text };
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
+    setLoading(true);
+    try {
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          max_tokens: 800,
+          system: systemPrompt,
+          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
+        }),
+      });
+      if (!res.ok) throw new Error('Advisor request failed');
+      const d = await res.json();
+      const reply = d?.content?.find((b: any) => b.type === 'text')?.text ?? 'No response.';
+      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+    } catch (e: any) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${e.message}` }]);
+    } finally {
+      setLoading(false);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  };
+
+  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+
+  const SUGGESTED_QUESTIONS = [
+    'Should I enter the suggested SPX trade today?',
+    'How is my overall deployment looking?',
+    'Which wheel position needs attention first?',
+    'Is it a good day to sell premium?',
+    'What should I do with idle wheel positions?',
+  ];
+
+  return (
+    <div className="flex flex-col max-w-4xl" style={{ height: 'calc(100vh - 220px)' }}>
+      {/* Header */}
+      <div className={`border ${th.border} rounded-t-xl px-4 py-3 bg-violet-500/5 flex items-center gap-3 shrink-0`}>
+        <span className="text-violet-400 text-sm font-bold">◈</span>
+        <div>
+          <p className="text-xs font-bold text-violet-400 tracking-widest">ENGINE ADVISOR</p>
+          <p className={`text-[9px] ${th.textFaint}`}>Full portfolio context loaded · SPX/SPY strikes, wheel positions, capital</p>
+        </div>
+        {messages.length > 0 && (
+          <button onClick={() => setMessages([])}
+            className={`ml-auto text-[9px] px-2 py-1 border ${th.border} ${th.textFaint} hover:text-white/70 rounded transition-colors`}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      {/* Messages */}
+      <div className={`flex-1 overflow-y-auto border-x ${th.border} px-4 py-4 space-y-4`}>
+        {messages.length === 0 && (
+          <div className="space-y-4">
+            <p className={`text-[11px] ${th.textFaint} leading-relaxed`}>
+              Ask me anything about your current positions, the suggested SPX/SPY entries, wheel management, or capital deployment. I have full context of your portfolio.
+            </p>
+            <div className="space-y-2">
+              <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase font-bold`}>Suggested questions</p>
+              {SUGGESTED_QUESTIONS.map((q, i) => (
+                <button key={i} onClick={() => { setInput(q); inputRef.current?.focus(); }}
+                  className={`block w-full text-left text-[10px] ${th.textMuted} px-3 py-2 border ${th.border} rounded-lg hover:border-violet-500/50 hover:text-violet-300 transition-colors`}>
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[85%] rounded-xl px-3 py-2.5 ${
+              msg.role === 'user'
+                ? 'bg-violet-600/20 border border-violet-600/40'
+                : `${th.card} border ${th.border}`
+            }`}>
+              {msg.role === 'assistant' && (
+                <p className="text-[8px] text-violet-400 font-bold tracking-widest mb-1.5">◈ ADVISOR</p>
+              )}
+              <p className={`text-[11px] ${th.textMuted} leading-relaxed whitespace-pre-wrap`}>{msg.content}</p>
+            </div>
+          </div>
+        ))}
+
+        {loading && (
+          <div className="flex justify-start">
+            <div className={`${th.card} border ${th.border} rounded-xl px-3 py-2.5`}>
+              <p className="text-[8px] text-violet-400 font-bold tracking-widest mb-1.5">◈ ADVISOR</p>
+              <div className="flex items-center gap-1.5">
+                {[0, 1, 2].map(i => (
+                  <div key={i} className="w-1.5 h-1.5 rounded-full bg-violet-400/60 animate-pulse" style={{ animationDelay: `${i * 150}ms` }} />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input */}
+      <div className={`border ${th.border} rounded-b-xl px-3 py-3 shrink-0 ${th.card}`}>
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="Ask about your positions, entries, strikes, capital..."
+            rows={2}
+            className={`flex-1 resize-none ${th.input} border ${th.inputBorder} rounded-lg px-3 py-2 text-[11px] ${th.text} focus:outline-none focus:border-violet-500`}
+            style={{ fontFamily: "'DM Sans', sans-serif" }}
+          />
+          <button onClick={send} disabled={!input.trim() || loading}
+            className="shrink-0 px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-[10px] font-bold rounded-lg transition-colors">
+            {loading ? '...' : 'Send'}
+          </button>
+        </div>
+        <p className={`text-[8px] ${th.textFaint} mt-1.5`}>Enter to send · Shift+Enter for new line</p>
       </div>
     </div>
   );
@@ -2377,6 +2621,7 @@ export default function EnginePage() {
             { key: 'actions', label: 'Actions', icon: '⚡' },
             { key: 'dashboard', label: 'Dashboard', icon: '◈' },
             { key: 'timeline', label: 'Timeline', icon: '⟿' },
+            { key: 'advisor', label: 'Advisor', icon: '◬' },
           ] as { key: SubTab; label: string; icon: string }[]).map(tab => (
             <button key={tab.key} onClick={() => saveSubTab(tab.key)}
               className={`flex items-center gap-1.5 px-4 py-3 text-xs font-medium tracking-wider border-b-2 transition-colors ${
