@@ -1938,6 +1938,7 @@ TRADING RULES (Prosper Trading Academy methodology):
 - SPY: flexible width, fills vehicle when SPX capital insufficient
 - Wheel: CSP -> assignment -> covered call cycle
 - Reserve bucket is UNTOUCHABLE - never deploy reserve capital
+- CRITICAL: If a wheel position's IVR or earnings data is missing/null, use web search to look up the actual next earnings date for that ticker before giving any earnings-related advice. Never hallucinate or guess earnings dates.
 
 CAPITAL SUMMARY:
 - Net Liquidating Value: $${capital.netLiq.toLocaleString()}
@@ -2014,8 +2015,9 @@ function EngineAdvisor({ data, watchlist, th }: { data: EngineData; watchlist: s
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'gpt-4o-search-preview',
           max_tokens: 800,
+          web_search: true,
           system: systemPrompt,
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
         }),
