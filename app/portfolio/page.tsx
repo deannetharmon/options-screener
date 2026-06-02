@@ -1923,7 +1923,10 @@ async function callAI(userMessage: string): Promise<string> {
   return text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 }
 
-interface ChatMessage { role: 'user' | 'assistant'; content: string; }
+interface ChatMessagePart { type: 'text'; text: string; }
+interface ChatImagePart { type: 'image'; source: { type: 'base64'; media_type: string; data: string }; }
+type ChatContentPart = ChatMessagePart | ChatImagePart;
+interface ChatMessage { role: 'user' | 'assistant'; content: string | ChatContentPart[]; }
 
 async function callAIWithHistory(messages: ChatMessage[], systemOverride?: string): Promise<string> {
   const res = await fetch('/api/analyze', {
@@ -3127,11 +3130,13 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
     { role: 'assistant', content: initialContext },
   ]);
   const [input, setInput] = useState('');
+  const [pendingImage, setPendingImage] = useState<{ base64: string; mediaType: string; preview: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // Scroll within the chat container only — never move the page
@@ -3141,12 +3146,31 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
     }
   }, [messages]);
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const [meta, base64] = dataUrl.split(',');
+      const mediaType = meta.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
+      setPendingImage({ base64, mediaType, preview: dataUrl });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   const send = async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text && !pendingImage || loading) return;
     setInput('');
     setError(null);
-    const next: ChatMessage[] = [...messages, { role: 'user', content: text }];
+    const parts: ChatContentPart[] = [];
+    if (pendingImage) parts.push({ type: 'image', source: { type: 'base64', media_type: pendingImage.mediaType, data: pendingImage.base64 } });
+    if (text) parts.push({ type: 'text', text });
+    const userMsg: ChatMessage = { role: 'user', content: parts.length === 1 && !pendingImage ? text : parts };
+    setPendingImage(null);
+    const next: ChatMessage[] = [...messages, userMsg];
     setMessages(next);
     setLoading(true);
     try {
@@ -3156,13 +3180,23 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
       setError(e.message ?? 'Failed');
     } finally {
       setLoading(false);
-      // Re-focus input after reply
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   };
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+
+  const getMessageText = (content: ChatMessage['content']): string => {
+    if (typeof content === 'string') return content;
+    return content.filter((p): p is ChatMessagePart => p.type === 'text').map(p => p.text).join(' ');
+  };
+
+  const getMessageImage = (content: ChatMessage['content']): string | null => {
+    if (typeof content === 'string') return null;
+    const img = content.find((p): p is ChatImagePart => p.type === 'image');
+    return img ? `data:${img.source.media_type};base64,${img.source.data}` : null;
   };
 
   // Suggested follow-up prompts shown below the initial analysis
@@ -3188,7 +3222,14 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
                   ? 'ac-bg-20 border ac-border/30 text-blue-100 ml-auto'
                   : `${th.card} border ${th.border} ${th.textMuted}`
               }`}>
-                {m.content}
+                {(() => {
+                  const imgSrc = getMessageImage(m.content);
+                  const txt = getMessageText(m.content);
+                  return (<>
+                    {imgSrc && <img src={imgSrc} alt="attachment" className="rounded-lg max-w-full mb-1.5" style={{ maxHeight: '180px', objectFit: 'contain' }} />}
+                    {txt && <span>{txt}</span>}
+                  </>);
+                })()}
               </div>
             </div>
           ))}
@@ -3226,27 +3267,49 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
       )}
 
       {/* Input */}
-      <div className={`flex items-end gap-2 px-4 py-3`}>
-        <textarea
-          ref={inputRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          placeholder={placeholder ?? 'Ask a follow-up question... (Enter to send, Shift+Enter for newline)'}
-          rows={1}
-          disabled={loading}
-          className={`flex-1 resize-none text-[11px] px-3 py-2 rounded-xl border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-indigo-500 transition-colors placeholder:${th.textFaint} disabled:opacity-50`}
-          style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minHeight: '36px', maxHeight: '120px' }}
-          onInput={e => {
-            const el = e.currentTarget;
-            el.style.height = 'auto';
-            el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-          }}
-        />
-        <button onClick={send} disabled={loading || !input.trim()}
-          className="shrink-0 w-8 h-8 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-colors text-sm">
-          ↑
-        </button>
+      <div className="px-4 py-3 space-y-2">
+        {/* Image preview */}
+        {pendingImage && (
+          <div className="relative inline-block">
+            <img src={pendingImage.preview} alt="pending" className="rounded-lg max-h-24 object-contain border border-indigo-500/40" />
+            <button onClick={() => setPendingImage(null)}
+              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-slate-700 border border-slate-500 text-slate-300 text-[9px] flex items-center justify-center hover:bg-red-600 transition-colors">
+              ✕
+            </button>
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          {/* Hidden file input */}
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
+          {/* Attach button */}
+          <button onClick={() => fileInputRef.current?.click()} disabled={loading}
+            title="Attach image"
+            className={`shrink-0 w-8 h-8 rounded-xl border ${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400 disabled:opacity-40 flex items-center justify-center transition-colors`}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder={placeholder ?? 'Ask a follow-up question... (Enter to send, Shift+Enter for newline)'}
+            rows={1}
+            disabled={loading}
+            className={`flex-1 resize-none text-[11px] px-3 py-2 rounded-xl border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-indigo-500 transition-colors placeholder:${th.textFaint} disabled:opacity-50`}
+            style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minHeight: '36px', maxHeight: '120px' }}
+            onInput={e => {
+              const el = e.currentTarget;
+              el.style.height = 'auto';
+              el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+            }}
+          />
+          <button onClick={send} disabled={loading || (!input.trim() && !pendingImage)}
+            className="shrink-0 w-8 h-8 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-colors text-sm">
+            ↑
+          </button>
+        </div>
       </div>
     </div>
   );
