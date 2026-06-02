@@ -1934,9 +1934,8 @@ async function callAIWithHistory(messages: ChatMessage[], systemOverride?: strin
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'gpt-4o-search-preview',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 1200,
-      web_search: true,
       system: systemOverride ?? TRADING_SYSTEM_PROMPT,
       messages,
     }),
@@ -4131,6 +4130,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   const [result, setResult]   = useState<'success' | 'error' | null>(null);
   const [resultMsg, setResultMsg] = useState('');
   const [stopPrice, setStopPrice] = useState('');
+  const [stopPct,   setStopPct]   = useState('200');  // default: 200% of credit = 2× rule
   const [gtcPrice,  setGtcPrice]  = useState('');
 
   // AI suggestion
@@ -4145,6 +4145,26 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
 
   // Confirmation step before destructive OCO replace
   const [confirming, setConfirming] = useState(false);
+
+  // ── Linked stop price ↔ pct setters ──────────────────────────────────────
+  // Entering a $ amount updates the % display; entering a % updates the $ amount.
+  // Both anchor to creditPerContract so the relationship is always: price = pct/100 × credit.
+  const setStopFromPrice = (val: string) => {
+    setStopPrice(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && creditPerContract > 0) {
+      setStopPct(((num / creditPerContract) * 100).toFixed(0));
+    }
+  };
+
+  const setStopFromPct = (val: string) => {
+    setStopPct(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && creditPerContract > 0) {
+      const price = parseFloat(((num / 100) * creditPerContract).toFixed(2));
+      setStopPrice(price.toFixed(2));
+    }
+  };
 
   // Mounted guard — prevents state updates after unmount
   const mountedRef = useRef(true);
@@ -4265,14 +4285,16 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
         console.log(`LIVE PRICE FETCH ${pos.symbol}: $${perContract.toFixed(4)}/contract`);
         // Set initial input defaults using live price
         const initGtc  = Math.min(existingGtcPrice, perContract - 0.01);
-        const initStop = Math.max(perContract * 2.0,  perContract + 0.01);
+        // Default stop = 200% of original credit (2× rule), must be above live value
+        const twoXStop = creditPerContract * 2.0;
+        const initStop = Math.max(twoXStop, perContract + 0.01);
         setGtcPrice(Math.max(initGtc, gtcMin).toFixed(2));
-        setStopPrice(Math.min(initStop, stopMax).toFixed(2));
+        setStopFromPrice(Math.min(initStop, stopMax).toFixed(2));
       } else {
         setLivePriceError('Could not fetch live price — using estimates');
         setGtcPrice(Math.max(existingGtcPrice, gtcMin).toFixed(2));
         const naiveStop = Math.max(creditPerContract * 2.0, stopMin);
-        setStopPrice(Math.min(naiveStop, stopMax).toFixed(2));
+        setStopFromPrice(Math.min(naiveStop, stopMax).toFixed(2));
       }
     } catch (e: any) {
       if (!mountedRef.current) return;
@@ -4280,7 +4302,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       console.warn('SetStopLossButton live price fetch failed:', e.message);
       setLivePriceError(`Price fetch failed: ${e.message ?? 'unknown error'}`);
       setGtcPrice(Math.max(existingGtcPrice, gtcMin).toFixed(2));
-      setStopPrice(Math.min(creditPerContract * 2.0, stopMax).toFixed(2));
+      setStopFromPrice(Math.min(creditPerContract * 2.0, stopMax).toFixed(2));
     } finally {
       if (mountedRef.current) setLivePriceLoading(false);
     }
@@ -4292,7 +4314,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   const applySuggestion = () => {
     if (!suggestion) return;
     setGtcPrice(suggestion.gtcPrice.toFixed(2));
-    setStopPrice(suggestion.stopPrice.toFixed(2));
+    setStopFromPrice(suggestion.stopPrice.toFixed(2));
   };
 
   // ── Submit ────────────────────────────────────────────────────────────────
@@ -4582,18 +4604,45 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
             )}
             <div>
               <div className="flex items-center gap-2">
-                <span className={`text-[10px] ${th.textFaint} w-28 shrink-0`}>Stop trigger $</span>
-                <input
-                  type="number" min={stopMin} max={stopMax} step="0.01" value={stopPrice}
-                  onChange={e => setStopPrice(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !hasErrors && !confirming) setConfirming(true); if (e.key === 'Escape') setOpen(false); }}
-                  autoFocus={!needsOco}
-                  className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${
-                    stopError ? 'border-red-500' : th.inputBorder
-                  } ${th.input} text-orange-400 outline-none focus:border-orange-500`}
-                  style={{ fontFamily: "'DM Mono', monospace" }}
-                />
-                {stopParsed > 0 && <span className={`text-[9px] ${th.textFaint} w-12 shrink-0`}>{stopMultipleDisplay}×</span>}
+                <span className={`text-[10px] ${th.textFaint} w-28 shrink-0`}>Stop trigger</span>
+                {/* Dollar input */}
+                <div className="flex items-center gap-1 flex-1">
+                  <span className={`text-[9px] ${th.textFaint}`}>$</span>
+                  <input
+                    type="number" min={stopMin} max={stopMax} step="0.01" value={stopPrice}
+                    onChange={e => setStopFromPrice(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !hasErrors && !confirming) setConfirming(true); if (e.key === 'Escape') setOpen(false); }}
+                    autoFocus={!needsOco}
+                    className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${
+                      stopError ? 'border-red-500' : th.inputBorder
+                    } ${th.input} text-orange-400 outline-none focus:border-orange-500`}
+                    style={{ fontFamily: "'DM Mono', monospace" }}
+                  />
+                </div>
+                {/* Percent input — linked */}
+                <div className="flex items-center gap-1 w-20 shrink-0">
+                  <input
+                    type="number" min={100} max={300} step={5} value={stopPct}
+                    onChange={e => setStopFromPct(e.target.value)}
+                    className={`w-full text-[11px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} text-orange-400/70 outline-none focus:border-orange-500`}
+                    style={{ fontFamily: "'DM Mono', monospace" }}
+                  />
+                  <span className={`text-[9px] ${th.textFaint} shrink-0`}>%</span>
+                </div>
+              </div>
+              {/* Quick % presets */}
+              <div className="flex items-center gap-1.5 mt-1.5 ml-28">
+                {[['150%', '150'], ['200%', '200'], ['250%', '250'], ['300%', '300']].map(([label, val]) => (
+                  <button key={val} onClick={() => setStopFromPct(val)}
+                    className={`text-[8px] px-1.5 py-0.5 rounded border transition-colors ${
+                      stopPct === val
+                        ? 'border-orange-500 text-orange-400 bg-orange-500/10'
+                        : `${th.border} ${th.textFaint} hover:border-orange-500/50 hover:text-orange-400/70`
+                    }`}>
+                    {label}
+                  </button>
+                ))}
+                <span className={`text-[8px] ${th.textFaint} ml-1`}>of credit</span>
               </div>
               {stopError && <p className="text-[9px] text-red-400 mt-1 ml-28">{stopError}</p>}
               {!stopError && effectiveLiveDisplay != null && (
