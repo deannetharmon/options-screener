@@ -2249,7 +2249,11 @@ ${userInputText}
 
 PROSPER RULES: Roll at 21 DTE or 2x credit loss. Roll out 35-45 DTE, same width. New credit >= 1/3 of width. Short delta 0.20-0.30. IVR >= 30.
 
-Assess this roll in 3-4 sentences: (1) roll vs close, (2) do the suggested strikes/expiry make sense, (3) one specific thing to watch. Direct, no disclaimers.`;
+COST TO CONSIDER:
+Close only costs approximately $\${pos.currentValue != null ? pos.currentValue.toFixed(2) : Math.abs(pos.pnl ?? 0).toFixed(2)} (net loss ~$\${pos.pnl != null ? Math.abs(pos.pnl).toFixed(2) : 'unknown'} from $\${pos.creditReceived.toFixed(2)} original credit).
+Rolling nets the new credit against that close cost. The trader needs to know: is paying to roll worth it, or is a clean close better?
+
+Assess in 4-5 sentences: (1) explicitly state close-only cost vs net roll cost and which makes more sense financially, (2) realistic probability the roll recovers, (3) do the suggested strikes/expiry make sense, (4) one specific thing to watch. Use dollar amounts. Direct, no disclaimers.`;
 
       const res = await fetch('/api/analyze', {
         method: 'POST',
@@ -2721,6 +2725,47 @@ Assess this roll in 3-4 sentences: (1) roll vs close, (2) do the suggested strik
                           <span className={`text-[9px} ${th.textFaint}`}>{rollMode[item.pos.key] === 'roll' ? 'Closes and opens new spread.' : 'Closes position only.'}</span>
                         </div>
                         <div className="pt-2 space-y-3" style={{display: rollMode[item.pos.key] === 'roll' ? undefined : 'none'}}>
+                          {/* Cost comparison — instant, no API needed */}
+                          {(() => {
+                            const closeOnly = item.pos.currentValue ?? Math.abs(item.pos.pnl ?? 0);
+                            const newCredit = suggestion?.credit ?? parseFloat(rollInputs[item.pos.key]?.credit ?? '0') ?? 0;
+                            const netRollCost = closeOnly - newCredit;
+                            const breakEven = newCredit > 0 ? (netRollCost / newCredit * 100).toFixed(0) : null;
+                            const originalCredit = item.pos.creditReceived;
+                            const totalCost = originalCredit > 0 ? ((closeOnly / originalCredit) * 100).toFixed(0) : null;
+                            if (closeOnly <= 0) return null;
+                            return (
+                              <div className={`rounded-lg border ${th.border} p-3`} style={{ background: 'rgba(255,255,255,0.02)' }}>
+                                <p className="text-[9px] text-white/40 uppercase tracking-widest mb-2 font-bold">Cost Comparison</p>
+                                <div className="grid grid-cols-3 gap-3">
+                                  <div>
+                                    <p className="text-[9px] text-white/40 mb-0.5">Close only</p>
+                                    <p className="text-sm font-bold text-red-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      -${closeOnly.toFixed(2)}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">{totalCost ? totalCost + '% of credit' : ''}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[9px] text-white/40 mb-0.5">New credit</p>
+                                    <p className={`text-sm font-bold ${newCredit > 0 ? 'text-emerald-400' : 'text-white/30'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      {newCredit > 0 ? '+$' + newCredit.toFixed(2) : '—'}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">{newCredit > 0 ? 'collected on roll' : 'enter roll params'}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[9px] text-white/40 mb-0.5">Net roll cost</p>
+                                    <p className={`text-sm font-bold ${netRollCost <= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      {newCredit > 0 ? (netRollCost >= 0 ? '-$' : '+$') + Math.abs(netRollCost).toFixed(2) : '—'}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">
+                                      {breakEven && newCredit > 0 ? `need ${breakEven}% profit to break even` : ''}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+
                           {/* AI Roll Guidance */}
                           {(rollAiGuidance[item.pos.key]?.loading || rollAiGuidance[item.pos.key]?.text || rollAiGuidance[item.pos.key]?.error) && (
                             <div className={`rounded-lg border p-3 border-indigo-500/40 bg-indigo-500/5`}>
