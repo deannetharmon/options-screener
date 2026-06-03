@@ -366,12 +366,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       else if (pnlPct !== null && pnlPct < -100) status = 'manage';
 
       const pop = Math.max(55, Math.min(90, 70 + (pnlPct ?? 0) * 0.1));
-      // bufferPct: fetch live price from currentPricesMap if available, else estimate from pnlPct
-      const underlyingPrice = currentPricesMap[symbol] ?? currentPricesMap['SPX'] ?? currentPricesMap['SPXW'] ?? null;
-      const bufferPct = underlyingPrice != null && underlyingPrice > 0
-        ? ((underlyingPrice - shortStrike) / underlyingPrice) * 100
-        : null;
-      const posEntry: SpxPosition = { symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * multiplier), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk, bufferPct };
+      const posEntry: SpxPosition = { symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * multiplier), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk, bufferPct: null };
 
       if (symbol === 'SPY') spyPositions.push(posEntry);
       else spxPositions.push(posEntry);
@@ -379,6 +374,17 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   }
   capital.spxDeployed = spxDeployed;
   capital.spxAvailable = Math.max(0, capital.spxTarget - spxDeployed);
+
+  // Backfill bufferPct now that currentPricesMap is populated
+  const spxPrice = currentPricesMap['SPX'] ?? currentPricesMap['SPXW'] ?? 0;
+  const spyPrice = currentPricesMap['SPY'] ?? 0;
+  for (const pos of spxPositions) {
+    const price = pos.symbol === 'SPY' ? spyPrice : spxPrice;
+    if (price > 0) pos.bufferPct = ((price - pos.shortStrike) / price) * 100;
+  }
+  for (const pos of spyPositions) {
+    if (spyPrice > 0) pos.bufferPct = ((spyPrice - pos.shortStrike) / spyPrice) * 100;
+  }
 
   // Parse wheel positions
   const wheelPositions: WheelPosition[] = [];
