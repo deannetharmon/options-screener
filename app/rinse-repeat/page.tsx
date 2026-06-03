@@ -248,6 +248,62 @@ async function ttFetch(path: string, token: string) {
   return res.json();
 }
 
+// ── Order helpers (entry) ──────────────────────────────────────────────────
+function buildOccSymbol(underlying: string, expiry: string, optType: 'P' | 'C', strike: number): string {
+  const exp = expiry.replace(/-/g, '').slice(2);
+  const under = underlying.padEnd(6, ' ');
+  const strikeStr = String(Math.round(strike * 1000)).padStart(8, '0');
+  return `${under}${exp}${optType}${strikeStr}`;
+}
+function instrType(symbol: string): 'Equity Option' | 'Index Option' {
+  return ['SPX', 'NDX', 'RUT', 'VIX'].includes(symbol.toUpperCase().trim()) ? 'Index Option' : 'Equity Option';
+}
+function formatTTReject(data: any): string {
+  return data?.error?.message ?? data?.['error-message'] ??
+    (Array.isArray(data?.error?.errors) ? data.error.errors.map((e: any) => e.reason ?? e.message ?? JSON.stringify(e)).join('; ') : null) ??
+    JSON.stringify(data).slice(0, 300);
+}
+async function ttPost(path: string, token: string, body: unknown) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login?redirect=/rinse-repeat'; throw new Error('Session expired'); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Order rejected (${res.status}): ${formatTTReject(data)}`);
+  return data;
+}
+async function ttPostComplex(path: string, token: string, body: unknown) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login?redirect=/rinse-repeat'; throw new Error('Session expired'); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Complex order rejected (${res.status}): ${formatTTReject(data)}`);
+  return data;
+}
+function buildOpenSpreadOrder(
+  underlying: string, expiry: string, optType: 'P' | 'C',
+  shortStrike: number, longStrike: number, quantity: number, credit: number,
+  shortSymbolOverride?: string, longSymbolOverride?: string
+) {
+  const itype = instrType(underlying);
+  const shortSym = shortSymbolOverride ?? buildOccSymbol(underlying, expiry, optType, shortStrike);
+  const longSym  = longSymbolOverride  ?? buildOccSymbol(underlying, expiry, optType, longStrike);
+  return {
+    'order-type': 'Limit', 'time-in-force': 'GTC',
+    price: Math.abs(credit).toFixed(2), 'price-effect': 'Credit',
+    legs: [
+      { symbol: shortSym, quantity, action: 'Sell to Open', 'instrument-type': itype },
+      { symbol: longSym,  quantity, action: 'Buy to Open',  'instrument-type': itype },
+    ],
+  };
+}
+
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 function daysUntil(dateStr: string): number {
   const target = new Date(dateStr + 'T12:00:00Z');
@@ -635,10 +691,226 @@ function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof
 }
 
 // ── Result Card ───────────────────────────────────────────────────────────
-function RRCard({ result, th, onAddToHunter, existingPositions }: {
+// ── EnterTradeModal ────────────────────────────────────────────────────────
+function EnterTradeModal({ result, th, onClose }: {
   result: RRResult;
   th: typeof THEMES[Theme];
-  onAddToHunter: (symbol: string, strategy: string) => void;
+  onClose: () => void;
+}) {
+  const { profile, candidate: c } = result;
+  if (!c) return null;
+
+  const isIC = c.strategy === 'IC';
+  const optType: 'P' | 'C' = c.strategy === 'BCS' ? 'C' : 'P';
+  const defaultCredit = isIC ? (c.totalCredit ?? c.credit) : c.credit;
+
+  const [qty,        setQty]        = useState(1);
+  const [credit,     setCredit]     = useState(defaultCredit.toFixed(2));
+  const [gtcPrice,   setGtcPrice]   = useState((defaultCredit * 0.50).toFixed(2));  // 50% profit target
+  const [stopPrice,  setStopPrice]  = useState((defaultCredit * 2.00).toFixed(2));  // 2× stop
+  const [phase,      setPhase]      = useState('');
+  const [result2,    setResult2]    = useState<'success' | 'error' | null>(null);
+  const [resultMsg,  setResultMsg]  = useState('');
+  const [loading,    setLoading]    = useState(false);
+  const [accountNum, setAccountNum] = useState<string | null>(null);
+
+  // Fetch account number on mount
+  useEffect(() => {
+    getAccessToken().then(token =>
+      ttFetch('/customers/me/accounts', token)
+        .then(d => setAccountNum(d?.data?.items?.[0]?.account?.['account-number'] ?? null))
+    ).catch(() => {});
+  }, []);
+
+  const creditNum = parseFloat(credit) || defaultCredit;
+  const gtcNum    = parseFloat(gtcPrice) || creditNum * 0.50;
+  const stopNum   = parseFloat(stopPrice) || creditNum * 2.00;
+  const spreadWidth = isIC ? (c.spreadWidth ?? 5) : Math.abs(c.shortStrike - c.longStrike);
+  const maxRisk = (spreadWidth - creditNum) * qty * 100;
+  const targetProfit = gtcNum > 0 ? ((1 - gtcNum / creditNum) * 100).toFixed(0) : '50';
+  const stopMultiple = stopNum > 0 ? (stopNum / creditNum).toFixed(1) : '2.0';
+
+  const submit = async () => {
+    if (!accountNum) { setResult2('error'); setResultMsg('Account not found — try refreshing'); return; }
+    setLoading(true); setResult2(null); setResultMsg('');
+
+    try {
+      const token = await getAccessToken();
+
+      // Step 1: Submit entry order
+      setPhase('Submitting entry order...');
+      let entryBody: any;
+      if (isIC) {
+        const itype = instrType(profile.symbol);
+        entryBody = {
+          'order-type': 'Limit', 'time-in-force': 'GTC',
+          price: Math.abs(creditNum).toFixed(2), 'price-effect': 'Credit',
+          legs: [
+            { symbol: c.shortOccSymbol ?? buildOccSymbol(profile.symbol, c.expiration, 'P', c.shortStrike), quantity: qty, action: 'Sell to Open', 'instrument-type': itype },
+            { symbol: c.longOccSymbol  ?? buildOccSymbol(profile.symbol, c.expiration, 'P', c.longStrike),  quantity: qty, action: 'Buy to Open',  'instrument-type': itype },
+            { symbol: c.shortCallOccSymbol ?? buildOccSymbol(profile.symbol, c.expiration, 'C', c.shortCallStrike!), quantity: qty, action: 'Sell to Open', 'instrument-type': itype },
+            { symbol: c.longCallOccSymbol  ?? buildOccSymbol(profile.symbol, c.expiration, 'C', c.longCallStrike!),  quantity: qty, action: 'Buy to Open',  'instrument-type': itype },
+          ],
+        };
+      } else {
+        entryBody = buildOpenSpreadOrder(
+          profile.symbol, c.expiration, optType,
+          c.shortStrike, c.longStrike, qty, creditNum,
+          c.shortOccSymbol, c.longOccSymbol
+        );
+      }
+
+      const entryRes = await ttPost(`/accounts/${accountNum}/orders`, token, entryBody);
+      const entryId = String(entryRes?.data?.order?.id ?? entryRes?.data?.id ?? 'submitted');
+
+      // Step 2: Place OCO (profit GTC + stop)
+      setPhase('Placing OCO profit/stop orders...');
+      const itype = instrType(profile.symbol);
+      const closeLegs = isIC
+        ? [
+            { symbol: c.shortOccSymbol ?? buildOccSymbol(profile.symbol, c.expiration, 'P', c.shortStrike), quantity: qty, action: 'Buy to Close' as const, 'instrument-type': itype },
+            { symbol: c.longOccSymbol  ?? buildOccSymbol(profile.symbol, c.expiration, 'P', c.longStrike),  quantity: qty, action: 'Sell to Close' as const, 'instrument-type': itype },
+            { symbol: c.shortCallOccSymbol ?? buildOccSymbol(profile.symbol, c.expiration, 'C', c.shortCallStrike!), quantity: qty, action: 'Buy to Close' as const, 'instrument-type': itype },
+            { symbol: c.longCallOccSymbol  ?? buildOccSymbol(profile.symbol, c.expiration, 'C', c.longCallStrike!),  quantity: qty, action: 'Sell to Close' as const, 'instrument-type': itype },
+          ]
+        : [
+            { symbol: c.shortOccSymbol ?? buildOccSymbol(profile.symbol, c.expiration, optType, c.shortStrike), quantity: qty, action: 'Buy to Close' as const, 'instrument-type': itype },
+            { symbol: c.longOccSymbol  ?? buildOccSymbol(profile.symbol, c.expiration, optType, c.longStrike),  quantity: qty, action: 'Sell to Close' as const, 'instrument-type': itype },
+          ];
+
+      const ocoBody = {
+        type: 'OCO',
+        orders: [
+          { 'order-type': 'Limit',      'time-in-force': 'GTC', price: gtcNum.toFixed(2),  'price-effect': 'Debit', legs: closeLegs },
+          { 'order-type': 'Stop Limit', 'time-in-force': 'GTC', 'stop-trigger': stopNum.toFixed(2), price: stopNum.toFixed(2), 'price-effect': 'Debit', legs: closeLegs },
+        ],
+      };
+      const ocoRes = await ttPostComplex(`/accounts/${accountNum}/complex-orders`, token, ocoBody);
+      const ocoId = String(ocoRes?.data?.['complex-order']?.id ?? ocoRes?.data?.id ?? 'submitted');
+
+      setResult2('success');
+      setResultMsg(`Entry #${entryId} submitted · OCO #${ocoId} placed (profit $${gtcNum.toFixed(2)} / stop $${stopNum.toFixed(2)})`);
+    } catch (e: any) {
+      setResult2('error');
+      setResultMsg(e.message ?? 'Failed');
+    } finally {
+      setLoading(false);
+      setPhase('');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div
+        className={`${th.sidebar} border ${th.border} rounded-2xl w-full max-w-md`}
+        onClick={e => e.stopPropagation()}
+        style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}
+      >
+        {/* Header */}
+        <div className={`flex items-center justify-between px-5 py-4 border-b ${th.border}`}>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className={`text-sm font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{profile.symbol}</span>
+              <span className={`text-[10px] px-2 py-0.5 border rounded font-bold ${c.strategy === 'BPS' ? 'border-emerald-600 text-emerald-400' : c.strategy === 'BCS' ? 'border-red-600 text-red-400' : 'border-purple-600 text-purple-400'}`}>{c.strategy}</span>
+              <span className={`text-[10px] ${th.textFaint}`}>{c.expiration} · {c.dte}d</span>
+            </div>
+            <p className={`text-[10px] ${th.textFaint} mt-0.5`}>
+              {isIC
+                ? `${c.shortStrike}P/${c.longStrike}P · ${c.shortCallStrike}C/${c.longCallStrike}C`
+                : `${c.shortStrike}/${c.longStrike} · $${spreadWidth} wide`
+              }
+            </p>
+          </div>
+          <button onClick={onClose} className={`text-[11px] ${th.textFaint} hover:${th.text} px-2 py-1`}>✕</button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {/* Entry fields */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={`text-[10px] ${th.textFaint} block mb-1`}>QUANTITY</label>
+              <input type="number" min={1} max={50} value={qty}
+                onChange={e => setQty(Math.max(1, parseInt(e.target.value) || 1))}
+                className={`w-full px-3 py-2 ${th.input} border ${th.border} rounded text-sm ${th.text} focus:outline-none`} />
+            </div>
+            <div>
+              <label className={`text-[10px] ${th.textFaint} block mb-1`}>ENTRY CREDIT</label>
+              <input type="number" step={0.01} value={credit}
+                onChange={e => {
+                  setCredit(e.target.value);
+                  const n = parseFloat(e.target.value);
+                  if (!isNaN(n) && n > 0) {
+                    setGtcPrice((n * 0.50).toFixed(2));
+                    setStopPrice((n * 2.00).toFixed(2));
+                  }
+                }}
+                className={`w-full px-3 py-2 ${th.input} border ${th.border} rounded text-sm ${th.text} focus:outline-none`} />
+            </div>
+          </div>
+
+          {/* OCO fields */}
+          <div className={`p-3 rounded-lg border ${th.border} space-y-3`}>
+            <p className={`text-[10px] ${th.textFaint} font-bold tracking-wider`}>OCO EXIT ORDERS</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={`text-[10px] text-emerald-400 block mb-1`}>PROFIT TARGET (GTC)</label>
+                <input type="number" step={0.01} value={gtcPrice}
+                  onChange={e => setGtcPrice(e.target.value)}
+                  className={`w-full px-3 py-2 ${th.input} border border-emerald-700/50 rounded text-sm text-emerald-400 focus:outline-none`} />
+                <p className={`text-[9px] ${th.textFaint} mt-0.5`}>{targetProfit}% profit · ${(parseFloat(gtcPrice)||0 > 0 ? ((creditNum - parseFloat(gtcPrice)) * qty * 100).toFixed(0) : '—')} gain</p>
+              </div>
+              <div>
+                <label className={`text-[10px] text-red-400 block mb-1`}>STOP LOSS</label>
+                <input type="number" step={0.01} value={stopPrice}
+                  onChange={e => setStopPrice(e.target.value)}
+                  className={`w-full px-3 py-2 ${th.input} border border-red-700/50 rounded text-sm text-red-400 focus:outline-none`} />
+                <p className={`text-[9px] ${th.textFaint} mt-0.5`}>{stopMultiple}× credit · -${((parseFloat(stopPrice)||0) * qty * 100).toFixed(0)} max loss</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Summary */}
+          <div className={`grid grid-cols-3 gap-2 text-center`}>
+            {[
+              ['Max Risk', `$${maxRisk.toFixed(0)}`],
+              ['ROC', `${c.roc.toFixed(0)}%`],
+              ['POP', `${c.pop?.toFixed(0) ?? '—'}%`],
+            ].map(([label, val]) => (
+              <div key={label} className={`${th.card} border ${th.border} rounded p-2`}>
+                <p className={`text-[9px] ${th.textFaint}`}>{label}</p>
+                <p className={`text-xs font-bold ${th.text}`}>{val}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Status */}
+          {phase && <p className={`text-[10px] text-blue-400 animate-pulse`}>{phase}</p>}
+          {result2 === 'success' && <p className="text-[10px] text-emerald-400 leading-relaxed">{resultMsg}</p>}
+          {result2 === 'error'   && <p className="text-[10px] text-red-400 leading-relaxed whitespace-pre-wrap">{resultMsg}</p>}
+
+          {/* Actions */}
+          <div className="flex gap-2 pt-1">
+            <button onClick={onClose} className={`flex-1 py-2.5 border ${th.border} ${th.textFaint} rounded text-xs`}>Cancel</button>
+            {result2 !== 'success' && (
+              <button
+                onClick={submit}
+                disabled={loading || !accountNum}
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded text-xs font-bold tracking-wider transition-colors">
+                {loading ? phase || 'Submitting...' : 'Enter Trade + OCO'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function RRCard({ result, th, existingPositions }: {
+  result: RRResult;
+  th: typeof THEMES[Theme];
+
   existingPositions?: ExistingPosition[];
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -646,6 +918,7 @@ function RRCard({ result, th, onAddToHunter, existingPositions }: {
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState<number[] | null>(null);
   const [sparkLoading, setSparkLoading] = useState(false);
+  const [showEnterModal, setShowEnterModal] = useState(false);
 
   useEffect(() => {
     if (!existingPositions || existingPositions.length === 0) return;
@@ -814,11 +1087,13 @@ function RRCard({ result, th, onAddToHunter, existingPositions }: {
         )}
 
         <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={e => { e.stopPropagation(); onAddToHunter(profile.symbol, profile.preferredStrategy); }}
-            className={`text-[9px] px-2.5 py-1 border ac-btn rounded ac-hover-border hover:ac-bg-10 transition-colors`}>
-            + Add to Hunter
-          </button>
+          {result.candidate && (
+            <button
+              onClick={e => { e.stopPropagation(); setShowEnterModal(true); }}
+              className="text-[9px] px-2.5 py-1 border border-emerald-700 text-emerald-400 rounded font-bold hover:bg-emerald-600/20 transition-colors">
+              ▶ Enter Trade
+            </button>
+          )}
           <span className={`text-[10px] ${th.textFaint}`}>{expanded ? '▲' : '▼'}</span>
         </div>
       </div>
@@ -895,6 +1170,9 @@ function RRCard({ result, th, onAddToHunter, existingPositions }: {
         </div>
       )}
     </div>
+    {showEnterModal && result.candidate && (
+      <EnterTradeModal result={result} th={th} onClose={() => setShowEnterModal(false)} />
+    )}
   );
 }
 
@@ -913,8 +1191,7 @@ export default function RinseRepeatPage() {
   const [error, setError]     = useState('');
   const [minWins, setMinWins] = useState(1);
   const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
-  const [hunterQueue, setHunterQueue] = useState<{ symbol: string; strategy: string }[]>([]);
-  const [addedToHunter, setAddedToHunter] = useState(false);
+
 
   // Load existing portfolio positions on mount
   useEffect(() => {
@@ -1045,25 +1322,6 @@ export default function RinseRepeatPage() {
     }
   };
 
-  const handleAddToHunter = (symbol: string, strategy: string) => {
-    setHunterQueue(prev => {
-      const exists = prev.find(h => h.symbol === symbol);
-      return exists ? prev : [...prev, { symbol, strategy }];
-    });
-  };
-
-  const sendToHunter = () => {
-    if (hunterQueue.length === 0) return;
-    const bps = hunterQueue.filter(h => h.strategy === 'BPS').map(h => h.symbol).join(', ');
-    const bcs = hunterQueue.filter(h => h.strategy === 'BCS').map(h => h.symbol).join(', ');
-    const ic  = hunterQueue.filter(h => h.strategy === 'IC').map(h => h.symbol).join(', ');
-    if (bps) try { localStorage.setItem('hunter-tickers-bps', bps); } catch {}
-    if (bcs) try { localStorage.setItem('hunter-tickers-bcs', bcs); } catch {}
-    if (ic)  try { localStorage.setItem('hunter-tickers-ic', ic);   } catch {}
-    setAddedToHunter(true);
-    setTimeout(() => setAddedToHunter(false), 3000);
-  };
-
   const qualified = results.filter(r => r.qualified);
   const unqualified = results.filter(r => !r.qualified);
 
@@ -1137,12 +1395,7 @@ export default function RinseRepeatPage() {
             )}
           </div>
           <div className="flex items-center gap-3">
-            {hunterQueue.length > 0 && (
-              <button onClick={sendToHunter}
-                className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors ${addedToHunter ? 'border-emerald-600 text-emerald-400' : 'ac-btn ac-hover-border hover:ac-bg-10'}`}>
-                {addedToHunter ? `✓ Sent to Hunter` : `→ Send ${hunterQueue.length} to Hunter`}
-              </button>
-            )}
+
             <button onClick={runScan} disabled={loading || profiles.length === 0}
               className="text-[10px] px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded font-bold tracking-wider transition-colors">
               {loading ? '↺ Scanning...' : '▶ Run Scan'}
@@ -1190,7 +1443,7 @@ export default function RinseRepeatPage() {
             {qualified.length > 0 && (
               <div className="space-y-2">
                 {qualified.map(r => (
-                  <RRCard key={r.profile.symbol} result={r} th={th} onAddToHunter={handleAddToHunter} existingPositions={existingPositions} />
+                  <RRCard key={r.profile.symbol} result={r} th={th} existingPositions={existingPositions} />
                 ))}
               </div>
             )}
@@ -1200,7 +1453,7 @@ export default function RinseRepeatPage() {
                 <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>NO QUALIFYING SETUP TODAY</p>
                 <div className="space-y-2">
                   {unqualified.map(r => (
-                    <RRCard key={r.profile.symbol} result={r} th={th} onAddToHunter={handleAddToHunter} existingPositions={existingPositions} />
+                    <RRCard key={r.profile.symbol} result={r} th={th} existingPositions={existingPositions} />
                   ))}
                 </div>
               </div>
