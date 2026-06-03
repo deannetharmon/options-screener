@@ -28,12 +28,12 @@ export const ACCENTS = {
 export type Accent = keyof typeof ACCENTS;
 
 export function getSavedTheme(): Theme {
-  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; }
+  try { const t = (typeof window !== 'undefined' ? localStorage : null)?.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; }
   catch { return 'dark'; }
 }
 
 export function getSavedAccent(): Accent {
-  try { const a = localStorage.getItem(LS_ACCENT); return (a && a in ACCENTS) ? a as Accent : 'electric'; }
+  try { const a = (typeof window !== 'undefined' ? localStorage : null)?.getItem(LS_ACCENT); return (a && a in ACCENTS) ? a as Accent : 'electric'; }
   catch { return 'electric'; }
 }
 
