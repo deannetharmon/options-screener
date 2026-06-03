@@ -1,1206 +1,980 @@
-// path: app/rinse-repeat/page.tsx
+// path: app/trade-log/page.tsx
 'use client';
-import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
-
+import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent,
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
-
 if (typeof document !== 'undefined') {
-  if (!document.getElementById('hunter-font')) {
-    const link = document.createElement('link');
-    link.id = 'hunter-font';
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=DM+Mono:wght@400;500&display=swap';
-    document.head.appendChild(link);
-  }
+if (!document.getElementById('hunter-font')) {
+const link = document.createElement('link');
+link.id = 'hunter-font';
+link.rel = 'stylesheet';
+link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;
+document.head.appendChild(link);
 }
-
-// ── Constants ─────────────────────────────────────────────────────────────
-const BASE       = 'https://api.tastytrade.com';
-const CLIENT_ID  = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-const LS_TL_3M   = 'hunter-tradelog-3m';
-const LS_TL_6M   = 'hunter-tradelog-6m';
-const LS_TL_12M  = 'hunter-tradelog-12m';
-const INDEX_TICKERS = new Set(['SPY','QQQ','IWM','DIA','GLD','SLV','TLT','HYG','LQD','XLF','XLK','XLE','XLV','XLI','XLP','XLU','XLB','XLRE','XLC','XLY','EEM','EFA','VXX','UVXY','ARKK','SMH','SOXX','XBI','IBB','GDX']);
-
-
-// ── Types ─────────────────────────────────────────────────────────────────
+}
+const BASE = 'https://api.tastytrade.com';
+const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
+const LS_DEVICE = 'hunter-device-id';
+const LS_TL_1W = 'hunter-tradelog-1w';
+const LS_TL_2W = 'hunter-tradelog-2w';
+const LS_TL_1M = 'hunter-tradelog-1m';
+const LS_TL_3M = 'hunter-tradelog-3m';
+const LS_TL_6M = 'hunter-tradelog-6m';
+const LS_TL_12M = 'hunter-tradelog-12m';
+const CACHE_VERSION = 'v3'; // bump to invalidate stale caches
 type TimeRange = '1w' | '2w' | '1m' | '3m' | '6m' | '12m';
-
+type Outcome = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
+type ExitType = 'TARGET_HIT' | 'FAST_CUT' | 'TIME_STOP' | 'MAX_LOSS' | 'HELD_TO_EXPIRY' | 'EA
+type SortField = 'closeDate' | 'openDate' | 'symbol' | 'strategy' | 'pnl' | 'pnlPct' | type SortDir = 'asc' | 'desc';
+'holdD
 interface ClosedTrade {
-  id: string; symbol: string; strategy: string; openDate: string; closeDate: string;
-  expiry: string; holdDays: number; strikes: string; creditReceived: number;
-  closePrice: number; pnl: number; pnlPct: number; outcome: string; quantity: number;
-  dteAtClose: number; dteAtEntry: number;
+id: string;
+symbol: string;
+strategy: 'BPS' | 'BCS' | 'IC' | 'SPREAD' | 'OTHER';
+openDate: string;
+closeDate: string;
+openTime: string; // HH:MM local
+openDow: number; // 0=Sun..6=Sat
+expiry: string;
+holdDays: number;
+strikes: string;
+creditReceived: number;
+closePrice: number;
+pnl: number;
+pnlPct: number;
+outcome: Outcome;
+quantity: number;
+fees: number;
+excluded?: boolean; // user-toggled: excluded from reporting
+dteAtClose: number; // days remaining to expiry when closed
+dteAtEntry: number; // estimated DTE when trade was opened
+exitType: ExitType;
 }
-
-interface WinningProfile {
-  symbol: string;
-  winCount: number;
-  totalTrades: number;
-  winRate: number;           // 0-1
-  avgPnlPct: number;
-  avgDteAtEntry: number;
-  preferredStrategy: 'BPS' | 'BCS' | 'IC';
-  avgSpreadWidth: number;
-  avgCreditRatio: number;
-  lastWinDate: string;
-  trades: ClosedTrade[];     // all trades on this symbol
-}
-
-interface ExistingPosition {
-  symbol: string; strategy: string; expDate: string; strikes: string; qty: number;
-}
-
-interface SpreadCandidate {
-  strategy: string; expiration: string; dte: number;
-  shortStrike: number; longStrike: number; shortDelta: number;
-  credit: number; spreadWidth: number; creditRatio: number;
-  roc: number; pop: number | null; shortOI: number; longOI: number;
-  shortCallStrike?: number; longCallStrike?: number;
-  callCredit?: number; callWidth?: number; totalCredit?: number;
-  shortOccSymbol?: string; longOccSymbol?: string;
-  shortCallOccSymbol?: string; longCallOccSymbol?: string;
-}
-
-// ── Sector map ────────────────────────────────────────────────────────────
-const SECTOR_MAP: Record<string, string> = {
-  // Technology
-  AAPL:'Technology', MSFT:'Technology', NVDA:'Technology', AMD:'Technology', INTC:'Technology',
-  GOOGL:'Technology', GOOG:'Technology', META:'Technology', TSLA:'Technology', AVGO:'Technology',
-  QCOM:'Technology', TXN:'Technology', MU:'Technology', AMAT:'Technology', LRCX:'Technology',
-  KLAC:'Technology', MRVL:'Technology', ADBE:'Technology', CRM:'Technology', NOW:'Technology',
-  ORCL:'Technology', IBM:'Technology', HPE:'Technology', DELL:'Technology', SNOW:'Technology',
-  PLTR:'Technology', CRWD:'Technology', ZS:'Technology', PANW:'Technology', FTNT:'Technology',
-  NET:'Technology', DDOG:'Technology', MDB:'Technology', TEAM:'Technology', SHOP:'Technology',
-  // Financials
-  JPM:'Financials', BAC:'Financials', GS:'Financials', MS:'Financials', WFC:'Financials',
-  C:'Financials', BLK:'Financials', AXP:'Financials', V:'Financials', MA:'Financials',
-  // Healthcare
-  JNJ:'Healthcare', UNH:'Healthcare', PFE:'Healthcare', ABBV:'Healthcare', MRK:'Healthcare',
-  LLY:'Healthcare', BMY:'Healthcare', AMGN:'Healthcare', GILD:'Healthcare', CVS:'Healthcare',
-  // Consumer
-  AMZN:'Consumer', WMT:'Consumer', HD:'Consumer', TGT:'Consumer', COST:'Consumer',
-  NKE:'Consumer', MCD:'Consumer', SBUX:'Consumer', DIS:'Consumer', NFLX:'Consumer',
-  // Energy
-  XOM:'Energy', CVX:'Energy', COP:'Energy', OXY:'Energy', SLB:'Energy',
-  // Industrials
-  BA:'Industrials', CAT:'Industrials', GE:'Industrials', HON:'Industrials', UPS:'Industrials',
-  // ETFs / Indexes (no sector concentration concern)
-  SPY:'Index', QQQ:'Index', IWM:'Index', DIA:'Index', SMH:'Technology', SOXX:'Technology',
-  XLF:'Financials', XLK:'Technology', XLE:'Energy', XLV:'Healthcare', XLI:'Industrials',
-  XLP:'Consumer', XLY:'Consumer', GLD:'Commodity', SLV:'Commodity', TLT:'Bonds',
-};
-
-async function getSector(symbol: string): Promise<string> {
-  if (SECTOR_MAP[symbol]) return SECTOR_MAP[symbol];
-  try {
-    const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`);
-    const data = await res.json();
-    const sector = data?.chart?.result?.[0]?.meta?.sector;
-    return sector ?? 'Unknown';
-  } catch { return 'Unknown'; }
-}
-
-// ── Portfolio risk types ───────────────────────────────────────────────────
-type RiskLevel = 'clear' | 'same_symbol' | 'same_strikes' | 'synthetic_ic' | 'sector_concentration';
-
-interface PortfolioRisk {
-  level: RiskLevel;
-  warnings: string[];           // specific factual flags
-  recommendation: string;       // AI-style actionable guidance
-  sectorName: string;
-  sectorCount: number;          // how many open positions in same sector
-}
-
-function parseStrikesFromString(strikes: string): { puts: number[]; calls: number[] } {
-  const puts: number[] = [], calls: number[] = [];
-  const parts = strikes.replace(/·/g, '/').split('/');
-  for (const p of parts) {
-    const m = p.trim().match(/^(\d+(?:\.\d+)?)(P|C)$/i);
-    if (!m) continue;
-    const n = parseFloat(m[1]);
-    if (m[2].toUpperCase() === 'P') puts.push(n);
-    else calls.push(n);
-  }
-  return { puts, calls };
-}
-
-function checkPortfolioRisk(
-  symbol: string,
-  candidate: SpreadCandidate | null,
-  existingPositions: ExistingPosition[],
-  sectorName: string,
-  allSectorCounts: Record<string, number>,
-): PortfolioRisk {
-  const warnings: string[] = [];
-  let level: RiskLevel = 'clear';
-  let recommendation = '';
-
-  const sameSymbolPositions = existingPositions.filter(p => p.symbol === symbol);
-  const sectorCount = allSectorCounts[sectorName] ?? 0;
-
-  // ── Same strikes check ──────────────────────────────────────────────────
-  if (candidate && sameSymbolPositions.length > 0) {
-    for (const pos of sameSymbolPositions) {
-      const existing = parseStrikesFromString(pos.strikes);
-      const newPuts  = candidate.strategy === 'BPS' || candidate.strategy === 'IC'
-        ? [candidate.shortStrike, candidate.longStrike] : [];
-      const newCalls = candidate.strategy === 'BCS' || candidate.strategy === 'IC'
-        ? [candidate.shortCallStrike ?? candidate.shortStrike, candidate.longCallStrike ?? candidate.longStrike] : [];
-
-      const putOverlap  = newPuts.some(s  => existing.puts.some(e  => Math.abs(e - s)  < 1));
-      const callOverlap = newCalls.some(s => existing.calls.some(e => Math.abs(e - s) < 1));
-      const exactMatch  = putOverlap && (newCalls.length === 0 || callOverlap);
-
-      if (exactMatch) {
-        level = 'same_strikes';
-        warnings.push(`Duplicate strikes: you already hold ${pos.strikes} on ${symbol} (exp ${pos.expDate})`);
-        recommendation = `This is nearly identical to your existing ${pos.symbol} ${pos.strategy} position. Adding it doubles your notional risk on this ticker without diversification benefit. Only consider this if you intentionally want to scale up your position size — and only if your account can absorb a full loss on both spreads simultaneously.`;
-        break;
-      }
-    }
-  }
-
-  // ── Same symbol, different strikes ─────────────────────────────────────
-  if (level === 'clear' && sameSymbolPositions.length > 0 && candidate) {
-    const existingStrategy = sameSymbolPositions[0].strategy;
-    const newStrategy = candidate.strategy;
-
-    // Check if adding this creates a synthetic IC
-    const hasPuts  = sameSymbolPositions.some(p => p.strategy === 'BPS');
-    const hasCalls = sameSymbolPositions.some(p => p.strategy === 'BCS');
-    const addingCalls = newStrategy === 'BCS';
-    const addingPuts  = newStrategy === 'BPS';
-
-    if ((hasPuts && addingCalls) || (hasCalls && addingPuts)) {
-      level = 'synthetic_ic';
-      warnings.push(`Adding this ${newStrategy} would create a synthetic Iron Condor on ${symbol}`);
-      recommendation = `You already have a ${existingStrategy} on ${symbol}. Adding this ${newStrategy} effectively builds an IC — which can be a valid strategy, but evaluate whether the combined structure has sufficient buffer on both sides and fits your current market view on ${symbol}. If you intended to enter an IC, it may be cleaner to close both and re-enter as a single IC order.`;
-    } else {
-      level = 'same_symbol';
-      warnings.push(`You already have ${sameSymbolPositions.length} open position${sameSymbolPositions.length > 1 ? 's' : ''} on ${symbol}: ${sameSymbolPositions.map(p => p.strikes).join(', ')}`);
-      const totalQty = sameSymbolPositions.reduce((s, p) => s + p.qty, 0);
-      recommendation = `Adding this increases your ${symbol} exposure to ${totalQty + (candidate ? 1 : 0)} spread${totalQty > 0 ? 's' : ''}. This concentrates risk on a single name. Only add if your conviction on ${symbol} is high and the combined risk fits your position-sizing rules.`;
-    }
-  }
-
-  // ── Sector concentration ────────────────────────────────────────────────
-  const SECTOR_LIMIT = 3;
-  if (sectorName !== 'Index' && sectorName !== 'Unknown' && sectorCount >= SECTOR_LIMIT) {
-    const sectorWarning = `Sector concentration: you already have ${sectorCount} open position${sectorCount !== 1 ? 's' : ''} in ${sectorName}`;
-    warnings.push(sectorWarning);
-    if (level === 'clear') {
-      level = 'sector_concentration';
-      recommendation = `You have ${sectorCount} positions already in ${sectorName}. Adding another increases sector risk — a sector-wide event (regulatory, macro, earnings miss from a major player) could hit multiple positions simultaneously. Consider whether your portfolio has sufficient exposure to other sectors before adding this.`;
-    } else {
-      // Append sector note to existing recommendation
-      recommendation += ` Additionally, you already have ${sectorCount} ${sectorName} positions open — sector concentration amplifies the risk here.`;
-    }
-  }
-
-  if (level === 'clear') {
-    recommendation = 'No portfolio conflicts detected. Evaluate on its own merits.';
-  }
-
-  return { level, warnings, recommendation, sectorName, sectorCount };
-}
-
-interface RRResult {
-  profile: WinningProfile;
-  candidate: SpreadCandidate | null;
-  currentIvr: number | null;
-  currentPrice: number | null;
-  earningsDate: string | null;
-  rrScore: number;            // composite score 0-100
-  qualified: boolean;
-  failReason: string;
-}
-
-const DEFAULT_RULES = {
-  IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 500, BID_ASK_MAX: 0.10,
-  CREDIT_RATIO_MIN: 0.33, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
-  IC_DELTA_MIN: 0.16, IC_DELTA_MAX: 0.20, DTE_MIN: 30, DTE_MAX: 45,
-  MAX_SPREAD_WIDTH: 100, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30, POP_MIN: 65,
-};
-type RulesType = typeof DEFAULT_RULES;
-
-// ── Auth ──────────────────────────────────────────────────────────────────
+interface CacheEntry { trades: ClosedTrade[]; fetchedAt: number; deviceId: string; range: Tim
+interface ChatMessage { role: 'user' | 'assistant'; content: string; }
 async function getAccessToken(): Promise<string> {
-  const cached = sessionStorage.getItem('tt_access_token');
-  if (cached) return cached;
-  const refreshToken = localStorage.getItem('tt_refresh_token');
-  const clientSecret = localStorage.getItem('tt_client_secret') ?? '';
-  if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not authenticated'); }
-  const res = await fetch(`${BASE}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: CLIENT_ID, client_secret: clientSecret }) });
-  if (!res.ok) { sessionStorage.removeItem('tt_access_token'); localStorage.removeItem('tt_refresh_token'); window.location.href = '/login'; throw new Error('Session expired'); }
-  const data = await res.json(); const token = data.access_token;
-  if (!token) { window.location.href = '/login'; throw new Error('No token'); }
-  sessionStorage.setItem('tt_access_token', token);
-  if (data.refresh_token && data.refresh_token !== refreshToken) localStorage.setItem('tt_refresh_token', data.refresh_token);
-  return token;
+const cached = sessionStorage.getItem('tt_access_token');
+if (cached) return cached;
+const refreshToken = localStorage.getItem('tt_refresh_token');
+const clientSecret = localStorage.getItem('tt_client_secret') ?? '';
+if (!refreshToken || !clientSecret) { window.location.href = '/login'; throw new Error('Not
+const res = await fetch(`${BASE}/oauth/token`, { method: 'POST', headers: { 'Content-Type':
+if (!res.ok) { sessionStorage.removeItem('tt_access_token'); localStorage.removeItem('tt_re
+const data = await res.json();
+const token = data.access_token;
+if (!token) { window.location.href = '/login'; throw new Error('No token'); }
+sessionStorage.setItem('tt_access_token', token);
+if (data.refresh_token && data.refresh_token !== refreshToken) localStorage.setItem('tt_ref
+return token;
 }
 async function ttFetch(path: string, token: string) {
-  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, cache: 'no-store' });
-  if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.href = '/login'; throw new Error('Session expired'); }
-  if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status}): ${text.slice(0, 120)}`); }
-  return res.json();
+const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}`, Ac
+if (res.status === 401) { sessionStorage.removeItem('tt_access_token'); window.location.hre
+if (!res.ok) { const text = await res.text(); throw new Error(`${path} failed (${res.status
+return res.json();
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────
-function daysUntil(dateStr: string): number {
-  const target = new Date(dateStr + 'T12:00:00Z');
-  const now = new Date();
-  return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+function getDeviceId(): string {
+try { let id = localStorage.getItem(LS_DEVICE); if (!id) { id = crypto.randomUUID(); localS
 }
-function getBidAskMax(price: number | null): number {
-  if (price == null) return 1.50;
-  if (price >= 500) return 3.00;
-  if (price >= 200) return 1.50;
-  if (price >= 100) return 0.50;
-  return 0.10;
+const LS_KEY: Record<TimeRange, string> = { '1w': LS_TL_1W, '2w': LS_TL_2W, '1m': LS_TL_1M, '
+function readCache(range: TimeRange): CacheEntry | null {
+try {
+const raw = localStorage.getItem(LS_KEY[range]);
+if (!raw) return null;
+const parsed = JSON.parse(raw) as CacheEntry & { version?: string };
+if (parsed.version !== CACHE_VERSION) return null; // stale schema
+return parsed;
+} catch { return null; }
 }
-function getWidthSteps(maxWidth: number, price: number | null): number[] {
-  const stepSize = price == null ? 5 : price >= 2000 ? 25 : 5;
-  const steps: number[] = [];
-  for (let w = stepSize; w <= maxWidth; w += stepSize) steps.push(w);
-  return steps;
+function writeCache(range: TimeRange, trades: ClosedTrade[]) {
+try { localStorage.setItem(LS_KEY[range], JSON.stringify({ trades, fetchedAt: Date.now(), d
 }
-
-// ── Profile building ───────────────────────────────────────────────────────
-function loadTradesFromCache(range: TimeRange): ClosedTrade[] {
-  const LS_TL_1W = 'hunter-tradelog-1w', LS_TL_2W = 'hunter-tradelog-2w', LS_TL_1M = 'hunter-tradelog-1m';
-  const key = range === '1w' ? LS_TL_1W : range === '2w' ? LS_TL_2W : range === '1m' ? LS_TL_1M : range === '3m' ? LS_TL_3M : range === '6m' ? LS_TL_6M : LS_TL_12M;
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return parsed.trades ?? [];
-  } catch { return []; }
+function parseOccSymbol(occ: string): { symbol: string; expiry: string; optionType: 'P' | 'C'
+const cleaned = occ.replace(/\s+/g, '');
+const m = cleaned.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
+if (!m) return { symbol: occ, expiry: '', optionType: null, strike: 0 };
+const y = '20' + m[2].slice(0, 2), mo = m[2].slice(2, 4), d = m[2].slice(4, 6);
+return { symbol: m[1], expiry: `${y}-${mo}-${d}`, optionType: m[3] as 'P' | 'C', strike: pa
 }
-
-function parseStrikeWidth(strikes: string): number {
-  // e.g. "450P/440P" → 10, "450P/440P · 470C/480C" → 10
-  try {
-    const nums = strikes.match(/\d+(\.\d+)?/g)?.map(Number) ?? [];
-    if (nums.length >= 2) return Math.abs(nums[0] - nums[1]);
-    return 5;
-  } catch { return 5; }
+function rangeStartDate(range: TimeRange): string {
+const d = new Date();
+if (range === '1w') d.setDate(d.getDate() - 7);
+else if (range === '2w') d.setDate(d.getDate() - 14);
+else if (range === '1m') d.setMonth(d.getMonth() - 1);
+else if (range === '3m') d.setMonth(d.getMonth() - 3);
+else if (range === '6m') d.setMonth(d.getMonth() - 6);
+else d.setFullYear(d.getFullYear() - 1);
+return d.toISOString().split('T')[0];
 }
-
-function buildProfiles(trades: ClosedTrade[], minWins: number): WinningProfile[] {
-  const bySymbol: Record<string, ClosedTrade[]> = {};
-  for (const t of trades) {
-    if (!bySymbol[t.symbol]) bySymbol[t.symbol] = [];
-    bySymbol[t.symbol].push(t);
-  }
-
-  const profiles: WinningProfile[] = [];
-
-  for (const [symbol, symTrades] of Object.entries(bySymbol)) {
-    const wins = symTrades.filter(t => t.outcome === 'WIN');
-    if (wins.length < minWins) continue;
-
-    const winRate = wins.length / symTrades.length;
-    const avgPnlPct = wins.reduce((s, t) => s + t.pnlPct, 0) / wins.length;
-    const avgDteAtEntry = Math.round(wins.reduce((s, t) => s + t.dteAtEntry, 0) / wins.length);
-    const avgSpreadWidth = wins.reduce((s, t) => s + parseStrikeWidth(t.strikes), 0) / wins.length;
-
-    // Preferred strategy = most common among wins
-    const stratCount: Record<string, number> = {};
-    for (const t of wins) stratCount[t.strategy] = (stratCount[t.strategy] ?? 0) + 1;
-    const preferredStrategy = (Object.entries(stratCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'BPS') as 'BPS' | 'BCS' | 'IC';
-
-    const avgCreditRatio = wins.reduce((s, t) => {
-      const w = parseStrikeWidth(t.strikes) * 100;
-      return s + (w > 0 ? t.creditReceived / w : 0.33);
-    }, 0) / wins.length;
-
-    const lastWinDate = wins.map(t => t.closeDate).sort().reverse()[0];
-
-    profiles.push({
-      symbol, winCount: wins.length, totalTrades: symTrades.length, winRate,
-      avgPnlPct, avgDteAtEntry, preferredStrategy, avgSpreadWidth, avgCreditRatio,
-      lastWinDate, trades: symTrades,
-    });
-  }
-
-  // Sort by composite attractiveness: winRate × winCount × avgPnlPct
-  return profiles.sort((a, b) => (b.winRate * b.winCount * b.avgPnlPct) - (a.winRate * a.winCount * a.avgPnlPct));
+// ── Exit classification ───────────────────────────────────────────────────
+function classifyExit(
+pnl: number,
+creditReceived: number,
+holdDays: number,
+dteAtClose: number,
+dteAtEntry: number,
+): ExitType {
+if (creditReceived === 0) return 'UNKNOWN';
+const pnlPct = (pnl / Math.abs(creditReceived)) * 100;
+const pctOfDteUsed = dteAtEntry > 0 ? holdDays / dteAtEntry : 0;
+if (pnl >= 0) {
+if (holdDays <= 3 && pnlPct < 30) return 'EARLY_WIN'; // very fast, small win
+if (pnlPct >= 30 && pnlPct <= 70) return 'TARGET_HIT'; // clean ~50% target
+if (pnlPct > 70 || pctOfDteUsed >= 0.75) return 'HELD_TO_EXPIRY'; // let it ride
+return 'TARGET_HIT';
+} else {
+if (pnlPct < -100) return 'MAX_LOSS'; if (holdDays <= 2) return 'FAST_CUT'; if (dteAtClose > 0 && dteAtClose <= 21) return 'TIME_STOP'; if (holdDays >= 14) return 'MAX_LOSS'; // loss > full credit —
+// quick defensive exit
+// hit 21-DTE rule
+// held long time with
+return 'FAST_CUT';
 }
-
-// Build personalized rules from winning profile
-function buildPersonalizedRules(profile: WinningProfile): RulesType {
-  const base = { ...DEFAULT_RULES };
-
-  // DTE range centered on their winning entry DTE
-  const dte = Math.max(14, Math.min(60, profile.avgDteAtEntry));
-  base.DTE_MIN = Math.max(14, dte - 8);
-  base.DTE_MAX = Math.min(60, dte + 8);
-
-  // Spread width cap: 2x their avg winning width, min $5
-  const maxWidth = Math.max(5, Math.round(profile.avgSpreadWidth * 2 / 5) * 5);
-  base.MAX_SPREAD_WIDTH = Math.min(200, maxWidth);
-
-  // Credit ratio: slightly relaxed from their historical avg
-  base.CREDIT_RATIO_MIN = Math.max(0.20, (profile.avgCreditRatio ?? 0.33) * 0.85);
-
-  // Relax IVR slightly for ETFs/indexes
-  if (INDEX_TICKERS.has(profile.symbol)) {
-    base.IVR_MIN = 15;
-    base.OI_MIN = 100;
-    base.BID_ASK_MAX = 0.25;
-  }
-
-  return base;
 }
-
-// ── API calls ─────────────────────────────────────────────────────────────
-async function fetchMetrics(symbol: string, token: string): Promise<{ ivr: number | null; earnings: string | null }> {
-  try {
-    const data = await ttFetch(`/market-metrics?symbols=${encodeURIComponent(symbol)}`, token);
-    const item = data?.data?.items?.[0];
-    if (!item) return { ivr: null, earnings: null };
-    const rawIvr = item['implied-volatility-index-rank'] ?? item['iv-rank'] ?? null;
-    const parsedIvr = rawIvr != null ? parseFloat(String(rawIvr)) : NaN;
-    const ivr = !isNaN(parsedIvr) ? (parsedIvr < 1 ? Math.round(parsedIvr * 100) : Math.round(parsedIvr)) : null;
-    const earningsRaw = item['earnings'] ?? item['next-earnings-date'] ?? null;
-    const earnings = earningsRaw?.['expected-report-date'] ?? (typeof earningsRaw === 'string' ? earningsRaw : null);
-    return { ivr, earnings };
-  } catch { return { ivr: null, earnings: null }; }
+async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[]> {
+const token = await getAccessToken();
+const accountsData = await ttFetch('/customers/me/accounts', token);
+const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+if (!accountNumber) throw new Error('No account found');
+const startDate = rangeStartDate(range);
+let allTx: any[] = [];
+let page = 1;
+while (true) {
+const data = await ttFetch(`/accounts/${accountNumber}/transactions?start-date=${startDat
+const items: any[] = data?.data?.items ?? [];
+allTx = [...allTx, ...items];
+if (!data?.pagination || items.length < 250 || allTx.length >= data.pagination['total-ite
+page++;
 }
-
-async function fetchQuote(symbol: string, token: string): Promise<number | null> {
-  try {
-    const data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
-    const item = data.data?.items?.[0]; if (!item) return null;
-    const bid = item.bid != null ? parseFloat(item.bid) : null;
-    const ask = item.ask != null ? parseFloat(item.ask) : null;
-    const last = item.last != null ? parseFloat(item.last) : null;
-    return last ?? (bid && ask ? (bid + ask) / 2 : null);
-  } catch { return null; }
+const optionTx = allTx.filter(tx => tx['transaction-type'] === 'Trade' && tx.symbol && pars
+const byOptionSymbol: Record<string, any[]> = {};
+for (const tx of optionTx) {
+const sym = tx.symbol.replace(/\s+/g, '');
+if (!byOptionSymbol[sym]) byOptionSymbol[sym] = [];
+byOptionSymbol[sym].push(tx);
 }
-
-async function fetchChain(symbol: string, token: string, rules: RulesType): Promise<{ expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean }> {
-  const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
-  const instrumentType: string = nested?.data?.items?.[0]?.['instrument-type'] ?? '';
-  const isEtfOrIndex = ['ETF', 'Index', 'Future'].some(t => instrumentType.toLowerCase().includes(t.toLowerCase())) || INDEX_TICKERS.has(symbol.toUpperCase());
-  const expirations: string[] = [], chains: Record<string, any[]> = {}, allOCCSymbols: string[] = [];
-  const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
-  for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
-    const expDate: string = expGroup['expiration-date']; if (!expDate) continue;
-    const dte = daysUntil(expDate); if (dte < rules.DTE_MIN - 5 || dte > rules.DTE_MAX + 5) continue;
-    for (const strike of expGroup.strikes ?? []) {
-      const strikePrice = parseFloat(strike['strike-price'] ?? '0');
-      const callSym: string = strike['call'], putSym: string = strike['put'];
-      if (callSym) { allOCCSymbols.push(callSym); symbolMeta[callSym] = { expDate, strike: strikePrice, optionType: 'C' }; }
-      if (putSym) { allOCCSymbols.push(putSym); symbolMeta[putSym] = { expDate, strike: strikePrice, optionType: 'P' }; }
-    }
-  }
-  if (allOCCSymbols.length === 0) return { expirations, chains, isEtfOrIndex };
-  for (let i = 0; i < allOCCSymbols.length; i += 100) {
-    const chunk = allOCCSymbols.slice(i, i + 100);
-    const qs = chunk.map(s => `equity-option=${encodeURIComponent(s)}`).join('&');
-    let greeksData: any;
-    try { greeksData = await ttFetch(`/market-data/by-type?${qs}`, token); } catch { continue; }
-    for (const item of greeksData?.data?.items ?? []) {
-      const meta = symbolMeta[item.symbol]; if (!meta) continue;
-      const bid = parseFloat(item.bid ?? '0'), ask = parseFloat(item.ask ?? '0');
-      const delta = item.delta != null ? parseFloat(item.delta) : null;
-      const oi = parseInt(item['open-interest'] ?? '0', 10);
-      if (!expirations.includes(meta.expDate)) expirations.push(meta.expDate);
-      if (!chains[meta.expDate]) chains[meta.expDate] = [];
-      chains[meta.expDate].push({ strikePrice: meta.strike, expirationDate: meta.expDate, optionType: meta.optionType, delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2, occSymbol: item.symbol });
-    }
-  }
-  expirations.sort();
-  return { expirations, chains, isEtfOrIndex };
+const legPairs: any[] = [];
+for (const [sym, txList] of Object.entries(byOptionSymbol)) {
+const parsed = parseOccSymbol(sym);
+if (!parsed.optionType) continue;
+const getTimestamp = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['sett
+const opens = txList.filter((tx: any) => tx['action-description'] === 'Sell to Open' ||
+const closes = txList.filter((tx: any) => tx['action-description'] === 'Buy to Close' ||
+const openQueue = [...opens].sort((a, b) => getTimestamp(a).localeCompare(getTimestamp(b
+const closeQueue = [...closes].sort((a, b) => getTimestamp(a).localeCompare(getTimestamp(
+for (const openTx of openQueue) {
+const openQty = Math.abs(parseFloat(openTx.quantity ?? '1'));
+const matchIdx = closeQueue.findIndex((c: any) => Math.abs(parseFloat(c.quantity if (matchIdx === -1) continue;
+?? '1'
+const closeTx = closeQueue.splice(matchIdx, 1)[0];
+const fees = ['regulatory-fees','clearing-fees','commission'].reduce((s: number, legPairs.push({ sym, underlying: openTx['underlying-symbol'], expiry: parsed.expiry, op
+k: str
 }
-
-// ── Spread finders (copied from Hunter) ───────────────────────────────────
-function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string, width: number, price: number | null, RULES: RulesType): SpreadCandidate | null {
-  const bidAskMax = getBidAskMax(price);
-  const candidates: SpreadCandidate[] = [];
-  for (const shortLeg of legs) {
-    const delta = shortLeg.delta; if (delta == null) continue;
-    const absDelta = Math.abs(delta);
-    if (absDelta < RULES.SPREAD_DELTA_MIN || absDelta > RULES.SPREAD_DELTA_MAX) continue;
-    if (shortLeg.openInterest < RULES.OI_MIN || shortLeg.ask - shortLeg.bid > bidAskMax) continue;
-    const longStrike = strategy === 'BPS' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
-    const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
-    if (!longLeg || longLeg.openInterest < RULES.OI_MIN || longLeg.ask - longLeg.bid > bidAskMax) continue;
-    const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
-    const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
-    const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
-    if (roc < RULES.ROC_MIN_SPREAD) continue;
-    const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
-    candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop, shortOccSymbol: shortLeg.occSymbol, longOccSymbol: longLeg.occSymbol });
-  }
-  if (candidates.length === 0) return null;
-  return candidates.sort((a, b) => { const pd = (b.pop ?? 0) - (a.pop ?? 0); if (Math.abs(pd) >= 5) return pd; return b.roc - a.roc; })[0];
 }
-
-function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
-  const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === (strategy === 'BPS' ? 'P' : 'C'));
-  const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
-  let best: SpreadCandidate | null = null;
-  for (const w of widthSteps) { const c = trySpreadAtWidth(legs, strategy, expDate, w, price, RULES); if (c && (!best || c.roc > best.roc)) best = c; }
-  return best;
+const spreadMap: Record<string, any[]> = {};
+for (const pair of legPairs) {
+const getTs2 = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at
+const openTs = getTs2(pair.openTx);
+const key = `${pair.underlying}::${pair.expiry}::${openTs.slice(0, 10)}`;
+if (!spreadMap[key]) spreadMap[key] = [];
+spreadMap[key].push(pair);
 }
-
-function tryICSideAtWidth(legs: any[], side: 'put' | 'call', width: number, price: number | null, RULES: RulesType, minCallStrike?: number): any | null {
-  const bidAskMax = getBidAskMax(price);
-  const candidates: any[] = [];
-  for (const shortLeg of legs) {
-    if (side === 'call' && minCallStrike != null && shortLeg.strikePrice <= minCallStrike) continue;
-    const delta = shortLeg.delta; if (delta == null) continue;
-    const absDelta = Math.abs(delta);
-    if (absDelta < RULES.IC_DELTA_MIN || absDelta > RULES.IC_DELTA_MAX) continue;
-    if (shortLeg.openInterest < RULES.OI_MIN || shortLeg.ask - shortLeg.bid > bidAskMax) continue;
-    const longStrike = side === 'put' ? shortLeg.strikePrice - width : shortLeg.strikePrice + width;
-    const longLeg = legs.find((o: any) => Math.abs(o.strikePrice - longStrike) < 0.01);
-    if (!longLeg || longLeg.openInterest < RULES.OI_MIN || longLeg.ask - longLeg.bid > bidAskMax) continue;
-    const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
-    const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
-    const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0;
-    const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
-    candidates.push({ shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, credit, creditRatio, roc, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, pop, shortOccSymbol: shortLeg.occSymbol, longOccSymbol: longLeg.occSymbol, width });
-  }
-  if (candidates.length === 0) return null;
-  return candidates.sort((a, b) => { const pd = b.pop - a.pop; if (Math.abs(pd) >= 5) return pd; return b.roc - a.roc; })[0];
+const trades: ClosedTrade[] = [];
+for (const [key, pairs] of Object.entries(spreadMap)) {
+const [underlying, expiry, openDay] = key.split('::');
+const putPairs = pairs.filter((p: any) => p.optionType === 'P');
+const callPairs = pairs.filter((p: any) => p.optionType === 'C');
+let strategy: ClosedTrade['strategy'] = 'SPREAD';
+if (putPairs.length >= 2 && callPairs.length === 0) strategy = 'BPS';
+else if (callPairs.length >= 2 && putPairs.length === 0) strategy = 'BCS';
+else if (putPairs.length >= 2 && callPairs.length >= 2) strategy = 'IC';
+else if (pairs.length > 0) strategy = 'OTHER';
+const sortedPuts = putPairs.map((p: any) => p.strike).sort((a: number, b: number) => b -
+const sortedCalls = callPairs.map((p: any) => p.strike).sort((a: number, b: number) => a
+let strikes = '';
+if (strategy === 'BPS' && sortedPuts.length >= 2) strikes = `${sortedPuts[0]}P/${sortedPu
+else if (strategy === 'BCS' && sortedCalls.length >= 2) strikes = `${sortedCalls[0]}C/${s
+else if (strategy === 'IC' && sortedPuts.length >= 2 && sortedCalls.length >= 2) strikes
+else strikes = pairs.map((p: any) => `${p.strike}${p.optionType}`).join('/');
+let totalOpenValue = 0, totalCloseValue = 0, totalFees = 0;
+for (const p of pairs) {
+const isShort = p.openTx['action-description'] === 'Sell to Open';
+totalOpenValue += p.openPrice * p.qty * 100 * (isShort ? 1 : -1);
+totalCloseValue += p.closePrice * p.qty * 100 * (isShort ? -1 : 1);
+totalFees += p.fees;
 }
-
-function findBestIC(chain: any[], expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
-  const puts = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'P');
-  const calls = chain.filter((o: any) => o.expirationDate === expDate && o.optionType === 'C');
-  const widthSteps = getWidthSteps(RULES.MAX_SPREAD_WIDTH, price);
-  let bestPut: any = null;
-  for (const w of widthSteps) { const c = tryICSideAtWidth(puts, 'put', w, price, RULES); if (c && (!bestPut || c.roc > bestPut.roc)) bestPut = { ...c, width: w }; }
-  if (!bestPut) return null;
-  let bestCall: any = null;
-  for (const w of widthSteps) { const c = tryICSideAtWidth(calls, 'call', w, price, RULES, bestPut.shortStrike); if (c && (!bestCall || c.roc > bestCall.roc)) bestCall = { ...c, width: w }; }
-  if (!bestCall) return null;
-  const totalCredit = parseFloat((bestPut.credit + bestCall.credit).toFixed(2));
-  const maxLoss = Math.max(bestPut.width - bestPut.credit, bestCall.width - bestCall.credit);
-  const roc = maxLoss > 0 ? (totalCredit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_IC) return null;
-  return { strategy: 'IC', expiration: expDate, dte: daysUntil(expDate), shortStrike: bestPut.shortStrike, longStrike: bestPut.longStrike, shortDelta: bestPut.shortDelta, shortOI: bestPut.shortOI, longOI: bestPut.longOI, credit: bestPut.credit, spreadWidth: bestPut.width, creditRatio: bestPut.creditRatio, roc, pop: (1 - bestPut.shortDelta - bestCall.shortDelta) * 100, shortCallStrike: bestCall.shortStrike, longCallStrike: bestCall.longStrike, callCredit: bestCall.credit, callWidth: bestCall.width, totalCredit, shortOccSymbol: bestPut.shortOccSymbol, longOccSymbol: bestPut.longOccSymbol, shortCallOccSymbol: bestCall.shortOccSymbol, longCallOccSymbol: bestCall.longOccSymbol };
+const creditReceived = totalOpenValue;
+const closePrice = -totalCloseValue;
+const pnl = creditReceived + totalCloseValue - totalFees;
+const pnlPct = creditReceived !== 0 ? (pnl / Math.abs(creditReceived)) * 100 : 0;
+const getTxTs = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-a
+const closeDate = pairs.map((p: any) => getTxTs(p.closeTx).slice(0, 10)).filter(Boolean).
+const holdDays = Math.round((new Date(closeDate).getTime() - new Date(openDay).getTime()
+const outcome: Outcome = pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : 'SCRATCH';
+// Entry time metadata — use the earliest open leg timestamp
+// TastyTrade uses 'executed-at'; fall back to other timestamp fields if missing
+const getTs = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at'
+const earliestOpen = pairs.map((p: any) => getTs(p.openTx)).filter(Boolean).sort()[0] ??
+let openTime = '';
+let openDow = -1;
+if (earliestOpen) {
+// Parse as ET — market hours are always Eastern regardless of user's local timezone
+try {
+const etStr = new Date(earliestOpen).toLocaleString('en-US', { timeZone: 'America/New
+const etDt = new Date(etStr);
+openTime = `${String(etDt.getHours()).padStart(2,'0')}:${String(etDt.getMinutes()).pa
+openDow = etDt.getDay();
+} catch {
+const fallback = new Date(earliestOpen);
+openTime = `${String(fallback.getHours()).padStart(2,'0')}:${String(fallback.getMinut
+openDow = fallback.getDay();
 }
-
-// ── RR Score ──────────────────────────────────────────────────────────────
-function computeRRScore(profile: WinningProfile, candidate: SpreadCandidate, ivr: number | null): number {
-  // Components (all 0-100, weighted):
-  // 40% — personal win rate on this symbol
-  // 25% — current ROC
-  // 20% — IVR quality
-  // 15% — win count bonus (more history = more confidence)
-  const winRateScore   = profile.winRate * 100 * 0.40;
-  const rocScore       = Math.min(100, (candidate.roc / 50) * 100) * 0.25;
-  const ivrScore       = ivr != null ? Math.min(100, (ivr / 60) * 100) * 0.20 : 15 * 0.20;
-  const historyBonus   = Math.min(100, (profile.winCount / 5) * 100) * 0.15;
-  return Math.round(winRateScore + rocScore + ivrScore + historyBonus);
 }
-
+// DTE calculations
+// Add T12:00:00Z to force UTC noon — prevents timezone day-shift on date-only strings
+const dteAtClose = Math.max(0, Math.round((new Date(expiry + 'T12:00:00Z').getTime() - ne
+const dteAtEntry = holdDays + dteAtClose;
+const exitType = classifyExit(pnl, creditReceived, holdDays, dteAtClose, dteAtEntry);
+trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, ope
+}
+trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
+return trades;
+}
+// ── AI ────────────────────────────────────────────────────────────────────
+const AI_SYSTEM_PROMPT = `You are a brutally honest options trading coach reviewing a trader'
+Do not hedge. Do not add disclaimers. If the data shows a clear problem, say so directly. If
+Respond in clear conversational prose. No JSON. No markdown headers. Use short paragraphs. Wh
+function buildTradeAnalysisPrompt(trades: ClosedTrade[], range: TimeRange): string {
+const total = trades.length;
+if (total === 0) return 'No closed trades found in this period.';
+const wins = trades.filter(t => t.outcome === 'WIN');
+const losses = trades.filter(t => t.outcome === 'LOSS');
+const winRate = Math.round((wins.length / total) * 100);
+const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length :
+const avgHold = Math.round(trades.reduce((s, t) => s + t.holdDays, 0) / total);
+// By strategy
+const strategies = ['BPS','BCS','IC','SPREAD','OTHER'] as const;
+const byStrategy = strategies.map(s => {
+const g = trades.filter(t => t.strategy === s);
+if (g.length === 0) return null;
+const w = g.filter(t => t.outcome === 'WIN').length;
+const pnl = g.reduce((sum, t) => sum + t.pnl, 0);
+return { strategy: s, count: g.length, winRate: Math.round((w / g.length) * 100), pnl: pn
+}).filter(Boolean);
+// By symbol
+const symMap: Record<string, { count: number; wins: number; pnl: number }> = {};
+for (const t of trades) {
+if (!symMap[t.symbol]) symMap[t.symbol] = { count: 0, wins: 0, pnl: 0 };
+symMap[t.symbol].count++;
+if (t.outcome === 'WIN') symMap[t.symbol].wins++;
+symMap[t.symbol].pnl += t.pnl;
+}
+const bySymbol = Object.entries(symMap).sort((a, b) => b[1].pnl - a[1].pnl)
+.map(([sym, v]) => `${sym}: ${v.count} trades, ${Math.round(v.wins/v.count*100)}% win, $$
+// By day of week
+const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const dowMap: Record<number, { count: number; wins: number; pnl: number }> = {};
+for (const t of trades) {
+if (t.openDow < 0) continue;
+if (!dowMap[t.openDow]) dowMap[t.openDow] = { count: 0, wins: 0, pnl: 0 };
+dowMap[t.openDow].count++;
+if (t.outcome === 'WIN') dowMap[t.openDow].wins++;
+dowMap[t.openDow].pnl += t.pnl;
+}
+const byDow = Object.entries(dowMap).sort((a, b) => Number(a[0]) - Number(b[0]))
+.map(([d, v]) => `${DOW[Number(d)]}: ${v.count} trades, ${Math.round(v.wins/v.count*100)}
+// By time of day bucket
+const timeBuckets = [
+{ label: 'Open (9:30–10:30)', min: 570, max: 630 },
+{ label: 'Morning (10:30–12:00)', min: 630, max: 720 },
+{ label: 'Midday (12:00–14:00)', min: 720, max: 840 },
+{ label: 'Afternoon (14:00–15:00)', min: 840, max: 900 },
+{ label: 'Close (15:00–16:00)', min: 900, max: 960 },
+];
+const byTime = timeBuckets.map(b => {
+const g = trades.filter(t => {
+if (!t.openTime) return false;
+const [h, m] = t.openTime.split(':').map(Number);
+const mins = h * 60 + m;
+return mins >= b.min && mins < b.max;
+});
+if (g.length === 0) return null;
+const w = g.filter(t => t.outcome === 'WIN').length;
+const pnl = g.reduce((s, t) => s + t.pnl, 0);
+return `${b.label}: ${g.length} trades, ${Math.round(w/g.length*100)}% win, $${pnl.toFixe
+}).filter(Boolean);
+// Hold time analysis
+const holdBuckets = [
+{ label: '0–7 days', min: 0, max: 7 },
+{ label: '8–14 days', min: 8, max: 14 },
+{ label: '15–21 days', min: 15, max: 21 },
+{ label: '22–30 days', min: 22, max: 30 },
+{ label: '31+ days', min: 31, max: 999 },
+];
+const byHold = holdBuckets.map(b => {
+const g = trades.filter(t => t.holdDays >= b.min && t.holdDays <= b.max);
+if (g.length === 0) return null;
+const w = g.filter(t => t.outcome === 'WIN').length;
+return `${b.label}: ${g.length} trades, ${Math.round(w/g.length*100)}% win`;
+}).filter(Boolean);
+// Behavioral flags
+const sorted = [...trades].sort((a, b) => a.closeDate.localeCompare(b.closeDate));
+let revengeTrades = 0;
+for (let i = 1; i < sorted.length; i++) {
+if (sorted[i-1].outcome === 'LOSS' && sorted[i].outcome === 'LOSS') {
+const daysBetween = Math.round((new Date(sorted[i].openDate).getTime() - new Date(sorte
+if (daysBetween <= 2) revengeTrades++;
+}
+}
+return `Analyze this trader's closed options trade history from the last ${range === '3m' ?
+OVERALL (${total} closed trades):
+Win rate: ${winRate}% | Total P&L: $${totalPnl.toFixed(0)} | Avg win: $${avgWin.toFixed(0
+BY STRATEGY:
+${byStrategy.map(s => `${s!.strategy}: ${s!.count} trades, ${s!.winRate}% win, $${s!.pnl} tot
+BY SYMBOL (best to worst P&L):
+${bySymbol.join('\n')}
+ENTRY DAY OF WEEK:
+${byDow.join('\n')}
+ENTRY TIME OF DAY:
+${byTime.length > 0 ? byTime.join('\n') : 'Insufficient time data'}
+HOLD TIME vs WIN RATE:
+${byHold.join('\n')}
+BEHAVIORAL FLAGS:
+Potential revenge trades (loss followed by another entry within 2 days that also lost): ${rev
+EXIT TYPE BREAKDOWN:
+${(() => {
+const exitLabels: Record<string, string> = {
+TARGET_HIT: 'Target hit (40–65% profit)',
+FAST_CUT: 'Fast cut (exit ≤2 days, loss)',
+TIME_STOP: 'Time stop (closed at ≤21 DTE)',
+MAX_LOSS: 'Max loss (held too long, >150% loss)',
+HELD_TO_EXPIRY: 'Held to expiry (win but risky)',
+EARLY_WIN: 'Early win (closed fast, small gain)',
+};
+const types = ['TARGET_HIT','FAST_CUT','TIME_STOP','MAX_LOSS','HELD_TO_EXPIRY','EARLY_WIN']
+return types.map(et => {
+const g = trades.filter(t => t.exitType === et);
+if (g.length === 0) return null;
+const w = g.filter(t => t.outcome === 'WIN').length;
+const pnl = g.reduce((s, t) => s + t.pnl, 0);
+const avgH = Math.round(g.reduce((s, t) => s + t.holdDays, 0) / g.length);
+return `${exitLabels[et]}: ${g.length} trades, ${Math.round(w/g.length*100)}% win, }).filter(Boolean).join('\n');
+})()}
+$${pnl
+LOSS DETAIL (each losing trade with context):
+${trades.filter(t => t.outcome === 'LOSS').map(t =>
+`${t.symbol} ${t.strategy}: held ${t.holdDays}d, ${t.dteAtClose}DTE remaining at close, los
+).join('\n') || 'No losses in this period'}
+Provide honest coaching. Lead with exit behavior analysis first — for each loss, was the exit
+}
+async function callAIWithHistory(messages: ChatMessage[], system: string): Promise<string> {
+const res = await fetch('/api/analyze', {
+method: 'POST',
+headers: { 'Content-Type': 'application/json' },
+body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1800, system, messa
+});
+if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err?.error ?
+const data = await res.json();
+return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+}
 // ── Formatting ────────────────────────────────────────────────────────────
 function fmtDate(d: string) {
-  if (!d) return '—';
-  const [y, m, day] = d.split('-');
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return `${months[parseInt(m,10)-1]} ${parseInt(day,10)}`;
+if (!d) return '—';
+const [y, m, day] = d.split('-');
+const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+return `${months[parseInt(m,10)-1]} ${parseInt(day,10)}, ${y}`;
+}
+function fmtAge(ms: number): string {
+const mins = Math.round(ms / 60000);
+if (mins < 60) return `${mins}m ago`;
+const hrs = Math.round(mins / 60);
+if (hrs < 24) return `${hrs}h ago`;
+return `${Math.round(hrs / 24)}d ago`;
+}
+function exitTypeColor(e: ExitType) {
+if (e === 'TARGET_HIT') return 'text-emerald-400 border-emerald-700 bg-emerald-500/8';
+if (e === 'FAST_CUT') return 'text-blue-400 ac-border-faint bg-blue-500/8';
+if (e === 'TIME_STOP') return 'text-yellow-400 border-yellow-700 bg-yellow-500/8';
+if (e === 'MAX_LOSS') return 'text-red-400 border-red-700 bg-red-500/8';
+if (e === 'HELD_TO_EXPIRY') return 'text-orange-400 border-orange-700 bg-orange-500/8';
+if (e === 'EARLY_WIN') return 'text-purple-400 border-purple-700 bg-purple-500/8';
+return 'text-slate-400 border-slate-700';
+}
+function exitTypeLabel(e: ExitType) {
+if (e === 'TARGET_HIT') return 'Target Hit';
+if (e === 'FAST_CUT') return 'Fast Cut';
+if (e === 'TIME_STOP') return 'Time Stop';
+if (e === 'MAX_LOSS') return 'Max Loss';
+if (e === 'HELD_TO_EXPIRY') return 'Held to Expiry';
+if (e === 'EARLY_WIN') return 'Early Win';
+return 'Unknown';
+}
+function outcomeColor(o: Outcome) {
+if (o === 'WIN') return 'text-emerald-400 border-emerald-600 bg-emerald-500/10';
+if (o === 'LOSS') return 'text-red-400 border-red-600 bg-red-500/10';
+if (o === 'SCRATCH') return 'text-yellow-400 border-yellow-600 bg-yellow-500/10';
+return 'text-slate-400 border-slate-600 bg-slate-500/10';
 }
 function stratColor(s: string) {
-  if (s === 'BPS') return 'text-emerald-400 border-emerald-600 bg-emerald-500/10';
-  if (s === 'BCS') return 'text-red-400 border-red-600 bg-red-500/10';
-  if (s === 'IC')  return 'text-blue-400 ac-border ac-bg-10';
-  return 'text-slate-400 border-slate-600 bg-slate-500/10';
+if (s === 'BPS') return 'text-emerald-400 border-emerald-600';
+if (s === 'BCS') return 'text-red-400 border-red-600';
+if (s === 'IC') return 'text-blue-400 ac-border';
+return 'text-slate-400 border-slate-600';
 }
-function scoreColor(s: number) {
-  if (s >= 70) return { text: 'text-emerald-400', border: 'border-emerald-600', bg: 'bg-emerald-500/10', label: 'Strong' };
-  if (s >= 50) return { text: 'text-yellow-400',  border: 'border-yellow-600',  bg: 'bg-yellow-500/10',  label: 'Good' };
-  if (s >= 35) return { text: 'text-orange-400',  border: 'border-orange-600',  bg: 'bg-orange-500/10',  label: 'Weak' };
-  return           { text: 'text-red-400',    border: 'border-red-600',    bg: 'bg-red-500/10',    label: 'Poor' };
-}
-
-
-// ── Stock Research Component ──────────────────────────────────────────────
-async function fetchStockResearch(symbol: string, riskContext?: string): Promise<string> {
-  // Step 1: fetch recent news headlines from Yahoo Finance
-  let headlines = '';
-  try {
-    const newsRes = await fetch(
-      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=8&quotesCount=0`,
-      { cache: 'no-store' }
-    );
-    const newsData = await newsRes.json();
-    const articles = newsData?.news ?? [];
-    headlines = articles
-      .slice(0, 6)
-      .map((a: any) => `- ${a.title}`)
-      .join('\n');
-  } catch { headlines = 'News unavailable'; }
-
-  // Step 2: send to GPT-4o for trading-focused summary
-  const prompt = `You are a professional options trader analyzing ${symbol} before placing a trade.
-
-Recent news headlines:
-${headlines}
-
-Give a concise 4-sentence trading analysis covering:
-1. What is driving price action right now
-2. Any near-term risks (earnings, macro, sector headwinds)
-3. Analyst/market sentiment
-4. Whether conditions currently favor selling premium (credit spreads) on this stock
-${riskContext ? `\n5. Given this portfolio risk context, is adding this trade advisable: ${riskContext}` : ''}
-
-Be direct and specific. No disclaimers. If the news is thin, say so.`;
-
-  const res = await fetch('/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'gpt-4o',
-      max_tokens: 400,
-      system: 'You are a concise, direct options trading analyst. No hedging. No disclaimers. Plain prose only.',
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  if (!res.ok) throw new Error(`Research failed (${res.status})`);
-  const data = await res.json();
-  return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
-}
-
-function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof THEMES[Theme]; riskContext?: string }) {
-  const [open, setOpen]         = useState(false);
-  const [loading, setLoading]   = useState(false);
-  const [result, setResult]     = useState<string | null>(null);
-  const [error, setError]       = useState('');
-
-  const handleClick = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (open) { setOpen(false); return; }
-    setOpen(true);
-    if (result) return; // already fetched — just re-open
-    setLoading(true); setError('');
-    try {
-      const text = await fetchStockResearch(symbol, riskContext);
-      setResult(text);
-    } catch (err: any) {
-      setError(err.message ?? 'Research failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div onClick={e => e.stopPropagation()}>
-      <button
-        onClick={handleClick}
-        className={`inline-flex items-center gap-1 text-[9px] px-2 py-0.5 border rounded transition-colors ${
-          open
-            ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10'
-            : `${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400`
-        }`}>
-        <span className="text-[8px]">◎</span> Research
-      </button>
-
-      {open && (
-        <div className={`mt-2 p-3 rounded-lg border ${th.borderLight} bg-indigo-500/5 text-[11px] leading-relaxed ${th.textMuted}`}>
-          {loading && (
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
-              <span className={`text-[10px] ${th.textFaint}`}>Researching {symbol}...</span>
-            </div>
-          )}
-          {error && <p className="text-red-400 text-[10px]">{error}</p>}
-          {result && (
-            <>
-              <p className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest mb-1.5">◎ {symbol} Research</p>
-              <p className="whitespace-pre-wrap">{result}</p>
-              <button onClick={() => { setResult(null); setOpen(false); }}
-                className={`mt-2 text-[9px] ${th.textFaint} hover:text-red-400 transition-colors`}>
-                ✕ Dismiss
-              </button>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Result Card ───────────────────────────────────────────────────────────
-function RRCard({ result, th, onAddToHunter, existingPositions }: {
-  result: RRResult;
-  th: typeof THEMES[Theme];
-  onAddToHunter: (symbol: string, strategy: string) => void;
-  existingPositions?: ExistingPosition[];
+// ── AI Chat Panel ─────────────────────────────────────────────────────────
+function AIChatPanel({ trades, range, th, onClose }: {
+trades: ClosedTrade[];
+range: TimeRange;
+th: typeof THEMES[Theme];
+onClose: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [portfolioRisk, setPortfolioRisk] = useState<PortfolioRisk | null>(null);
-  const [showChart, setShowChart] = useState(false);
-  const [sparkData, setSparkData] = useState<number[] | null>(null);
-  const [sparkLoading, setSparkLoading] = useState(false);
-
-  useEffect(() => {
-    if (!existingPositions || existingPositions.length === 0) return;
-    const sectorCounts: Record<string, number> = {};
-    Promise.all(existingPositions.map((p: ExistingPosition) => getSector(p.symbol))).then(sectors => {
-      sectors.forEach(s => { if (s !== 'Index' && s !== 'Unknown') sectorCounts[s] = (sectorCounts[s] ?? 0) + 1; });
-      getSector(result.profile.symbol).then(sector => {
-        const adjCounts = { ...sectorCounts };
-        existingPositions.filter((p: ExistingPosition) => p.symbol === result.profile.symbol).forEach(() => {
-          if (adjCounts[sector] > 0) adjCounts[sector]--;
-        });
-        setPortfolioRisk(checkPortfolioRisk(result.profile.symbol, result.candidate, existingPositions, sector, adjCounts));
-      });
-    });
-  }, [existingPositions, result.profile.symbol, result.candidate]);
-  const { profile, candidate: c, currentIvr, currentPrice, rrScore, qualified } = result;
-  const sc = scoreColor(rrScore);
-  const wins = profile.trades.filter(t => t.outcome === 'WIN');
-  const losses = profile.trades.filter(t => t.outcome === 'LOSS');
-
-  return (
-    <div
-      className={`border ${th.border} border-l-4 ${sc.border.replace('border-', 'border-l-')} ${th.card} rounded-lg cursor-pointer transition-all hover:shadow-md`}
-      onClick={() => setExpanded(!expanded)}
-    >
-      {/* Header row */}
-      <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
-        {/* Symbol + price */}
-        <div className="w-20 shrink-0">
-          <p className={`font-bold ${th.text} text-sm`} style={{ fontFamily: "'DM Mono', monospace" }}>{profile.symbol}</p>
-          {currentPrice && <p className={`text-[10px] ${th.textFaint}`}>${currentPrice.toFixed(2)}</p>}
-          <div className="relative mt-0.5">
-            <button
-              onClick={e => {
-                e.stopPropagation();
-                if (!showChart) {
-                  setShowChart(true);
-                  if (!sparkData) {
-                    setSparkLoading(true);
-                    fetch(`/api/chart?symbol=${encodeURIComponent(profile.symbol)}`)
-                      .then(r => r.json())
-                      .then(d => {
-                        const allBars = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null);
-                        const closes = allBars.slice(-90);
-                        setSparkData(closes);
-                      })
-                      .catch(() => setSparkData([]))
-                      .finally(() => setSparkLoading(false));
-                  }
-                } else { setShowChart(false); }
-              }}
-              className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 ac-hover-text'}`}
-              title="Quick chart">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-              </svg>
-              <span className="tracking-wide">chart</span>
-            </button>
-
-            {showChart && (
-              <div className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
-                style={{ width: '280px' }} onClick={e => e.stopPropagation()}>
-                <div className="mb-2">
-                  {sparkLoading && <div className="flex items-center justify-center h-16"><div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>}
-                  {!sparkLoading && sparkData && sparkData.length > 1 && (() => {
-                    const min = Math.min(...sparkData), max = Math.max(...sparkData);
-                    const range = max - min || 1;
-                    const w = 256, h = 56;
-                    const pts = sparkData.map((v, i) => `${((i / (sparkData.length - 1)) * w).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`).join(' ');
-                    const isUp = sparkData[sparkData.length - 1] >= sparkData[0];
-                    const color = isUp ? '#10b981' : '#ef4444';
-                    const lastPrice = sparkData[sparkData.length - 1];
-                    const changePct = ((lastPrice - sparkData[0]) / sparkData[0] * 100).toFixed(1);
-                    return (
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className={`text-[10px] font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{profile.symbol}</span>
-                          <span className="text-[10px] font-bold" style={{ color }}>${lastPrice.toFixed(2)} <span className="text-[9px]">{isUp ? '+' : ''}{changePct}% 30d</span></span>
-                        </div>
-                        <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: '56px' }}>
-                          <defs><linearGradient id={`grad-rr-${profile.symbol}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity="0.3" /><stop offset="100%" stopColor={color} stopOpacity="0" /></linearGradient></defs>
-                          <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
-                          <polygon points={`0,${h} ${pts} ${w},${h}`} fill={`url(#grad-rr-${profile.symbol})`} />
-                        </svg>
-                      </div>
-                    );
-                  })()}
-                  {!sparkLoading && sparkData && sparkData.length === 0 && <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>}
-                </div>
-                <a href={`https://www.tradingview.com/chart/?symbol=${profile.symbol}`} target="_blank" rel="noopener noreferrer"
-                  onClick={e => e.stopPropagation()}
-                  className="flex items-center justify-center gap-2 w-full py-2 ac-bg-20 ac-hover-bg/30 border ac-border/40 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                    <polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
-                  </svg>
-                  Open in TradingView
-                </a>
-              </div>
-            )}
-          </div>
-          <StockResearch symbol={profile.symbol} th={th} riskContext={portfolioRisk && portfolioRisk.level !== 'clear' ? portfolioRisk.recommendation : undefined} />
-        </div>
-
-        {/* Strategy + RR score */}
-        <div className="flex items-center gap-2 shrink-0">
-          <span className={`text-[10px] px-2 py-0.5 border rounded font-bold ${stratColor(profile.preferredStrategy)}`}>{profile.preferredStrategy}</span>
-          <span className={`text-[10px] px-2 py-0.5 border rounded font-bold ${sc.text} ${sc.border} ${sc.bg}`}>
-            ◈ {rrScore} — {sc.label}
-          </span>
-        </div>
-
-        {/* Your history on this symbol */}
-        <div className="shrink-0">
-          <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Your History</p>
-          <p className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-            <span className="text-emerald-400">{profile.winCount}W</span>
-            <span className={th.textFaint}>/</span>
-            <span className="text-red-400">{losses.length}L</span>
-            <span className={`ml-1.5 text-[10px] ${profile.winRate >= 0.6 ? 'text-emerald-400' : 'text-yellow-400'}`}>
-              {Math.round(profile.winRate * 100)}%
-            </span>
-          </p>
-          <p className={`text-[9px] ${th.textFaint}`}>avg +{profile.avgPnlPct.toFixed(0)}% · last {fmtDate(profile.lastWinDate)}</p>
-        </div>
-
-        {/* Current opportunity */}
-        {c && (
-          <>
-            <div className="shrink-0">
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Expiry</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{c.expiration} <span className={th.textFaint}>({c.dte}d)</span></p>
-            </div>
-            <div className="shrink-0">
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Strikes</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {c.strategy === 'IC'
-                  ? `${c.shortStrike}P/${c.longStrike}P · ${c.shortCallStrike}C/${c.longCallStrike}C`
-                  : `${c.shortStrike}/${c.longStrike}`}
-              </p>
-            </div>
-            <div className="shrink-0">
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Credit</p>
-              <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${(c.totalCredit ?? c.credit).toFixed(2)}</p>
-            </div>
-            <div className="shrink-0">
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>ROC</p>
-              <p className={`text-xs font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{c.roc.toFixed(0)}%</p>
-            </div>
-            <div className="shrink-0">
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>POP</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{c.pop?.toFixed(0) ?? '—'}%</p>
-            </div>
-          </>
-        )}
-
-        {currentIvr != null && (
-          <div className="shrink-0">
-            <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>IVR</p>
-            <p className={`text-xs font-bold ${currentIvr >= 30 ? 'text-emerald-400' : 'text-yellow-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>{currentIvr.toFixed(0)}%</p>
-          </div>
-        )}
-
-        {!qualified && result.failReason && (
-          <p className="text-[10px] text-red-400/80 flex-1">{result.failReason}</p>
-        )}
-
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={e => { e.stopPropagation(); onAddToHunter(profile.symbol, profile.preferredStrategy); }}
-            className={`text-[9px] px-2.5 py-1 border ac-btn rounded ac-hover-border hover:ac-bg-10 transition-colors`}>
-            + Add to Hunter
-          </button>
-          <span className={`text-[10px] ${th.textFaint}`}>{expanded ? '▲' : '▼'}</span>
-        </div>
-      </div>
-
-      {/* Portfolio risk banner */}
-      {portfolioRisk && portfolioRisk.level !== 'clear' && (
-        <div className={`border-t px-4 py-2.5 ${
-          portfolioRisk.level === 'same_strikes' ? 'border-red-500/40 bg-red-500/8'
-          : portfolioRisk.level === 'synthetic_ic' ? 'border-purple-500/30 bg-purple-500/8'
-          : portfolioRisk.level === 'sector_concentration' ? 'border-orange-500/30 bg-orange-500/8'
-          : 'border-amber-500/30 bg-amber-500/8'
-        }`} onClick={e => e.stopPropagation()}>
-          <div className="flex items-start gap-2 mb-1">
-            <span className={`text-sm shrink-0 ${portfolioRisk.level === 'same_strikes' ? 'text-red-400' : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-400' : portfolioRisk.level === 'sector_concentration' ? 'text-orange-400' : 'text-amber-400'}`}>⚠</span>
-            <div>
-              {portfolioRisk.warnings.map((w, i) => (
-                <p key={i} className={`text-[10px] font-bold ${portfolioRisk.level === 'same_strikes' ? 'text-red-300' : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-300' : portfolioRisk.level === 'sector_concentration' ? 'text-orange-300' : 'text-amber-300'}`}>{w}</p>
-              ))}
-              <p className={`text-[10px] mt-1 leading-relaxed ${portfolioRisk.level === 'same_strikes' ? 'text-red-400/80' : portfolioRisk.level === 'synthetic_ic' ? 'text-purple-400/80' : portfolioRisk.level === 'sector_concentration' ? 'text-orange-400/80' : 'text-amber-400/80'}`}>{portfolioRisk.recommendation}</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Expanded: trade history + setup details */}
-      {expanded && (
-        <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
-
-          {/* Personalization note */}
-          <div className={`text-[10px] ${th.textFaint} p-2 rounded border ${th.borderLight}`}>
-            <span className="font-medium text-indigo-400">◈ Why this setup:</span>
-            {' '}DTE range {Math.max(14, profile.avgDteAtEntry - 8)}–{Math.min(60, profile.avgDteAtEntry + 8)}d tuned to your avg {profile.avgDteAtEntry}d entry · spread width up to ${Math.round(profile.avgSpreadWidth * 2)}
-            {' · '}{profile.winRate >= 0.7 ? 'Strong win rate on this ticker' : profile.winRate >= 0.5 ? 'Positive edge on this ticker' : 'Limited history — proceed carefully'}
-          </div>
-
-          {/* Past trades table */}
-          <div>
-            <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Your Trade History — {profile.symbol}</p>
-            <div className="space-y-1">
-              {profile.trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate)).map(t => (
-                <div key={t.id} className={`flex items-center gap-3 text-[10px] px-2 py-1 rounded ${t.outcome === 'WIN' ? 'bg-emerald-500/5' : t.outcome === 'LOSS' ? 'bg-red-500/5' : 'bg-white/2'}`}>
-                  <span className={`w-3 h-3 rounded-full shrink-0 ${t.outcome === 'WIN' ? 'bg-emerald-500' : t.outcome === 'LOSS' ? 'bg-red-500' : 'bg-yellow-500'}`} />
-                  <span className={th.textFaint}>{fmtDate(t.openDate)} → {fmtDate(t.closeDate)}</span>
-                  <span className={`${th.textFaint} font-mono`}>{t.strikes}</span>
-                  <span className={th.textFaint}>{t.dteAtEntry}d DTE</span>
-                  <span className="text-emerald-400 font-mono">${t.creditReceived.toFixed(0)}</span>
-                  <span className={`font-bold font-mono ${t.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {t.pnl >= 0 ? '+' : ''}{t.pnlPct.toFixed(0)}%
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Current candidate details */}
-          {c && (
-            <div className={`border-t ${th.border} pt-3`}>
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Current Setup</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                <div><span className={th.label}>Strategy </span><span className={th.text}>{c.strategy}</span></div>
-                <div><span className={th.label}>Expiry </span><span className={th.text}>{c.expiration} ({c.dte}d)</span></div>
-                <div><span className={th.label}>Credit </span><span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-                <div><span className={th.label}>ROC </span><span className={th.text}>{c.roc.toFixed(0)}%</span></div>
-                <div><span className={th.label}>Delta </span><span className={th.text}>{c.shortDelta.toFixed(2)}</span></div>
-                <div><span className={th.label}>POP </span><span className={th.text}>{c.pop?.toFixed(0) ?? '—'}%</span></div>
-                <div><span className={th.label}>Short OI </span><span className={th.text}>{c.shortOI}</span></div>
-                <div><span className={th.label}>Long OI </span><span className={th.text}>{c.longOI}</span></div>
-              </div>
-              {result.earningsDate && (
-                <p className="text-[10px] text-yellow-400 mt-2">⚠ Earnings: {result.earningsDate}</p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
+const [messages, setMessages] = useState<ChatMessage[]>([]);
+const [input, setInput] = useState('');
+const [loading, setLoading] = useState(false);
+const [error, setError] = useState('');
+const [initializing, setInitializing] = useState(true);
+const bottomRef = useRef<HTMLDivElement>(null);
+const inputRef = useRef<HTMLTextAreaElement>(null);
+useEffect(() => {
+bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+}, [messages]);
+// Auto-run initial analysis on open
+useEffect(() => {
+const runInitial = async () => {
+setInitializing(true);
+const prompt = buildTradeAnalysisPrompt(trades, range);
+const initMessages: ChatMessage[] = [{ role: 'user', content: prompt }];
+try {
+const reply = await callAIWithHistory(initMessages, AI_SYSTEM_PROMPT);
+setMessages([{ role: 'assistant', content: reply }]);
+} catch (e: any) {
+setError(e.message);
+} finally {
+setInitializing(false);
+setTimeout(() => inputRef.current?.focus(), 100);
 }
-
+};
+runInitial();
+}, []);
+const send = async () => {
+const text = input.trim();
+if (!text || loading) return;
+setInput('');
+setError('');
+const next: ChatMessage[] = [...messages, { role: 'user', content: text }];
+setMessages(next);
+setLoading(true);
+try {
+const reply = await callAIWithHistory(next, AI_SYSTEM_PROMPT);
+setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+} catch (e: any) {
+setError(e.message);
+} finally {
+setLoading(false);
+setTimeout(() => inputRef.current?.focus(), 50);
+}
+};
+const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+};
+const suggestions = [
+'Which symbol should I stop trading?',
+'Is my risk/reward ratio sustainable?',
+'What time of day gives me the best entries?',
+'Am I cutting winners too early?',
+'What should I focus on for the next month?',
+];
+return (
+<div className={`fixed top-0 right-0 h-full w-[480px] max-w-[95vw] ${th.sidebar} border-l
+style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+{/* Header */}
+<div className={`flex items-center justify-between px-5 py-4 border-b ${th.border} shri
+<div>
+<p className={`text-sm font-bold ${th.text} tracking-wider`}>◈ AI COACHING</p>
+<p className={`text-[10px] ${th.textFaint} mt-0.5`}>
+{trades.length} trades · {range === '3m' ? '3 months' : range === '6m' ? '6 month
+</p>
+</div>
+<button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-xl </div>
+leadin
+{/* Messages */}
+<div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+{initializing && (
+<div className="flex items-center gap-3 py-8 justify-center">
+<div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-f
+<p className={`text-xs ${th.textFaint}`}>Analyzing your trade history...</p>
+</div>
+)}
+{messages.map((m, i) => (
+<div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-
+{m.role === 'assistant' && <span className="text-indigo-400 text-[11px] mt-1 shri
+<div className={`rounded-2xl px-4 py-3 text-[12px] leading-relaxed whitespace-pre
+m.role === 'user'
+? 'ac-bg-20 border ac-border/30 text-blue-100 ml-auto'
+: `${th.card} border ${th.border} ${th.textMuted}`
+}`}>
+</div>
+</div>
+{m.content}
+))}
+{loading && (
+<div className="flex gap-3 justify-start">
+<span className="text-indigo-400 text-[11px] mt-1 shrink-0 font-bold">◈</span>
+<div className={`${th.card} border ${th.border} rounded-2xl px-4 py-3`}>
+<div className="flex gap-1 items-center h-4">
+<span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style
+<span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style
+<span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" style
+</div>
+</div>
+</div>
+)}
+{error && <p className="text-[10px] text-red-400 px-1">{error} — <button onClick={sen
+<div ref={bottomRef} />
+</div>
+{/* Suggestions — shown before user sends first message */}
+{messages.length === 1 && !initializing && (
+<div className="px-5 pb-3 flex flex-wrap gap-1.5 shrink-0">
+{suggestions.map((s, i) => (
+<button key={i} onClick={() => { setInput(s); setTimeout(() => inputRef.current?.
+className={`text-[10px] px-2.5 py-1 rounded-full border ${th.border} ${th.textF
+{s}
+</button>
+))}
+</div>
+)}
+{/* Input */}
+<div className={`px-5 py-4 border-t ${th.border} shrink-0`}>
+<div className="flex items-end gap-2">
+<textarea
+ref={inputRef}
+value={input}
+onChange={e => setInput(e.target.value)}
+onKeyDown={handleKey}
+placeholder="Ask a follow-up question..."
+rows={2}
+className={`flex-1 resize-none text-xs px-3 py-2.5 border ${th.inputBorder} ${th.
+/>
+<button onClick={send} disabled={loading || !input.trim()}
+className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text
+Send
+</button>
+</div>
+<p className={`text-[9px] ${th.textFaint} mt-1.5`}>Enter to send · Shift+Enter </div>
+</div>
+for ne
+);
+}
+// ── Multi-Select Filter ───────────────────────────────────────────────────
+function MultiSelect({ label, options, selected, onChange, th }: {
+label: string;
+options: { value: string; label: string }[];
+selected: string[]; // empty = all selected
+onChange: (vals: string[]) => void;
+th: typeof THEMES[Theme];
+}) {
+const [open, setOpen] = useState(false);
+const ref = useRef<HTMLDivElement>(null);
+useEffect(() => {
+const handler = (e: MouseEvent) => {
+if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+};
+}, []);
+document.addEventListener('mousedown', handler);
+return () => document.removeEventListener('mousedown', handler);
+const allSelected = selected.length === 0;
+const toggle = (val: string) => {
+if (val === 'ALL') { onChange([]); return; }
+const next = selected.includes(val)
+? selected.filter(v => v !== val)
+: [...selected, val];
+onChange(next.length === options.length ? [] : next);
+};
+const summaryLabel = allSelected
+? `All ${label}`
+: selected.length === 1
+? options.find(o => o.value === selected[0])?.label ?? selected[0]
+: `${selected.length} ${label}`;
+return (
+<div className="relative" ref={ref}>
+<button
+onClick={() => setOpen(v => !v)}
+className={`text-[10px] px-2.5 py-1.5 border rounded flex items-center gap-1.5 !allSelected
+? 'ac-btn bg-blue-500/8'
+: `${th.inputBorder} ${th.textFaint} ac-hover-border hover:ac-text`
+transi
+}`}>
+{summaryLabel}
+<span className="text-[8px] opacity-50">▾</span>
+</button>
+{open && (
+<div className={`absolute top-full mt-1 left-0 z-30 ${th.sidebar} border ${th.border}
+onClick={e => e.stopPropagation()}>
+{/* All */}
+<button
+onClick={() => { onChange([]); setOpen(false); }}
+className={`w-full flex items-center gap-2 px-3 py-1.5 text-[10px] hover:bg-white
+<span className={`w-3 h-3 border rounded-sm flex items-center justify-center shri
+{allSelected && <span className="text-white text-[8px]">✓</span>}
+</span>
+All {label}
+</button>
+<div className={`my-1 border-t ${th.borderLight}`} />
+{options.map(opt => {
+const checked = !allSelected && selected.includes(opt.value);
+return (
+<button key={opt.value}
+onClick={() => toggle(opt.value)}
+className={`w-full flex items-center gap-2 px-3 py-1.5 text-[10px] hover:bg-w
+<span className={`w-3 h-3 border rounded-sm flex items-center justify-center
+{checked && <span className="text-white text-[8px]">✓</span>}
+</span>
+{opt.label}
+</button>
+);
+})}
+{!allSelected && (
+<>
+<div className={`my-1 border-t ${th.borderLight}`} />
+<button onClick={() => { onChange([]); setOpen(false); }}
+className={`w-full px-3 py-1.5 text-[9px] ${th.textFaint} hover:text-red-400
+Clear filter
+</button>
+</>
+)}
+</div>
+)}
+</div>
+);
+}
 // ── Main ──────────────────────────────────────────────────────────────────
-export default function RinseRepeatPage() {
-  const [theme, setTheme]     = useState<Theme>(getSavedTheme);
-  const th = THEMES[theme];
-  const [accent, setAccent] = useState<Accent>(getSavedAccent);
-  useEffect(() => { applyAccent(accent); }, [accent]);
-  useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
-  const [range, setRange]     = useState<TimeRange>('6m');
-  const [results, setResults] = useState<RRResult[]>([]);
-  const [profiles, setProfiles] = useState<WinningProfile[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [status, setStatus]   = useState('');
-  const [error, setError]     = useState('');
-  const [minWins, setMinWins] = useState(1);
-  const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
-  const [hunterQueue, setHunterQueue] = useState<{ symbol: string; strategy: string }[]>([]);
-  const [addedToHunter, setAddedToHunter] = useState(false);
-
-  // Load existing portfolio positions on mount
-  useEffect(() => {
-    // Reuse the same loadExistingPositions logic inline
-    (async () => {
-      try {
-        const token = await getAccessToken();
-        const accountsData = await ttFetch('/customers/me/accounts', token);
-        const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
-        if (!accountNumber) return;
-        const posData = await ttFetch(`/accounts/${accountNumber}/positions`, token);
-        const rawPositions: any[] = posData?.data?.items ?? [];
-        const optionLegs = rawPositions.filter((p: any) =>
-          (p['instrument-type'] === 'Equity Option' || p['instrument-type'] === 'Index Option')
-          && parseFloat(p['quantity'] ?? '0') > 0
-        );
-        const groups: Record<string, any[]> = {};
-        for (const leg of optionLegs) {
-          const sym = leg['underlying-symbol'];
-          const exp = (leg['expires-at'] ?? leg['expiration-date'] ?? 'unknown').slice(0, 10);
-          const key = `${sym}::${exp}`;
-          if (!groups[key]) groups[key] = [];
-          groups[key].push(leg);
-        }
-        const positions: ExistingPosition[] = [];
-        for (const [key, legs] of Object.entries(groups)) {
-          const [symbol, expDate] = key.split('::');
-          const shortLeg = legs.find((l: any) => l['quantity-direction'] === 'Short');
-          const qty = shortLeg ? parseInt(shortLeg['quantity'] ?? '1', 10) : 1;
-          const getOT = (occ: string) => { const m = occ.replace(/\s+/g,'').match(/^[A-Z]+\d{6}([CP])\d{8}$/); return m?.[1] ?? null; };
-          const getStrike = (occ: string) => { const m = occ.replace(/\s+/g,'').match(/\d{8}$/); return m ? parseInt(m[0],10)/1000 : 0; };
-          const putLegs  = legs.filter((l: any) => getOT(l.symbol) === 'P');
-          const callLegs = legs.filter((l: any) => getOT(l.symbol) === 'C');
-          let strategy = 'SPREAD';
-          if (putLegs.length >= 2 && callLegs.length === 0) strategy = 'BPS';
-          else if (callLegs.length >= 2 && putLegs.length === 0) strategy = 'BCS';
-          else if (putLegs.length >= 2 && callLegs.length >= 2) strategy = 'IC';
-          const sp = putLegs.map((l: any) => getStrike(l.symbol)).sort((a: number,b: number) => b-a);
-          const sc = callLegs.map((l: any) => getStrike(l.symbol)).sort((a: number,b: number) => a-b);
-          let strikes = '';
-          if (strategy === 'BPS' && sp.length >= 2) strikes = `${sp[0]}P/${sp[1]}P`;
-          else if (strategy === 'BCS' && sc.length >= 2) strikes = `${sc[0]}C/${sc[1]}C`;
-          else if (strategy === 'IC' && sp.length >= 2 && sc.length >= 2) strikes = `${sp[0]}P/${sp[1]}P · ${sc[0]}C/${sc[1]}C`;
-          else strikes = legs.map((l: any) => `${getStrike(l.symbol)}${getOT(l.symbol)}`).join('/');
-          positions.push({ symbol, strategy, expDate, strikes, qty });
-        }
-        setExistingPositions(positions);
-      } catch {}
-    })();
-  }, []);
-
-  // Load profiles from cache on mount/range change
-  useEffect(() => {
-    const trades = loadTradesFromCache(range);
-    if (trades.length === 0) { setProfiles([]); return; }
-    const p = buildProfiles(trades, minWins);
-    setProfiles(p);
-  }, [range, minWins]);
-
-  const runScan = async () => {
-    if (profiles.length === 0) { setError('No winning trades found in your trade log for this period. Try a longer range or run more trades.'); return; }
-    setLoading(true); setError(''); setResults([]);
-    try {
-      const token = await getAccessToken();
-      const scanResults: RRResult[] = [];
-
-      for (const profile of profiles) {
-        setStatus(`Scanning ${profile.symbol} (${profiles.indexOf(profile) + 1}/${profiles.length})...`);
-        try {
-          const rules = buildPersonalizedRules(profile);
-          const [{ ivr, earnings }, price, chainData] = await Promise.all([
-            fetchMetrics(profile.symbol, token),
-            fetchQuote(profile.symbol, token),
-            fetchChain(profile.symbol, token, rules).catch(() => ({ expirations: [], chains: {}, isEtfOrIndex: false })),
-          ]);
-
-          // Earnings check
-          if (earnings) {
-            const eDate = daysUntil(earnings);
-            if (eDate >= 0 && eDate <= rules.DTE_MAX + 5) {
-              scanResults.push({ profile, candidate: null, currentIvr: ivr, currentPrice: price, earningsDate: earnings, rrScore: 0, qualified: false, failReason: `Earnings in ${eDate}d — wait until after` });
-              continue;
-            }
-          }
-
-          // Find best candidate using personalized rules
-          let candidate: SpreadCandidate | null = null;
-          const validExps = chainData.expirations.filter(exp => { const d = daysUntil(exp); return d >= rules.DTE_MIN && d <= rules.DTE_MAX; });
-
-          for (const exp of validExps) {
-            const chain = (chainData.chains as Record<string, any[]>)[exp] ?? [];
-            candidate = profile.preferredStrategy === 'IC'
-              ? findBestIC(chain, exp, price, rules)
-              : findBestSpread(chain, profile.preferredStrategy, exp, price, rules);
-            if (candidate) break;
-          }
-
-          if (!candidate && validExps.length === 0) {
-            scanResults.push({ profile, candidate: null, currentIvr: ivr, currentPrice: price, earningsDate: earnings, rrScore: 0, qualified: false, failReason: 'No valid expirations in your DTE range' });
-            continue;
-          }
-          if (!candidate) {
-            scanResults.push({ profile, candidate: null, currentIvr: ivr, currentPrice: price, earningsDate: earnings, rrScore: 0, qualified: false, failReason: 'No qualifying strikes found at current prices' });
-            continue;
-          }
-
-          const rrScore = computeRRScore(profile, candidate, ivr);
-          scanResults.push({ profile, candidate, currentIvr: ivr, currentPrice: price, earningsDate: earnings ?? null, rrScore, qualified: true, failReason: '' });
-
-        } catch (e: any) {
-          scanResults.push({ profile, candidate: null, currentIvr: null, currentPrice: null, earningsDate: null, rrScore: 0, qualified: false, failReason: e.message ?? 'Scan error' });
-        }
-      }
-
-      // Sort: qualified first by RR score, then unqualified
-      scanResults.sort((a, b) => {
-        if (a.qualified && !b.qualified) return -1;
-        if (!a.qualified && b.qualified) return 1;
-        return b.rrScore - a.rrScore;
-      });
-      setResults(scanResults);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false); setStatus('');
-    }
-  };
-
-  const handleAddToHunter = (symbol: string, strategy: string) => {
-    setHunterQueue(prev => {
-      const exists = prev.find(h => h.symbol === symbol);
-      return exists ? prev : [...prev, { symbol, strategy }];
-    });
-  };
-
-  const sendToHunter = () => {
-    if (hunterQueue.length === 0) return;
-    const bps = hunterQueue.filter(h => h.strategy === 'BPS').map(h => h.symbol).join(', ');
-    const bcs = hunterQueue.filter(h => h.strategy === 'BCS').map(h => h.symbol).join(', ');
-    const ic  = hunterQueue.filter(h => h.strategy === 'IC').map(h => h.symbol).join(', ');
-    if (bps) try { localStorage.setItem('hunter-tickers-bps', bps); } catch {}
-    if (bcs) try { localStorage.setItem('hunter-tickers-bcs', bcs); } catch {}
-    if (ic)  try { localStorage.setItem('hunter-tickers-ic', ic);   } catch {}
-    setAddedToHunter(true);
-    setTimeout(() => setAddedToHunter(false), 3000);
-  };
-
-  const qualified = results.filter(r => r.qualified);
-  const unqualified = results.filter(r => !r.qualified);
-
-  return (
-    <div className={`min-h-screen ${th.bg} transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-
-      {/* Header */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
-        <div className="flex items-center gap-6">
-          <div>
-            <h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamily: "'DM Mono', monospace" }}>OPTIONS HUNTER</h1>
-            <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>RINSE & REPEAT</p>
-          </div>
-          <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-            <Link href="/"              className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
-            <Link href="/portfolio"     className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
-            <Link href="/engine" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">ENGINE</Link>
-            <Link href="/engine" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">ENGINE</Link>
-            <span                       className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>RINSE & REPEAT</span>
-            <Link href="/trade-log"     className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</Link>
-            <Link href="/performance"   className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</Link>
-          </nav>
-        </div>
-        <div className="flex items-center gap-2">
-
-          {/* Accent swatches */}
-          <div className="flex items-center gap-1 mr-1">
-            {(Object.entries(ACCENTS) as [Accent, typeof ACCENTS[Accent]][]).map(([key, val]) => (
-              <button key={key} onClick={() => { setAccent(key); applyAccent(key); try { localStorage.setItem(LS_ACCENT, key); } catch {} }}
-                title={val.label}
-                className={`w-3.5 h-3.5 rounded-full transition-all ${accent === key ? 'ring-2 ring-white/60 ring-offset-1 ring-offset-black scale-125' : 'opacity-60 hover:opacity-100'}`}
-                style={{ backgroundColor: val.hex }}
-              />
-            ))}
-          </div>
-          <div className="w-px h-4 bg-white/20 mr-1" />
-          {(['dark','medium','light'] as Theme[]).map(t => (
-            <button key={t} onClick={() => { setTheme(t); try { localStorage.setItem(LS_THEME, t); } catch {} }}
-              className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'ac-btn' : `${th.border} ${th.textFaint}`}`}>
-              {t}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Sticky controls */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[57px] z-40`}>
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-3 flex-wrap">
-            {/* Range */}
-            <div className="flex items-center gap-1">
-              {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
-                <button key={r} onClick={() => setRange(r)}
-                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors ${range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            {/* Min wins */}
-            <div className="flex items-center gap-2">
-              <span className={`text-[10px] ${th.textFaint}`}>Min wins:</span>
-              {[1,2,3].map(n => (
-                <button key={n} onClick={() => setMinWins(n)}
-                  className={`text-[10px] w-6 h-6 border rounded font-bold transition-colors ${minWins === n ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
-                  {n}
-                </button>
-              ))}
-            </div>
-            {profiles.length > 0 && (
-              <span className={`text-[10px] ${th.textFaint}`}>
-                {profiles.length} symbol{profiles.length !== 1 ? 's' : ''} with ≥{minWins} win{minWins !== 1 ? 's' : ''}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            {hunterQueue.length > 0 && (
-              <button onClick={sendToHunter}
-                className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider transition-colors ${addedToHunter ? 'border-emerald-600 text-emerald-400' : 'ac-btn ac-hover-border hover:ac-bg-10'}`}>
-                {addedToHunter ? `✓ Sent to Hunter` : `→ Send ${hunterQueue.length} to Hunter`}
-              </button>
-            )}
-            <button onClick={runScan} disabled={loading || profiles.length === 0}
-              className="text-[10px] px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded font-bold tracking-wider transition-colors">
-              {loading ? '↺ Scanning...' : '▶ Run Scan'}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="px-6 py-4 max-w-[1600px] mx-auto space-y-4 pb-24">
-
-        {/* Status */}
-        {(loading || status) && (
-          <div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5">
-            {loading && <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />}
-            <p className={`text-xs ${th.textFaint}`}>{status || 'Scanning...'}</p>
-          </div>
-        )}
-        {error && <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/8"><p className="text-xs text-red-400">{error}</p></div>}
-
-        {/* Empty state */}
-        {!loading && results.length === 0 && profiles.length === 0 && (
-          <div className={`text-center py-16 ${th.textFaint}`}>
-            <div className="text-4xl mb-3 opacity-20">↺</div>
-            <p className="text-sm font-medium">No winning trades found in the last {range === '3m' ? '3 months' : range === '6m' ? '6 months' : '12 months'}</p>
-            <p className="text-[10px] mt-2 opacity-60">Make sure your Trade Log is synced, or try a longer range.</p>
-            <Link href="/trade-log" className="inline-block mt-3 text-[10px] text-blue-400 hover:ac-text underline">Go to Trade Log →</Link>
-          </div>
-        )}
-
-        {!loading && results.length === 0 && profiles.length > 0 && (
-          <div className={`text-center py-12 ${th.textFaint}`}>
-            <p className="text-sm">Found {profiles.length} symbol{profiles.length !== 1 ? 's' : ''} with winning history.</p>
-            <p className="text-[10px] mt-1 opacity-60">Hit Run Scan to find current setups tuned to your winning trades.</p>
-          </div>
-        )}
-
-        {/* Results */}
-        {results.length > 0 && (
-          <div className="space-y-4">
-            <div className="flex items-center gap-4 text-[10px] tracking-wider">
-              <span className="text-emerald-400 font-medium">{qualified.length} OPPORTUNITIES FOUND</span>
-              {unqualified.length > 0 && <span className={`${th.textFaint}`}>{unqualified.length} NO SETUP</span>}
-            </div>
-
-            {qualified.length > 0 && (
-              <div className="space-y-2">
-                {qualified.map(r => (
-                  <RRCard key={r.profile.symbol} result={r} th={th} onAddToHunter={handleAddToHunter} existingPositions={existingPositions} />
-                ))}
-              </div>
-            )}
-
-            {unqualified.length > 0 && (
-              <div>
-                <p className={`text-[9px] ${th.textFaint} tracking-widest mb-2 font-medium`}>NO QUALIFYING SETUP TODAY</p>
-                <div className="space-y-2">
-                  {unqualified.map(r => (
-                    <RRCard key={r.profile.symbol} result={r} th={th} onAddToHunter={handleAddToHunter} existingPositions={existingPositions} />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+export default function TradeLogPage() {
+const [theme, setTheme] = useState<Theme>(getSavedTheme);
+const [accent, setAccent] = useState<Accent>(getSavedAccent);
+useEffect(() => { applyAccent(accent); }, [accent]);
+useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
+const th = THEMES[theme];
+const [trades, setTrades] = useState<ClosedTrade[]>([]);
+const [loading, setLoading] = useState(false);
+const [error, setError] = useState('');
+const [status, setStatus] = useState('');
+const [range, setRange] = useState<TimeRange>('3m');
+const [cachedAt, setCachedAt] = useState<number | null>(null);
+const [isNewDevice, setIsNewDevice] = useState(false);
+const [showAI, setShowAI] = useState(false);
+const [filterStrategy, setFilterStrategy] = useState<string[]>(() => {
+try { const s = localStorage.getItem('hunter-tl-f-strategy'); return s ? JSON.parse(s) :
+const [filterOutcome, setFilterOutcome] = useState<string[]>(() => {
+try { const s = localStorage.getItem('hunter-tl-f-outcome'); return s ? JSON.parse(s) :
+const [filterExitType, setFilterExitType] = useState<string[]>(() => {
+try { const s = localStorage.getItem('hunter-tl-f-exit'); const [filterSymbol, setFilterSymbol] = useState(() => {
+try { return localStorage.getItem('hunter-tl-f-symbol') ?? ''; } catch { return ''; }
+});
+});
+});
+});
+return s ? JSON.parse(s) :
+const saveFilter = (key: string, val: string[] | string) => {
+try { localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val)); } c
+};
+const [showExcluded, setShowExcluded] = useState(false);
+const [excludedIds, setExcludedIds] = useState<Set<string>>(() => {
+try { const s = localStorage.getItem('hunter-tradelog-excluded'); return s ? new Set<stri
+});
+const toggleExclude = (id: string) => {
+setExcludedIds(prev => {
+const next = new Set(prev);
+next.has(id) ? next.delete(id) : next.add(id);
+try { localStorage.setItem('hunter-tradelog-excluded', JSON.stringify(Array.from(next))
+return next;
+});
+};
+const [sortField, setSortField] = useState<SortField>('closeDate');
+const [sortDir, setSortDir] = useState<SortDir>('desc');
+const loadTrades = useCallback(async (r: TimeRange, forceRefresh = false) => {
+const deviceId = getDeviceId();
+if (!forceRefresh) {
+const cached = readCache(r);
+if (cached) {
+const sameDevice = cached.deviceId === deviceId;
+const fresh = Date.now() - cached.fetchedAt < 4 * 60 * 60 * 1000;
+if (sameDevice && fresh) { setTrades(cached.trades); setCachedAt(cached.fetchedAt); s
+if (!sameDevice) { setIsNewDevice(true); setStatus('New device detected — loading fro
+else setStatus('Cache stale — refreshing...');
+} else { setStatus('Loading trade history from TastyTrade...'); }
+} else { setStatus('Refreshing from TastyTrade...'); }
+setLoading(true); setError('');
+try {
+const fetched = await fetchAndReconstructTrades(r);
+setTrades(fetched); writeCache(r, fetched); setCachedAt(Date.now()); setIsNewDevice(fal
+} catch (e: any) { setError(e.message); }
+finally { setLoading(false); setStatus(''); }
+}, []);
+useEffect(() => { loadTrades('3m'); }, [loadTrades]);
+const handleRangeChange = (r: TimeRange) => { setRange(r); loadTrades(r); };
+const filtered = trades.filter(t => {
+if (!showExcluded && excludedIds.has(t.id)) return false;
+if (filterStrategy.length > 0 && !filterStrategy.includes(t.strategy)) return false;
+if (filterOutcome.length > 0 && !filterOutcome.includes(t.outcome)) return false;
+if (filterExitType.length > 0 && !filterExitType.includes(t.exitType)) return false;
+if (filterSymbol && !t.symbol.toLowerCase().includes(filterSymbol.toLowerCase())) return
+return true;
+});
+const reportingTrades = filtered.filter(t => !excludedIds.has(t.id));
+const sorted = [...filtered].sort((a, b) => {
+let cmp = 0;
+switch (sortField) {
+case 'closeDate': cmp = a.closeDate.localeCompare(b.closeDate); break;
+case 'openDate': cmp = a.openDate.localeCompare(b.openDate); break;
+case 'symbol': cmp = a.symbol.localeCompare(b.symbol); break;
+case 'strategy': cmp = a.strategy.localeCompare(b.strategy); break;
+case 'pnl': cmp = a.pnl - b.pnl; break;
+case 'pnlPct': cmp = a.pnlPct - b.pnlPct; break;
+case 'holdDays': cmp = a.holdDays - b.holdDays; break;
+}
+});
+return sortDir === 'desc' ? -cmp : cmp;
+const handleSort = (field: SortField) => {
+if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+else { setSortField(field); setSortDir('desc'); }
+};
+const sortIcon = (field: SortField) =>
+sortField !== field ? <span className="text-[8px] opacity-30">↕</span>
+: sortDir === 'desc' ? <span className="text-[9px] text-blue-400">↓</span>
+: <span className="text-[9px] text-blue-400">↑</span>;
+const wins = reportingTrades.filter(t => t.outcome === 'WIN').length;
+const losses = reportingTrades.filter(t => t.outcome === 'LOSS').length;
+const scratches = reportingTrades.filter(t => t.outcome === 'SCRATCH').length;
+const total = reportingTrades.length;
+const excluded = excludedIds.size;
+const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
+const totalPnl = reportingTrades.reduce((s, t) => s + t.pnl, 0);
+const avgPnlPct = total > 0 ? reportingTrades.reduce((s, t) => s + t.pnlPct, 0) / total : 0
+const thCol = `text-[9px] text-[#808080] uppercase tracking-widest font-medium cursor-point
+return (
+<div className={`min-h-screen ${th.bg} pb-24 transition-colors duration-200`} style={{ fo
+<div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify
+<div className="flex items-center gap-6">
+<div>
+<h1 className="text-base font-bold tracking-widest text-white" style={{ fontFamil
+<p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamil
+</div>
+<nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
+<Link href="/" className="text-xs px-3 py-1.5 rounded text-white/50 ho
+<Link href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 ho
+<Link href="/engine" className="text-xs px-3 py-1.5 rounded text-white/50 hover:t
+<Link href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50
+<span className="text-xs px-3 py-1.5 rounded text-white track
+<Link href="/performance" className="text-xs px-3 py-1.5 rounded text-white/50 ho
+</nav>
+</div>
+<div className="flex items-center gap-3">
+{/* Accent swatches */}
+<div className="flex items-center gap-1 mr-1">
+{(Object.entries(ACCENTS) as [Accent, typeof ACCENTS[Accent]][]).map(([key, val])
+<button key={key} onClick={() => { setAccent(key); applyAccent(key); try title={val.label}
+className={`w-3.5 h-3.5 rounded-full transition-all ${accent === key ? style={{ backgroundColor: val.hex }}
+{ loca
+'ring-
+/>
+))}
+</div>
+<div className="w-px h-4 bg-white/20 mr-1" />
+{(['dark','medium','light'] as Theme[]).map(t => (
+<button key={t} onClick={() => { setTheme(t); try { localStorage.setItem(LS_THEME
+className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t
+{t}
+</button>
+))}
+</div>
+</div>
+{/* Sticky controls bar */}
+<div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[57px] z-40 tr
+<div className="flex items-center justify-between flex-wrap gap-3">
+<div className="flex items-center gap-2 flex-wrap">
+<div className="flex items-center gap-1">
+{([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m'
+<button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
+className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wid
+{label}
+</button>
+))}
+</div>
+<MultiSelect
+label="Strategies"
+options={[
+{ value: 'BPS', label: 'BPS' },
+{ value: 'BCS', label: 'BCS' },
+{ value: 'IC', label: 'IC' },
+{ value: 'OTHER', label: 'Other' },
+]}
+selected={filterStrategy}
+onChange={v => { setFilterStrategy(v); saveFilter('hunter-tl-f-strategy', v); }
+th={th}
+/>
+<MultiSelect
+label="Outcomes"
+options={[
+{ value: 'WIN', label: 'Win' },
+{ value: 'LOSS', label: 'Loss' },
+{ value: 'SCRATCH', label: 'Scratch' },
+]}
+selected={filterOutcome}
+onChange={v => { setFilterOutcome(v); saveFilter('hunter-tl-f-outcome', v); }}
+th={th}
+/>
+<MultiSelect
+label="Exit Types"
+options={[
+{ value: 'TARGET_HIT', label: 'Target Hit' },
+{ value: 'FAST_CUT', label: 'Fast Cut' },
+{ value: 'TIME_STOP', label: 'Time Stop' },
+{ value: 'MAX_LOSS', label: 'Max Loss' },
+{ value: 'HELD_TO_EXPIRY', label: 'Held to Expiry' },
+{ value: 'EARLY_WIN', label: 'Early Win' },
+]}
+selected={filterExitType}
+onChange={v => { setFilterExitType(v); saveFilter('hunter-tl-f-exit', v); }}
+th={th}
+/>
+${th.t
+<input value={filterSymbol}
+onChange={e => { setFilterSymbol(e.target.value); saveFilter('hunter-tl-f-symbo
+placeholder="Filter symbol..."
+className={`text-[10px] px-2 py-1.5 border ${th.inputBorder} ${th.input} </div>
+<div className="flex items-center gap-3">
+{cachedAt && <span className={`text-[9px] ${th.textFaint}`}>Synced {fmtAge(Date.n
+{excluded > 0 && (
+<button onClick={() => setShowExcluded(v => !v)}
+className={`text-[10px] px-3 py-1.5 border rounded tracking-wider transition-
+{showExcluded ? `⊘ Hide ${excluded} excluded` : `⊘ Show ${excluded} excluded`
+</button>
+)}
+{trades.length > 0 && (
+<button onClick={() => setShowAI(v => !v)}
+className={`text-[10px] px-3 py-1.5 border rounded font-bold tracking-wider t
+◈ AI Analysis {excluded > 0 ? `(${total} trades)` : ''}
+</button>
+)}
+<button onClick={() => loadTrades(range, true)} disabled={loading}
+className={`text-[10px] px-3 py-1.5 border ${th.border} rounded ${th.textMuted}
+{loading ? '↺ Loading...' : '↺ Refresh'}
+</button>
+</div>
+</div>
+</div>{/* end sticky controls */}
+{/* Scrolling content */}
+<div className={`px-6 py-4 max-w-[1600px] mx-auto space-y-4 transition-all duration-300
+{isNewDevice && !loading && (
+<div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/30 bg
+<span className="text-blue-400">↺</span>
+<p className="text-xs ac-text">Different device detected — trade history loaded f
+</div>
+)}
+{(loading || status) && (
+<div className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/20 bg
+{loading && <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent
+<p className={`text-xs ${loading ? 'text-blue-400' : th.textFaint}`}>{status || '
+</div>
+)}
+{error && <div className="p-3 rounded-lg border border-red-500/40 bg-red-500/8"><p cl
+{!loading && total > 0 && (
+<div className={`${th.card} border ${th.border} rounded-xl grid grid-cols-2 md:grid
+{[
+{ label: 'Trades', value: String(total),
+{ label: 'Win Rate', value: `${winRate}%`,
+{ label: 'W / L / S', value: `${wins} / ${losses} / ${scratches}`,
+{ label: 'Total P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)
+{ label: 'Avg P&L %', value: `${avgPnlPct >= 0 ? '+' : ''}${avgPnlPct.toFixed(1
+...(excluded > 0 ? [{ label: 'Excluded', value: String(excluded), color: 'text-
+].map((s, i) => (
+<div key={i} className="px-4 py-3 flex flex-col items-center text-center">
+<p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-1`}>{s
+<p className={`text-lg font-bold ${s.color}`} style={{ fontFamily: "'DM Mono'
+</div>
+))}
+</div>
+)}
+{!loading && sorted.length > 0 && (
+<div className={`${th.card} border ${th.border} rounded-xl overflow-hidden`}>
+<div className="overflow-x-auto">
+<table className="w-full text-xs">
+<thead>
+<tr className={`border-b ${th.border}`}>
+{[
+{ label: 'Symbol', field: 'symbol' as SortField },
+{ label: 'Strategy', field: 'strategy' as SortField },
+{ label: 'Strikes', field: null },
+{ label: 'Opened', field: 'openDate' as SortField },
+{ label: 'Entry Time', field: null },
+{ label: 'Closed', field: 'closeDate' as SortField },
+{ label: 'Days Held', field: 'holdDays' as SortField },
+{ label: 'Credit', field: null },
+{ label: 'Close Cost', field: null },
+{ label: 'P&L $', field: 'pnl' as SortField },
+{ label: 'P&L %', field: 'pnlPct' as SortField },
+{ label: 'DTE Left', field: null },
+{ label: 'Exit Type', field: null },
+{ label: 'Outcome', field: null },
+{ label: '', field: null }, // exclude toggle
+].map(col => (
+<th key={col.label} className={`px-3 py-2.5 text-left ${thCol}`}
+onClick={() => col.field && handleSort(col.field)}>
+<span className="flex items-center gap-1">{col.label}{col.field && so
+</th>
+))}
+</tr>
+</thead>
+<tbody>
+{sorted.map(trade => (
+<tr key={trade.id} className={`border-b ${th.borderLight} hover:bg-white/
+<td className={`px-3 py-2.5 font-bold ${th.text}`} style={{ fontFamily:
+<td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5
+<td className={`px-3 py-2.5 ${th.textFaint} text-[10px]`} style={{ font
+<td className={`px-3 py-2.5 ${th.textMuted}`}>{fmtDate(trade.openDate)}
+<td className={`px-3 py-2.5 ${th.textFaint} text-[10px]`} style={{ font
+<td className={`px-3 py-2.5 ${th.textMuted}`}>{fmtDate(trade.closeDate)
+<td className={`px-3 py-2.5 ${th.textFaint} text-center`}>{trade.holdDa
+<td className="px-3 py-2.5 text-emerald-400 font-medium" style={{ fontF
+<td className="px-3 py-2.5 text-red-400/80" style={{ fontFamily: "'DM M
+<td className={`px-3 py-2.5 font-bold ${trade.pnl >= 0 ? 'text-emerald-
+<td className={`px-3 py-2.5 font-bold ${trade.pnlPct >= 0 ? 'text-emera
+<td className={`px-3 py-2.5 text-center ${th.textFaint} text-[10px]`} s
+<td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5
+<td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5
+<td className="px-3 py-2.5">
+<button
+onClick={e => { e.stopPropagation(); toggleExclude(trade.id); }}
+title={excludedIds.has(trade.id) ? 'Include in reporting' : 'Exclud
+className={`text-[9px] px-1.5 py-0.5 border rounded transition-colo
+excludedIds.has(trade.id)
+? 'border-orange-600 text-orange-400 bg-orange-500/10 hover:bg-
+: `${th.border} ${th.textFaint} hover:border-orange-500 hover:t
+}`}>
+</button>
+</td>
+</tr>
+{excludedIds.has(trade.id) ? '⊘ excl.' : '⊘'}
+))}
+</tbody>
+</table>
+</div>
+</div>
+)}
+{!loading && !error && total === 0 && trades.length > 0 && (
+<div className={`text-center py-12 ${th.textFaint}`}><p className="text-sm">No trad
+)}
+{!loading && !error && trades.length === 0 && (
+<div className={`text-center py-16 ${th.textFaint}`}>
+<div className="text-4xl mb-3 opacity-20">◈</div>
+<p className="text-sm">No closed trades found in this period.</p>
+</div>
+)}
+</div>
+{showAI && (
+<AIChatPanel trades={reportingTrades.length > 0 ? reportingTrades : trades} range={ra
+)}
+</div>
+);
 }
