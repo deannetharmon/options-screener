@@ -940,6 +940,7 @@ function RRCard({ result, th, existingPositions }: {
   const losses = profile.trades.filter(t => t.outcome === 'LOSS');
 
   return (
+    <>
     <div
       className={`border ${th.border} border-l-4 ${sc.border.replace('border-', 'border-l-')} ${th.card} rounded-lg cursor-pointer transition-all hover:shadow-md`}
       onClick={() => setExpanded(!expanded)}
@@ -1173,7 +1174,7 @@ function RRCard({ result, th, existingPositions }: {
     {showEnterModal && result.candidate && (
       <EnterTradeModal result={result} th={th} onClose={() => setShowEnterModal(false)} />
     )}
-  );
+  </>;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
