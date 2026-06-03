@@ -2775,37 +2775,78 @@ export default function EnginePage() {
       )}
 
       {/* ── Capital Summary Strip ── */}
-      {d && (
-        <div className={`${th.sidebar} border-b ${th.border} px-6 py-3`}>
-          <div className="flex items-center gap-8">
-            <div className="shrink-0">
-              <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase`}>Option Buying Power</p>
-              <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
-            </div>
-            <div className="flex-1 grid grid-cols-4 gap-4">
-              <CapitalBar label={`Spread Engine · SPX+SPY (${alloc.spx}% · $${formatCurrency(d.capital.spxTarget)})`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
-              <CapitalBar label={`Wheel (${alloc.wheel}% · $${formatCurrency(d.capital.wheelTarget)})`} deployed={d.capital.wheelDeployed} target={d.capital.wheelTarget} color="bg-blue-500" />
-              {d.capital.hunterDeployed > 0 ? (
-                <CapitalBar label="Hunter Spreads · closing out" deployed={d.capital.hunterDeployed} target={d.capital.hunterDeployed} color="bg-amber-500" />
-              ) : (
-                <div />
-              )}
-              <div>
-                <p className={`text-[9px] ${th.textFaint} mb-1`}>Reserve ({alloc.reserve}% · ${formatCurrency(d.capital.reserveTarget)})</p>
-                <div className="h-1.5 rounded-full bg-slate-700/60 overflow-hidden mb-1">
-                  <div className="h-full rounded-full bg-slate-500" style={{ width: '100%' }} />
+      {d && (() => {
+        const assignmentExposure = d.wheelPositions
+          .filter(p => p.phase === 'cash-secured-put')
+          .reduce((sum, p) => sum + (p.capitalRequired ?? 0), 0);
+        const assignedExposure = d.wheelPositions
+          .filter(p => p.phase === 'assigned')
+          .reduce((sum, p) => sum + (p.capitalRequired ?? 0), 0);
+        const totalWheelExposure = assignmentExposure + assignedExposure;
+        const wheelHeadroom = d.capital.wheelTarget - totalWheelExposure;
+        const exposureColor = wheelHeadroom < 0 ? 'text-red-400' : wheelHeadroom < d.capital.wheelTarget * 0.1 ? 'text-amber-400' : 'text-emerald-400';
+        const exposureBg = wheelHeadroom < 0 ? 'bg-red-500/10 border-red-500/30' : wheelHeadroom < d.capital.wheelTarget * 0.1 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-emerald-500/10 border-emerald-500/30';
+        return (
+          <div className={`${th.sidebar} border-b ${th.border} px-6 py-3`}>
+            <div className="flex items-center gap-8">
+              <div className="shrink-0">
+                <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase`}>Option Buying Power</p>
+                <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+              </div>
+              <div className="flex-1 grid grid-cols-4 gap-4">
+                <CapitalBar label={`Spread Engine · SPX+SPY (${alloc.spx}% · $${formatCurrency(d.capital.spxTarget)})`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
+                <CapitalBar label={`Wheel (${alloc.wheel}% · $${formatCurrency(d.capital.wheelTarget)})`} deployed={d.capital.wheelDeployed} target={d.capital.wheelTarget} color="bg-blue-500" />
+                {d.capital.hunterDeployed > 0 ? (
+                  <CapitalBar label="Hunter Spreads · closing out" deployed={d.capital.hunterDeployed} target={d.capital.hunterDeployed} color="bg-amber-500" />
+                ) : (
+                  <div />
+                )}
+                <div>
+                  <p className={`text-[9px] ${th.textFaint} mb-1`}>Reserve ({alloc.reserve}% · ${formatCurrency(d.capital.reserveTarget)})</p>
+                  <div className="h-1.5 rounded-full bg-slate-700/60 overflow-hidden mb-1">
+                    <div className="h-full rounded-full bg-slate-500" style={{ width: '100%' }} />
+                  </div>
+                  <p className={`text-[9px] ${th.textFaint}`}>${d.capital.reserveTarget.toLocaleString(undefined, { maximumFractionDigits: 0 })} protected</p>
                 </div>
-                <p className={`text-[9px] ${th.textFaint}`}>${d.capital.reserveTarget.toLocaleString(undefined, { maximumFractionDigits: 0 })} protected</p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className={`text-[9px] ${th.textFaint}`}>Deployment</p>
+                <p className={`text-lg font-bold ${d.capital.deploymentPct >= 80 ? 'text-emerald-400' : d.capital.deploymentPct >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{d.capital.deploymentPct}%</p>
+                <p className={`text-[9px] ${th.textFaint}`}>of target</p>
               </div>
             </div>
-            <div className="shrink-0 text-right">
-              <p className={`text-[9px] ${th.textFaint}`}>Deployment</p>
-              <p className={`text-lg font-bold ${d.capital.deploymentPct >= 80 ? 'text-emerald-400' : d.capital.deploymentPct >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{d.capital.deploymentPct}%</p>
-              <p className={`text-[9px] ${th.textFaint}`}>of target</p>
-            </div>
+            {/* ── Assignment Exposure Warning ── */}
+            {totalWheelExposure > 0 && (
+              <div className={`mt-2 flex items-center gap-3 px-3 py-2 rounded-lg border ${exposureBg}`}>
+                <span className={`text-[10px] font-bold ${exposureColor}`}>
+                  {wheelHeadroom < 0 ? '⚠ UNDER-RESERVED' : wheelHeadroom < d.capital.wheelTarget * 0.1 ? '⚠ TIGHT' : '✓ COVERED'}
+                </span>
+                <span className={`text-[9px] ${th.textFaint}`}>·</span>
+                <span className={`text-[9px] ${th.textMuted}`}>
+                  Max assignment exposure: <span className={`font-bold ${th.text}`}>${totalWheelExposure.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                  {assignmentExposure > 0 && assignedExposure > 0 && (
+                    <span className={th.textFaint}> ({assignmentExposure.toLocaleString(undefined, { maximumFractionDigits: 0 })} CSPs + {assignedExposure.toLocaleString(undefined, { maximumFractionDigits: 0 })} assigned)</span>
+                  )}
+                </span>
+                <span className={`text-[9px] ${th.textFaint}`}>·</span>
+                <span className={`text-[9px] ${th.textMuted}`}>
+                  Wheel target: <span className={`font-bold ${th.text}`}>${d.capital.wheelTarget.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                </span>
+                <span className={`text-[9px] ${th.textFaint}`}>·</span>
+                <span className={`text-[9px] ${th.textMuted}`}>
+                  Headroom: <span className={`font-bold ${exposureColor}`}>{wheelHeadroom < 0 ? '-' : '+'}${Math.abs(wheelHeadroom).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                </span>
+                {wheelHeadroom < 0 && (
+                  <>
+                    <span className={`text-[9px] ${th.textFaint}`}>·</span>
+                    <span className="text-[9px] text-red-400">Assignment would exceed wheel allocation by ${Math.abs(wheelHeadroom).toLocaleString(undefined, { maximumFractionDigits: 0 })} — reduce positions or increase wheel %</span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── Sub-tab bar ── */}
       <div className={`${th.sidebar} border-b ${th.border} px-6 sticky top-[57px] z-40`}>
