@@ -1,5 +1,4 @@
 // path: app/trade-log/page.tsx
-
 'use client';
 import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -144,21 +143,31 @@ function classifyExit(
 }
 
 async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[]> {
+  console.log('[TL] fetchAndReconstructTrades start, range=', range);
   const token = await getAccessToken();
   const accountsData = await ttFetch('/customers/me/accounts', token);
   const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
+  console.log('[TL] accountNumber=', accountNumber);
   if (!accountNumber) throw new Error('No account found');
   const startDate = rangeStartDate(range);
+  console.log('[TL] startDate=', startDate);
   let allTx: any[] = [];
   let page = 1;
   while (true) {
     const data = await ttFetch(`/accounts/${accountNumber}/transactions?start-date=${startDate}&per-page=250&page-offset=${(page - 1) * 250}`, token);
     const items: any[] = data?.data?.items ?? [];
+    console.log(`[TL] page ${page}: ${items.length} items, pagination=`, data?.pagination);
     allTx = [...allTx, ...items];
     if (!data?.pagination || items.length < 250 || allTx.length >= data.pagination['total-items']) break;
     page++;
   }
+  console.log('[TL] allTx total=', allTx.length);
+  // Log a sample transaction to check field names
+  if (allTx.length > 0) console.log('[TL] sample tx=', JSON.stringify(allTx[0]));
   const optionTx = allTx.filter(tx => tx['transaction-type'] === 'Trade' && tx.symbol && parseOccSymbol(tx.symbol).optionType !== null);
+  console.log('[TL] optionTx=', optionTx.length, '— all transaction-types:', [...new Set(allTx.map(tx => tx['transaction-type']))]);
+  // Log action-description values present in optionTx
+  if (optionTx.length > 0) console.log('[TL] action-description values:', [...new Set(optionTx.map((tx: any) => tx['action-description']))]);
   const byOptionSymbol: Record<string, any[]> = {};
   for (const tx of optionTx) {
     const sym = tx.symbol.replace(/\s+/g, '');
@@ -184,6 +193,7 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     }
   }
   const spreadMap: Record<string, any[]> = {};
+  console.log('[TL] legPairs=', legPairs.length);
   for (const pair of legPairs) {
     const getTs2 = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at'] ?? '';
     const openTs = getTs2(pair.openTx);
@@ -249,6 +259,7 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     const exitType   = classifyExit(pnl, creditReceived, holdDays, dteAtClose, dteAtEntry);
     trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, openDate: openDay, closeDate, openTime, openDow, expiry, holdDays, dteAtClose, dteAtEntry, exitType, strikes, creditReceived, closePrice, pnl, pnlPct, outcome, quantity: strategy === 'IC' ? Math.min(putPairs.length, callPairs.length) : Math.max(putPairs.length, callPairs.length, 1), fees: totalFees });
   }
+  console.log('[TL] spreadMap keys=', Object.keys(spreadMap).length, '— final trades=', trades.length);
   trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
   return trades;
 }
