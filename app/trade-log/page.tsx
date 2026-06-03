@@ -17,6 +17,8 @@ if (typeof document !== 'undefined') {
 const BASE       = 'https://api.tastytrade.com';
 const CLIENT_ID  = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
 const LS_DEVICE  = 'hunter-device-id';
+
+const LS_DEVICE  = 'hunter-device-id';
 const LS_TL_1W   = 'hunter-tradelog-1w';
 const LS_TL_2W   = 'hunter-tradelog-2w';
 const LS_TL_1M   = 'hunter-tradelog-1m';
@@ -24,7 +26,6 @@ const LS_TL_3M   = 'hunter-tradelog-3m';
 const LS_TL_6M   = 'hunter-tradelog-6m';
 const LS_TL_12M  = 'hunter-tradelog-12m';
 const CACHE_VERSION = 'v3'; // bump to invalidate stale caches
-
 
 type TimeRange = '1w' | '2w' | '1m' | '3m' | '6m' | '12m';
 type Outcome  = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
@@ -165,9 +166,13 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
   // Log a sample transaction to check field names
   if (allTx.length > 0) console.log('[TL] sample tx=', JSON.stringify(allTx[0]));
   const optionTx = allTx.filter(tx => tx['transaction-type'] === 'Trade' && tx.symbol && parseOccSymbol(tx.symbol).optionType !== null);
-  console.log('[TL] optionTx=', optionTx.length, '— all transaction-types:', [...new Set(allTx.map(tx => tx['transaction-type']))]);
+  const txTypes = allTx.map(tx => tx['transaction-type']).filter((v, i, a) => a.indexOf(v) === i);
+  console.log('[TL] optionTx=', optionTx.length, '— all transaction-types:', txTypes);
   // Log action-description values present in optionTx
-  if (optionTx.length > 0) console.log('[TL] action-description values:', [...new Set(optionTx.map((tx: any) => tx['action-description']))]);
+  if (optionTx.length > 0) {
+    const actionDescs = optionTx.map((tx: any) => tx['action-description']).filter((v: any, i: number, a: any[]) => a.indexOf(v) === i);
+    console.log('[TL] action-description values:', actionDescs);
+  }
   const byOptionSymbol: Record<string, any[]> = {};
   for (const tx of optionTx) {
     const sym = tx.symbol.replace(/\s+/g, '');
