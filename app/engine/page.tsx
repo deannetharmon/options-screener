@@ -1,4 +1,5 @@
 // app/engine/page.tsx
+
 'use client';
 import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -46,8 +47,7 @@ type EngineStatus = 'idle' | 'loading' | 'ready' | 'error';
 interface Allocation { reserve: number; wheel: number; spx: number; hunter: number; longBook: number; }
 
 interface CapitalSummary {
-  obp: number;        // derivative buying power (includes margin)
-  obpCash: number;    // cash available without margin
+  obp: number;
   netLiq: number;
   reserveTarget: number;
   wheelTarget: number;
@@ -246,20 +246,12 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
     ?? balData['option-buying-power']
     ?? '0'
   );
-  const obpCash = parseFloat(
-    balData['cash-available-to-withdraw']
-    ?? balData['cash-balance']
-    ?? balData['equity-buying-power']
-    ?? String(obp)
-  );
-
   const capital: CapitalSummary = {
     obp,
-    obpCash,
     netLiq,
-    reserveTarget: netLiq * (alloc.reserve / 100),
-    wheelTarget: netLiq * (alloc.wheel / 100),
-    spxTarget: netLiq * (alloc.spx / 100),
+    reserveTarget: obp * (alloc.reserve / 100),
+    wheelTarget: obp * (alloc.wheel / 100),
+    spxTarget: obp * (alloc.spx / 100),
     wheelDeployed: 0, spxDeployed: 0, hunterDeployed: 0,
     wheelAvailable: 0, spxAvailable: 0,
     deploymentPct: 0,
@@ -2530,7 +2522,6 @@ export default function EnginePage() {
   const [marketConditions, setMarketConditions] = useState<MarketConditions | null>(null);
   const [mcLoading, setMcLoading] = useState(false);
   const [editingAlloc, setEditingAlloc] = useState({ ...alloc });
-  const [includeMargin, setIncludeMargin] = useState(false);
   const [orderEntry, setOrderEntry] = useState<EngineOrderEntry | null>(null);
 
   const saveSubTab = (t: SubTab) => {
@@ -2604,7 +2595,7 @@ export default function EnginePage() {
     value.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   const allocationDollar = (pct: number) =>
-    d?.capital?.obp ? (includeMargin ? d.capital.obp : d.capital.obpCash) * (pct / 100) : 0;
+    d?.capital?.obp ? d.capital.obp * (pct / 100) : 0;
 
   const allocationLabel = (pct: number) =>
     d?.capital?.obp ? `$${formatCurrency(allocationDollar(pct))}` : '$—';
@@ -2728,18 +2719,8 @@ export default function EnginePage() {
         <div className={`${th.sidebar} border-b ${th.border} px-6 py-3`}>
           <div className="flex items-center gap-8">
             <div className="shrink-0">
-              <div className="flex items-center gap-2 mb-0.5">
-                <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase`}>Option Buying Power</p>
-                <button
-                  onClick={() => setIncludeMargin(v => !v)}
-                  className={`text-[8px] px-1.5 py-0.5 rounded border transition-colors ${includeMargin ? 'border-amber-500 text-amber-400 bg-amber-500/10' : `${th.border} ${th.textFaint} hover:border-white/30`}`}
-                  title={includeMargin ? 'Showing with margin — click for cash only' : 'Showing cash only — click to include margin'}>
-                  {includeMargin ? 'w/ Margin' : 'Cash Only'}
-                </button>
-              </div>
-              <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                ${(includeMargin ? d.capital.obp : d.capital.obpCash).toLocaleString()}
-              </p>
+              <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase`}>Option Buying Power</p>
+              <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString()}</p>
             </div>
             <div className="flex-1 grid grid-cols-4 gap-4">
               <CapitalBar label={`Spread Engine · SPX+SPY (${alloc.spx}% · $${formatCurrency(d.capital.spxTarget)})`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
