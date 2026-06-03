@@ -334,19 +334,25 @@ function buildProfiles(trades: ClosedTrade[], minWins: number): WinningProfile[]
 function buildPersonalizedRules(profile: WinningProfile): RulesType {
   const base = { ...DEFAULT_RULES };
 
-  // DTE range centered on their winning entry DTE
-  const dte = Math.max(14, Math.min(60, profile.avgDteAtEntry));
-  base.DTE_MIN = Math.max(14, dte - 8);
-  base.DTE_MAX = Math.min(60, dte + 8);
+  // DTE: use history as a preference but keep a wide enough window to find setups.
+  // If avg winning DTE was short (e.g. 10d), fall back to standard range.
+  const avgDte = profile.avgDteAtEntry;
+  if (avgDte >= 21 && avgDte <= 50) {
+    base.DTE_MIN = Math.max(14, avgDte - 12);
+    base.DTE_MAX = Math.min(60, avgDte + 12);
+  } else {
+    base.DTE_MIN = DEFAULT_RULES.DTE_MIN;
+    base.DTE_MAX = DEFAULT_RULES.DTE_MAX;
+  }
 
-  // Spread width cap: 2x their avg winning width, min $5
-  const maxWidth = Math.max(5, Math.round(profile.avgSpreadWidth * 2 / 5) * 5);
+  // Spread width: 3x avg winning width, min $10
+  const maxWidth = Math.max(10, Math.round(profile.avgSpreadWidth * 3 / 5) * 5);
   base.MAX_SPREAD_WIDTH = Math.min(200, maxWidth);
 
-  // Credit ratio: slightly relaxed from their historical avg
-  base.CREDIT_RATIO_MIN = Math.max(0.20, (profile.avgCreditRatio ?? 0.33) * 0.85);
+  // Credit ratio: relaxed from historical avg
+  base.CREDIT_RATIO_MIN = Math.max(0.20, (profile.avgCreditRatio ?? 0.33) * 0.80);
 
-  // Relax IVR slightly for ETFs/indexes
+  // Always relax rules for ETFs/indexes
   if (INDEX_TICKERS.has(profile.symbol)) {
     base.IVR_MIN = 15;
     base.OI_MIN = 100;
