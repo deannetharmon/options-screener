@@ -2104,6 +2104,7 @@ function BatchConfirmModal({
   // Roll state per position
   const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
   const [rollMode, setRollMode] = useState<Record<string, string>>({});
+  const [rollAiGuidance, setRollAiGuidance] = useState<Record<string, { loading: boolean; text: string; error: string }>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
@@ -2669,10 +2670,42 @@ function BatchConfirmModal({
                         <div className="flex items-center gap-2 pt-2 pb-2">
                           <span className={`text-[9px} ${th.textFaint} uppercase`}>Action:</span>
                           <button onClick={() => setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'close'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${(rollMode[item.pos.key] ?? 'close') === 'close' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : th.border + ' ' + th.textFaint}`}>Close Only</button>
-                          <button onClick={() => setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'roll'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${rollMode[item.pos.key] === 'roll' ? 'border-purple-500 text-purple-400 bg-purple-500/10' : th.border + ' ' + th.textFaint}`}>Close + Roll</button>
+                          <button onClick={() => {
+                            setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'roll'}));
+                            if (!rollAiGuidance[item.pos.key]?.text && !rollAiGuidance[item.pos.key]?.loading) {
+                              fetchRollGuidance(item.pos.key, item.pos, suggestion ?? null);
+                            }
+                          }} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${rollMode[item.pos.key] === 'roll' ? 'border-purple-500 text-purple-400 bg-purple-500/10' : th.border + ' ' + th.textFaint}`}>Close + Roll</button>
                           <span className={`text-[9px} ${th.textFaint}`}>{rollMode[item.pos.key] === 'roll' ? 'Closes and opens new spread.' : 'Closes position only.'}</span>
                         </div>
                         <div className="pt-2 space-y-3" style={{display: rollMode[item.pos.key] === 'roll' ? undefined : 'none'}}>
+                          {/* AI Roll Guidance */}
+                          {(rollAiGuidance[item.pos.key]?.loading || rollAiGuidance[item.pos.key]?.text || rollAiGuidance[item.pos.key]?.error) && (
+                            <div className={`rounded-lg border p-3 border-indigo-500/40 bg-indigo-500/5`}>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest">◈ AI Roll Guidance</span>
+                                {!rollAiGuidance[item.pos.key]?.loading && (
+                                  <button
+                                    onClick={() => fetchRollGuidance(item.pos.key, item.pos, suggestion ?? null)}
+                                    className="text-[9px] text-indigo-400/60 hover:text-indigo-400 transition-colors">
+                                    ↺ Regenerate
+                                  </button>
+                                )}
+                              </div>
+                              {rollAiGuidance[item.pos.key]?.loading && (
+                                <div className="flex items-center gap-2">
+                                  <div className="w-3 h-3 border border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                                  <span className="text-[10px] text-indigo-400/60">Analyzing roll...</span>
+                                </div>
+                              )}
+                              {rollAiGuidance[item.pos.key]?.text && (
+                                <p className="text-[11px] text-indigo-100 leading-relaxed">{rollAiGuidance[item.pos.key].text}</p>
+                              )}
+                              {rollAiGuidance[item.pos.key]?.error && (
+                                <p className="text-[10px] text-red-400">{rollAiGuidance[item.pos.key].error}</p>
+                              )}
+                            </div>
+                          )}
                           {suggestion && (
                             <div className={`rounded-lg border p-3 space-y-2 ${
                               rollIsBlocking(suggestion) ? 'border-red-500/50 bg-red-500/5' :
@@ -3083,28 +3116,34 @@ function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[T
 }
 
 function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
-  const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
-  const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
-  const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
-  const totalAtRisk = positions.reduce((s, p) => s + p.maxRisk, 0);
-  const totalTheta = positions.reduce((s, p) => {
+  const totalCredit   = positions.reduce((s, p) => s + p.creditReceived, 0);
+  const totalPnlOpen  = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
+  const capturedPct   = totalCredit > 0 ? (totalPnlOpen / totalCredit) * 100 : 0;
+  const totalAtRisk   = positions.reduce((s, p) => s + p.maxRisk, 0);
+  const totalTheta    = positions.reduce((s, p) => {
     if (p.currentValue != null && p.dte > 0) return s + p.currentValue / p.dte;
     if (p.dte > 0) return s + p.creditReceived / p.dte;
     return s;
   }, 0);
+  // P&L Day: positions that have live pnl AND plOpen — difference is today's move
+  const posWithDay    = positions.filter(p => p.pnl != null && p.plOpen != null);
+  const totalPnlDay   = posWithDay.reduce((s, p) => s + (p.pnl! - p.plOpen!), 0);
+  const hasDayPnl     = posWithDay.length > 0;
 
   return (
-    <div className={`grid grid-cols-5 border-b ${th.border}`}>
+    <div className={`grid grid-cols-7 border-b ${th.border}`}>
       {[
-        { label: 'Open Positions', value: String(positions.length), sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`, color: th.text },
-        { label: 'Captured', value: `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, sub: `of $${totalCredit.toFixed(0)} · ${capturedPct.toFixed(0)}%`, color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
-        { label: 'At Risk', value: `$${totalAtRisk.toFixed(0)}`, sub: 'max loss if expired', color: th.textMuted },
-        { label: 'Est. Theta/Day', value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—', sub: 'daily decay', color: 'text-blue-400' },
+        { label: 'Open Positions',  value: String(positions.length),                                                        sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`,                                                                           color: th.text },
+        { label: 'P&L Open',        value: `${totalPnlOpen >= 0 ? '+' : ''}$${Math.abs(totalPnlOpen).toFixed(0)}`,          sub: `of $${totalCredit.toFixed(0)} credit · ${capturedPct.toFixed(0)}%`,                                                                           color: totalPnlOpen >= 0 ? 'text-emerald-400' : 'text-red-400' },
+        { label: 'P&L Day',         value: hasDayPnl ? `${totalPnlDay >= 0 ? '+' : ''}$${Math.abs(totalPnlDay).toFixed(0)}` : '—', sub: hasDayPnl ? `${posWithDay.length} position${posWithDay.length !== 1 ? 's' : ''} with live prices` : 'refresh for live prices',       color: !hasDayPnl ? th.textFaint : totalPnlDay >= 0 ? 'text-emerald-400' : 'text-red-400' },
+        { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnlOpen / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
+        { label: 'At Risk',         value: `$${totalAtRisk.toFixed(0)}`,                                                     sub: 'max loss if expired',                                                                                                                         color: th.textMuted },
+        { label: 'Est. Theta/Day',  value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—',                             sub: 'daily decay',                                                                                                                                 color: 'text-blue-400' },
+        { label: 'Collateral',      value: `$${totalCredit.toFixed(0)}`,                                                     sub: `${positions.length} spread${positions.length !== 1 ? 's' : ''}`,                                                                             color: th.textMuted },
       ].map((item, i, arr) => (
-        <div key={item.label} className={`p-5 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
+        <div key={item.label} className={`p-4 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
           <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>{item.label}</p>
-          <p className={`text-3xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
+          <p className={`text-2xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
           <p className={`text-[10px] ${th.textFaint} mt-1`}>{item.sub}</p>
         </div>
       ))}
