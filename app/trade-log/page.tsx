@@ -1047,7 +1047,7 @@ export default function TradeLogPage() {
                     </tr>
                   )) : (() => {
                     const groupKeys: string[] = groupBy === 'symbol'
-                      ? [...new Set(sorted.map(t => t.symbol))].sort((a, b) => {
+                      ? sorted.map(t => t.symbol).filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => {
                           const ap = sorted.filter(t2 => t2.symbol === a).reduce((s, t2) => s + t2.pnl, 0);
                           const bp = sorted.filter(t2 => t2.symbol === b).reduce((s, t2) => s + t2.pnl, 0);
                           return bp - ap;
