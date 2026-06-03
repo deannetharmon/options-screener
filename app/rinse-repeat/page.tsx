@@ -965,6 +965,7 @@ export default function RinseRepeatPage() {
     const trades = loadTradesFromCache(range);
     if (trades.length === 0) { setProfiles([]); return; }
     const p = buildProfiles(trades, minWins);
+    console.log('[RR] trades from cache:', trades.length, 'profiles built:', p.length, 'outcomes:', trades.map(t => t.outcome));
     setProfiles(p);
   }, [range, minWins]);
 
