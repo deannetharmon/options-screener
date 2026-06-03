@@ -30,6 +30,7 @@ type Outcome  = 'WIN' | 'LOSS' | 'SCRATCH' | 'OPEN';
 type ExitType = 'TARGET_HIT' | 'FAST_CUT' | 'TIME_STOP' | 'MAX_LOSS' | 'HELD_TO_EXPIRY' | 'EARLY_WIN' | 'UNKNOWN';
 type SortField = 'closeDate' | 'openDate' | 'symbol' | 'strategy' | 'pnl' | 'pnlPct' | 'holdDays';
 type SortDir = 'asc' | 'desc';
+type GroupBy = 'none' | 'symbol' | 'outcome';
 
 interface ClosedTrade {
   id: string;
@@ -142,35 +143,24 @@ function classifyExit(
 }
 
 async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[]> {
-  console.log('[TL] fetchAndReconstructTrades start, range=', range);
   const token = await getAccessToken();
   const accountsData = await ttFetch('/customers/me/accounts', token);
   const accountNumber = accountsData?.data?.items?.[0]?.account?.['account-number'];
-  console.log('[TL] accountNumber=', accountNumber);
   if (!accountNumber) throw new Error('No account found');
   const startDate = rangeStartDate(range);
-  console.log('[TL] startDate=', startDate);
   let allTx: any[] = [];
   let page = 1;
   while (true) {
     const data = await ttFetch(`/accounts/${accountNumber}/transactions?start-date=${startDate}&per-page=250&page-offset=${(page - 1) * 250}`, token);
     const items: any[] = data?.data?.items ?? [];
-    console.log(`[TL] page ${page}: ${items.length} items, pagination=`, data?.pagination);
     allTx = [...allTx, ...items];
     if (!data?.pagination || items.length < 250 || allTx.length >= data.pagination['total-items']) break;
     page++;
   }
-  console.log('[TL] allTx total=', allTx.length);
   // Log a sample transaction to check field names
-  if (allTx.length > 0) console.log('[TL] sample tx=', JSON.stringify(allTx[0]));
   const optionTx = allTx.filter(tx => tx['transaction-type'] === 'Trade' && tx.symbol && parseOccSymbol(tx.symbol).optionType !== null);
   const txTypes = allTx.map(tx => tx['transaction-type']).filter((v, i, a) => a.indexOf(v) === i);
-  console.log('[TL] optionTx=', optionTx.length, '— all transaction-types:', txTypes);
   // Log action-description values present in optionTx
-  if (optionTx.length > 0) {
-    const actionDescs = optionTx.map((tx: any) => tx['action-description']).filter((v: any, i: number, a: any[]) => a.indexOf(v) === i);
-    console.log('[TL] action-description values:', actionDescs);
-  }
   const byOptionSymbol: Record<string, any[]> = {};
   for (const tx of optionTx) {
     const sym = tx.symbol.replace(/\s+/g, '');
@@ -196,7 +186,6 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     }
   }
   const spreadMap: Record<string, any[]> = {};
-  console.log('[TL] legPairs=', legPairs.length);
   for (const pair of legPairs) {
     const getTs2 = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at'] ?? '';
     const openTs = getTs2(pair.openTx);
@@ -262,7 +251,6 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     const exitType   = classifyExit(pnl, creditReceived, holdDays, dteAtClose, dteAtEntry);
     trades.push({ id: `${underlying}-${openDay}-${expiry}`, symbol: underlying, strategy, openDate: openDay, closeDate, openTime, openDow, expiry, holdDays, dteAtClose, dteAtEntry, exitType, strikes, creditReceived, closePrice, pnl, pnlPct, outcome, quantity: strategy === 'IC' ? Math.min(putPairs.length, callPairs.length) : Math.max(putPairs.length, callPairs.length, 1), fees: totalFees });
   }
-  console.log('[TL] spreadMap keys=', Object.keys(spreadMap).length, '— final trades=', trades.length);
   trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate));
   return trades;
 }
@@ -766,6 +754,7 @@ export default function TradeLogPage() {
   };
   const [sortField, setSortField] = useState<SortField>('closeDate');
   const [sortDir,   setSortDir]   = useState<SortDir>('desc');
+  const [groupBy,   setGroupBy]   = useState<GroupBy>('none');
 
   const loadTrades = useCallback(async (r: TimeRange, forceRefresh = false) => {
     const deviceId = getDeviceId();
@@ -943,6 +932,15 @@ export default function TradeLogPage() {
                 ◈ AI Analysis {excluded > 0 ? `(${total} trades)` : ''}
               </button>
             )}
+            {/* Group toggle */}
+            <div className="flex items-center gap-1">
+              {([['none','Flat'],['symbol','By Ticker'],['outcome','By Outcome']] as [GroupBy,string][]).map(([g,label]) => (
+                <button key={g} onClick={() => setGroupBy(g)}
+                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors ${groupBy === g ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
             <button onClick={() => loadTrades(range, true)} disabled={loading}
               className={`text-[10px] px-3 py-1.5 border ${th.border} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors disabled:opacity-50 tracking-wider`}>
               {loading ? '↺ Loading...' : '↺ Refresh'}
@@ -1018,7 +1016,7 @@ export default function TradeLogPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sorted.map(trade => (
+                  {groupBy === 'none' ? sorted.map(trade => (
                     <tr key={trade.id} className={`border-b ${th.borderLight} hover:bg-white/5 transition-colors ${excludedIds.has(trade.id) ? 'opacity-40' : ''}`}>
                       <td className={`px-3 py-2.5 font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.symbol}</td>
                       <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${stratColor(trade.strategy)}`}>{trade.strategy}</span></td>
@@ -1047,7 +1045,66 @@ export default function TradeLogPage() {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                  )) : (() => {
+                    const groupKeys: string[] = groupBy === 'symbol'
+                      ? [...new Set(sorted.map(t => t.symbol))].sort((a, b) => {
+                          const ap = sorted.filter(t2 => t2.symbol === a).reduce((s, t2) => s + t2.pnl, 0);
+                          const bp = sorted.filter(t2 => t2.symbol === b).reduce((s, t2) => s + t2.pnl, 0);
+                          return bp - ap;
+                        })
+                      : ['WIN', 'LOSS', 'SCRATCH'];
+                    const rows: React.ReactNode[] = [];
+                    for (const key of groupKeys) {
+                      const group = sorted.filter(t => groupBy === 'symbol' ? t.symbol === key : t.outcome === key);
+                      if (group.length === 0) continue;
+                      const groupPnl = group.reduce((s, t) => s + t.pnl, 0);
+                      const groupWins = group.filter(t => t.outcome === 'WIN').length;
+                      const groupWinRate = Math.round(groupWins / group.length * 100);
+                      const hdrColor = groupBy === 'outcome'
+                        ? (key === 'WIN' ? 'text-emerald-400' : key === 'LOSS' ? 'text-red-400' : 'text-yellow-400')
+                        : th.text;
+                      rows.push(
+                        <tr key={`hdr-${key}`} style={{ background: 'rgba(255,255,255,0.04)' }}>
+                          <td colSpan={15} className={`px-3 py-1.5 border-t border-b ${th.border}`}>
+                            <div className="flex items-center gap-3">
+                              <span className={`text-[10px] font-bold tracking-widest ${hdrColor}`} style={{ fontFamily: "'DM Mono', monospace" }}>{key}</span>
+                              <span className={`text-[9px] ${th.textFaint}`}>{group.length} trade{group.length !== 1 ? 's' : ''}</span>
+                              {groupBy === 'symbol' && <span className={`text-[9px] ${groupWinRate >= 60 ? 'text-emerald-400' : groupWinRate >= 40 ? 'text-yellow-400' : 'text-red-400'}`}>{groupWinRate}% win</span>}
+                              <span className={`text-[9px] font-bold ${groupPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{groupPnl >= 0 ? '+' : ''}${groupPnl.toFixed(0)}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                      for (const trade of group) {
+                        rows.push(
+                          <tr key={trade.id} className={`border-b ${th.borderLight} hover:bg-white/5 transition-colors ${excludedIds.has(trade.id) ? 'opacity-40' : ''}`}>
+                            <td className={`px-3 py-2.5 font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.symbol}</td>
+                            <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${stratColor(trade.strategy)}`}>{trade.strategy}</span></td>
+                            <td className={`px-3 py-2.5 ${th.textFaint} text-[10px]`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.strikes}</td>
+                            <td className={`px-3 py-2.5 ${th.textMuted}`}>{fmtDate(trade.openDate)}</td>
+                            <td className={`px-3 py-2.5 ${th.textFaint} text-[10px]`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.openTime || '—'}</td>
+                            <td className={`px-3 py-2.5 ${th.textMuted}`}>{fmtDate(trade.closeDate)}</td>
+                            <td className={`px-3 py-2.5 ${th.textFaint} text-center`}>{trade.holdDays}d</td>
+                            <td className="px-3 py-2.5 text-emerald-400 font-medium" style={{ fontFamily: "'DM Mono', monospace" }}>${trade.creditReceived.toFixed(2)}</td>
+                            <td className="px-3 py-2.5 text-red-400/80" style={{ fontFamily: "'DM Mono', monospace" }}>${trade.closePrice.toFixed(2)}</td>
+                            <td className={`px-3 py-2.5 font-bold ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}</td>
+                            <td className={`px-3 py-2.5 font-bold ${trade.pnlPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.pnlPct >= 0 ? '+' : ''}{trade.pnlPct.toFixed(1)}%</td>
+                            <td className={`px-3 py-2.5 text-center ${th.textFaint} text-[10px]`} style={{ fontFamily: "'DM Mono', monospace" }}>{trade.dteAtClose}d</td>
+                            <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${exitTypeColor(trade.exitType)}`}>{exitTypeLabel(trade.exitType)}</span></td>
+                            <td className="px-3 py-2.5"><span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${outcomeColor(trade.outcome)}`}>{trade.outcome}</span></td>
+                            <td className="px-3 py-2.5">
+                              <button onClick={e => { e.stopPropagation(); toggleExclude(trade.id); }}
+                                title={excludedIds.has(trade.id) ? 'Include in reporting' : 'Exclude from reporting'}
+                                className={`text-[9px] px-1.5 py-0.5 border rounded transition-colors ${excludedIds.has(trade.id) ? 'border-orange-600 text-orange-400 bg-orange-500/10 hover:bg-orange-500/20' : `${th.border} ${th.textFaint} hover:border-orange-500 hover:text-orange-400`}`}>
+                                {excludedIds.has(trade.id) ? '⊘ excl.' : '⊘'}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      }
+                    }
+                    return rows;
+                  })()}
                 </tbody>
               </table>
             </div>
