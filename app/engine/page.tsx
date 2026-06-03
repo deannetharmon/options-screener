@@ -2810,7 +2810,7 @@ export default function EnginePage() {
             </div>
             {/* ── Worst-Case Assignment Warning ── */}
             {assignmentExposure > 0 && (() => {
-              const deployableNetLiq = d.capital.netLiq - d.capital.reserveTarget;
+              const deployableNetLiq = d.capital.netLiq - d.capital.reserveTarget - d.capital.hunterDeployed;
               const shortfall = assignmentExposure - deployableNetLiq;
               const covered = shortfall <= 0;
               const tight = covered && shortfall > -(deployableNetLiq * 0.1);
@@ -2827,7 +2827,7 @@ export default function EnginePage() {
                   <span className={`text-[9px] ${th.textFaint}`}>·</span>
                   <span className={`text-[9px] ${th.textMuted}`}>
                     Deployable net liq: <span className={`font-bold ${th.text}`}>${deployableNetLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-                    <span className={th.textFaint}> (net liq − reserve)</span>
+                    <span className={th.textFaint}> (net liq − reserve{d.capital.hunterDeployed > 0 ? ' − hunter spreads' : ''})</span>
                   </span>
                   <span className={`text-[9px] ${th.textFaint}`}>·</span>
                   <span className={`text-[9px] ${th.textMuted}`}>
