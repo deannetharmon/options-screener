@@ -962,6 +962,7 @@ export default function RinseRepeatPage() {
 
   // Load profiles from cache on mount/range change
   useEffect(() => {
+    console.log('[RR] loading cache for range:', range);
     const trades = loadTradesFromCache(range);
     if (trades.length === 0) { setProfiles([]); return; }
     const p = buildProfiles(trades, minWins);
