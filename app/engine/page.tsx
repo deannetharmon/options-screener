@@ -2725,12 +2725,24 @@ export default function EnginePage() {
                     return (
                       <div key={key} className="flex items-center gap-3">
                         <span className={`text-[10px] w-24 shrink-0 ${colors[key]} font-medium`}>{labels[key]}</span>
-                        <input type="range" min={2} max={70} step={1} value={editingAlloc[key]}
+                        <input type="range" min={0} max={70} step={1} value={editingAlloc[key]}
                           onChange={e => setEditingAlloc(prev => ({ ...prev, [key]: parseInt(e.target.value) }))}
                           className="flex-1 h-1.5 rounded-full appearance-none cursor-pointer accent-blue-500" />
-                        <span className={`text-[10px] font-bold ${th.text} w-24 text-right`}>
-                          {editingAlloc[key]}% <span className={th.textFaint}>({allocationLabel(editingAlloc[key])})</span>
-                        </span>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={editingAlloc[key]}
+                            onChange={e => {
+                              const v = Math.min(100, Math.max(0, parseInt(e.target.value) || 0));
+                              setEditingAlloc(prev => ({ ...prev, [key]: v }));
+                            }}
+                            className={`w-12 text-[10px] font-bold text-center rounded px-1 py-0.5 border ${th.inputBorder} ${th.input} ${th.text} focus:outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`}
+                          />
+                          <span className={`text-[10px] ${th.textFaint}`}>%</span>
+                        </div>
                       </div>
                     );
                   })}
