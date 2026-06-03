@@ -1,14 +1,34 @@
 // app/portfolio/page.tsx
 
 'use client';
+import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
+
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
+
+// Inject accent CSS variable style
+if (typeof document !== 'undefined') {
+  if (!document.getElementById('hunter-accent-style')) {
+    const style = document.createElement('style');
+    style.id = 'hunter-accent-style';
+    style.textContent = `
+      :root { --accent: #3b82f6; --accent-r: 59; --accent-g: 130; --accent-b: 246; }
+      .accent-border { border-color: var(--accent) !important; }
+      .accent-text { color: var(--accent) !important; }
+      .accent-bg { background-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.1) !important; }
+      .accent-ring { box-shadow: 0 0 0 1px var(--accent) !important; }
+      nav a.active-nav, nav span.active-nav { background: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.2); color: var(--accent); }
+    `;
+    document.head.appendChild(style);
+  }
+}
+
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
-  if (!document.getElementById('prosper-font')) {
+  if (!document.getElementById('hunter-font')) {
     const link = document.createElement('link');
-    link.id = 'prosper-font';
+    link.id = 'hunter-font';
     link.rel = 'stylesheet';
     link.href = 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=DM+Mono:wght@400;500&display=swap';
     document.head.appendChild(link);
@@ -17,11 +37,10 @@ if (typeof document !== 'undefined') {
 
 const BASE = 'https://api.tastytrade.com';
 const CLIENT_ID = '4d4c851b-bdaf-4ac9-b39b-811e604739f2';
-const LS_PROFIT_TARGETS = 'prosper-profit-targets';
-const LS_AUDIT_LOG = 'prosper-audit-log';
-const LS_THEME = 'prosper-theme';
-const LS_MEMORY = 'prosper-trading-memory';
-const LS_DRY_RUN = 'prosper-dry-run';
+const LS_PROFIT_TARGETS = 'hunter-profit-targets';
+const LS_AUDIT_LOG = 'hunter-audit-log';
+const LS_MEMORY = 'hunter-trading-memory';
+const LS_DRY_RUN = 'hunter-dry-run';
 const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
 const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
 const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
@@ -38,7 +57,6 @@ function setDryRun(val: boolean) {
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
-type Theme = 'dark' | 'medium' | 'light';
 type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
 
 interface PositionLeg {
@@ -87,7 +105,7 @@ interface Position {
   buffer: number | null;
   theta: number | null;
   gamma: number | null;
-  earningsDate: string | null; // next earnings within 60 days
+  earningsDate: string | null; // next earnings only if on/before option expiration
 }
 
 interface PositionAnalysis {
@@ -136,6 +154,7 @@ interface GtcOrderLeg { symbol: string; action: string; }
 interface GtcOrder {
   id: string; price: string; stopPrice: string | null;
   orderType: string; timeInForce: string; legs: GtcOrderLeg[];
+  complexOrderId?: string; // set when this order is part of a complex/OCO order
 }
 interface StopLossInfo { status: StopStatus; price: number | null; }
 
@@ -222,7 +241,7 @@ interface RollSuggestion {
   longOi: number | null;
   shortBidAsk: number | null;   // ask - bid on short leg
   longBidAsk: number | null;    // ask - bid on long leg
-  // Prosper rule checks
+  // Rule checks
   ruleViolations: string[];     // empty = all clear, strings = specific violations
   meetsMinCredit: boolean;      // credit >= 1/3 spread width
   meetsDte: boolean;            // 30-45 DTE
@@ -232,19 +251,7 @@ interface RollSuggestion {
 }
 
 // ── Theme ──────────────────────────────────────────────────────────────────
-const THEMES: Record<Theme, {
-  bg: string; sidebar: string; card: string; border: string; borderLight: string;
-  header: string; text: string; textMuted: string; textFaint: string;
-  input: string; inputBorder: string; tag: string; label: string;
-}> = {
-  dark:   { bg: 'bg-[#0a0a0a]', sidebar: 'bg-[#0f0f0f]', card: 'bg-[#171717]', border: 'border-[#2c2c2c]', borderLight: 'border-[#202020]', header: 'bg-[#0f0f0f]', text: 'text-white', textMuted: 'text-[#e0e0e0]', textFaint: 'text-[#808080]', input: 'bg-[#141414]', inputBorder: 'border-[#353535]', tag: 'bg-[#222222]', label: 'text-[#aaaaaa]' },
-  medium: { bg: 'bg-[#141414]', sidebar: 'bg-[#1a1a1a]', card: 'bg-[#202020]', border: 'border-[#333333]', borderLight: 'border-[#282828]', header: 'bg-[#1a1a1a]', text: 'text-white', textMuted: 'text-[#d8d8d8]', textFaint: 'text-[#777777]', input: 'bg-[#1e1e1e]', inputBorder: 'border-[#3a3a3a]', tag: 'bg-[#2a2a2a]', label: 'text-[#999999]' },
-  light:  { bg: 'bg-[#f5f5f5]', sidebar: 'bg-white', card: 'bg-white', border: 'border-[#e0e0e0]', borderLight: 'border-[#ebebeb]', header: 'bg-[#111111]', text: 'text-[#111111]', textMuted: 'text-[#1a1a1a]', textFaint: 'text-[#666666]', input: 'bg-white', inputBorder: 'border-[#cccccc]', tag: 'bg-[#f0f0f0]', label: 'text-[#444444]' },
-};
 
-function getSavedTheme(): Theme {
-  try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t : 'dark'; } catch { return 'dark'; }
-}
 
 // ── Market Hours ───────────────────────────────────────────────────────────
 function isMarketOpen(): boolean {
@@ -291,7 +298,7 @@ function exportAuditCsv() {
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `prosper-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.href = url; a.download = `hunter-audit-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click(); URL.revokeObjectURL(url);
 }
 
@@ -656,8 +663,12 @@ async function ttPost(path: string, token: string, body: unknown) {
   return data;
 }
 
-async function cancelOrder(accountNumber: string, orderId: string, token: string) {
-  const res = await fetch(`${BASE}/accounts/${accountNumber}/orders/${orderId}`, {
+async function cancelOrder(accountNumber: string, orderId: string, token: string, complexOrderId?: string) {
+  // If part of a complex order, cancel the whole complex order
+  const path = complexOrderId
+    ? `${BASE}/accounts/${accountNumber}/complex-orders/${complexOrderId}`
+    : `${BASE}/accounts/${accountNumber}/orders/${orderId}`;
+  const res = await fetch(path, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
@@ -668,9 +679,12 @@ async function cancelOrder(accountNumber: string, orderId: string, token: string
   }
   if (!res.ok) {
     const text = await res.text();
+    console.error(`CANCEL RAW RESPONSE (${res.status}):`, text.slice(0, 500));
     throw new Error(`Cancel failed: ${text.slice(0, 200)}`);
   }
-  return res.json().catch(() => ({}));
+  const result = await res.json().catch(() => ({}));
+  console.log('CANCEL RAW SUCCESS:', JSON.stringify(result).slice(0, 200));
+  return result;
 }
 
 // TastyTrade supports a native dry-run: POST to same endpoint with ?dry-run=true
@@ -726,7 +740,7 @@ async function fetchFreshPositionPrice(pos: Position, token: string): Promise<nu
 async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSuggestion | null> {
   try {
     const optType = pos.strategy === 'BCS' ? 'C' : 'P';
-    // Delta targets per Prosper rules: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
+    // Delta targets: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
     const targetDelta = pos.strategy === 'BCS' ? 0.25 : -0.25;
     const deltaMin = pos.strategy === 'BCS' ?  0.20 : -0.30;
     const deltaMax = pos.strategy === 'BCS' ?  0.30 : -0.20;
@@ -817,7 +831,7 @@ async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSu
     const shortBidAsk = parseFloat((best.ask - best.bid).toFixed(2));
     const longBidAsk  = longLegData ? parseFloat((longLegData.ask - longLegData.bid).toFixed(2)) : null;
 
-    // Step 8: Prosper rule validation
+    // Step 8: Rule validation
     const ruleViolations: string[] = [];
     const meetsMinCredit = creditRatio >= (1/3);
     const meetsDte       = dte >= 30 && dte <= 45;
@@ -875,13 +889,17 @@ function buildCloseOrder(pos: Position, limitPrice: number, tif: 'GTC' | 'Day' =
   // A closing spread order is a debit — we pay to buy back what we sold.
   // Use price-effect: Debit with a POSITIVE price value (the absolute amount).
   // Both formats have been seen in the wild; using positive + price-effect is safest.
+  // TastyTrade rejects Market orders on multi-leg spreads.
+  // Always use Limit. Floor at $0.01 — TT accepts this as a valid close price
+  // and will fill at market when the spread is essentially worthless.
+  const safePrice = Math.max(limitPrice, 0.01);
   return {
     'order-type': 'Limit',
     'time-in-force': effectiveTif,
-    price: limitPrice.toFixed(2),
+    price: safePrice.toFixed(2),
     'price-effect': 'Debit',
     legs: pos.legs.map(leg => ({
-      symbol: leg.symbol, // keep OCC space-padded format exactly as returned by positions API
+      symbol: leg.symbol,
       quantity: leg.quantity,
       action: leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close',
       'instrument-type': itype,
@@ -919,6 +937,81 @@ function parseOptionSymbol(sym: string): { optionType: 'P' | 'C'; strikePrice: n
   return { optionType: match[3] as 'P' | 'C', strikePrice: parseInt(match[4], 10) / 1000 };
 }
 
+
+function calculateSpreadCredit(legs: Pick<PositionLeg, 'direction' | 'quantity' | 'avgOpenPrice'>[]): number {
+  // Returns the actual net opening credit for the whole position in dollars.
+  // TT leg prices are per-share option prices; multiply by contracts * 100.
+  const net = legs.reduce((sum, leg) => {
+    const qty = Math.abs(Number(leg.quantity) || 0);
+    const price = Number(leg.avgOpenPrice) || 0;
+    return sum + (leg.direction === 'Short' ? price * qty : -price * qty);
+  }, 0);
+  return Math.max(0, Math.round(net * 100 * 100) / 100);
+}
+
+function sideGrossRisk(
+  shorts: PositionLeg[],
+  longs: PositionLeg[],
+  side: 'P' | 'C'
+): number {
+  // Gross risk before credit for verticals on one side, in dollars.
+  // For puts: short strike should be above long strike. For calls: short strike should be below long strike.
+  const availableLongs = longs
+    .filter(l => l.optionType === side && l.strikePrice > 0 && l.quantity > 0)
+    .map(l => ({ ...l, remainingQty: Math.abs(l.quantity) }))
+    .sort((a, b) => side === 'P' ? b.strikePrice - a.strikePrice : a.strikePrice - b.strikePrice);
+
+  let gross = 0;
+  const orderedShorts = shorts
+    .filter(s => s.optionType === side && s.strikePrice > 0 && s.quantity > 0)
+    .sort((a, b) => side === 'P' ? b.strikePrice - a.strikePrice : a.strikePrice - b.strikePrice);
+
+  for (const short of orderedShorts) {
+    let remainingShortQty = Math.abs(short.quantity);
+    for (const long of availableLongs) {
+      if (remainingShortQty <= 0) break;
+      if (long.remainingQty <= 0) continue;
+      const protects = side === 'P'
+        ? long.strikePrice < short.strikePrice
+        : long.strikePrice > short.strikePrice;
+      if (!protects) continue;
+
+      const matchedQty = Math.min(remainingShortQty, long.remainingQty);
+      gross += Math.abs(short.strikePrice - long.strikePrice) * 100 * matchedQty;
+      remainingShortQty -= matchedQty;
+      long.remainingQty -= matchedQty;
+    }
+
+    // If any short contracts are unprotected, treat them as naked risk for margin display.
+    // This keeps the number conservative instead of incorrectly showing $0 risk.
+    if (remainingShortQty > 0) gross += short.strikePrice * 100 * remainingShortQty;
+  }
+
+  return gross;
+}
+
+function calculateMaxRisk(legs: PositionLeg[], creditReceived: number, strategy: string): number {
+  const shorts = legs.filter(l => l.direction === 'Short');
+  const longs = legs.filter(l => l.direction === 'Long');
+
+  const putGross = sideGrossRisk(shorts, longs, 'P');
+  const callGross = sideGrossRisk(shorts, longs, 'C');
+
+  let grossRisk = 0;
+  if (strategy === 'IC') {
+    // An iron condor can only lose on one side at expiration, so use the larger side, not both.
+    grossRisk = Math.max(putGross, callGross);
+  } else if (strategy === 'BPS' || strategy === 'PUT') {
+    grossRisk = putGross;
+  } else if (strategy === 'BCS' || strategy === 'CALL') {
+    grossRisk = callGross;
+  } else {
+    grossRisk = putGross + callGross;
+  }
+
+  return Math.max(0, Math.round((grossRisk - Math.abs(creditReceived)) * 100) / 100);
+}
+
 function normalizeOccSymbol(symbol: string): string { return String(symbol ?? '').replace(/\s+/g, '').trim(); }
 function normalizeOrderAction(action: string): string { return String(action ?? '').replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase(); }
 function isBuyToCloseAction(action: string): boolean { const n = normalizeOrderAction(action); return n === 'buy to close' || n === 'btc'; }
@@ -929,7 +1022,7 @@ function pickOrderField(o: any, keys: string[]): string | null {
   return null;
 }
 
-function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
+function mapGtcOrder(o: any, parentTif?: string, parentComplexId?: string): GtcOrder {
   // Collect legs from direct legs array OR from nested orders' legs (automation/complex orders)
   let legs = (o?.legs ?? []).map((l: any) => ({ symbol: normalizeOccSymbol(String(l?.symbol ?? '')), action: String(l?.action ?? '') }));
   if (legs.length === 0) {
@@ -938,8 +1031,14 @@ function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
       legs = legs.concat(nestedLegs);
     }
   }
-  // TIF may be on parent complex order but missing on sub-orders — inherit from parent
   const tif = String(o?.['time-in-force'] ?? o?.timeInForce ?? parentTif ?? '');
+  // complex-order-id comes from TT on individual orders; parentComplexId comes from collectRawOrders
+  const complexOrderId = o?.['complex-order-id']
+    ? String(o['complex-order-id'])
+    : parentComplexId
+    ? String(parentComplexId)
+    : undefined;
+  console.log(`MAP_GTC_ORDER id=${o?.id} complex-order-id=${o?.['complex-order-id']} parentComplexId=${parentComplexId} resolved=${complexOrderId}`);
   return {
     id: String(o?.id ?? ''),
     price: String(o?.price ?? o?.['limit-price'] ?? ''),
@@ -947,17 +1046,20 @@ function mapGtcOrder(o: any, parentTif?: string): GtcOrder {
     orderType: String(o?.['order-type'] ?? o?.orderType ?? ''),
     timeInForce: tif,
     legs,
+    complexOrderId,
   };
 }
 
 function collectRawOrders(raw: any): any[] {
   const out: any[] = [];
-  const visit = (order: any, parentTif?: string) => {
+  const visit = (order: any, parentTif?: string, parentComplexId?: string) => {
     if (!order || typeof order !== 'object') return;
     const tif = String(order?.['time-in-force'] ?? order?.timeInForce ?? parentTif ?? '');
     // Collect this order if it has direct legs
     if (Array.isArray(order.legs) && order.legs.length > 0) {
-      out.push({ ...order, _inheritedTif: tif });
+      // Inject complex-order-id from parent if not already set on the order
+      const complexId = order['complex-order-id'] ?? parentComplexId;
+      out.push({ ...order, 'complex-order-id': complexId, _inheritedTif: tif, _parentComplexId: parentComplexId });
     }
     // For complex/automation orders: also collect as a combined order with all nested legs merged
     if (Array.isArray(order.orders) && order.orders.length > 0) {
@@ -966,7 +1068,9 @@ function collectRawOrders(raw: any): any[] {
       if (allLegs.length > 0) {
         out.push({ ...order, legs: allLegs, _inheritedTif: tif, _isCombined: true });
       }
-      for (const nested of order.orders) visit(nested, tif);
+      // Pass this order's ID as the parentComplexId to its nested orders
+      const thisComplexId = String(order.id ?? parentComplexId ?? '');
+      for (const nested of order.orders) visit(nested, tif, thisComplexId);
     }
   };
   for (const item of raw?.data?.items ?? []) visit(item);
@@ -1019,13 +1123,36 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
   try {
     // Use /orders/live only — it returns working + recent 24h orders.
     // ?status=Open and ?per-page=250 are invalid params that return 400.
-    const requests = await Promise.allSettled([
+    const [liveResult, complexResult] = await Promise.allSettled([
       ttFetch(`/accounts/${accountNumber}/orders/live`, token),
       fetchAllComplexOrders(accountNumber, token),
     ]);
+
+    // Build a map from individual order ID → complex order ID
+    // Orders from /orders/live don't have complex-order-id, but we can look them up
+    // by matching their ID against nested orders in the complex orders response
+    const individualToComplexId: Record<string, string> = {};
+    if (complexResult.status === 'fulfilled') {
+      for (const complexOrder of complexResult.value?.data?.items ?? []) {
+        const complexId = String(complexOrder.id);
+        for (const nestedOrder of complexOrder.orders ?? []) {
+          if (nestedOrder.id) {
+            individualToComplexId[String(nestedOrder.id)] = complexId;
+          }
+        }
+      }
+    }
+
+    const requests = [liveResult, complexResult];
     const rawOrders = requests.flatMap(r => r.status === 'fulfilled' ? collectRawOrders(r.value) : []);
+    // Inject complexOrderId for orders that came from /orders/live
+    rawOrders.forEach(o => {
+      if (!o['complex-order-id'] && individualToComplexId[String(o.id)]) {
+        o['complex-order-id'] = individualToComplexId[String(o.id)];
+      }
+    });
     const seen = new Set<string>();
-    return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif)).filter(order => {
+    return rawOrders.map(o => mapGtcOrder(o, o._inheritedTif, o._parentComplexId)).filter(order => {
       const tif = order.timeInForce.toUpperCase();
       const type = order.orderType.toLowerCase();
       // Parent OCO envelope has no tif/type — check nested sub-orders
@@ -1235,12 +1362,16 @@ async function loadPositions(): Promise<Position[]> {
     const plData = await ttFetch(`/accounts/${accountNumber}/positions?include-marks=true`, token);
     for (const item of plData?.data?.items ?? []) {
       const sym = item['underlying-symbol']; if (!sym) continue;
+      const expDate = item['expires-at']?.slice(0, 10) ?? 'unknown';
+      const key = `${sym}::${expDate}`;
       const qty = parseFloat(item['quantity'] ?? '1');
       const multiplier = parseFloat(item['multiplier'] ?? '100');
       const avgOpen = parseFloat(item['average-open-price'] ?? '0');
-      const mark = parseFloat(item['mark-price'] ?? '0');
+      const markRaw = parseFloat(item['mark-price'] ?? '0');
+      const closeRaw = parseFloat(item['close-price'] ?? '0');
+      const mark = markRaw !== 0 ? markRaw : closeRaw;
       const dir = item['quantity-direction'] === 'Short' ? -1 : 1;
-      plBySymbol[sym] = (plBySymbol[sym] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
+      plBySymbol[key] = (plBySymbol[key] ?? 0) + dir * (mark - avgOpen) * qty * multiplier;
     }
   } catch {}
 
@@ -1262,13 +1393,18 @@ async function loadPositions(): Promise<Position[]> {
     else if (putLegs.length === 1) strategy = 'PUT';
     else if (callLegs.length === 1) strategy = 'CALL';
 
-    let creditReceived = 0;
-    for (const leg of legs) {
-      const qty = parseInt(leg['quantity'] ?? '1', 10);
-      const avgPrice = parseFloat(leg['average-open-price'] ?? '0');
-      creditReceived += leg['quantity-direction'] === 'Short' ? avgPrice * qty : -(avgPrice * qty);
-    }
-    creditReceived = creditReceived * 100;
+    const positionLegs: PositionLeg[] = legs.map((l: any) => {
+      const parsed = parseOptionSymbol(l.symbol);
+      return {
+        symbol: l.symbol, optionType: parsed.optionType, strikePrice: parsed.strikePrice,
+        direction: l['quantity-direction'] as 'Short' | 'Long',
+        quantity: parseInt(l['quantity'] ?? '1', 10),
+        avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
+        currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
+      };
+    });
+
+    const creditReceived = calculateSpreadCredit(positionLegs);
 
     let currentValue = 0; let hasCurrentPrices = true;
     for (const leg of legs) {
@@ -1285,40 +1421,36 @@ async function loadPositions(): Promise<Position[]> {
     const targetPrice = Math.abs(creditReceived) * profitTarget;
     const hitTarget = hasCurrentPrices && pnl != null && pnl >= Math.abs(creditReceived) * profitTarget;
 
-    const positionLegs: PositionLeg[] = legs.map((l: any) => {
-      const parsed = parseOptionSymbol(l.symbol);
-      return {
-        symbol: l.symbol, optionType: parsed.optionType, strikePrice: parsed.strikePrice,
-        direction: l['quantity-direction'] as 'Short' | 'Long',
-        quantity: parseInt(l['quantity'] ?? '1', 10),
-        avgOpenPrice: parseFloat(l['average-open-price'] ?? '0'),
-        currentPrice: currentPrices[l.symbol?.replace(/\s+/g, '')] ?? null,
-      };
-    });
+    // Stop loss tracking only applies to defined-risk spreads (BPS/BCS/IC).
+    // CSPs and single-leg positions (PUT/CALL) have no spread width to stop out of.
+    const isSpread = strategy === 'BPS' || strategy === 'BCS' || strategy === 'IC';
+    const stopLoss = isSpread
+      ? classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders)
+      : { status: 'unknown' as const, price: null };
 
-    const stopLoss = classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders);
+    // Only treat earnings as relevant if it occurs on or before this position's expiration.
+    // Tastytrade market-metrics can return the next earnings date within ~60 days;
+    // that is NOT the same as "earnings within expiry."
+    const rawEarningsDate = earningsMap[symbol] ?? null;
+    // Use string comparison (YYYY-MM-DD) — avoids UTC midnight timezone shifts
+    // that cause new Date() comparisons to misclassify same-day or next-day earnings
+    const earningsWithinExpiry = rawEarningsDate && rawEarningsDate <= expDate
+      ? rawEarningsDate
+      : null;
 
     return {
       key, symbol, expDate, dte, strategy, legs: positionLegs,
       creditReceived: Math.abs(creditReceived),
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, profitTarget, hitTarget,
-      plOpen: plBySymbol[symbol] != null ? Math.round(plBySymbol[symbol] * 100) / 100 : null,
-      maxRisk: (() => {
-        const shorts = legs.filter((l: any) => l['quantity-direction'] === 'Short');
-        const longs  = legs.filter((l: any) => l['quantity-direction'] === 'Long');
-        if (shorts[0] && longs[0]) {
-          const w = Math.abs(parseOptionSymbol(shorts[0].symbol).strikePrice - parseOptionSymbol(longs[0].symbol).strikePrice);
-          return Math.max(0, (w * 100 * parseInt(shorts[0]['quantity'] ?? '1', 10)) - Math.abs(creditReceived));
-        }
-        return 0;
-      })(),
+      plOpen: plBySymbol[key] != null ? Math.round(plBySymbol[key] * 100) / 100 : null,
+      maxRisk: calculateMaxRisk(positionLegs, creditReceived, strategy),
       entryDte, entryDate: openedAt, needsClose: entryDte > 21 && dte <= 21, accountNumber,
       ivr: ivrMap[symbol] ?? null,
       iv: ivMap[symbol] ?? null,
       hv30: hv30Map[symbol] ?? null,
       beta: betaMap[symbol] ?? null,
-      earningsDate: earningsMap[symbol] ?? null,
+      earningsDate: earningsWithinExpiry,
       hasGtc: (() => {
         // Check both the position symbol and its weekly option variant
         // SPX positions may have SPXW option legs; SPXW positions may have SPXW legs
@@ -1334,6 +1466,10 @@ async function loadPositions(): Promise<Position[]> {
       gtcOrderId: (() => {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
         return match?.id ?? null;
+      })(),
+      gtcComplexOrderId: (() => {
+        const match = findProfitGtcOrder(positionLegs, gtcOrders);
+        return match?.complexOrderId ?? null;
       })(),
       gtcOrderPrice: (() => {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
@@ -1425,29 +1561,45 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   const trendAgainst = trend && ((pos.strategy === 'BPS' && trend.trend === 'downtrend') || (pos.strategy === 'BCS' && trend.trend === 'uptrend'));
   const trendAligns = trend && ((pos.strategy === 'BPS' && trend.trend === 'uptrend') || (pos.strategy === 'BCS' && trend.trend === 'downtrend') || (pos.strategy === 'IC' && trend.trend === 'sideways'));
   const shortDate = isShortDateEntry(pos);
+  const breached = pos.buffer != null && pos.buffer <= 0;
+  const criticalBuffer = pos.buffer != null && pos.buffer < 2;
+  const veryLargeLoss = pnlPct <= -200;
+  const shortQty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
+  // stopLossPrice is a per-spread/per-contract option price (e.g. 1.56 = $156 per contract).
+  // currentValue is the total buyback value for the whole position, so scale the stop by contracts.
+  const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && shortQty > 0
+    ? pos.currentValue >= (pos.stopLossPrice * 100 * shortQty)
+    : false;
 
   // needsClose only fires for standard entries (entryDte > 21) — short-dated entries skip this
   if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
-  if (pos.needsClose && pnlPct < 0)  return { action: 'CUT_LOSSES', detail: `${pos.dte} DTE — close to prevent further loss` };
+  if (pos.needsClose && pnlPct < 0)  return { action: 'MANAGE', detail: `${pos.dte} DTE with loss — review close/roll, don't auto-cut` };
 
-  // Short-dated entry: maximize profit, exit fast — urgency scales with DTE
+  // Hard exits: breached strike, explicit stop breach, or very large loss.
+  if (breached) return { action: 'CUT_LOSSES', detail: `Short strike breached — exit or roll immediately` };
+  if (stopLossBreached) return { action: 'CUT_LOSSES', detail: `Stop threshold reached — follow the risk plan` };
+  if (veryLargeLoss && trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% and trend is adverse — exit or roll` };
+
+  // Short-dated entry: maximize profit, but do not treat ordinary red P/L as a failure.
   if (shortDate) {
     if (pos.hitTarget) return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target hit — take it, no time to wait` };
     if (pnlPct >= 30 && pos.dte <= 7)  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit at ${pos.dte} DTE — take profit now, gamma risk rising` };
     if (pnlPct >= 40)                  return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit — solid capture for short-dated trade` };
     if (!pos.hasGtc)                   return { action: 'PLACE_GTC', detail: 'Short-dated trade — place GTC immediately' };
-    if (pnlPct < -25 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend — exit, no time to recover` };
-    if (pnlPct < -25)                  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% on short-dated trade — cut losses` };
+    if (criticalBuffer && pnlPct < 0)  return { action: 'MANAGE', detail: `${pos.buffer?.toFixed(1)}% buffer with ${pos.dte} DTE — manage closely, not automatic cut` };
+    if (pnlPct < -100 && trendAgainst) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend — review exit/roll` };
     if (pos.dte <= 3)                  return { action: 'TAKE_PROFIT', detail: `${pos.dte} DTE — expiry imminent, close to avoid pin/assignment risk` };
     if (trendAgainst)                  return { action: 'MANAGE', detail: `Trend against position with only ${pos.dte} DTE — watch closely` };
+    if (pnlPct < 0)                    return { action: 'HOLD', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — ${pos.dte} DTE, monitor buffer/theta` };
     return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE, short-dated, let theta work` };
   }
 
   // Standard entry
   if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
   if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
-  if (pnlPct < -15 && trendAgainst)  return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + trend confirms — exit` };
-  if (pnlPct < -15)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
+  if (pnlPct < -150 && trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend confirms — exit` };
+  if (pnlPct < -50 && trendAgainst)  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — manage actively` };
+  if (pnlPct < -50)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
   if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
@@ -1473,7 +1625,7 @@ function getExtendSignal(pos: Position): string | null {
 }
 
 // ── AI Analysis ───────────────────────────────────────────────────────────
-const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
+const TRADING_CHAT_PROMPT = `You are a professional options trader and portfolio analyst advising a trader who uses the Options Hunter methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints.
 
 You are in a live conversation about a specific position or portfolio. The trader has already seen a structured analysis. They are now asking follow-up questions to dig deeper.
 
@@ -1487,7 +1639,7 @@ You know the methodology deeply:
 
 Keep responses focused and concise — 3-6 sentences unless the question genuinely requires more. If the trader asks about rolling, give specific guidance on strikes and expiry. If they ask about risk, quantify it. If they're thinking about something wrong, say so directly.`;
 
-const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Prosper Trading methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
+const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Options Hunter methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
 
 CORE METHODOLOGY (know it deeply, apply it intelligently):
 - Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound
@@ -1501,7 +1653,7 @@ WHEN TO DEVIATE FROM RULES (apply professional judgment):
 - If a position is at 40% profit but 15 DTE with gamma risk rising sharply, closing early beats waiting for 50%
 - If trend has reversed hard against a spread, cutting losses at 1.5x credit is better than waiting for 2x
 - If IVR just dropped below 30 mid-trade but P&L is positive, holding can still make sense if trend confirms
-- If earnings are within the window but the spread is far OTM with minimal risk, evaluate the actual probability rather than auto-skip
+- Earnings risk only exists if earnings occurs on or before the option expiration; never mention post-expiration earnings as a current-position risk
 - Sometimes doing nothing is the hardest but best trade
 
 ANALYSIS PRINCIPLES:
@@ -1644,6 +1796,7 @@ EXTEND_PROFIT (e.g. moving 50% target to 70%):
 - DTE: if < 21, gamma risk makes holding dangerous. If > 30, extension is more reasonable.
 - Trend: if trend is confirmed aligned, extension has merit. If trend is uncertain or against, don't be greedy.
 - Earnings approaching: never extend through an earnings event for extra premium.
+- CRITICAL: If a position's earningsDate field is null or not provided, DO NOT guess, assume, or speculate about earnings timing. Instead use web search to look up the actual next earnings date for that ticker before giving any earnings-related advice. Never hallucinate earnings dates.
 - Buffer: if buffer < 5%, don't extend — protect the capital.
 
 CLOSE_ROLL (closing and re-entering):
@@ -1776,7 +1929,10 @@ async function callAI(userMessage: string): Promise<string> {
   return text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 }
 
-interface ChatMessage { role: 'user' | 'assistant'; content: string; }
+interface ChatMessagePart { type: 'text'; text: string; }
+interface ChatImagePart { type: 'image'; source: { type: 'base64'; media_type: string; data: string }; }
+type ChatContentPart = ChatMessagePart | ChatImagePart;
+interface ChatMessage { role: 'user' | 'assistant'; content: string | ChatContentPart[]; }
 
 async function callAIWithHistory(messages: ChatMessage[], systemOverride?: string): Promise<string> {
   const res = await fetch('/api/analyze', {
@@ -1878,7 +2034,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 function stratColor(strategy: string) {
   if (strategy === 'BPS') return 'text-emerald-400 border-emerald-700';
   if (strategy === 'BCS') return 'text-red-400 border-red-700';
-  if (strategy === 'IC')  return 'text-blue-400 border-blue-700';
+  if (strategy === 'IC')  return 'text-blue-400 ac-border-faint';
   return 'text-slate-400 border-slate-700';
 }
 function pnlColor(pnl: number | null) { return pnl == null ? 'text-slate-400' : pnl >= 0 ? 'text-emerald-400' : 'text-red-400'; }
@@ -1891,18 +2047,33 @@ const ACTION_META: Record<ActionType, { label: string; color: string; btnClass: 
   TAKE_PROFIT: { label: '✓ Take Profit',  color: 'text-emerald-400', btnClass: 'border-emerald-600 text-emerald-400 hover:bg-emerald-600/20' },
   CUT_LOSSES:  { label: '✕ Cut Losses',   color: 'text-red-400',     btnClass: 'border-red-600 text-red-400 hover:bg-red-600/20' },
   CLOSE_ROLL:  { label: '↻ Close/Roll',   color: 'text-purple-400',  btnClass: 'border-purple-600 text-purple-400 hover:bg-purple-600/20' },
-  PLACE_GTC:   { label: '⏱ Place GTC',   color: 'text-blue-400',    btnClass: 'border-blue-600 text-blue-400 hover:bg-blue-600/20' },
+  PLACE_GTC:   { label: '⏱ Place GTC',   color: 'text-blue-400',    btnClass: 'ac-btn hover:ac-bg-20' },
 };
 
-function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+function ThemeToggle({ theme, setTheme, accent, setAccent }: {
+  theme: Theme; setTheme: (t: Theme) => void;
+  accent: Accent; setAccent: (a: Accent) => void;
+}) {
   return (
-    <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-      {(['light', 'medium', 'dark'] as Theme[]).map((v, i) => (
-        <button key={v} onClick={() => { setTheme(v); try { localStorage.setItem(LS_THEME, v); } catch {} }}
-          className={`text-sm px-2 py-1 rounded transition-all ${theme === v ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
-          {['☀', '◐', '☾'][i]}
-        </button>
-      ))}
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
+        {(Object.entries(ACCENTS) as [Accent, typeof ACCENTS[Accent]][]).map(([key, val]) => (
+          <button key={key} onClick={() => { setAccent(key); applyAccent(key); try { localStorage.setItem(LS_ACCENT, key); } catch {} }}
+            title={val.label}
+            className={`w-3.5 h-3.5 rounded-full transition-all ${accent === key ? 'ring-2 ring-white/60 ring-offset-1 ring-offset-black scale-125' : 'opacity-60 hover:opacity-100'}`}
+            style={{ backgroundColor: val.hex }}
+          />
+        ))}
+      </div>
+      <div className="w-px h-4 bg-white/20" />
+      <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
+        {(['light', 'medium', 'dark'] as Theme[]).map((v, i) => (
+          <button key={v} onClick={() => { setTheme(v); try { localStorage.setItem(LS_THEME, v); } catch {} }}
+            className={`text-sm px-2 py-1 rounded transition-all ${theme === v ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
+            {['☀', '◐', '☾'][i]}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1933,6 +2104,7 @@ function BatchConfirmModal({
   // Roll state per position
   const [rollInputs, setRollInputs] = useState<Record<string, { expiry: string; shortStrike: string; longStrike: string; credit: string }>>({});
   const [rollMode, setRollMode] = useState<Record<string, string>>({});
+  const [rollAiGuidance, setRollAiGuidance] = useState<Record<string, { loading: boolean; text: string; error: string }>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
@@ -1984,12 +2156,10 @@ function BatchConfirmModal({
             if (effectivePerContract != null && targetPrice >= effectivePerContract) {
               limitPrice = parseFloat(Math.max(effectivePerContract - 0.01, 0.01).toFixed(2));
             } else {
-              limitPrice = targetPrice;
+              limitPrice = Math.max(targetPrice, 0.01);
             }
-            if (limitPrice <= 0) {
-              priceError = `Calculated limit price $${limitPrice.toFixed(2)} is invalid — position may already be worthless`;
-              limitPrice = 0.01;
-            }
+            // Hard floor — negative or zero prices are always rejected by TastyTrade
+            limitPrice = Math.max(parseFloat(limitPrice.toFixed(2)), 0.01);
           } else if (action === 'CUT_LOSSES' || action === 'CLOSE_ROLL') {
             if (effectivePerContract != null) {
               limitPrice = parseFloat((effectivePerContract * 1.02).toFixed(2));
@@ -2057,6 +2227,52 @@ function BatchConfirmModal({
     return () => { cancelled = true; };
   }, [initialItems]);
 
+  const fetchRollGuidance = async (posKey: string, pos: Position, suggestion: any | null) => {
+    setRollAiGuidance(prev => ({ ...prev, [posKey]: { loading: true, text: '', error: '' } }));
+    try {
+      const ri = rollInputs[posKey];
+      const suggestionText = suggestion
+        ? `Rule-based suggestion: Expiry ${suggestion.expiry} (${suggestion.dte}d DTE) · Short ${suggestion.shortStrike} / Long ${suggestion.longStrike} · Credit mid $${suggestion.creditMid?.toFixed(2)} · Limit $${suggestion.credit?.toFixed(2)} · Delta ${suggestion.delta?.toFixed(2)} · Credit ratio ${(suggestion.creditRatio * 100)?.toFixed(0)}% · Violations: ${suggestion.ruleViolations?.join(', ') || 'none'}`
+        : 'No rule-based suggestion available (chain data not loaded).';
+      const userInputText = ri?.expiry
+        ? `User-entered roll: Expiry ${ri.expiry} · Short ${ri.shortStrike} / Long ${ri.longStrike} · Credit $${ri.credit}`
+        : 'User has not entered roll parameters yet.';
+      const prompt = `You are reviewing a roll decision for an options spread.
+
+CURRENT POSITION:
+Symbol: ${pos.symbol} · Strategy: ${pos.strategy}
+DTE remaining: ${pos.dte}d · Credit received: $${pos.creditReceived.toFixed(2)} · Current P&L: ${pos.pnl != null ? (pos.pnl >= 0 ? '+' : '') + '$' + pos.pnl.toFixed(2) : 'N/A'} (${pos.pnlPct != null ? pos.pnlPct.toFixed(1) + '%' : 'N/A'})
+Buffer: ${pos.buffer != null ? pos.buffer.toFixed(1) + '%' : 'N/A'} · IVR: ${pos.ivr != null ? pos.ivr + '%' : 'N/A'} · Stock price: ${pos.stockPrice != null ? '$' + pos.stockPrice.toFixed(2) : 'N/A'}
+
+${suggestionText}
+${userInputText}
+
+PROSPER RULES: Roll at 21 DTE or 2x credit loss. Roll out 35-45 DTE, same width. New credit >= 1/3 of width. Short delta 0.20-0.30. IVR >= 30.
+
+COST TO CONSIDER:
+Close only costs approximately $\${pos.currentValue != null ? pos.currentValue.toFixed(2) : Math.abs(pos.pnl ?? 0).toFixed(2)} (net loss ~$\${pos.pnl != null ? Math.abs(pos.pnl).toFixed(2) : 'unknown'} from $\${pos.creditReceived.toFixed(2)} original credit).
+Rolling nets the new credit against that close cost. The trader needs to know: is paying to roll worth it, or is a clean close better?
+
+Assess in 4-5 sentences: (1) explicitly state close-only cost vs net roll cost and which makes more sense financially, (2) realistic probability the roll recovers, (3) do the suggested strikes/expiry make sense, (4) one specific thing to watch. Use dollar amounts. Direct, no disclaimers.`;
+
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514', max_tokens: 350,
+          system: 'You are a brutally honest options trading coach. Give specific, direct guidance. No hedging, no disclaimers. 3-4 sentences max.',
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      const data = await res.json();
+      const text = data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+      setRollAiGuidance(prev => ({ ...prev, [posKey]: { loading: false, text, error: '' } }));
+    } catch (e: any) {
+      setRollAiGuidance(prev => ({ ...prev, [posKey]: { loading: false, text: '', error: e.message } }));
+    }
+  };
+
   const activeItems = batchItems
     .filter(i => !excluded.has(i.pos.key))
     .map(i => {
@@ -2101,10 +2317,16 @@ function BatchConfirmModal({
           // AUTO CANCEL EXISTING GTC IF USER CONFIRMED
           if (!dryRun && item.pos.hasGtc && gtcConfirmed.has(item.pos.key) && item.pos.gtcOrderId) {
             try {
-              await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token);
-              console.log(`Cancelled old GTC ${item.pos.gtcOrderId} for ${item.pos.symbol}`);
-            } catch (cancelErr) {
-              console.warn(`Failed to cancel GTC for ${item.pos.symbol}`, cancelErr);
+              const gtcComplexId = (item.pos as any).gtcComplexOrderId as string | undefined;
+              console.log(`CANCEL DEBUG: symbol=${item.pos.symbol} orderId=${item.pos.gtcOrderId} complexId=${gtcComplexId}`);
+              const cancelResult = await cancelOrder(item.pos.accountNumber, item.pos.gtcOrderId, token, gtcComplexId);
+              console.log(`CANCEL SUCCESS: ${item.pos.symbol}`, cancelResult);
+              await new Promise(r => setTimeout(r, 800));
+            } catch (cancelErr: any) {
+              console.error(`CANCEL FAILED: ${item.pos.symbol} orderId=${item.pos.gtcOrderId} error=`, cancelErr?.message);
+              // TastyTrade may reject cancel if order is in terminal/partial state.
+              // Proceed with placing the new order — TT will reject it if the old one
+              // is still truly active, but the user will see a clear error message.
             }
           }
 
@@ -2123,7 +2345,7 @@ function BatchConfirmModal({
                   const pctFromLive = Math.abs(item.limitPrice - livePerContract) / livePerContract;
                   if (pctFromLive > 0.30) {
                     const freshLimit = item.action === 'TAKE_PROFIT'
-                      ? parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2))
+                      ? Math.max(parseFloat(Math.min(creditPerContract * (1 - item.pos.profitTarget), livePerContract - 0.01).toFixed(2)), 0.01)
                       : parseFloat((livePerContract * 1.02).toFixed(2));
                     item.orderBody = buildCloseOrder(item.pos, freshLimit, item.orderBody['time-in-force'] as 'GTC' | 'Day');
                     (item as any).limitPrice = freshLimit;
@@ -2163,7 +2385,7 @@ function BatchConfirmModal({
               const inputCredit = parseFloat(ri.credit);
               const inputWidth  = Math.abs(parseFloat(ri.shortStrike) - parseFloat(ri.longStrike));
               if (inputWidth > 0 && inputCredit < inputWidth / 3) {
-                throw new Error(`Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). This roll doesn't meet the Prosper credit rule.`);
+                throw new Error(`Roll credit $${inputCredit.toFixed(2)} is less than 1/3 of spread width $${inputWidth} ($${(inputWidth/3).toFixed(2)} min). This roll doesn't meet the credit rule.`);
               }
 
               let finalCredit = inputCredit;
@@ -2380,7 +2602,13 @@ function BatchConfirmModal({
                     </div>
                     {r.error && (
                       <div className="mt-2 p-2 rounded bg-red-500/10 border border-red-500/20">
-                        <p className="text-[10px] text-red-300 leading-relaxed">{r.error}</p>
+                        <p className="text-[10px] text-red-300 leading-relaxed">
+                          {r.error.includes('cannot_close_against_more_than_existing') || r.error.includes('closing order')
+                            ? `TastyTrade blocked this order because an existing closing order is already working on this position. Go to TastyTrade → Activity → Working Orders, cancel the existing GTC on ${r.symbol}, then retry here.`
+                            : r.error.includes('cannot_update_order') || r.error.includes('cancel')
+                            ? `The existing GTC order could not be cancelled automatically. Cancel it manually in TastyTrade first, then retry.`
+                            : r.error}
+                        </p>
                       </div>
                     )}
                   </div>
@@ -2470,7 +2698,7 @@ function BatchConfirmModal({
                               if (isNaN(v) || v <= 0) setLimitOverrides(prev => { const n = { ...prev }; delete n[item.pos.key]; return n; });
                               else setLimitOverrides(prev => ({ ...prev, [item.pos.key]: v.toFixed(2) }));
                             }}
-                            className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${item.priceError != null ? 'border-red-500/60 text-red-400' : 'border-blue-500/40 text-blue-400'} bg-transparent outline-none focus:border-blue-400`}
+                            className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${item.priceError != null ? 'border-red-500/60 text-red-400' : 'border-blue-500/40 text-blue-400'} bg-transparent outline-none focus:ac-border`}
                             style={{ fontFamily: "'DM Mono', monospace" }}
                           />
                         </div>
@@ -2488,10 +2716,83 @@ function BatchConfirmModal({
                         <div className="flex items-center gap-2 pt-2 pb-2">
                           <span className={`text-[9px} ${th.textFaint} uppercase`}>Action:</span>
                           <button onClick={() => setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'close'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${(rollMode[item.pos.key] ?? 'close') === 'close' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : th.border + ' ' + th.textFaint}`}>Close Only</button>
-                          <button onClick={() => setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'roll'}))} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${rollMode[item.pos.key] === 'roll' ? 'border-purple-500 text-purple-400 bg-purple-500/10' : th.border + ' ' + th.textFaint}`}>Close + Roll</button>
+                          <button onClick={() => {
+                            setRollMode((p: Record<string,string>) => ({...p, [item.pos.key]: 'roll'}));
+                            if (!rollAiGuidance[item.pos.key]?.text && !rollAiGuidance[item.pos.key]?.loading) {
+                              fetchRollGuidance(item.pos.key, item.pos, suggestion ?? null);
+                            }
+                          }} className={`text-[9px] px-2 py-0.5 rounded border font-bold ${rollMode[item.pos.key] === 'roll' ? 'border-purple-500 text-purple-400 bg-purple-500/10' : th.border + ' ' + th.textFaint}`}>Close + Roll</button>
                           <span className={`text-[9px} ${th.textFaint}`}>{rollMode[item.pos.key] === 'roll' ? 'Closes and opens new spread.' : 'Closes position only.'}</span>
                         </div>
                         <div className="pt-2 space-y-3" style={{display: rollMode[item.pos.key] === 'roll' ? undefined : 'none'}}>
+                          {/* Cost comparison — instant, no API needed */}
+                          {(() => {
+                            const closeOnly = item.pos.currentValue ?? Math.abs(item.pos.pnl ?? 0);
+                            const newCredit = suggestion?.credit ?? parseFloat(rollInputs[item.pos.key]?.credit ?? '0') ?? 0;
+                            const netRollCost = closeOnly - newCredit;
+                            const breakEven = newCredit > 0 ? (netRollCost / newCredit * 100).toFixed(0) : null;
+                            const originalCredit = item.pos.creditReceived;
+                            const totalCost = originalCredit > 0 ? ((closeOnly / originalCredit) * 100).toFixed(0) : null;
+                            if (closeOnly <= 0) return null;
+                            return (
+                              <div className={`rounded-lg border ${th.border} p-3`} style={{ background: 'rgba(255,255,255,0.02)' }}>
+                                <p className="text-[9px] text-white/40 uppercase tracking-widest mb-2 font-bold">Cost Comparison</p>
+                                <div className="grid grid-cols-3 gap-3">
+                                  <div>
+                                    <p className="text-[9px] text-white/40 mb-0.5">Close only</p>
+                                    <p className="text-sm font-bold text-red-400" style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      -${closeOnly.toFixed(2)}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">{totalCost ? totalCost + '% of credit' : ''}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[9px] text-white/40 mb-0.5">New credit</p>
+                                    <p className={`text-sm font-bold ${newCredit > 0 ? 'text-emerald-400' : 'text-white/30'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      {newCredit > 0 ? '+$' + newCredit.toFixed(2) : '—'}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">{newCredit > 0 ? 'collected on roll' : 'enter roll params'}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-[9px] text-white/40 mb-0.5">Net roll cost</p>
+                                    <p className={`text-sm font-bold ${netRollCost <= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                                      {newCredit > 0 ? (netRollCost >= 0 ? '-$' : '+$') + Math.abs(netRollCost).toFixed(2) : '—'}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">
+                                      {breakEven && newCredit > 0 ? `need ${breakEven}% profit to break even` : ''}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+
+                          {/* AI Roll Guidance */}
+                          {(rollAiGuidance[item.pos.key]?.loading || rollAiGuidance[item.pos.key]?.text || rollAiGuidance[item.pos.key]?.error) && (
+                            <div className={`rounded-lg border p-3 border-indigo-500/40 bg-indigo-500/5`}>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest">◈ AI Roll Guidance</span>
+                                {!rollAiGuidance[item.pos.key]?.loading && (
+                                  <button
+                                    onClick={() => fetchRollGuidance(item.pos.key, item.pos, suggestion ?? null)}
+                                    className="text-[9px] text-indigo-400/60 hover:text-indigo-400 transition-colors">
+                                    ↺ Regenerate
+                                  </button>
+                                )}
+                              </div>
+                              {rollAiGuidance[item.pos.key]?.loading && (
+                                <div className="flex items-center gap-2">
+                                  <div className="w-3 h-3 border border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                                  <span className="text-[10px] text-indigo-400/60">Analyzing roll...</span>
+                                </div>
+                              )}
+                              {rollAiGuidance[item.pos.key]?.text && (
+                                <p className="text-[11px] text-indigo-100 leading-relaxed">{rollAiGuidance[item.pos.key].text}</p>
+                              )}
+                              {rollAiGuidance[item.pos.key]?.error && (
+                                <p className="text-[10px] text-red-400">{rollAiGuidance[item.pos.key].error}</p>
+                              )}
+                            </div>
+                          )}
                           {suggestion && (
                             <div className={`rounded-lg border p-3 space-y-2 ${
                               rollIsBlocking(suggestion) ? 'border-red-500/50 bg-red-500/5' :
@@ -2501,14 +2802,14 @@ function BatchConfirmModal({
                               <div className="flex items-center justify-between flex-wrap gap-2">
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">Suggested Roll</span>
-                                  <span className="text-[10px] text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+                                  <span className="text-[10px] ac-text" style={{ fontFamily: "'DM Mono', monospace" }}>
                                     {suggestion.expiry} ({suggestion.dte}d) · {suggestion.shortStrike}/{suggestion.longStrike} · δ{suggestion.delta.toFixed(2)}
                                   </span>
                                 </div>
                                 <button onClick={() => setRollInputs(prev => ({
                                   ...prev,
                                   [item.pos.key]: { expiry: suggestion.expiry, shortStrike: String(suggestion.shortStrike), longStrike: String(suggestion.longStrike), credit: String(suggestion.credit) }
-                                }))} className="text-[9px] px-2 py-0.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-600/20 transition-colors">
+                                }))} className="text-[9px] px-2 py-0.5 border ac-btn rounded hover:ac-bg-20 transition-colors">
                                   Use this
                                 </button>
                               </div>
@@ -2585,7 +2886,7 @@ function BatchConfirmModal({
                             if (inputCredit > 0 && inputRatio < 1/3) {
                               return (
                                 <p className="text-[9px} text-red-400">
-                                  ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates Prosper credit rule
+                                  ✕ Credit ${inputCredit.toFixed(2)} &lt; 1/3 of ${inputWidth} spread (${minCredit.toFixed(2)} min) — violates credit rule
                                 </p>
                               );
                             }
@@ -2636,7 +2937,7 @@ function BatchConfirmModal({
                   </button>
                 ) : (
                   <button onClick={submitAll} disabled={activeItems.length === 0}
-                    className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'}`}>
+                    className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'ac-btn-solid'}`}>
                     {dryRun ? `⚗ DRY RUN — Simulate ${activeItems.length} Order${activeItems.length !== 1 ? 's' : ''}` : `SUBMIT ${activeItems.length} ORDER${activeItems.length !== 1 ? 'S' : ''}`}
                   </button>
                 )}
@@ -2648,7 +2949,7 @@ function BatchConfirmModal({
           )}
           {status === 'done' && (
             <div className="flex gap-3">
-              <button onClick={() => { onSuccess(); onClose(); }} className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'bg-blue-600 hover:bg-blue-500'}`}>
+              <button onClick={() => { onSuccess(); onClose(); }} className={`flex-1 py-3 text-white rounded-xl text-xs font-bold tracking-widest transition-colors ${dryRun ? 'bg-amber-600 hover:bg-amber-500' : 'ac-btn-solid'}`}>
                 {dryRun ? 'DRY RUN DONE — Close' : 'DONE — REFRESH POSITIONS'}
               </button>
             </div>
@@ -2806,7 +3107,7 @@ function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[T
             <div className="flex flex-col items-center justify-center h-40 gap-2">
               <p className={`text-sm ${th.textFaint}`}>No trades recorded yet</p>
               <p className={`text-[10px] ${th.textFaint} text-center max-w-xs`}>
-                Memory builds automatically as you execute trades through Prosper. Each trade teaches the verdict engine your patterns.
+                Memory builds automatically as you execute trades through Options Hunter. Each trade teaches the verdict engine your patterns.
               </p>
             </div>
           )}
@@ -2902,36 +3203,34 @@ function MemoryPanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[T
 }
 
 function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEMES[Theme] }) {
-  const totalCredit = positions.reduce((s, p) => s + p.creditReceived, 0);
-  const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
-  const capturedPct = totalCredit > 0 ? (totalPnl / totalCredit) * 100 : 0;
-  const totalAtRisk = positions.reduce((s, p) => {
-    const shorts = p.legs.filter(l => l.direction === 'Short');
-    const longs  = p.legs.filter(l => l.direction === 'Long' && l.optionType === shorts[0]?.optionType);
-    if (shorts[0] && longs[0]) {
-      const width = Math.abs(shorts[0].strikePrice - longs[0].strikePrice);
-      return s + Math.max(0, (width * 100 * shorts[0].quantity) - p.creditReceived);
-    }
-    return s;
-  }, 0);
-  const totalTheta = positions.reduce((s, p) => {
+  const totalCredit   = positions.reduce((s, p) => s + p.creditReceived, 0);
+  const totalPnlOpen  = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
+  const capturedPct   = totalCredit > 0 ? (totalPnlOpen / totalCredit) * 100 : 0;
+  const totalAtRisk   = positions.reduce((s, p) => s + p.maxRisk, 0);
+  const totalTheta    = positions.reduce((s, p) => {
     if (p.currentValue != null && p.dte > 0) return s + p.currentValue / p.dte;
     if (p.dte > 0) return s + p.creditReceived / p.dte;
     return s;
   }, 0);
+  // P&L Day: positions that have live pnl AND plOpen — difference is today's move
+  const posWithDay    = positions.filter(p => p.pnl != null && p.plOpen != null);
+  const totalPnlDay   = posWithDay.reduce((s, p) => s + (p.pnl! - p.plOpen!), 0);
+  const hasDayPnl     = posWithDay.length > 0;
 
   return (
-    <div className={`grid grid-cols-5 border-b ${th.border}`}>
+    <div className={`grid grid-cols-7 border-b ${th.border}`}>
       {[
-        { label: 'Open Positions', value: String(positions.length), sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`, color: th.text },
-        { label: 'Captured', value: `${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}`, sub: `of $${totalCredit.toFixed(0)} · ${capturedPct.toFixed(0)}%`, color: totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnl / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
-        { label: 'At Risk', value: `$${totalAtRisk.toFixed(0)}`, sub: 'max loss if expired', color: th.textMuted },
-        { label: 'Est. Theta/Day', value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—', sub: 'daily decay', color: 'text-blue-400' },
+        { label: 'Open Positions',  value: String(positions.length),                                                        sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`,                                                                           color: th.text },
+        { label: 'P&L Open',        value: `${totalPnlOpen >= 0 ? '+' : ''}$${Math.abs(totalPnlOpen).toFixed(0)}`,          sub: `of $${totalCredit.toFixed(0)} credit · ${capturedPct.toFixed(0)}%`,                                                                           color: totalPnlOpen >= 0 ? 'text-emerald-400' : 'text-red-400' },
+        { label: 'P&L Day',         value: hasDayPnl ? `${totalPnlDay >= 0 ? '+' : ''}$${Math.abs(totalPnlDay).toFixed(0)}` : '—', sub: hasDayPnl ? `${posWithDay.length} position${posWithDay.length !== 1 ? 's' : ''} with live prices` : 'refresh for live prices',       color: !hasDayPnl ? th.textFaint : totalPnlDay >= 0 ? 'text-emerald-400' : 'text-red-400' },
+        { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnlOpen / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
+        { label: 'At Risk',         value: `$${totalAtRisk.toFixed(0)}`,                                                     sub: 'max loss if expired',                                                                                                                         color: th.textMuted },
+        { label: 'Est. Theta/Day',  value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—',                             sub: 'daily decay',                                                                                                                                 color: 'text-blue-400' },
+        { label: 'Collateral',      value: `$${totalCredit.toFixed(0)}`,                                                     sub: `${positions.length} spread${positions.length !== 1 ? 's' : ''}`,                                                                             color: th.textMuted },
       ].map((item, i, arr) => (
-        <div key={item.label} className={`p-5 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
+        <div key={item.label} className={`p-4 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
           <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>{item.label}</p>
-          <p className={`text-3xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
+          <p className={`text-2xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
           <p className={`text-[10px] ${th.textFaint} mt-1`}>{item.sub}</p>
         </div>
       ))}
@@ -2963,21 +3262,47 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
     { role: 'assistant', content: initialContext },
   ]);
   const [input, setInput] = useState('');
+  const [pendingImage, setPendingImage] = useState<{ base64: string; mediaType: string; preview: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Scroll within the chat container only — never move the page
+    const container = scrollContainerRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
   }, [messages]);
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const [meta, base64] = dataUrl.split(',');
+      const mediaType = meta.match(/:(.*?);/)?.[1] ?? 'image/jpeg';
+      setPendingImage({ base64, mediaType, preview: dataUrl });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
 
   const send = async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text && !pendingImage || loading) return;
     setInput('');
     setError(null);
-    const next: ChatMessage[] = [...messages, { role: 'user', content: text }];
+    const parts: ChatContentPart[] = [];
+    if (pendingImage) parts.push({ type: 'image', source: { type: 'base64', media_type: pendingImage.mediaType, data: pendingImage.base64 } });
+    if (text) parts.push({ type: 'text', text });
+    const userMsg: ChatMessage = { role: 'user', content: parts.length === 1 && !pendingImage ? text : parts };
+    setPendingImage(null);
+    const next: ChatMessage[] = [...messages, userMsg];
     setMessages(next);
     setLoading(true);
     try {
@@ -2987,13 +3312,23 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
       setError(e.message ?? 'Failed');
     } finally {
       setLoading(false);
-      // Re-focus input after reply
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   };
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+
+  const getMessageText = (content: ChatMessage['content']): string => {
+    if (typeof content === 'string') return content;
+    return content.filter((p): p is ChatMessagePart => p.type === 'text').map(p => p.text).join(' ');
+  };
+
+  const getMessageImage = (content: ChatMessage['content']): string | null => {
+    if (typeof content === 'string') return null;
+    const img = content.find((p): p is ChatImagePart => p.type === 'image');
+    return img ? `data:${img.source.media_type};base64,${img.source.data}` : null;
   };
 
   // Suggested follow-up prompts shown below the initial analysis
@@ -3008,7 +3343,7 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
     <div className={`border-t ${th.border} flex flex-col`} style={{ background: 'rgba(99,102,241,0.03)' }}>
       {/* Message history — skip the first assistant message, it's already shown above */}
       {messages.length > 1 && (
-        <div className="px-4 py-3 space-y-3 max-h-80 overflow-y-auto">
+        <div ref={scrollContainerRef} className="px-4 py-3 space-y-3 max-h-80 overflow-y-auto">
           {messages.slice(1).map((m, i) => (
             <div key={i} className={`flex gap-3 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               {m.role === 'assistant' && (
@@ -3016,10 +3351,17 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
               )}
               <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[11px] leading-relaxed ${
                 m.role === 'user'
-                  ? 'bg-blue-600/20 border border-blue-600/30 text-blue-100 ml-auto'
+                  ? 'ac-bg-20 border ac-border/30 text-blue-100 ml-auto'
                   : `${th.card} border ${th.border} ${th.textMuted}`
               }`}>
-                {m.content}
+                {(() => {
+                  const imgSrc = getMessageImage(m.content);
+                  const txt = getMessageText(m.content);
+                  return (<>
+                    {imgSrc && <img src={imgSrc} alt="attachment" className="rounded-lg max-w-full mb-1.5" style={{ maxHeight: '180px', objectFit: 'contain' }} />}
+                    {txt && <span>{txt}</span>}
+                  </>);
+                })()}
               </div>
             </div>
           ))}
@@ -3057,27 +3399,49 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
       )}
 
       {/* Input */}
-      <div className={`flex items-end gap-2 px-4 py-3`}>
-        <textarea
-          ref={inputRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          placeholder={placeholder ?? 'Ask a follow-up question... (Enter to send, Shift+Enter for newline)'}
-          rows={1}
-          disabled={loading}
-          className={`flex-1 resize-none text-[11px] px-3 py-2 rounded-xl border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-indigo-500 transition-colors placeholder:${th.textFaint} disabled:opacity-50`}
-          style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minHeight: '36px', maxHeight: '120px' }}
-          onInput={e => {
-            const el = e.currentTarget;
-            el.style.height = 'auto';
-            el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-          }}
-        />
-        <button onClick={send} disabled={loading || !input.trim()}
-          className="shrink-0 w-8 h-8 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-colors text-sm">
-          ↑
-        </button>
+      <div className="px-4 py-3 space-y-2">
+        {/* Image preview */}
+        {pendingImage && (
+          <div className="relative inline-block">
+            <img src={pendingImage.preview} alt="pending" className="rounded-lg max-h-24 object-contain border border-indigo-500/40" />
+            <button onClick={() => setPendingImage(null)}
+              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-slate-700 border border-slate-500 text-slate-300 text-[9px] flex items-center justify-center hover:bg-red-600 transition-colors">
+              ✕
+            </button>
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          {/* Hidden file input */}
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
+          {/* Attach button */}
+          <button onClick={() => fileInputRef.current?.click()} disabled={loading}
+            title="Attach image"
+            className={`shrink-0 w-8 h-8 rounded-xl border ${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400 disabled:opacity-40 flex items-center justify-center transition-colors`}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder={placeholder ?? 'Ask a follow-up question... (Enter to send, Shift+Enter for newline)'}
+            rows={1}
+            disabled={loading}
+            className={`flex-1 resize-none text-[11px] px-3 py-2 rounded-xl border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-indigo-500 transition-colors placeholder:${th.textFaint} disabled:opacity-50`}
+            style={{ fontFamily: "'DM Sans', system-ui, sans-serif", minHeight: '36px', maxHeight: '120px' }}
+            onInput={e => {
+              const el = e.currentTarget;
+              el.style.height = 'auto';
+              el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+            }}
+          />
+          <button onClick={send} disabled={loading || (!input.trim() && !pendingImage)}
+            className="shrink-0 w-8 h-8 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-colors text-sm">
+            ↑
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -3502,7 +3866,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
         className={`text-[9px] px-2.5 py-1 border rounded font-bold transition-colors ${
           result === 'success' ? 'border-emerald-600 text-emerald-400' :
           result === 'error'   ? 'border-red-600 text-red-400' :
-          open ? 'border-blue-500 text-blue-400 bg-blue-500/10' :
+          open ? 'ac-btn ac-bg-10' :
           assessColor
         }`}>
         {result === 'success' ? '✓ Extended' : result === 'error' ? '✕ Failed' : '↑ Extend Profit'}
@@ -3565,7 +3929,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
                     disabled={loading}
                     onClick={() => handleSelectPct(pct)}
                     className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border transition-colors text-[10px] font-bold ${
-                      isSelected ? 'border-blue-500 bg-blue-500/15' : `${th.border} hover:border-blue-500 hover:bg-blue-500/10`
+                      isSelected ? 'border-blue-500 bg-blue-500/15' : `${th.border} ac-hover-border hover:ac-bg-10`
                     } disabled:opacity-50`}>
                     <span className="text-blue-400">{pct}% profit target</span>
                     <span className={`${th.textFaint} font-normal`}>BTC @ ${newPrice}</span>
@@ -3584,7 +3948,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
                         className={`w-full py-1.5 rounded-lg text-[10px] font-bold transition-colors ${
                           isStop
                             ? 'bg-red-600/20 border border-red-600 text-red-400 hover:bg-red-600/40'
-                            : 'bg-blue-600 hover:bg-blue-500 text-white'
+                            : 'ac-btn-solid text-white'
                         } disabled:opacity-50`}>
                         {loading ? 'Updating...' : isStop ? `Override & Extend to ${pct}%` : `Confirm — Extend to ${pct}%`}
                       </button>
@@ -3730,7 +4094,7 @@ interface StopGtcSuggestion {
   deviationNote: string | null;
 }
 
-const STOP_GTC_SYSTEM_PROMPT = `You are an expert options trader specializing in credit spreads using the Prosper Trading methodology. Your job is to recommend optimal GTC profit-target and stop-loss prices for an open spread position.
+const STOP_GTC_SYSTEM_PROMPT = `You are an expert options trader specializing in credit spreads using the Options Hunter methodology. Your job is to recommend optimal GTC profit-target and stop-loss prices for an open spread position.
 
 CRITICAL RULE — STOP MUST BE ABOVE CURRENT SPREAD VALUE:
 The stop trigger price MUST be strictly above the current spread value (buyback cost). A stop at or below the current value would execute immediately and be rejected by the broker. This is a hard constraint — never violate it.
@@ -3897,6 +4261,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   const [result, setResult]   = useState<'success' | 'error' | null>(null);
   const [resultMsg, setResultMsg] = useState('');
   const [stopPrice, setStopPrice] = useState('');
+  const [stopPct,   setStopPct]   = useState('200');  // default: 200% of credit = 2× rule
   const [gtcPrice,  setGtcPrice]  = useState('');
 
   // AI suggestion
@@ -3911,6 +4276,26 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
 
   // Confirmation step before destructive OCO replace
   const [confirming, setConfirming] = useState(false);
+
+  // ── Linked stop price ↔ pct setters ──────────────────────────────────────
+  // Entering a $ amount updates the % display; entering a % updates the $ amount.
+  // Both anchor to creditPerContract so the relationship is always: price = pct/100 × credit.
+  const setStopFromPrice = (val: string) => {
+    setStopPrice(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && creditPerContract > 0) {
+      setStopPct(((num / creditPerContract) * 100).toFixed(0));
+    }
+  };
+
+  const setStopFromPct = (val: string) => {
+    setStopPct(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && creditPerContract > 0) {
+      const price = parseFloat(((num / 100) * creditPerContract).toFixed(2));
+      setStopPrice(price.toFixed(2));
+    }
+  };
 
   // Mounted guard — prevents state updates after unmount
   const mountedRef = useRef(true);
@@ -4031,14 +4416,16 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
         console.log(`LIVE PRICE FETCH ${pos.symbol}: $${perContract.toFixed(4)}/contract`);
         // Set initial input defaults using live price
         const initGtc  = Math.min(existingGtcPrice, perContract - 0.01);
-        const initStop = Math.max(perContract * 2.0,  perContract + 0.01);
+        // Default stop = 200% of original credit (2× rule), must be above live value
+        const twoXStop = creditPerContract * 2.0;
+        const initStop = Math.max(twoXStop, perContract + 0.01);
         setGtcPrice(Math.max(initGtc, gtcMin).toFixed(2));
-        setStopPrice(Math.min(initStop, stopMax).toFixed(2));
+        setStopFromPrice(Math.min(initStop, stopMax).toFixed(2));
       } else {
         setLivePriceError('Could not fetch live price — using estimates');
         setGtcPrice(Math.max(existingGtcPrice, gtcMin).toFixed(2));
         const naiveStop = Math.max(creditPerContract * 2.0, stopMin);
-        setStopPrice(Math.min(naiveStop, stopMax).toFixed(2));
+        setStopFromPrice(Math.min(naiveStop, stopMax).toFixed(2));
       }
     } catch (e: any) {
       if (!mountedRef.current) return;
@@ -4046,7 +4433,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       console.warn('SetStopLossButton live price fetch failed:', e.message);
       setLivePriceError(`Price fetch failed: ${e.message ?? 'unknown error'}`);
       setGtcPrice(Math.max(existingGtcPrice, gtcMin).toFixed(2));
-      setStopPrice(Math.min(creditPerContract * 2.0, stopMax).toFixed(2));
+      setStopFromPrice(Math.min(creditPerContract * 2.0, stopMax).toFixed(2));
     } finally {
       if (mountedRef.current) setLivePriceLoading(false);
     }
@@ -4058,7 +4445,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   const applySuggestion = () => {
     if (!suggestion) return;
     setGtcPrice(suggestion.gtcPrice.toFixed(2));
-    setStopPrice(suggestion.stopPrice.toFixed(2));
+    setStopFromPrice(suggestion.stopPrice.toFixed(2));
   };
 
   // ── Submit ────────────────────────────────────────────────────────────────
@@ -4109,17 +4496,37 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       }
 
       const itype = instrType(pos.symbol);
-      const legs = pos.legs.map(leg => ({
+      // Simple /orders endpoint only accepts 'Equity Option' as instrument-type on legs,
+      // even for index options (SPX/SPXW). 'Index Option' is only valid on /complex-orders.
+      const simpleItype = 'Equity Option' as const;
+      const complexItype = itype;
+      const legsForSimple = pos.legs.map(leg => ({
         symbol: leg.symbol,
         quantity: leg.quantity,
         action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as 'Buy to Close' | 'Sell to Close',
-        'instrument-type': itype,
+        'instrument-type': simpleItype,
+      }));
+      const legsForComplex = pos.legs.map(leg => ({
+        symbol: leg.symbol,
+        quantity: leg.quantity,
+        action: (leg.direction === 'Short' ? 'Buy to Close' : 'Sell to Close') as 'Buy to Close' | 'Sell to Close',
+        'instrument-type': complexItype,
       }));
 
       if (needsOco) {
         setPhase('Cancelling existing GTC order...');
         console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
-        await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+        const complexId = (pos as any).gtcComplexOrderId;
+        console.log(`PLACE_GTC CANCEL: orderId=${pos.gtcOrderId} complexId=${complexId}`);
+        if (complexId) {
+          console.log(`Cancelling complex order ${complexId}`);
+          await ttDelete(`/accounts/${pos.accountNumber}/complex-orders/${complexId}`, token);
+        } else {
+          console.log(`Cancelling simple order ${pos.gtcOrderId}`);
+          await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+        }
+        console.log(`Cancel complete, waiting 500ms...`);
+        await new Promise(r => setTimeout(r, 500));
 
         setPhase('Placing OCO order...');
         const ocoBody = {
@@ -4130,15 +4537,15 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
               'time-in-force': 'GTC',
               price: gtcLimit.toFixed(2),
               'price-effect': 'Debit',
-              legs,
+              legs: legsForComplex,
             },
             {
               'order-type': 'Stop Limit',
               'time-in-force': 'GTC',
               'stop-trigger': stopTrigger.toFixed(2),
-              price: parseFloat((stopTrigger * 1.10).toFixed(2)).toFixed(2),  // 10% above trigger for fill room
+              price: stopTrigger.toFixed(2),
               'price-effect': 'Debit',
-              legs,
+              legs: legsForComplex,
             },
           ],
         };
@@ -4152,14 +4559,30 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
           'order-type': 'Stop Limit',
           'time-in-force': 'GTC',
           'stop-trigger': stopTrigger.toFixed(2),
-          price: parseFloat((stopTrigger * 1.10).toFixed(2)).toFixed(2),
+          price: stopTrigger.toFixed(2),  // limit = trigger for spreads
           'price-effect': 'Debit',
-          legs,
+          legs: legsForSimple,
         };
-        const res = await ttPost(`/accounts/${pos.accountNumber}/orders`, token, stopBody);
+        console.log('STOP ORDER PAYLOAD:', JSON.stringify(stopBody, null, 2));
+        const stopRes = await fetch(`${BASE}/accounts/${pos.accountNumber}/orders`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(stopBody),
+        });
+        const stopData = await stopRes.json().catch(() => ({}));
+        console.log('STOP ORDER RESPONSE status:', stopRes.status);
+        console.log('STOP ORDER RESPONSE body:', JSON.stringify(stopData, null, 2));
+        if (!stopRes.ok) {
+          const detail = stopData?.error?.message
+            ?? stopData?.['error-message']
+            ?? stopData?.errors?.map((e: any) => `${e.field ?? ''}: ${e.message ?? e.reason ?? JSON.stringify(e)}`).join('; ')
+            ?? JSON.stringify(stopData).slice(0, 600);
+          throw new Error(`TastyTrade rejected stop order (${stopRes.status}): ${detail}`);
+        }
+        const res = stopData;
         const orderId = String(res?.data?.order?.id ?? res?.data?.id ?? 'submitted');
         setResult('success');
-        setResultMsg(`Stop Limit placed @ trigger $${stopTrigger.toFixed(2)} (ID #${orderId})`);
+        setResultMsg(`Stop Limit placed @ $${stopTrigger.toFixed(2)} (ID #${orderId})`);
       }
       setOpen(false);
       setConfirming(false);
@@ -4232,7 +4655,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
             <button
               onClick={fetchLivePrice}
               disabled={livePriceLoading}
-              className={`text-[9px] ${th.textFaint} hover:text-blue-400 transition-colors disabled:opacity-40`}>
+              className={`text-[9px] ${th.textFaint} ac-hover-text transition-colors disabled:opacity-40`}>
               ↻
             </button>
           </div>
@@ -4337,18 +4760,45 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
             )}
             <div>
               <div className="flex items-center gap-2">
-                <span className={`text-[10px] ${th.textFaint} w-28 shrink-0`}>Stop trigger $</span>
-                <input
-                  type="number" min={stopMin} max={stopMax} step="0.01" value={stopPrice}
-                  onChange={e => setStopPrice(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !hasErrors && !confirming) setConfirming(true); if (e.key === 'Escape') setOpen(false); }}
-                  autoFocus={!needsOco}
-                  className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${
-                    stopError ? 'border-red-500' : th.inputBorder
-                  } ${th.input} text-orange-400 outline-none focus:border-orange-500`}
-                  style={{ fontFamily: "'DM Mono', monospace" }}
-                />
-                {stopParsed > 0 && <span className={`text-[9px] ${th.textFaint} w-12 shrink-0`}>{stopMultipleDisplay}×</span>}
+                <span className={`text-[10px] ${th.textFaint} w-28 shrink-0`}>Stop trigger</span>
+                {/* Dollar input */}
+                <div className="flex items-center gap-1 flex-1">
+                  <span className={`text-[9px] ${th.textFaint}`}>$</span>
+                  <input
+                    type="number" min={stopMin} max={stopMax} step="0.01" value={stopPrice}
+                    onChange={e => setStopFromPrice(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !hasErrors && !confirming) setConfirming(true); if (e.key === 'Escape') setOpen(false); }}
+                    autoFocus={!needsOco}
+                    className={`flex-1 text-[11px] px-2 py-1.5 rounded border ${
+                      stopError ? 'border-red-500' : th.inputBorder
+                    } ${th.input} text-orange-400 outline-none focus:border-orange-500`}
+                    style={{ fontFamily: "'DM Mono', monospace" }}
+                  />
+                </div>
+                {/* Percent input — linked */}
+                <div className="flex items-center gap-1 w-20 shrink-0">
+                  <input
+                    type="number" min={100} max={300} step={5} value={stopPct}
+                    onChange={e => setStopFromPct(e.target.value)}
+                    className={`w-full text-[11px] px-2 py-1.5 rounded border ${th.inputBorder} ${th.input} text-orange-400/70 outline-none focus:border-orange-500`}
+                    style={{ fontFamily: "'DM Mono', monospace" }}
+                  />
+                  <span className={`text-[9px] ${th.textFaint} shrink-0`}>%</span>
+                </div>
+              </div>
+              {/* Quick % presets */}
+              <div className="flex items-center gap-1.5 mt-1.5 ml-28">
+                {[['150%', '150'], ['200%', '200'], ['250%', '250'], ['300%', '300']].map(([label, val]) => (
+                  <button key={val} onClick={() => setStopFromPct(val)}
+                    className={`text-[8px] px-1.5 py-0.5 rounded border transition-colors ${
+                      stopPct === val
+                        ? 'border-orange-500 text-orange-400 bg-orange-500/10'
+                        : `${th.border} ${th.textFaint} hover:border-orange-500/50 hover:text-orange-400/70`
+                    }`}>
+                    {label}
+                  </button>
+                ))}
+                <span className={`text-[8px] ${th.textFaint} ml-1`}>of credit</span>
               </div>
               {stopError && <p className="text-[9px] text-red-400 mt-1 ml-28">{stopError}</p>}
               {!stopError && effectiveLiveDisplay != null && (
@@ -4476,38 +4926,35 @@ function vegaTint(vega: number | null): string {
 // ── Buffer Color Helpers ──────────────────────────────────────────────────
 function bufferColor(buffer: number | null, dte: number): string {
   if (buffer == null) return 'text-[#808080]';
-  // < 7 DTE — theta acceleration, very relaxed thresholds
-  if (dte < 7) {
-    if (buffer < 2)  return 'text-yellow-400';
+
+  // Breached or effectively at the short strike is the only true red condition.
+  if (buffer <= 0) return 'text-red-400';
+
+  // DTE-aware coloring: the same buffer is less dangerous with fewer days remaining.
+  // Short-dated positions should warn, not panic, unless the strike is breached.
+  if (dte <= 7) {
+    if (buffer < 1) return 'text-orange-400';
+    if (buffer < 2) return 'text-yellow-400';
     return 'text-emerald-400';
   }
-  // 7-14 DTE
-  if (dte < 14) {
-    if (buffer < 2)  return 'text-yellow-400';
-    if (buffer < 3)  return 'text-yellow-400';
-    if (buffer < 5)  return 'text-emerald-400';
+  if (dte <= 21) {
+    if (buffer < 1) return 'text-orange-400';
+    if (buffer < 2) return 'text-yellow-400';
+    if (buffer < 3) return 'text-yellow-400';
     return 'text-emerald-400';
   }
-  // 14-21 DTE
-  if (dte < 21) {
-    if (buffer < 2)  return 'text-orange-400';
-    if (buffer < 3)  return 'text-yellow-400';
-    if (buffer < 5)  return 'text-emerald-400';
+  if (dte <= 30) {
+    if (buffer < 1) return 'text-red-400';
+    if (buffer < 2) return 'text-orange-400';
+    if (buffer < 3) return 'text-yellow-400';
+    if (buffer < 5) return 'text-yellow-400';
     return 'text-emerald-400';
   }
-  // 21-30 DTE
-  if (dte < 30) {
-    if (buffer < 2)  return 'text-red-400';
-    if (buffer < 3)  return 'text-orange-400';
-    if (buffer < 5)  return 'text-yellow-400';
-    if (buffer < 8)  return 'text-emerald-400';
-    return 'text-emerald-400';
-  }
-  // > 30 DTE
-  if (buffer < 2)  return 'text-red-400';
-  if (buffer < 3)  return 'text-orange-400';
-  if (buffer < 5)  return 'text-yellow-400';
-  if (buffer < 8)  return 'text-emerald-400';
+
+  // Longer-dated positions need a wider cushion because there is more time to move.
+  if (buffer < 1) return 'text-red-400';
+  if (buffer < 2) return 'text-orange-400';
+  if (buffer < 5) return 'text-yellow-400';
   return 'text-emerald-400';
 }
 
@@ -4547,6 +4994,23 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [showAnalysis, setShowAnalysis] = useState(false);
+  const [showChart, setShowChart] = useState(false);
+  const [sparkData, setSparkData] = useState(null as number[] | null);
+  const [sparkLoading, setSparkLoading] = useState(false);
+  const chartPopupRef = useRef(null as HTMLDivElement | null);
+  const chartButtonRef = useRef<HTMLButtonElement>(null);
+  const [chartPopupPos, setChartPopupPos] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    if (!showChart) return;
+    const handler = (e: MouseEvent) => {
+      if (chartPopupRef.current && !chartPopupRef.current.contains(e.target as Node)) {
+        setShowChart(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showChart]);
 
   const handleAnalyze = async () => {
     if (analysis) return; // already have it — button handles show/hide
@@ -4636,6 +5100,106 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             <div className="border-t-2 border-slate-600/60 pt-1">
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
               <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
+              {/* Chart button */}
+              <div className="relative mt-1">
+                <button
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (!showChart) {
+                      setShowChart(true);
+                      if (!sparkData) {
+                        setSparkLoading(true);
+                        fetch(`/api/chart?symbol=${encodeURIComponent(pos.symbol)}`)
+                          .then(r => r.json())
+                          .then(d => {
+                            const closes = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null).slice(-90);
+                            setSparkData(closes);
+                          })
+                          .catch(() => setSparkData([]))
+                          .finally(() => setSparkLoading(false));
+                      }
+                    } else { setShowChart(false); }
+                  }}
+                  ref={chartButtonRef}
+                className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 hover:text-blue-400'}`}
+                  title="Quick chart"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                  </svg>
+                  <span className="tracking-wide">chart</span>
+                </button>
+
+                {showChart && (
+                  <div
+                    ref={chartPopupRef}
+                    className={`fixed z-[9999] ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
+                    style={{ width: '280px', top: chartPopupPos?.top ?? 0, left: chartPopupPos?.left ?? 0 }}
+                    onClick={e => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className={`text-[10px] font-bold ${th.textFaint} tracking-widest`}>{pos.symbol}</span>
+                      <button onClick={() => setShowChart(false)} className="text-slate-500 hover:text-white transition-colors text-sm leading-none">✕</button>
+                    </div>
+                      {sparkLoading && (
+                        <div className="flex items-center justify-center h-16">
+                          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                        </div>
+                      )}
+                      {!sparkLoading && sparkData && sparkData.length > 1 && (() => {
+                        const min = Math.min(...sparkData);
+                        const max = Math.max(...sparkData);
+                        const range = max - min || 1;
+                        const w = 256, h = 56;
+                        const pts = sparkData.map((v, i) => {
+                          const x = (i / (sparkData.length - 1)) * w;
+                          const y = h - ((v - min) / range) * h;
+                          return `${x.toFixed(1)},${y.toFixed(1)}`;
+                        }).join(' ');
+                        const isUp = sparkData[sparkData.length - 1] >= sparkData[0];
+                        const color = isUp ? '#10b981' : '#ef4444';
+                        const lastPrice = sparkData[sparkData.length - 1];
+                        const changePct = ((lastPrice - sparkData[0]) / sparkData[0] * 100).toFixed(1);
+                        return (
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className={`text-[10px] font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</span>
+                              <span className="text-[10px] font-bold" style={{ color }}>
+                                ${lastPrice.toFixed(2)} <span className="text-[9px]">{isUp ? '+' : ''}{changePct}% 30d</span>
+                              </span>
+                            </div>
+                            <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: '56px' }}>
+                              <defs>
+                                <linearGradient id={`grad-${pos.symbol}-${pos.key}`} x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+                                  <stop offset="100%" stopColor={color} stopOpacity="0" />
+                                </linearGradient>
+                              </defs>
+                              <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+                              <polygon points={`0,${h} ${pts} ${w},${h}`} fill={`url(#grad-${pos.symbol}-${pos.key})`} />
+                            </svg>
+                          </div>
+                        );
+                      })()}
+                      {!sparkLoading && sparkData && sparkData.length === 0 && (
+                        <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
+                      )}
+                    <a
+                      href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors border border-blue-500/30 hover:border-blue-500/60 hover:bg-blue-500/10"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
+                      </svg>
+                      Open in TradingView
+                    </a>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="border-t-2 border-slate-600/60 pt-1 border-r border-r-slate-700/40 pr-2">
@@ -4725,24 +5289,35 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   <span className="text-[9px] text-blue-400">%</span>
                 </div>
               ) : (
-                <p className={`text-xs cursor-pointer hover:text-blue-400 transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
-                  style={{ fontFamily: "'DM Mono', monospace" }}
-                  onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}>
-                  ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
-                </p>
+                <div className="cursor-pointer" onClick={() => { setTargetInput(String(Math.round(pos.profitTarget * 100))); setEditingTarget(true); }}>
+                  <p className={`text-xs ac-hover-text transition-colors ${pos.hitTarget ? 'text-emerald-400 font-bold' : th.textFaint}`}
+                    style={{ fontFamily: "'DM Mono', monospace" }}>
+                    ${pos.targetPrice.toFixed(2)}{pos.hitTarget && ' ✓'}
+                  </p>
+                </div>
               )}
             </div>
 
             <div className="border-t-2 border-emerald-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>P/L Open</p>
-              <p className={`text-xs font-bold ${pos.plOpen != null ? (pos.plOpen >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                {pos.plOpen != null ? `${pos.plOpen >= 0 ? '+' : ''}$${pos.plOpen.toFixed(0)}` : '—'}
-                {pos.plOpen != null && pos.creditReceived !== 0 && (
-                  <span className={`ml-1 font-normal text-[10px]`}>
-                    ({pos.plOpen >= 0 ? '+' : ''}{(pos.plOpen / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
-                  </span>
-                )}
-              </p>
+              {(() => {
+                // Prefer pnl (live mid from market-data) over plOpen (EOD marks)
+                const displayPnl = pos.pnl ?? pos.plOpen;
+                const isStale = pos.pnl == null && pos.plOpen != null;
+                if (displayPnl == null) return <p className={`text-xs ${th.textFaint}`}>—</p>;
+                return (
+                  <>
+                    <p className={`text-xs font-bold ${displayPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                      {displayPnl >= 0 ? '+' : ''}${displayPnl.toFixed(0)}{isStale && <span className="text-[8px] opacity-50 ml-0.5">~</span>}
+                    </p>
+                    {pos.creditReceived !== 0 && (
+                      <p className={`font-normal text-[10px] ${displayPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                        ({displayPnl >= 0 ? '+' : ''}{(displayPnl / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             {/* ── GREEKS ─────────────────────────────── */}
@@ -4751,6 +5326,9 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-xs font-bold inline-block ${thetaTint(pos.theta)} ${pos.theta != null ? (pos.theta >= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.theta != null ? (pos.theta >= 0 ? '+' : '') + pos.theta.toFixed(3) : '—'}
               </p>
+              <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
+                {pos.theta == null ? '' : pos.theta >= 0.10 ? '★ strong decay' : pos.theta >= 0.05 ? '✓ good decay' : pos.theta >= 0.01 ? '~ light decay' : '✗ paying theta'}
+              </p>
             </div>
 
             <div className="border-t-2 border-purple-600/50 pt-1">
@@ -4758,12 +5336,37 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-xs font-bold inline-block ${deltaTint(pos.netDelta)} ${pos.netDelta != null ? (Math.abs(pos.netDelta) > 0.15 ? 'text-yellow-400' : 'text-emerald-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netDelta != null ? (pos.netDelta >= 0 ? '+' : '') + pos.netDelta.toFixed(3) : '—'}
               </p>
+              <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
+                {pos.netDelta == null ? '' : (() => {
+                  const t = deltaTint(pos.netDelta);
+                  if (t.includes('emerald') && t.includes('10')) return '✓ neutral';
+                  if (t.includes('emerald')) return '✓ near neutral';
+                  if (t.includes('yellow')) return '~ directional';
+                  if (t.includes('orange')) return '⚠ exposed';
+                  return '✗ high exposure';
+                })()}
+              </p>
             </div>
 
             <div className="border-t-2 border-purple-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>Gamma</p>
-              <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (pos.gamma <= 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+              <p className={`text-xs font-bold inline-block ${gammaTint(pos.gamma)} ${pos.gamma != null ? (
+                Math.abs(pos.gamma) <= 0.003 ? 'text-emerald-400' :
+                Math.abs(pos.gamma) <= 0.006 ? 'text-yellow-400' :
+                Math.abs(pos.gamma) <= 0.010 ? 'text-orange-400' :
+                'text-red-400'
+              ) : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.gamma != null ? pos.gamma.toFixed(4) : '—'}
+              </p>
+              <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
+                {pos.gamma == null ? '' : (() => {
+                  const t = gammaTint(pos.gamma);
+                  if (t.includes('emerald') && t.includes('10')) return '✓ low risk';
+                  if (t.includes('emerald')) return '✓ manageable';
+                  if (t.includes('yellow')) return '~ watch';
+                  if (t.includes('orange')) return '⚠ elevated';
+                  return '✗ high gamma';
+                })()}
               </p>
             </div>
 
@@ -4771,6 +5374,15 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-[9px] ${th.textFaint}`}>Vega</p>
               <p className={`text-xs font-bold inline-block ${vegaTint(pos.netVega)} ${pos.netVega != null ? (pos.netVega < 0 ? 'text-emerald-400' : 'text-red-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.netVega != null ? (pos.netVega >= 0 ? '+' : '') + pos.netVega.toFixed(3) : '—'}
+              </p>
+              <p className={`text-[8px] mt-0.5 ${th.textFaint}`}>
+                {pos.netVega == null ? '' : (() => {
+                  const t = vegaTint(pos.netVega);
+                  if (t.includes('emerald') && t.includes('10')) return '✓ short vega';
+                  if (t.includes('emerald') && t.includes('8')) return '✓ short vega';
+                  if (t.includes('emerald')) return '~ slight short';
+                  return '✗ long vega (wrong side)';
+                })()}
               </p>
             </div>
 
@@ -4789,7 +5401,9 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
             <div className="border-t-2 border-amber-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
-              {(() => {
+              {(pos.strategy !== 'BPS' && pos.strategy !== 'BCS' && pos.strategy !== 'IC') ? (
+                <p className={`text-xs font-bold ${th.textFaint}`}>— N/A</p>
+              ) : (() => {
                 const cfg =
                   pos.stopLossStatus === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-400' } :
                   pos.stopLossStatus === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
@@ -4823,8 +5437,28 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
         <div className="flex items-center gap-1.5 flex-wrap">
           {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).map(action => {
             const meta = ACTION_META[action];
+            const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : null;
+
+            // TAKE_PROFIT — only show when profit target hit (≥50%) or AI recommends it
             if (action === 'TAKE_PROFIT' && !pos.hitTarget && rec.action !== 'TAKE_PROFIT') return null;
+
+            // CUT_LOSSES — only show for a true hard-exit situation.
+            // Ordinary red P/L on a credit spread is mark-to-market noise unless the
+            // short strike is breached, the stop threshold is reached, or loss is extreme.
+            if (action === 'CUT_LOSSES') {
+              const breached = pos.buffer != null && pos.buffer <= 0;
+              const atExtremeLoss = pnlPct != null && pnlPct <= -200;
+              const shortQty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
+              // stopLossPrice is per contract; currentValue is total position buyback value.
+              const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && shortQty > 0
+                ? pos.currentValue >= (pos.stopLossPrice * 100 * shortQty)
+                : false;
+              if (!breached && !atExtremeLoss && !stopLossBreached && rec.action !== 'CUT_LOSSES') return null;
+            }
+
+            // PLACE_GTC — hide when already has GTC
             if (action === 'PLACE_GTC' && pos.hasGtc) return null;
+
             return (
               <button key={action}
                 onClick={e => { e.stopPropagation(); onExecute(pos, action); }}
@@ -4833,8 +5467,16 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </button>
             );
           })}
-          <ExtendProfitButton pos={pos} th={th} />
-          <SetStopLossButton pos={pos} th={th} />
+          {/* Extend Profit — only show when profit ≥50% AND DTE ≥ 14 */}
+          {(() => {
+            const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? (pos.pnl / pos.creditReceived) * 100 : null;
+            const canExtend = pnlPct != null && pnlPct >= 50 && pos.dte >= 14;
+            return canExtend ? <ExtendProfitButton pos={pos} th={th} /> : null;
+          })()}
+          {/* Stop only applies to defined-risk spreads — not CSPs or single-leg positions */}
+          {(pos.strategy === 'BPS' || pos.strategy === 'BCS' || pos.strategy === 'IC') && (
+            <SetStopLossButton pos={pos} th={th} />
+          )}
           {(['TAKE_PROFIT', 'CUT_LOSSES', 'CLOSE_ROLL', 'PLACE_GTC'] as ActionType[]).includes(rec.action) && (
             <span className={`text-[9px] ${th.textFaint} ml-1`}>← suggested</span>
           )}
@@ -4989,7 +5631,7 @@ function BulkActionBar({ selectedKeys, positions, onExecute, onClear, th }: {
 // ── Performance Panel ──────────────────────────────────────────────────────
 function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THEMES[Theme] }) {
   const auditLog: AuditEntry[] = (() => {
-    try { return JSON.parse(localStorage.getItem('prosper-audit-log') ?? '[]'); } catch { return []; }
+    try { return JSON.parse(localStorage.getItem('hunter-audit-log') ?? '[]'); } catch { return []; }
   })();
 
   const closed = auditLog.filter(e => e.status === 'submitted' && e.estPnl != null &&
@@ -5177,6 +5819,9 @@ function PerformancePanel({ onClose, th }: { onClose: () => void; th: typeof THE
 export default function PortfolioPage() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const th = THEMES[theme];
+  const [accent, setAccent] = useState<Accent>(getSavedAccent);
+  useEffect(() => { applyAccent(accent); }, [accent]);
+  useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
 
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
@@ -5259,7 +5904,8 @@ export default function PortfolioPage() {
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
             <Link href="/"              className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
-            <span                       className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">PORTFOLIO</span>
+            <span                       className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>PORTFOLIO</span>
+            <Link href="/engine" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">ENGINE</Link>
             <Link href="/rinse-repeat"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</Link>
             <Link href="/trade-log"     className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</Link>
             <Link href="/performance"   className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</Link>
@@ -5304,7 +5950,7 @@ export default function PortfolioPage() {
             className="text-[10px] px-3 py-1.5 border border-white/10 text-white/30 rounded hover:border-white/30 hover:text-white/60 transition-colors tracking-wider">
             SIGN OUT
           </button>
-          <ThemeToggle theme={theme} setTheme={setTheme} />
+          <ThemeToggle theme={theme} setTheme={setTheme} accent={accent} setAccent={setAccent} />
         </div>
       </div>
 

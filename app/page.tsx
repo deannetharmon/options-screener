@@ -1,9 +1,27 @@
 // path: app/page.tsx
 
 'use client';
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { createPortal } from 'react-dom';
+
+
+// Inject accent CSS variable style
+if (typeof document !== 'undefined') {
+  if (!document.getElementById('hunter-accent-style')) {
+    const style = document.createElement('style');
+    style.id = 'hunter-accent-style';
+    style.textContent = `
+      :root { --accent: #3b82f6; --accent-r: 59; --accent-g: 130; --accent-b: 246; }
+      .accent-border { border-color: var(--accent) !important; }
+      .accent-text { color: var(--accent) !important; }
+      .accent-bg { background-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.1) !important; }
+      .accent-ring { box-shadow: 0 0 0 1px var(--accent) !important; }
+      nav a.active-nav, nav span.active-nav { background: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.2); color: var(--accent); }
+    `;
+    document.head.appendChild(style);
+  }
+}
 
 // Inject DM Sans font
 if (typeof document !== 'undefined') {
@@ -19,6 +37,41 @@ if (typeof document !== 'undefined') {
 // ── Theme ──────────────────────────────────────────────────────────────────
 type Theme = 'dark' | 'medium' | 'light';
 const LS_THEME = 'hunter-theme';
+
+// ── Accent Colors ──────────────────────────────────────────────────────────
+const LS_ACCENT = 'hunter-accent';
+
+const ACCENTS = {
+  electric: { hex: '#3b82f6', label: 'Electric',  tw: 'blue' },
+  emerald:  { hex: '#10b981', label: 'Emerald',   tw: 'emerald' },
+  amber:    { hex: '#f59e0b', label: 'Amber',     tw: 'amber' },
+  violet:   { hex: '#8b5cf6', label: 'Violet',    tw: 'violet' },
+  rose:     { hex: '#f43f5e', label: 'Rose',      tw: 'rose' },
+  slate:    { hex: '#64748b', label: 'Slate',     tw: 'slate' },
+} as const;
+type Accent = keyof typeof ACCENTS;
+
+function getSavedAccent(): Accent {
+  try { const a = localStorage.getItem(LS_ACCENT); return (a && a in ACCENTS) ? a as Accent : 'electric'; }
+  catch { return 'electric'; }
+}
+
+// Inject accent CSS variable into document root
+function applyAccent(accent: Accent) {
+  const hex = ACCENTS[accent].hex;
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--accent', hex);
+    // Parse hex to RGB for rgba() usage
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    document.documentElement.style.setProperty('--accent-r', String(r));
+    document.documentElement.style.setProperty('--accent-g', String(g));
+    document.documentElement.style.setProperty('--accent-b', String(b));
+  }
+}
+
+
 
 const THEMES: Record<Theme, {
   bg: string; sidebar: string; card: string; cardQualified: string;
@@ -584,7 +637,7 @@ const DEFAULT_RULES = {
 type RulesType = typeof DEFAULT_RULES;
 
 const RULE_PRESETS = [
-  { key: 'course',    label: 'Course',     desc: 'Exact course rules',             color: 'border-blue-600 text-blue-400 bg-blue-600/10',        rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 } },
+  { key: 'course',    label: 'Course',     desc: 'Exact course rules',             color: 'ac-btn bg-blue-600/10',        rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 } },
   { key: 'relaxed',   label: 'Relaxed',    desc: 'Wider net, still disciplined',   color: 'border-emerald-600 text-emerald-400 bg-emerald-600/10', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
   { key: 'lowvol',    label: 'Low Vol',    desc: 'Crushed IV environments',        color: 'border-yellow-600 text-yellow-400 bg-yellow-600/10',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
   { key: 'strict',    label: 'Strict',     desc: 'A+ setups only',                 color: 'border-red-600 text-red-400 bg-red-600/10',            rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
@@ -1446,21 +1499,38 @@ const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '
 const strategyAccent = (s: string) => s === 'BPS' ? 'border-l-4 border-l-emerald-500' : s === 'BCS' ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500';
 
 // ── Theme Toggle ───────────────────────────────────────────────────────────
-function ThemeToggle({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+function ThemeToggle({ theme, setTheme, accent, setAccent }: {
+  theme: Theme; setTheme: (t: Theme) => void;
+  accent: Accent; setAccent: (a: Accent) => void;
+}) {
   const options: { value: Theme; icon: string; label: string }[] = [
     { value: 'light', icon: '☀', label: 'Light' },
     { value: 'medium', icon: '◐', label: 'Dim' },
     { value: 'dark', icon: '☾', label: 'Dark' },
   ];
   return (
-    <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-      {options.map(o => (
-        <button key={o.value} onClick={() => { setTheme(o.value); try { localStorage.setItem(LS_THEME, o.value); } catch {} }}
-          title={o.label}
-          className={`text-sm px-2 py-1 rounded transition-all ${theme === o.value ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
-          {o.icon}
-        </button>
-      ))}
+    <div className="flex items-center gap-2">
+      {/* Accent swatches */}
+      <div className="flex items-center gap-1">
+        {(Object.entries(ACCENTS) as [Accent, typeof ACCENTS[Accent]][]).map(([key, val]) => (
+          <button key={key} onClick={() => { setAccent(key); applyAccent(key); try { localStorage.setItem(LS_ACCENT, key); } catch {} }}
+            title={val.label}
+            className={`w-3.5 h-3.5 rounded-full transition-all ${accent === key ? 'ring-2 ring-white/60 ring-offset-1 ring-offset-black scale-125' : 'opacity-60 hover:opacity-100'}`}
+            style={{ backgroundColor: val.hex }}
+          />
+        ))}
+      </div>
+      <div className="w-px h-4 bg-white/20" />
+      {/* Theme buttons */}
+      <div className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
+        {options.map(o => (
+          <button key={o.value} onClick={() => { setTheme(o.value); try { localStorage.setItem(LS_THEME, o.value); } catch {} }}
+            title={o.label}
+            className={`text-sm px-2 py-1 rounded transition-all ${theme === o.value ? 'bg-white/20 text-white' : 'text-white/50 hover:text-white/80'}`}>
+            {o.icon}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1475,7 +1545,7 @@ function CalendarButton({ symbol, strategy, earningsDate, ivr, th }: { symbol: s
     setScheduled(true);
   };
   if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ scheduled</span>;
-  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium`} title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up</button>;
+  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors font-medium`} title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up</button>;
 }
 function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme]; rules: RulesType; }) {
   const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
@@ -1644,7 +1714,7 @@ function SmartSuggestionsPanel({ results, rules, th, onApplyAndRerun }: { result
   if (suggestions.length === 0 && earningsFails === 0) return null;
   return (
     <div className={`border ${th.border} ${th.card} rounded-lg overflow-hidden`}>
-      <button onClick={() => setExpanded(!expanded)} className={`w-full px-4 py-3 flex items-center justify-between hover:bg-blue-500/5 transition-colors`}>
+      <button onClick={() => setExpanded(!expanded)} className={`w-full px-4 py-3 flex items-center justify-between ac-hover-bg/5 transition-colors`}>
         <div className="flex items-center gap-2">
           <span className="text-blue-400 text-sm">◈</span>
           <div className="text-left">
@@ -1670,7 +1740,7 @@ function SmartSuggestionsPanel({ results, rules, th, onApplyAndRerun }: { result
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[9px] bg-blue-500/20 text-blue-400 border border-blue-600 rounded px-1.5 py-0.5 font-medium">#{s.priority}</span>
+                    <span className="text-[9px] ac-bg-20 text-blue-400 border ac-border rounded px-1.5 py-0.5 font-medium">#{s.priority}</span>
                     <p className={`text-xs ${th.text} font-medium`}>{s.label}</p>
                   </div>
                   <p className={`text-[10px] ${th.textMuted} mb-1`}>{s.rationale}</p>
@@ -1683,7 +1753,7 @@ function SmartSuggestionsPanel({ results, rules, th, onApplyAndRerun }: { result
                   <p className={`text-[9px] ${th.textFaint}`}>+{s.wouldQualify} stocks</p>
                 </div>
               </div>
-              <button onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })} className="w-full text-[9px] py-1.5 border border-blue-600 text-blue-400 rounded hover:bg-blue-500/10 transition-colors font-medium tracking-wider">APPLY & RE-RUN</button>
+              <button onClick={() => onApplyAndRerun({ ...rules, [s.rule]: s.suggestedValue })} className="w-full text-[9px] py-1.5 border ac-btn rounded hover:ac-bg-10 transition-colors font-medium tracking-wider">APPLY & RE-RUN</button>
             </div>
           ))}
         </div>
@@ -1701,11 +1771,11 @@ function LoadPromptModal({ state, onClose, th }: { state: LoadPromptState; onClo
         <h3 className={`text-xs font-bold ${th.text} mb-1 tracking-wider`}>LOAD {state.type === 'global' ? 'SESSION' : 'FILTER'}</h3>
         <p className={`text-[10px] ${th.textMuted} mb-4`}>Load <span className={`${th.text} font-medium`}>"{state.name}"</span> — how should it be applied?</p>
         <div className="space-y-2 mb-4">
-          <button onClick={() => { state.onLoad?.(false); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:bg-blue-500/10 hover:border-blue-500 transition-colors`}>
+          <button onClick={() => { state.onLoad?.(false); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:ac-bg-10 ac-hover-border transition-colors`}>
             <p className={`text-xs ${th.text} font-medium`}>Replace</p>
             <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Clear current tickers and load this {state.type === 'global' ? 'session' : 'filter'}</p>
           </button>
-          <button onClick={() => { state.onLoad?.(true); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:bg-blue-500/10 hover:border-blue-500 transition-colors`}>
+          <button onClick={() => { state.onLoad?.(true); onClose(); }} className={`w-full text-left px-3 py-2.5 border ${th.border} rounded-lg hover:ac-bg-10 ac-hover-border transition-colors`}>
             <p className={`text-xs ${th.text} font-medium`}>Merge</p>
             <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Add tickers from this {state.type === 'global' ? 'session' : 'filter'} to existing ones</p>
           </button>
@@ -1860,26 +1930,26 @@ function SessionsPanel({ bps, bcs, ic, broken, onLoadAll, onLoadPrompt, onReclas
       <div className="flex gap-2">
         <button onClick={() => onLoadAll('', '', '', '')} className={`text-[9px] px-2 py-1.5 border border-red-800 rounded-lg text-red-500 hover:border-red-500 hover:text-red-400 transition-colors font-medium flex items-center justify-center gap-1 shrink-0`}>✕ Clear</button>
         <div className="relative flex-1">
-          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
+          <button onClick={() => { setShowSave(!showSave); setShowLoad(false); setSaveError(''); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} ac-hover-border ac-hover-text transition-colors font-medium flex items-center justify-center gap-1`}>💾 Save Session</button>
           {showSave && (
             <div className={`absolute top-8 left-0 z-40 ${th.sidebar} border ${th.border} rounded-lg p-2 w-56 shadow-xl`}>
               <p className={`text-[9px] ${th.textFaint} mb-1.5`}>Saves all three scan lists as one session</p>
               <div className="flex gap-1 mb-1">
                 <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Session name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
-                  className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
-                <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition-colors">Save</button>
+                  className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none ac-focus placeholder-slate-500`} />
+                <button onClick={() => handleSave()} className="text-[9px] px-2 py-1 ac-btn-solid text-white rounded font-medium transition-colors">Save</button>
               </div>
               {saveError && (<div className="flex gap-1 items-center mt-1"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1.5 py-0.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded font-medium">Replace</button>}</div>)}
             </div>
           )}
         </div>
         <div className="relative flex-1">
-          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors font-medium flex items-center justify-center gap-1`}>▼ Load Session</button>
+          <button onClick={() => { setShowLoad(!showLoad); setShowSave(false); if (!showLoad) refreshFilters(); }} className={`w-full text-[9px] px-2 py-1.5 border ${th.inputBorder} rounded-lg ${th.textMuted} ac-hover-border ac-hover-text transition-colors font-medium flex items-center justify-center gap-1`}>▼ Load Session</button>
           {showLoad && (
             <div className={`absolute top-8 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg overflow-hidden w-56 shadow-xl`}>
               {filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>No saved sessions yet</p>
                 : filterNames.map(name => (
-                  <div key={name} className={`flex items-center justify-between px-3 py-2 hover:bg-blue-500/10 group cursor-pointer`}>
+                  <div key={name} className={`flex items-center justify-between px-3 py-2 hover:ac-bg-10 group cursor-pointer`}>
                     <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} hover:${th.text} text-left flex-1 font-medium`}>{name}</button>
                     <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
                   </div>
@@ -1979,28 +2049,28 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
         </div>
         <div className="flex items-center gap-1">
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleOCR} />
-          <button onClick={handleImgClick} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
+          <button onClick={handleImgClick} disabled={disabled || scanning} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors disabled:opacity-40`}>{scanning ? '⟳' : '↑ img'}</button>
           <div className="relative">
-            <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled || !hasValue} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>💾</button>
+            <button onClick={() => { setShowSaveInput(!showSaveInput); setShowLoad(false); setSaveError(''); }} disabled={disabled || !hasValue} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors disabled:opacity-40`}>💾</button>
             {showSaveInput && (
               <div className={`absolute top-6 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg p-2 w-44 shadow-xl`}>
                 <div className="flex gap-1 mb-1">
                   <input type="text" value={saveName} onChange={e => { setSaveName(e.target.value); setSaveError(''); }} placeholder="Filter name..." onKeyDown={e => e.key === 'Enter' && handleSave()}
-                    className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none focus:border-blue-500 placeholder-slate-500`} />
-                  <button onClick={() => handleSave()} className="text-[9px] px-1.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium">Save</button>
+                    className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[10px] ${th.text} focus:outline-none ac-focus placeholder-slate-500`} />
+                  <button onClick={() => handleSave()} className="text-[9px] px-1.5 py-1 ac-btn-solid text-white rounded font-medium">Save</button>
                 </div>
                 {saveError && (<div className="flex gap-1 items-center"><span className="text-[9px] text-yellow-400">{saveError}</span>{saveError.includes('exists') && <button onClick={() => handleSave(true)} className="text-[9px] px-1 py-0.5 bg-yellow-600 text-white rounded">Replace</button>}</div>)}
               </div>
             )}
           </div>
           <div className="relative">
-            <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>▼</button>
+            <button onClick={() => { setShowLoad(!showLoad); setShowSaveInput(false); if (!showLoad) refreshFilters(); }} disabled={disabled} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors disabled:opacity-40`}>▼</button>
             {showLoad && (
               <div className={`absolute top-6 right-0 z-40 ${th.sidebar} border ${th.border} rounded-lg overflow-hidden w-44 shadow-xl`}>
                 {loadingFilters ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>Loading...</p>
                   : filterNames.length === 0 ? <p className={`text-[9px] ${th.textFaint} px-3 py-2`}>No saved filters yet</p>
                   : filterNames.map(name => (
-                    <div key={name} className={`flex items-center justify-between px-3 py-2 hover:bg-blue-500/10 group cursor-pointer`}>
+                    <div key={name} className={`flex items-center justify-between px-3 py-2 hover:ac-bg-10 group cursor-pointer`}>
                       <button onClick={() => handleLoadSelect(name)} className={`text-[10px] ${th.textMuted} text-left flex-1 font-medium`}>{name}</button>
                       <button onClick={() => handleDelete(name)} className="text-[9px] text-slate-500 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
                     </div>
@@ -2220,9 +2290,9 @@ function TradeModal({ result, th, onClose }: {
           <div className="flex justify-between text-xs items-center">
             <span className={th.textFaint}>Entry limit / contract</span>
             <div className="flex items-center gap-1">
-              <button onClick={() => setEntryLimit(v => parseFloat(Math.max(0.01, v - 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs hover:border-blue-500`}>−</button>
+              <button onClick={() => setEntryLimit(v => parseFloat(Math.max(0.01, v - 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs ac-hover-border`}>−</button>
               <span className="text-emerald-400 font-bold text-xs w-12 text-center">${entryLimit.toFixed(2)}</span>
-              <button onClick={() => setEntryLimit(v => parseFloat((v + 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs hover:border-blue-500`}>+</button>
+              <button onClick={() => setEntryLimit(v => parseFloat((v + 0.05).toFixed(2)))} className={`w-5 h-5 rounded border ${th.border} ${th.textMuted} text-xs ac-hover-border`}>+</button>
             </div>
           </div>
           <div className="flex justify-between text-xs">
@@ -2235,9 +2305,9 @@ function TradeModal({ result, th, onClose }: {
         <div className="flex items-center gap-3 mb-4">
           <span className={`text-xs ${th.textFaint}`}>Contracts</span>
           <div className="flex items-center gap-2">
-            <button onClick={() => setQuantity(q => Math.max(1, q - 1))} className={`w-7 h-7 rounded border ${th.border} ${th.textMuted} hover:border-blue-500 text-sm`}>−</button>
+            <button onClick={() => setQuantity(q => Math.max(1, q - 1))} className={`w-7 h-7 rounded border ${th.border} ${th.textMuted} ac-hover-border text-sm`}>−</button>
             <span className={`text-sm font-bold ${th.text} w-6 text-center`}>{quantity}</span>
-            <button onClick={() => setQuantity(q => Math.min(20, q + 1))} className={`w-7 h-7 rounded border ${th.border} ${th.textMuted} hover:border-blue-500 text-sm`}>+</button>
+            <button onClick={() => setQuantity(q => Math.min(20, q + 1))} className={`w-7 h-7 rounded border ${th.border} ${th.textMuted} ac-hover-border text-sm`}>+</button>
           </div>
           <div className="ml-auto text-right">
             <p className="text-emerald-400 font-bold text-sm">${credit.toFixed(2)} credit</p>
@@ -2306,13 +2376,13 @@ function TradeModal({ result, th, onClose }: {
           <div className="flex gap-2">
             {!dryRunResult ? (
               <button onClick={runDryRun} disabled={!hasOccSymbols || phase === 'dryrun'}
-                className="flex-1 py-2.5 border border-blue-600 text-blue-400 rounded-xl text-xs font-bold tracking-widest hover:bg-blue-500/10 transition-colors disabled:opacity-40">
+                className="flex-1 py-2.5 border ac-btn rounded-xl text-xs font-bold tracking-widest hover:ac-bg-10 transition-colors disabled:opacity-40">
                 {phase === 'dryrun' ? 'VALIDATING...' : 'VALIDATE ORDER'}
               </button>
             ) : (
               <>
                 <button onClick={runDryRun} disabled={phase === 'dryrun'}
-                  className={`py-2.5 px-3 border ${th.border} ${th.textFaint} rounded-xl text-xs hover:border-blue-500 transition-colors disabled:opacity-40`}>
+                  className={`py-2.5 px-3 border ${th.border} ${th.textFaint} rounded-xl text-xs ac-hover-border transition-colors disabled:opacity-40`}>
                   ↺
                 </button>
                 <button onClick={placeOrder} disabled={phase === 'placing'}
@@ -2336,8 +2406,9 @@ function TradeModal({ result, th, onClose }: {
 
 
 // ── Stock Research Component ──────────────────────────────────────────────
-async function fetchStockResearch(symbol: string, riskContext?: string): Promise<string> {
-  // Step 1: fetch recent news headlines from Yahoo Finance
+interface ChatMessage { role: 'user' | 'assistant'; content: string; }
+
+async function fetchStockResearch(symbol: string, tradeContext: string, riskContext?: string): Promise<string> {
   let headlines = '';
   try {
     const newsRes = await fetch(
@@ -2345,35 +2416,31 @@ async function fetchStockResearch(symbol: string, riskContext?: string): Promise
       { cache: 'no-store' }
     );
     const newsData = await newsRes.json();
-    const articles = newsData?.news ?? [];
-    headlines = articles
-      .slice(0, 6)
-      .map((a: any) => `- ${a.title}`)
-      .join('\n');
+    headlines = (newsData?.news ?? []).slice(0, 6).map((a: any) => `- ${a.title}`).join('\n');
   } catch { headlines = 'News unavailable'; }
 
-  // Step 2: send to GPT-4o for trading-focused summary
-  const prompt = `You are a professional options trader analyzing ${symbol} before placing a trade.
+  const prompt = `You are a professional options trader analyzing ${symbol}.
 
-Recent news headlines:
+Trade setup: ${tradeContext}
+Recent news:
 ${headlines}
+${riskContext ? `\nPortfolio risk context: ${riskContext}` : ''}
 
-Give a concise 4-sentence trading analysis covering:
+Give a specific 4-sentence analysis:
 1. What is driving price action right now
-2. Any near-term risks (earnings, macro, sector headwinds)
-3. Analyst/market sentiment
-4. Whether conditions currently favor selling premium (credit spreads) on this stock
-${riskContext ? `\n5. Given this portfolio risk context, is adding this trade advisable: ${riskContext}` : ''}
+2. Near-term risks (earnings, macro, sector headwinds) that affect THIS specific trade setup
+3. Whether the technical setup (strikes, DTE, strategy) makes sense given current conditions
+4. Your overall assessment: take the trade, wait, or avoid — and why
 
-Be direct and specific. No disclaimers. If the news is thin, say so.`;
+Be direct. Reference the specific strikes and strategy. No disclaimers.`;
 
   const res = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'gpt-4o',
-      max_tokens: 400,
-      system: 'You are a concise, direct options trading analyst. No hedging. No disclaimers. Plain prose only.',
+      max_tokens: 500,
+      system: 'You are a concise, direct options trading analyst. Reference specific trade details. No hedging. No disclaimers.',
       messages: [{ role: 'user', content: prompt }],
     }),
   });
@@ -2382,21 +2449,47 @@ Be direct and specific. No disclaimers. If the news is thin, say so.`;
   return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
 }
 
-function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof THEMES[Theme]; riskContext?: string }) {
-  const [open, setOpen]         = useState(false);
-  const [loading, setLoading]   = useState(false);
-  const [result, setResult]     = useState<string | null>(null);
-  const [error, setError]       = useState('');
+async function sendChatMessage(messages: ChatMessage[], symbol: string, tradeContext: string): Promise<string> {
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gpt-4o',
+      max_tokens: 500,
+      system: `You are a professional options trading analyst. The trader is analyzing ${symbol}. Trade context: ${tradeContext}. Be direct, specific, and reference the actual trade setup in your answers.`,
+      messages: messages.map(m => ({ role: m.role, content: m.content })),
+    }),
+  });
+  if (!res.ok) throw new Error(`Chat failed (${res.status})`);
+  const data = await res.json();
+  return data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+}
 
-  const handleClick = async (e: React.MouseEvent) => {
+function StockResearch({ symbol, th, riskContext, tradeContext }: {
+  symbol: string; th: typeof THEMES[Theme]; riskContext?: string; tradeContext?: string;
+}) {
+  const [open, setOpen]           = useState(false);
+  const [loading, setLoading]     = useState(false);
+  const [initialResult, setInitialResult] = useState<string | null>(null);
+  const [messages, setMessages]   = useState<ChatMessage[]>([]);
+  const [input, setInput]         = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [error, setError]         = useState('');
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const context = tradeContext ?? `${symbol} options analysis`;
+
+  const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (open) { setOpen(false); return; }
     setOpen(true);
-    if (result) return; // already fetched — just re-open
+    if (initialResult) return;
     setLoading(true); setError('');
     try {
-      const text = await fetchStockResearch(symbol, riskContext);
-      setResult(text);
+      const text = await fetchStockResearch(symbol, context, riskContext);
+      setInitialResult(text);
+      setMessages([{ role: 'assistant', content: text }]);
     } catch (err: any) {
       setError(err.message ?? 'Research failed');
     } finally {
@@ -2404,37 +2497,93 @@ function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof
     }
   };
 
+  const handleSend = async () => {
+    const q = input.trim(); if (!q || chatLoading) return;
+    const newMessages: ChatMessage[] = [...messages, { role: 'user', content: q }];
+    setMessages(newMessages);
+    setInput('');
+    setChatLoading(true);
+    try {
+      const reply = await sendChatMessage(newMessages, symbol, context);
+      setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
+    } catch (err: any) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
+    } finally {
+      setChatLoading(false);
+      setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  };
+
   return (
     <div onClick={e => e.stopPropagation()}>
-      <button
-        onClick={handleClick}
+      <button onClick={handleOpen}
         className={`inline-flex items-center gap-1 text-[9px] px-2 py-0.5 border rounded transition-colors ${
-          open
-            ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10'
-            : `${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400`
+          open ? 'border-indigo-500 text-indigo-400 bg-indigo-500/10'
+               : `${th.border} ${th.textFaint} hover:border-indigo-500 hover:text-indigo-400`
         }`}>
         <span className="text-[8px]">◎</span> Research
       </button>
 
       {open && (
-        <div className={`mt-2 p-3 rounded-lg border ${th.borderLight} bg-indigo-500/5 text-[11px] leading-relaxed ${th.textMuted}`}>
-          {loading && (
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
-              <span className={`text-[10px] ${th.textFaint}`}>Researching {symbol}...</span>
-            </div>
-          )}
-          {error && <p className="text-red-400 text-[10px]">{error}</p>}
-          {result && (
-            <>
-              <p className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest mb-1.5">◎ {symbol} Research</p>
-              <p className="whitespace-pre-wrap">{result}</p>
-              <button onClick={() => { setResult(null); setOpen(false); }}
-                className={`mt-2 text-[9px] ${th.textFaint} hover:text-red-400 transition-colors`}>
-                ✕ Dismiss
-              </button>
-            </>
-          )}
+        <div className={`mt-2 rounded-xl border border-indigo-500/30 bg-indigo-500/5 overflow-hidden`}
+             style={{ width: '520px', maxWidth: '90vw' }}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-3 py-2 border-b border-indigo-500/20">
+            <p className="text-[9px] text-indigo-400 font-bold uppercase tracking-widest">◎ {symbol} — AI Research</p>
+            <button onClick={() => setOpen(false)} className={`text-[10px] ${th.textFaint} hover:text-red-400`}>✕</button>
+          </div>
+          {/* Chat area */}
+          <div className="px-3 py-2 space-y-3 max-h-64 overflow-y-auto">
+            {loading && (
+              <div className="flex items-center gap-2 py-2">
+                <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                <span className={`text-[10px] ${th.textFaint}`}>Analyzing {symbol} trade setup...</span>
+              </div>
+            )}
+            {error && <p className="text-red-400 text-[10px]">{error}</p>}
+            {messages.map((m, i) => (
+              <div key={i} className={`flex gap-2 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {m.role === 'assistant' && (
+                  <span className="text-[8px] text-indigo-400 mt-1 shrink-0">◎</span>
+                )}
+                <div className={`text-[11px] leading-relaxed rounded-lg px-2.5 py-1.5 max-w-[90%] ${
+                  m.role === 'user'
+                    ? 'bg-indigo-500/15 text-indigo-200 border border-indigo-500/30'
+                    : `${th.card} ${th.textMuted} border ${th.borderLight}`
+                }`}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {chatLoading && (
+              <div className="flex gap-2">
+                <span className="text-[8px] text-indigo-400 mt-1">◎</span>
+                <div className={`text-[11px] ${th.card} border ${th.borderLight} rounded-lg px-2.5 py-1.5`}>
+                  <div className="flex gap-1">
+                    <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={chatBottomRef} />
+          </div>
+          {/* Input */}
+          <div className={`flex gap-2 px-3 py-2 border-t border-indigo-500/20`}>
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              placeholder="Ask about this trade..."
+              className={`flex-1 text-[11px] ${th.input} border ${th.inputBorder} rounded-lg px-2.5 py-1.5 ${th.text} focus:outline-none focus:border-indigo-500 placeholder-slate-500`}
+            />
+            <button onClick={handleSend} disabled={!input.trim() || chatLoading || loading}
+              className="text-[10px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors disabled:opacity-40">
+              Send
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -2484,6 +2633,21 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   // Ranking
   const scored = rankConfig ? scoreCandidate(result, rankConfig) : null;
   const light = scored ? trafficLight(scored.score, rankConfig!) : null;
+  // Compute alternate strategy score for the + IC / + BPS badge
+  const altStrategyScore = useMemo(() => {
+    if (!rankConfig || !cachedEntry) return null;
+    const mainStrat = result.strategy;
+    const altStrat: 'IC' | 'BPS' | 'BCS' | null =
+      (mainStrat === 'BPS' || mainStrat === 'BCS') ? 'IC' : null;
+    if (!altStrat) return null;
+    try {
+      const altResult = runChecklist(cachedEntry.symbol, altStrat, cachedEntry.metrics, cachedEntry.chainData, cachedEntry.price, rules, cachedEntry.trendResult);
+      const s = scoreCandidate(altResult, rankConfig);
+      if (!s) return null;
+      const l = trafficLight(s.score, rankConfig);
+      return { score: s.score, light: l, qualified: altResult.qualified };
+    } catch { return null; }
+  }, [cachedEntry, rankConfig, rules, result.strategy]);
   const isRankMode = screenMode === 'rank';
   const stratBadge = result.strategy === 'BPS'
     ? 'bg-emerald-500/15 border-emerald-500 text-emerald-500'
@@ -2508,8 +2672,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
     : 'border-l-4 border-l-red-500'
     : strategyAccent(result.strategy);
 
-  const cardBorder = isApproaching ? 'border-yellow-500/50' : th.border;
-  const cardBg = result.qualified ? th.cardQualified : `${th.card} opacity-50`;
+  const cardBorder = isApproaching ? 'border-yellow-500/50' : !result.qualified ? 'border-orange-900/40' : th.border;
+  const cardBg = result.qualified ? th.cardQualified : th.card;
 
   return (
     <div className={`border ${cardBorder} ${scoreBorderL} ${cardBg} rounded-lg cursor-pointer transition-all hover:shadow-md`}
@@ -2520,7 +2684,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
         {/* Col 1: Symbol + price — fixed */}
         <div className="w-16 shrink-0">
           <p className={`font-bold ${th.text} text-sm`}>{result.symbol}</p>
-          {result.price && <p className={`text-[10px] ${th.textFaint}`}>${result.price.toFixed(2)}</p>}
+          {result.price && <p className={`text-[10px] font-bold ${th.textMuted}`}>${result.price.toFixed(2)}</p>}
           {result.isEtf && (
             <p className="text-[8px] text-blue-400/70 tracking-wider leading-tight">
               {result.symbol === 'SPX' || result.symbol === 'XSP' || result.symbol === 'NDX' || result.symbol === 'RUT' ? 'index' : 'etf'}
@@ -2548,7 +2712,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                   setShowChart(false);
                 }
               }}
-              className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 hover:text-blue-400'}`}
+              className={`inline-flex items-center gap-0.5 text-[9px] transition-colors ${showChart ? 'text-blue-400' : 'text-slate-500 ac-hover-text'}`}
               title="Quick chart"
             >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2617,7 +2781,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={e => e.stopPropagation()}
-                  className="flex items-center justify-center gap-2 w-full py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-600/40 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors"
+                  className="flex items-center justify-center gap-2 w-full py-2 ac-bg-20 ac-hover-bg/30 border ac-border/40 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors"
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -2628,7 +2792,12 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               </div>
             )}
           </div>
-          <StockResearch symbol={result.symbol} th={th} riskContext={portfolioRisk && portfolioRisk.level !== 'clear' ? portfolioRisk.recommendation : undefined} />
+          <StockResearch
+            symbol={result.symbol}
+            th={th}
+            riskContext={portfolioRisk && portfolioRisk.level !== 'clear' ? portfolioRisk.recommendation : undefined}
+            tradeContext={c ? `${result.strategy} ${c.shortStrike}/${c.longStrike}${c.strategy === 'IC' ? ` · ${c.shortCallStrike}/${c.longCallStrike}` : ''} exp ${c.expiration} (${c.dte}d) · credit $${(c.totalCredit ?? c.credit).toFixed(2)} · ROC ${c.roc.toFixed(0)}% · POP ${c.pop?.toFixed(0)}% · IVR ${result.ivr?.toFixed(1)}%` : `${result.strategy} on ${result.symbol}`}
+          />
         </div>
         {/* Col 2: Badges — fixed width */}
         <div className="w-52 shrink-0 flex items-center gap-1 flex-wrap">
@@ -2658,9 +2827,15 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               {light.emoji} {scored.score} — {light.label}
             </span>
           )}
-          <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge}`}>{result.strategy}</span>
+          <span className={`text-[10px] px-2 py-0.5 border rounded-md shrink-0 font-bold ${stratBadge} flex items-center gap-1`}>
+            {result.strategy}{scored && <span className="font-bold text-[9px]">{scored.score}</span>}
+          </span>
           {(result.strategy === 'BPS' || result.strategy === 'BCS') && result.ivr != null && result.ivr >= 30 && (
-            <span className="text-[9px] px-1.5 py-0.5 border border-blue-500/50 text-blue-400/80 rounded shrink-0">+ IC</span>
+            <span className={`text-[9px] px-1.5 py-0.5 border rounded shrink-0 flex items-center gap-1 ${
+              altStrategyScore ? `${altStrategyScore.light.border} ${altStrategyScore.light.bg} ${altStrategyScore.light.color}` : 'border-slate-600 text-slate-400'
+            }`}>
+              + IC{altStrategyScore && <span className="font-bold">{altStrategyScore.score}</span>}
+            </span>
           )}
         </div>
         {/* Col 3: Data fields — fixed widths */}
@@ -2842,7 +3017,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               <span className={`px-1.5 py-0.5 border rounded text-[9px] font-bold ${
                 p.strategy === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
                 : p.strategy === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
-                : p.strategy === 'IC' ? 'border-blue-600 text-blue-400 bg-blue-500/10'
+                : p.strategy === 'IC' ? 'ac-btn ac-bg-10'
                 : 'border-amber-600 text-amber-400 bg-amber-500/10'
               }`}>{p.strategy}</span>
               <span className="text-amber-300/90 font-medium">{p.strikes}</span>
@@ -2878,7 +3053,7 @@ function AutoTrendDebugPanel({ entries, th }: { entries: AutoTrendEntry[]; th: t
   const stratColor = (s: string) =>
     s === 'BPS' ? 'text-emerald-400 border-emerald-600 bg-emerald-500/10'
     : s === 'BCS' ? 'text-red-400 border-red-600 bg-red-500/10'
-    : s === 'IC' ? 'text-blue-400 border-blue-600 bg-blue-500/10'
+    : s === 'IC' ? 'text-blue-400 ac-border ac-bg-10'
     : 'text-amber-400 border-amber-600 bg-amber-500/10';
 
   const barColor = (val: number) =>
@@ -3061,7 +3236,7 @@ function RuleInput({ ruleKey, rawValues, editedRules, onRawChange, onBlur, th, l
         onChange={e => onRawChange(ruleKey, e.target.value)}
         onBlur={e => onBlur(ruleKey, e.target.value)}
         onFocus={e => e.target.select()}
-        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-1.5 text-xs ${th.text} focus:outline-none focus:border-blue-500 font-medium`}
+        className={`w-full ${th.input} border ${th.inputBorder} rounded-lg px-3 py-1.5 text-xs ${th.text} focus:outline-none ac-focus font-medium`}
       />
     </div>
   );
@@ -3079,7 +3254,7 @@ function SectionHeader({ label, th }: { label: string; th: typeof THEMES[Theme] 
 // ── Run Mode Modal ─────────────────────────────────────────────────────────
 const FILTER_PRESETS = [
   { key: 'strict',    label: 'Strict',      color: 'border-red-500 text-red-400',         desc: 'Tightest rules — high conviction only' },
-  { key: 'course',   label: 'Course',      color: 'border-blue-500 text-blue-400',        desc: 'Baseline rules — balanced approach' },
+  { key: 'course',   label: 'Course',      color: 'ac-btn',        desc: 'Baseline rules — balanced approach' },
   { key: 'relaxed',  label: 'Relaxed',     color: 'border-emerald-500 text-emerald-400',  desc: 'Looser rules — more opportunities' },
   { key: 'lowvol',   label: 'Low Vol',     color: 'border-yellow-500 text-yellow-400',    desc: 'Adapted for low IVR environments' },
   { key: 'shortterm',   label: 'Short Term',   color: 'border-orange-500 text-orange-400',  desc: '7–14 DTE — very active daily management' },
@@ -3110,7 +3285,7 @@ function RunModeModal({ th, lastMode, lastPreset, onRun, onClose }: {
             <button key={m} onClick={() => setMode(m)}
               className={`flex-1 py-3 rounded-xl border text-xs font-bold tracking-wider transition-all ${
                 mode === m
-                  ? m === 'filter' ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-purple-500/20 border-purple-500 text-purple-400'
+                  ? m === 'filter' ? 'ac-bg-20 ac-btn' : 'bg-purple-500/20 border-purple-500 text-purple-400'
                   : `${th.card} ${th.border} ${th.textFaint} hover:${th.textMuted}`
               }`}>
               {m === 'filter' ? '⊘ FILTER' : '⬡ RANK'}
@@ -3138,7 +3313,7 @@ function RunModeModal({ th, lastMode, lastPreset, onRun, onClose }: {
         )}
 
         <button onClick={() => onRun(mode, mode === 'filter' ? preset : undefined)}
-          className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-xl text-xs font-bold tracking-widest transition-colors shadow-lg border border-blue-400/30">
+          className="w-full ac-btn-solid text-white py-2.5 rounded-xl text-xs font-bold tracking-widest transition-colors shadow-lg border ac-border/30">
           RUN HUNTER →
         </button>
       </div>
@@ -3347,8 +3522,8 @@ function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
         </div>
         <div className={`flex gap-3 px-6 py-4 border-t ${th.border}`}>
           <p className={`text-[9px] ${th.textFaint} flex-1 self-center`}>Stocks and ETFs/Indexes auto-apply their own rules. Ranking scores apply in Rank mode only. Dots on inputs show where each preset sits.</p>
-          <button onClick={onClose} className={`border ${th.border} ${th.textMuted} py-2 px-4 rounded-lg text-xs tracking-widest hover:border-blue-500`}>CANCEL</button>
-          <button onClick={handleRun} className="bg-blue-600 hover:bg-blue-500 text-white py-2 px-6 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
+          <button onClick={onClose} className={`border ${th.border} ${th.textMuted} py-2 px-4 rounded-lg text-xs tracking-widest ac-hover-border`}>CANCEL</button>
+          <button onClick={handleRun} className="ac-btn-solid text-white py-2 px-6 rounded-lg text-xs font-bold tracking-widest transition-colors">RUN</button>
         </div>
       </div>
     </div>
@@ -3979,7 +4154,7 @@ function BestOpportunityFinder({
   const COURSE_RULES = { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 };
   const levels = [
     { presetKey: 'strict',    presetLabel: 'Strict',     presetColor: 'border-red-500 text-red-400',         rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
-    { presetKey: 'course',    presetLabel: 'Course',     presetColor: 'border-blue-500 text-blue-400',       rules: COURSE_RULES },
+    { presetKey: 'course',    presetLabel: 'Course',     presetColor: 'ac-btn',       rules: COURSE_RULES },
     { presetKey: 'relaxed',   presetLabel: 'Relaxed',    presetColor: 'border-emerald-500 text-emerald-400', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
     { presetKey: 'lowvol',    presetLabel: 'Low Vol',    presetColor: 'border-yellow-500 text-yellow-400',   rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
     { presetKey: 'shortterm',    presetLabel: 'Short Term',   presetColor: 'border-orange-500 text-orange-400',  rules: { IVR_MIN: 35, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.30, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 22, DTE_MIN: 7,  DTE_MAX: 14 } },
@@ -4107,7 +4282,7 @@ function BestOpportunityFinder({
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
                           <span className={`text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border ${idx === 0 ? 'border-emerald-500 text-emerald-400' : idx === 1 ? 'border-slate-500 text-slate-400' : 'border-slate-700 text-slate-500'}`}>{idx + 1}</span>
-                          <span className={`text-xs font-bold px-2 py-0.5 border rounded ${setup.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : setup.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 border-blue-700'}`}>{setup.strategy}</span>
+                          <span className={`text-xs font-bold px-2 py-0.5 border rounded ${setup.strategy === 'BPS' ? 'text-emerald-400 border-emerald-700' : setup.strategy === 'BCS' ? 'text-red-400 border-red-700' : 'text-blue-400 ac-border-faint'}`}>{setup.strategy}</span>
                           {preferredStrategy && setup.strategy !== preferredStrategy && (
                             <span className="text-[9px] px-2 py-0.5 rounded border border-yellow-600/60 bg-yellow-500/10 text-yellow-400 font-bold">⚠ contradicts {preferredStrategy} box</span>
                           )}
@@ -4184,7 +4359,10 @@ interface RawScanEntry {
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
+  const [accent, setAccent] = useState<Accent>(getSavedAccent);
   const th = THEMES[theme];
+  useEffect(() => { applyAccent(accent); }, [accent]);
+  useEffect(() => { applyAccent(getSavedAccent()); }, []);
 
   const [autoTickers, setAutoTickers] = useState('');
   const autoFileRef = useRef<HTMLInputElement>(null);
@@ -4465,8 +4643,9 @@ export default function Home() {
             <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-            <span className="text-xs px-3 py-1.5 rounded bg-white/20 text-white tracking-wider">HUNTER</span>
+            <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>HUNTER</span>
             <a href="/portfolio"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
+            <a href="/engine" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">ENGINE</a>
             <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</a>
             <a href="/trade-log"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
             <a href="/performance"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
@@ -4475,7 +4654,7 @@ export default function Home() {
         
         <div className="flex items-center gap-3">
           <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
-          <ThemeToggle theme={theme} setTheme={setTheme} />
+          <ThemeToggle theme={theme} setTheme={setTheme} accent={accent} setAccent={setAccent} />
         </div>
       </div>
 
@@ -4519,7 +4698,7 @@ export default function Home() {
                   setAutoScanning(false);
                 }} />
                 <button onClick={() => { if (autoFileRef.current) autoFileRef.current.value = ''; autoFileRef.current?.click(); }} disabled={loading || autoScanning}
-                  className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors disabled:opacity-40`}>
+                  className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors disabled:opacity-40`}>
                   {autoScanning ? '⟳' : '↑ img'}
                 </button>
                 <span className={`text-[9px] font-medium ${th.textFaint}`}>{autoTickerList.length}</span>
@@ -4569,7 +4748,7 @@ export default function Home() {
             <p className={`text-[9px] ${th.textMuted} tracking-widest font-medium`}>SCAN LISTS</p>
             <StrategyBox label="BPS" badge="BULLISH" badgeColor="bg-emerald-500/15 text-emerald-500 border-emerald-500" borderFocus="focus:border-emerald-500" value={bpsTickers} onChange={handleBpsChange} strategy="BPS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="BCS" badge="BEARISH" badgeColor="bg-red-500/15 text-red-500 border-red-500" borderFocus="focus:border-red-500" value={bcsTickers} onChange={handleBcsChange} strategy="BCS" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
-            <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="focus:border-blue-500" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
+            <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="ac-focus" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="PMCC" badge="BULLISH+" badgeColor="bg-purple-500/15 text-purple-400 border-purple-500" borderFocus="focus:border-purple-500" value={pmccTickers} onChange={handlePmccChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox
               label="Broken (Review)"
@@ -4588,7 +4767,7 @@ export default function Home() {
           {error && <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg p-2 leading-relaxed font-medium">{error}</div>}
 
           <button onClick={() => setShowRunModal(true)} disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg border border-blue-400/30">
+            className="w-full text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg" style={{ background: `var(--accent)` }}>
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
 
@@ -4717,11 +4896,11 @@ export default function Home() {
                       });
                       try { localStorage.setItem(LS_CAL, JSON.stringify(stored)); } catch {}
                     }}
-                    className={`text-[10px] px-3 py-1.5 border border-blue-700 rounded-lg text-blue-400 hover:border-blue-500 hover:text-blue-300 transition-colors tracking-wider`}>
+                    className={`text-[10px] px-3 py-1.5 border ac-border-faint rounded-lg text-blue-400 ac-hover-border hover:ac-text transition-colors tracking-wider`}>
                       📅 Schedule All Earnings Follow-ups
                     </button>
                   )}
-                  <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-blue-500 hover:text-blue-400 transition-colors tracking-wider`}>↓ CSV</button>
+                  <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} ac-hover-border ac-hover-text transition-colors tracking-wider`}>↓ CSV</button>
                   <button onClick={() => setShowRunModal(true)} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-purple-500 hover:text-purple-400 transition-colors tracking-wider`}>
                     {screenMode === 'filter' ? '⊘ Filter' : '⬡ Rank'} ↺
                   </button>
