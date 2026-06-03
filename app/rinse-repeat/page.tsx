@@ -1121,50 +1121,108 @@ function RRCard({ result, th, existingPositions }: {
 
       {/* Expanded: trade history + setup details */}
       {expanded && (
-        <div className={`border-t ${th.border} px-4 py-3 space-y-3`}>
+        <div className={`border-t ${th.border} px-4 py-3 space-y-4`}>
 
-          {/* Personalization note */}
-          <div className={`text-[10px] ${th.textFaint} p-2 rounded border ${th.borderLight}`}>
-            <span className="font-medium text-indigo-400">◈ Why this setup:</span>
-            {' '}DTE range {Math.max(14, profile.avgDteAtEntry - 8)}–{Math.min(60, profile.avgDteAtEntry + 8)}d tuned to your avg {profile.avgDteAtEntry}d entry · spread width up to ${Math.round(profile.avgSpreadWidth * 2)}
-            {' · '}{profile.winRate >= 0.7 ? 'Strong win rate on this ticker' : profile.winRate >= 0.5 ? 'Positive edge on this ticker' : 'Limited history — proceed carefully'}
+          {/* Win summary stats */}
+          <div className="grid grid-cols-4 gap-2">
+            {[
+              ['Win Rate',     `${Math.round(profile.winRate * 100)}%`,                          profile.winRate >= 0.7 ? 'text-emerald-400' : 'text-yellow-400'],
+              ['Avg P&L',      `+${profile.avgPnlPct.toFixed(0)}%`,                             'text-emerald-400'],
+              ['Avg DTE Entry',`${profile.avgDteAtEntry}d`,                                      th.text],
+              ['Avg Width',    `$${profile.avgSpreadWidth.toFixed(0)}`,                          th.text],
+            ].map(([label, val, col]) => (
+              <div key={label as string} className={`${th.card} border ${th.border} rounded p-2 text-center`}>
+                <p className={`text-[9px] ${th.textFaint} mb-0.5`}>{label}</p>
+                <p className={`text-xs font-bold ${col}`}>{val}</p>
+              </div>
+            ))}
           </div>
 
           {/* Past trades table */}
           <div>
             <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Your Trade History — {profile.symbol}</p>
-            <div className="space-y-1">
-              {profile.trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate)).map(t => (
-                <div key={t.id} className={`flex items-center gap-3 text-[10px] px-2 py-1 rounded ${t.outcome === 'WIN' ? 'bg-emerald-500/5' : t.outcome === 'LOSS' ? 'bg-red-500/5' : 'bg-white/2'}`}>
-                  <span className={`w-3 h-3 rounded-full shrink-0 ${t.outcome === 'WIN' ? 'bg-emerald-500' : t.outcome === 'LOSS' ? 'bg-red-500' : 'bg-yellow-500'}`} />
-                  <span className={th.textFaint}>{fmtDate(t.openDate)} → {fmtDate(t.closeDate)}</span>
-                  <span className={`${th.textFaint} font-mono`}>{t.strikes}</span>
-                  <span className={th.textFaint}>{t.dteAtEntry}d DTE</span>
-                  <span className="text-emerald-400 font-mono">${t.creditReceived.toFixed(0)}</span>
-                  <span className={`font-bold font-mono ${t.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {t.pnl >= 0 ? '+' : ''}{t.pnlPct.toFixed(0)}%
-                  </span>
-                </div>
-              ))}
+            {/* Header */}
+            <div className={`grid text-[9px] ${th.textFaint} px-2 py-1 font-bold tracking-wider`}
+              style={{ gridTemplateColumns: '14px 1fr 1fr 48px 48px 48px 52px 52px' }}>
+              <span />
+              <span>OPENED → CLOSED</span>
+              <span>STRIKES</span>
+              <span className="text-right">DTE IN</span>
+              <span className="text-right">HOLD</span>
+              <span className="text-right">CREDIT</span>
+              <span className="text-right">P&L%</span>
+              <span className="text-right">P&L$</span>
+            </div>
+            <div className="space-y-0.5">
+              {profile.trades.sort((a, b) => b.closeDate.localeCompare(a.closeDate)).map(t => {
+                const isWin = t.outcome === 'WIN';
+                const isLoss = t.outcome === 'LOSS';
+                return (
+                  <div key={t.id}
+                    className={`grid items-center text-[10px] px-2 py-1.5 rounded gap-1 ${isWin ? 'bg-emerald-500/5' : isLoss ? 'bg-red-500/5' : 'bg-white/2'}`}
+                    style={{ gridTemplateColumns: '14px 1fr 1fr 48px 48px 48px 52px 52px' }}>
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isWin ? 'bg-emerald-500' : isLoss ? 'bg-red-500' : 'bg-yellow-500'}`} />
+                    <span className={th.textFaint}>{fmtDate(t.openDate)} → {fmtDate(t.closeDate)}</span>
+                    <span className={`${th.textFaint} font-mono text-[9px]`}>{t.strikes}</span>
+                    <span className={`${th.textFaint} text-right`}>{t.dteAtEntry}d</span>
+                    <span className={`${th.textFaint} text-right`}>{t.holdDays}d</span>
+                    <span className="text-right font-mono text-emerald-400">${t.creditReceived.toFixed(2)}</span>
+                    <span className={`text-right font-bold font-mono ${isWin ? 'text-emerald-400' : isLoss ? 'text-red-400' : th.textFaint}`}>
+                      {t.pnl >= 0 ? '+' : ''}{t.pnlPct.toFixed(0)}%
+                    </span>
+                    <span className={`text-right font-mono ${isWin ? 'text-emerald-400' : isLoss ? 'text-red-400' : th.textFaint}`}>
+                      {t.pnl >= 0 ? '+' : ''}${Math.abs(t.pnl).toFixed(0)}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
           {/* Current candidate details */}
           {c && (
             <div className={`border-t ${th.border} pt-3`}>
-              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Current Setup</p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                <div><span className={th.label}>Strategy </span><span className={th.text}>{c.strategy}</span></div>
-                <div><span className={th.label}>Expiry </span><span className={th.text}>{c.expiration} ({c.dte}d)</span></div>
-                <div><span className={th.label}>Credit </span><span className="text-emerald-400 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-                <div><span className={th.label}>ROC </span><span className={th.text}>{c.roc.toFixed(0)}%</span></div>
-                <div><span className={th.label}>Delta </span><span className={th.text}>{c.shortDelta.toFixed(2)}</span></div>
-                <div><span className={th.label}>POP </span><span className={th.text}>{c.pop?.toFixed(0) ?? '—'}%</span></div>
-                <div><span className={th.label}>Short OI </span><span className={th.text}>{c.shortOI}</span></div>
-                <div><span className={th.label}>Long OI </span><span className={th.text}>{c.longOI}</span></div>
+              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Current Setup Details</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                {[
+                  ['Strategy',  c.strategy],
+                  ['Expiry',    `${c.expiration} (${c.dte}d)`],
+                  ['Strikes',   c.strategy === 'IC' ? `${c.shortStrike}P/${c.longStrike}P · ${c.shortCallStrike}C/${c.longCallStrike}C` : `${c.shortStrike}/${c.longStrike}`],
+                  ['Width',     `$${Math.abs(c.shortStrike - c.longStrike)}`],
+                  ['Credit',    `$${(c.totalCredit ?? c.credit).toFixed(2)}`],
+                  ['Delta',     c.shortDelta.toFixed(2)],
+                  ['ROC',       `${c.roc.toFixed(0)}%`],
+                  ['POP',       `${c.pop?.toFixed(0) ?? '—'}%`],
+                  ['Short OI',  c.shortOI.toLocaleString()],
+                  ['Long OI',   c.longOI.toLocaleString()],
+                  ['IVR',       result.currentIvr != null ? `${result.currentIvr}%` : '—'],
+                  ['RR Score',  `${result.rrScore}/100`],
+                ].map(([label, val]) => (
+                  <div key={label as string} className={`${th.card} border ${th.border} rounded px-2 py-1.5`}>
+                    <span className={`text-[9px] ${th.textFaint} block`}>{label}</span>
+                    <span className={`text-[11px] font-bold ${
+                      label === 'Credit' ? 'text-emerald-400' :
+                      label === 'RR Score' ? (result.rrScore >= 70 ? 'text-emerald-400' : result.rrScore >= 50 ? 'text-yellow-400' : 'text-red-400') :
+                      th.text
+                    }`}>{val}</span>
+                  </div>
+                ))}
               </div>
+              {/* Exit strategy suggestion */}
+              <div className={`mt-3 p-2.5 rounded border ${th.borderLight} bg-indigo-500/5`}>
+                <p className="text-[9px] text-indigo-400 font-bold tracking-wider mb-1">◈ SUGGESTED EXIT STRATEGY</p>
+                <div className="grid grid-cols-3 gap-2 text-[10px]">
+                  <div><span className={th.textFaint}>Profit target: </span><span className="text-emerald-400 font-bold">50% of credit · ${((c.totalCredit ?? c.credit) * 0.50).toFixed(2)}</span></div>
+                  <div><span className={th.textFaint}>Stop loss: </span><span className="text-red-400 font-bold">2× credit · ${((c.totalCredit ?? c.credit) * 2.00).toFixed(2)}</span></div>
+                  <div><span className={th.textFaint}>Time stop: </span><span className={`${th.text} font-bold`}>21 DTE or {Math.round(c.dte * 0.5)}d</span></div>
+                </div>
+              </div>
+              {/* Personalization note */}
+              <p className={`text-[9px] ${th.textFaint} mt-2`}>
+                <span className="text-indigo-400">◈</span> Setup tuned to your avg {profile.avgDteAtEntry}d entry DTE · {profile.winRate >= 0.7 ? 'Strong' : profile.winRate >= 0.5 ? 'Positive' : 'Limited'} edge on {profile.symbol}
+              </p>
               {result.earningsDate && (
-                <p className="text-[10px] text-yellow-400 mt-2">⚠ Earnings: {result.earningsDate}</p>
+                <p className="text-[10px] text-yellow-400 mt-1.5">⚠ Earnings: {result.earningsDate}</p>
               )}
             </div>
           )}
