@@ -3233,29 +3233,123 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
     if (p.dte > 0) return s + p.creditReceived / p.dte;
     return s;
   }, 0);
-  // P&L Day: positions that have live pnl AND plOpen — difference is today's move
   const posWithDay    = positions.filter(p => p.pnl != null && p.plOpen != null);
   const totalPnlDay   = posWithDay.reduce((s, p) => s + (p.pnl! - p.plOpen!), 0);
   const hasDayPnl     = posWithDay.length > 0;
 
+  // ── Portfolio Net Delta (Rule 13) ──────────────────────────────────────
+  // Sum netDelta × 100 × contracts for each position. netDelta is already
+  // the per-share delta for the spread; multiply by 100 to get per-contract.
+  const posWithDelta  = positions.filter(p => p.netDelta != null);
+  const portfolioDelta = posWithDelta.reduce((s, p) => {
+    const qty = p.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
+    return s + (p.netDelta! * 100 * qty);
+  }, 0);
+  const hasDelta = posWithDelta.length > 0;
+  const deltaAbs = Math.abs(portfolioDelta);
+  const deltaColor = deltaAbs >= 200 ? 'text-red-400' : deltaAbs >= 150 ? 'text-amber-400' : 'text-emerald-400';
+  const deltaBias  = portfolioDelta > 5 ? 'BULLISH' : portfolioDelta < -5 ? 'BEARISH' : 'NEUTRAL';
+
+  // ── Expiration Concentration (Rule 14) ─────────────────────────────────
+  // Group by expDate, sum maxRisk per expiry, flag any > 30% of total.
+  const riskByExpiry: Record<string, number> = {};
+  for (const p of positions) {
+    riskByExpiry[p.expDate] = (riskByExpiry[p.expDate] ?? 0) + p.maxRisk;
+  }
+  const maxExpiry     = Object.entries(riskByExpiry).sort((a, b) => b[1] - a[1])[0];
+  const maxExpPct     = totalAtRisk > 0 && maxExpiry ? (maxExpiry[1] / totalAtRisk) * 100 : 0;
+  const concColor     = maxExpPct >= 30 ? 'text-red-400' : maxExpPct >= 20 ? 'text-amber-400' : 'text-emerald-400';
+
   return (
-    <div className={`grid grid-cols-7 border-b ${th.border}`}>
-      {[
-        { label: 'Open Positions',  value: String(positions.length),                                                        sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`,                                                                           color: th.text },
-        { label: 'P&L Open',        value: `${totalPnlOpen >= 0 ? '+' : ''}$${Math.abs(totalPnlOpen).toFixed(0)}`,          sub: `of $${totalCredit.toFixed(0)} credit · ${capturedPct.toFixed(0)}%`,                                                                           color: totalPnlOpen >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: 'P&L Day',         value: hasDayPnl ? `${totalPnlDay >= 0 ? '+' : ''}$${Math.abs(totalPnlDay).toFixed(0)}` : '—', sub: hasDayPnl ? `${posWithDay.length} position${posWithDay.length !== 1 ? 's' : ''} with live prices` : 'refresh for live prices',       color: !hasDayPnl ? th.textFaint : totalPnlDay >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnlOpen / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
-        { label: 'At Risk',         value: `$${totalAtRisk.toFixed(0)}`,                                                     sub: `${totalRiskUsedPct.toFixed(1)}% risk used`,                                                                                                  color: riskUsedColor(totalRiskUsedPct) },
-        { label: 'Est. Theta/Day',  value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—',                             sub: 'daily decay',                                                                                                                                 color: 'text-blue-400' },
-        { label: 'Collateral',      value: `$${totalCredit.toFixed(0)}`,                                                     sub: `${positions.length} spread${positions.length !== 1 ? 's' : ''}`,                                                                             color: th.textMuted },
-      ].map((item, i, arr) => (
-        <div key={item.label} className={`p-4 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
-          <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>{item.label}</p>
-          <p className={`text-2xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
-          <p className={`text-[10px] ${th.textFaint} mt-1`}>{item.sub}</p>
+    <>
+      <div className={`grid grid-cols-7 border-b ${th.border}`}>
+        {[
+          { label: 'Open Positions',  value: String(positions.length),                                                        sub: `${positions.length} position${positions.length !== 1 ? 's' : ''}`,                                                                           color: th.text },
+          { label: 'P&L Open',        value: `${totalPnlOpen >= 0 ? '+' : ''}$${Math.abs(totalPnlOpen).toFixed(0)}`,          sub: `of $${totalCredit.toFixed(0)} credit · ${capturedPct.toFixed(0)}%`,                                                                           color: totalPnlOpen >= 0 ? 'text-emerald-400' : 'text-red-400' },
+          { label: 'P&L Day',         value: hasDayPnl ? `${totalPnlDay >= 0 ? '+' : ''}$${Math.abs(totalPnlDay).toFixed(0)}` : '—', sub: hasDayPnl ? `${posWithDay.length} position${posWithDay.length !== 1 ? 's' : ''} with live prices` : 'refresh for live prices',       color: !hasDayPnl ? th.textFaint : totalPnlDay >= 0 ? 'text-emerald-400' : 'text-red-400' },
+          { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnlOpen / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
+          { label: 'At Risk',         value: `$${totalAtRisk.toFixed(0)}`,                                                     sub: `${totalRiskUsedPct.toFixed(1)}% risk used`,                                                                                                  color: riskUsedColor(totalRiskUsedPct) },
+          { label: 'Est. Theta/Day',  value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—',                             sub: 'daily decay',                                                                                                                                 color: 'text-blue-400' },
+          { label: 'Collateral',      value: `$${totalCredit.toFixed(0)}`,                                                     sub: `${positions.length} spread${positions.length !== 1 ? 's' : ''}`,                                                                             color: th.textMuted },
+        ].map((item, i, arr) => (
+          <div key={item.label} className={`p-4 ${i < arr.length - 1 ? `border-r ${th.border}` : ''} flex flex-col items-center text-center`}>
+            <p className={`text-[10px] ${th.textFaint} uppercase tracking-widest mb-2`}>{item.label}</p>
+            <p className={`text-2xl font-bold ${item.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>{item.value}</p>
+            <p className={`text-[10px] ${th.textFaint} mt-1`}>{item.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Portfolio Risk Rules Bar (Rules 13 & 14) ── */}
+      <div className={`flex items-center gap-6 px-6 py-2 border-b ${th.border} ${th.sidebar}`}>
+        {/* Net Delta */}
+        <div className="flex items-center gap-2">
+          <span className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Portfolio Δ</span>
+          {hasDelta ? (
+            <>
+              <span className={`text-[11px] font-bold ${deltaColor}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {portfolioDelta >= 0 ? '+' : ''}{portfolioDelta.toFixed(0)}
+              </span>
+              <span className={`text-[9px] ${deltaColor}`}>{deltaBias}</span>
+              {deltaAbs >= 150 && (
+                <span className={`text-[9px] px-1.5 py-0.5 rounded border ${deltaAbs >= 200 ? 'text-red-400 border-red-500/40 bg-red-500/10' : 'text-amber-400 border-amber-500/40 bg-amber-500/10'}`}>
+                  {deltaAbs >= 200 ? '⚠ LIMIT' : '⚠ WATCH'}
+                </span>
+              )}
+              <span className={`text-[9px] ${th.textFaint}`}>limit ±200</span>
+            </>
+          ) : (
+            <span className={`text-[9px] ${th.textFaint}`}>no greek data</span>
+          )}
         </div>
-      ))}
-    </div>
+
+        <div className={`w-px h-4 ${th.border} bg-white/10`} />
+
+        {/* Expiry Concentration */}
+        <div className="flex items-center gap-2">
+          <span className={`text-[9px] ${th.textFaint} uppercase tracking-widest`}>Expiry Conc.</span>
+          {maxExpiry ? (
+            <>
+              <span className={`text-[11px] font-bold ${concColor}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {maxExpPct.toFixed(0)}%
+              </span>
+              <span className={`text-[9px] ${th.textFaint}`}>in {maxExpiry[0]}</span>
+              {maxExpPct >= 30 && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded border text-red-400 border-red-500/40 bg-red-500/10">
+                  ⚠ CONCENTRATED
+                </span>
+              )}
+              {maxExpPct >= 20 && maxExpPct < 30 && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded border text-amber-400 border-amber-500/40 bg-amber-500/10">
+                  ⚠ WATCH
+                </span>
+              )}
+              <span className={`text-[9px] ${th.textFaint}`}>limit 30%</span>
+            </>
+          ) : (
+            <span className={`text-[9px] ${th.textFaint}`}>—</span>
+          )}
+        </div>
+
+        {/* All expiry breakdown if concentrated */}
+        {maxExpPct >= 20 && Object.keys(riskByExpiry).length > 1 && (
+          <>
+            <div className={`w-px h-4 ${th.border} bg-white/10`} />
+            <div className="flex items-center gap-2 flex-wrap">
+              {Object.entries(riskByExpiry).sort((a,b) => b[1]-a[1]).map(([exp, risk]) => {
+                const pct = totalAtRisk > 0 ? (risk / totalAtRisk) * 100 : 0;
+                const c = pct >= 30 ? 'text-red-400' : pct >= 20 ? 'text-amber-400' : th.textFaint;
+                return (
+                  <span key={exp} className={`text-[9px] ${c}`}>
+                    {exp}: {pct.toFixed(0)}%
+                  </span>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -6035,6 +6129,7 @@ export default function PortfolioPage() {
       {positions.length > 0 && (
         <>
           {/* <SummaryBar positions={positions} th={th} /> */}
+          <SummaryBar positions={positions} th={th} />
           <div className="overflow-x-auto">
             <div className="p-6 space-y-8" style={{ minWidth: '1600px' }}>
 
