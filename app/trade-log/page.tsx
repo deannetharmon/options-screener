@@ -182,8 +182,8 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     const parsed = parseOccSymbol(sym);
     if (!parsed.optionType) continue;
     const getTimestamp = (tx: any) => tx['executed-at'] ?? tx['transaction-date'] ?? tx['settled-at'] ?? '';
-    const opens  = txList.filter((tx: any) => tx.action === 'Sell to Open' || tx.action === 'Buy to Open');
-    const closes = txList.filter((tx: any) => tx.action === 'Buy to Close' || tx.action === 'Sell to Close');
+    const opens  = txList.filter((tx: any) => tx['transaction-sub-type'] === 'Sell to Open' || tx['transaction-sub-type'] === 'Buy to Open');
+    const closes = txList.filter((tx: any) => tx['transaction-sub-type'] === 'Buy to Close' || tx['transaction-sub-type'] === 'Sell to Close');
     const openQueue  = [...opens].sort((a, b) => getTimestamp(a).localeCompare(getTimestamp(b)));
     const closeQueue = [...closes].sort((a, b) => getTimestamp(a).localeCompare(getTimestamp(b)));
     for (const openTx of openQueue) {
@@ -223,7 +223,7 @@ async function fetchAndReconstructTrades(range: TimeRange): Promise<ClosedTrade[
     else strikes = pairs.map((p: any) => `${p.strike}${p.optionType}`).join('/');
     let totalOpenValue = 0, totalCloseValue = 0, totalFees = 0;
     for (const p of pairs) {
-      const isShort = p.openTx.action === 'Sell to Open';
+      const isShort = p.openTx['transaction-sub-type'] === 'Sell to Open';
       totalOpenValue  += p.openPrice  * p.qty * 100 * (isShort ?  1 : -1);
       totalCloseValue += p.closePrice * p.qty * 100 * (isShort ? -1 :  1);
       totalFees += p.fees;
