@@ -58,7 +58,7 @@ function LoginContent() {
 
   useEffect(() => {
     const existingAccess = sessionStorage.getItem('tt_access_token');
-    if (existingAccess) { router.replace('/portfolio'); return; }
+    if (existingAccess) { router.replace(searchParams.get('redirect') ?? '/portfolio'); return; }
 
     const storedRefresh = localStorage.getItem('tt_refresh_token');
     const storedSecret = localStorage.getItem('tt_client_secret');
@@ -70,7 +70,7 @@ function LoginContent() {
         .then(({ accessToken, newRefreshToken }) => {
           sessionStorage.setItem('tt_access_token', accessToken);
           if (newRefreshToken) localStorage.setItem('tt_refresh_token', newRefreshToken);
-          router.replace('/portfolio');
+          router.replace(searchParams.get('redirect') ?? '/portfolio');
         })
         .catch((e) => {
           // Keep the client secret — it's the refresh token that expired
@@ -100,7 +100,7 @@ function LoginContent() {
       sessionStorage.setItem('tt_access_token', accessToken);
       localStorage.setItem('tt_refresh_token', newRefreshToken ?? refreshToken.trim());
       localStorage.setItem('tt_client_secret', secretToUse);
-      router.push('/portfolio');
+      window.location.href = '/login';
     } catch (e: any) {
       setError(e.message || 'Could not connect');
       setIsLoading(false);
