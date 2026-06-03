@@ -26,7 +26,7 @@ const INDEX_TICKERS = new Set(['SPY','QQQ','IWM','DIA','GLD','SLV','TLT','HYG','
 
 
 // ── Types ─────────────────────────────────────────────────────────────────
-type TimeRange = '1w' | '2w' | '1m' | '3m' | '6m' | '12m';
+type TimeRange = '1w' | '2w' | '1m' | '3m' | '3m' | '12m';
 
 interface ClosedTrade {
   id: string; symbol: string; strategy: string; openDate: string; closeDate: string;
@@ -271,7 +271,7 @@ function getWidthSteps(maxWidth: number, price: number | null): number[] {
 // ── Profile building ───────────────────────────────────────────────────────
 function loadTradesFromCache(range: TimeRange): ClosedTrade[] {
   const LS_TL_1W = 'hunter-tradelog-1w', LS_TL_2W = 'hunter-tradelog-2w', LS_TL_1M = 'hunter-tradelog-1m';
-  const key = range === '1w' ? LS_TL_1W : range === '2w' ? LS_TL_2W : range === '1m' ? LS_TL_1M : range === '3m' ? LS_TL_3M : range === '6m' ? LS_TL_6M : LS_TL_12M;
+  const key = range === '1w' ? LS_TL_1W : range === '2w' ? LS_TL_2W : range === '1m' ? LS_TL_1M : range === '3m' ? LS_TL_3M : range === '3m' ? LS_TL_3m : LS_TL_12M;
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return [];
@@ -899,7 +899,7 @@ export default function RinseRepeatPage() {
   const [accent, setAccent] = useState<Accent>(getSavedAccent);
   useEffect(() => { applyAccent(accent); }, [accent]);
   useEffect(() => { injectAccentStyle(); applyAccent(getSavedAccent()); }, []);
-  const [range, setRange]     = useState<TimeRange>('6m');
+  const [range, setRange]     = useState<TimeRange>('3m');
   const [results, setResults] = useState<RRResult[]>([]);
   const [profiles, setProfiles] = useState<WinningProfile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1107,7 +1107,7 @@ export default function RinseRepeatPage() {
           <div className="flex items-center gap-3 flex-wrap">
             {/* Range */}
             <div className="flex items-center gap-1">
-              {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
+              {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['3m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
                 <button key={r} onClick={() => setRange(r)}
                   className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors ${range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
                   {label}
@@ -1160,7 +1160,7 @@ export default function RinseRepeatPage() {
         {!loading && results.length === 0 && profiles.length === 0 && (
           <div className={`text-center py-16 ${th.textFaint}`}>
             <div className="text-4xl mb-3 opacity-20">↺</div>
-            <p className="text-sm font-medium">No winning trades found in the last {range === '3m' ? '3 months' : range === '6m' ? '6 months' : '12 months'}</p>
+            <p className="text-sm font-medium">No winning trades found in the last {range === '3m' ? '3 months' : range === '3m' ? '6 months' : '12 months'}</p>
             <p className="text-[10px] mt-2 opacity-60">Make sure your Trade Log is synced, or try a longer range.</p>
             <Link href="/trade-log" className="inline-block mt-3 text-[10px] text-blue-400 hover:ac-text underline">Go to Trade Log →</Link>
           </div>
