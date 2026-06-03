@@ -73,6 +73,7 @@ interface SpxPosition {
   status: 'hold' | 'watch' | 'close' | 'manage';
   contracts: number;
   capitalAtRisk: number;
+  bufferPct: number | null;  // % distance from current price to short strike
 }
 
 interface WheelPosition {
@@ -219,6 +220,36 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+// ── Buffer color helper (matches Prosper BPS OTM guide) ──────────────────────
+// Guidelines: 7d=2.5-3.5%, 14d=3.5-5%, 21d=5-7%, 30d=6-8%, 45d=7-10%
+function otmBufferColor(bufferPct: number | null, dte: number): string {
+  if (bufferPct == null) return 'text-[#808080]';
+  if (bufferPct <= 0) return 'text-red-400';
+  if (dte <= 7) {
+    if (bufferPct < 1.5) return 'text-red-400';
+    if (bufferPct < 2.5) return 'text-amber-400';
+    return 'text-emerald-400';
+  }
+  if (dte <= 14) {
+    if (bufferPct < 2.0) return 'text-red-400';
+    if (bufferPct < 3.5) return 'text-amber-400';
+    return 'text-emerald-400';
+  }
+  if (dte <= 21) {
+    if (bufferPct < 3.0) return 'text-red-400';
+    if (bufferPct < 5.0) return 'text-amber-400';
+    return 'text-emerald-400';
+  }
+  if (dte <= 30) {
+    if (bufferPct < 4.0) return 'text-red-400';
+    if (bufferPct < 6.0) return 'text-amber-400';
+    return 'text-emerald-400';
+  }
+  if (bufferPct < 5.0) return 'text-red-400';
+  if (bufferPct < 7.0) return 'text-amber-400';
+  return 'text-emerald-400';
+}
+
 // ── Engine data loader ─────────────────────────────────────────────────────
 async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesSignal: EsFutures | null = null, trendContext: TrendContext | null = null): Promise<EngineData> {
   const token = await getAccessToken();
@@ -335,7 +366,12 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
       else if (pnlPct !== null && pnlPct < -100) status = 'manage';
 
       const pop = Math.max(55, Math.min(90, 70 + (pnlPct ?? 0) * 0.1));
-      const posEntry: SpxPosition = { symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * multiplier), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk };
+      // bufferPct: fetch live price from currentPricesMap if available, else estimate from pnlPct
+      const underlyingPrice = currentPricesMap[symbol] ?? currentPricesMap['SPX'] ?? currentPricesMap['SPXW'] ?? null;
+      const bufferPct = underlyingPrice != null && underlyingPrice > 0
+        ? ((underlyingPrice - shortStrike) / underlyingPrice) * 100
+        : null;
+      const posEntry: SpxPosition = { symbol, shortStrike, longStrike, expiration: expDate, dte, pop, credit: currentCost / (qty * multiplier), creditReceived, pnl, pnlPct, status, contracts: qty, capitalAtRisk, bufferPct };
 
       if (symbol === 'SPY') spyPositions.push(posEntry);
       else spxPositions.push(posEntry);
@@ -351,7 +387,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   const ivrMap: Record<string, number | null> = {};
 
   try {
-    const equityQs = watchlist.map(s => `equity=${encodeURIComponent(s)}`).join('&');
+    const equityQs = [...watchlist, 'SPX', 'SPY'].map(s => `equity=${encodeURIComponent(s)}`).join('&');
     const priceData = await ttFetch(`/market-data/by-type?${equityQs}`, token);
     for (const item of priceData?.data?.items ?? []) {
       const sym = item.symbol?.trim();
@@ -1500,6 +1536,12 @@ function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme
         <div className="w-20 shrink-0 text-center">
           <p className={`text-[9px] ${th.textFaint}`}>${pos.capitalAtRisk.toLocaleString()}</p>
           <p className={`text-[9px] ${th.textFaint}`}>at risk</p>
+        </div>
+        <div className="w-16 shrink-0 text-center">
+          <p className={`text-xs font-bold ${otmBufferColor(pos.bufferPct, pos.dte)}`}>
+            {pos.bufferPct != null ? `${pos.bufferPct.toFixed(1)}%` : '—'}
+          </p>
+          <p className={`text-[9px] ${th.textFaint}`}>buffer</p>
         </div>
         <div className="w-16 shrink-0 text-center">
           <p className={`text-[9px] ${pos.contracts > 1 ? 'text-amber-400 font-bold' : th.textFaint}`}>{pos.contracts}×</p>
