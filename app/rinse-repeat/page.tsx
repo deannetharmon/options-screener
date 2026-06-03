@@ -691,6 +691,32 @@ function StockResearch({ symbol, th, riskContext }: { symbol: string; th: typeof
 }
 
 // ── Result Card ───────────────────────────────────────────────────────────
+
+// ── Weekend gap risk helper ────────────────────────────────────────────────
+const INDEX_NO_GAP = new Set(['SPX', 'SPXW', 'NDX', 'RUT', 'VIX']);
+
+function getWeekendGapWarning(symbol: string, dte: number): { level: 'none' | 'advisory' | 'strong'; message: string } {
+  // Futures-based indexes trade through weekends — no gap risk
+  if (INDEX_NO_GAP.has(symbol.toUpperCase())) return { level: 'none', message: '' };
+
+  const now = new Date();
+  // Get ET day of week (market hours are Eastern)
+  const etStr = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const etDate = new Date(etStr);
+  const dow = etDate.getDay(); // 0=Sun, 5=Fri, 4=Thu
+
+  if (dow === 5) { // Friday
+    if (dte <= 7)  return { level: 'strong',   message: `⚠ Friday entry with ${dte}d DTE on ${symbol}: high weekend gap risk. Two days of price movement before you can react. Consider waiting until Monday or widening your buffer strike.` };
+    if (dte <= 14) return { level: 'strong',   message: `⚠ Friday entry with ${dte}d DTE on ${symbol}: meaningful weekend gap risk. Any adverse news over the weekend could put this position in trouble by Monday open.` };
+    if (dte <= 21) return { level: 'advisory', message: `Advisory: Friday entry with ${dte}d DTE on ${symbol}. Weekend gap risk is manageable but real — ensure your buffer is wide enough to survive a 1–2% gap.` };
+  }
+  if (dow === 4) { // Thursday
+    if (dte <= 7)  return { level: 'advisory', message: `Advisory: Thursday entry with ${dte}d DTE on ${symbol}. You'll hold through the weekend almost immediately. Consider a wider buffer or waiting until early next week.` };
+    if (dte <= 14) return { level: 'advisory', message: `Advisory: Thursday entry with ${dte}d DTE on ${symbol}. Short-dated position will carry weekend risk within days of entry.` };
+  }
+  return { level: 'none', message: '' };
+}
+
 // ── EnterTradeModal ────────────────────────────────────────────────────────
 function EnterTradeModal({ result, th, onClose }: {
   result: RRResult;
@@ -729,6 +755,7 @@ function EnterTradeModal({ result, th, onClose }: {
   const maxRisk = (spreadWidth - creditNum) * qty * 100;
   const targetProfit = gtcNum > 0 ? ((1 - gtcNum / creditNum) * 100).toFixed(0) : '50';
   const stopMultiple = stopNum > 0 ? (stopNum / creditNum).toFixed(1) : '2.0';
+  const weekendWarn = getWeekendGapWarning(profile.symbol, c.dte);
 
   const submit = async () => {
     if (!accountNum) { setResult2('error'); setResultMsg('Account not found — try refreshing'); return; }
@@ -825,6 +852,12 @@ function EnterTradeModal({ result, th, onClose }: {
         </div>
 
         <div className="px-5 py-4 space-y-4">
+          {/* Weekend gap warning */}
+          {weekendWarn.level !== 'none' && (
+            <div className={`p-2.5 rounded border text-[10px] leading-relaxed ${weekendWarn.level === 'strong' ? 'border-red-500/50 bg-red-500/8 text-red-300' : 'border-yellow-500/40 bg-yellow-500/8 text-yellow-300'}`}>
+              {weekendWarn.message}
+            </div>
+          )}
           {/* Entry fields */}
           <div className="grid grid-cols-2 gap-3">
             <div>
