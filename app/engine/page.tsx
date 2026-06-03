@@ -1,5 +1,4 @@
 // app/engine/page.tsx
-
 'use client';
 import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -246,6 +245,7 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
     ?? balData['option-buying-power']
     ?? '0'
   );
+
   const capital: CapitalSummary = {
     obp,
     netLiq,
@@ -2720,7 +2720,7 @@ export default function EnginePage() {
           <div className="flex items-center gap-8">
             <div className="shrink-0">
               <p className={`text-[9px] ${th.textFaint} tracking-widest uppercase`}>Option Buying Power</p>
-              <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString()}</p>
+              <p className={`text-xl font-bold ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>${d.capital.obp.toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
             </div>
             <div className="flex-1 grid grid-cols-4 gap-4">
               <CapitalBar label={`Spread Engine · SPX+SPY (${alloc.spx}% · $${formatCurrency(d.capital.spxTarget)})`} deployed={d.capital.spxDeployed} target={d.capital.spxTarget} color="bg-violet-500" />
@@ -2735,7 +2735,7 @@ export default function EnginePage() {
                 <div className="h-1.5 rounded-full bg-slate-700/60 overflow-hidden mb-1">
                   <div className="h-full rounded-full bg-slate-500" style={{ width: '100%' }} />
                 </div>
-                <p className={`text-[9px] ${th.textFaint}`}>${d.capital.reserveTarget.toLocaleString()} protected</p>
+                <p className={`text-[9px] ${th.textFaint}`}>${d.capital.reserveTarget.toLocaleString(undefined, { maximumFractionDigits: 0 })} protected</p>
               </div>
             </div>
             <div className="shrink-0 text-right">
