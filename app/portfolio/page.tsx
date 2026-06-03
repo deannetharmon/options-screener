@@ -2039,6 +2039,22 @@ function stratColor(strategy: string) {
 }
 function pnlColor(pnl: number | null) { return pnl == null ? 'text-slate-400' : pnl >= 0 ? 'text-emerald-400' : 'text-red-400'; }
 function dteColor(dte: number) { if (dte <= 7) return 'text-red-500 font-bold'; if (dte <= 21) return 'text-yellow-400 font-bold'; return 'text-slate-400'; }
+function riskUsedPct(plOpen: number | null, maxRisk: number): number | null {
+  if (plOpen == null || maxRisk <= 0 || plOpen >= 0) return plOpen != null && maxRisk > 0 ? 0 : null;
+  return Math.min(100, Math.abs(plOpen) / maxRisk * 100);
+}
+function riskUsedColor(pct: number | null): string {
+  if (pct == null) return 'text-slate-500';
+  if (pct >= 75) return 'text-red-400';
+  if (pct >= 50) return 'text-orange-400';
+  if (pct >= 25) return 'text-yellow-400';
+  return 'text-emerald-400';
+}
+function remainingRisk(plOpen: number | null, maxRisk: number): number | null {
+  if (maxRisk <= 0) return null;
+  if (plOpen == null) return maxRisk;
+  return Math.max(0, maxRisk + plOpen);
+}
 
 const ACTION_META: Record<ActionType, { label: string; color: string; btnClass: string }> = {
   HOLD:        { label: '● Hold',         color: 'text-slate-400',   btnClass: 'border-slate-600 text-slate-400' },
@@ -3207,6 +3223,11 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
   const totalPnlOpen  = positions.reduce((s, p) => s + (p.pnl ?? p.plOpen ?? 0), 0);
   const capturedPct   = totalCredit > 0 ? (totalPnlOpen / totalCredit) * 100 : 0;
   const totalAtRisk   = positions.reduce((s, p) => s + p.maxRisk, 0);
+  const totalOpenLoss = positions.reduce((s, p) => {
+    const v = p.pnl ?? p.plOpen ?? 0;
+    return v < 0 ? s + Math.abs(v) : s;
+  }, 0);
+  const totalRiskUsedPct = totalAtRisk > 0 ? (totalOpenLoss / totalAtRisk) * 100 : 0;
   const totalTheta    = positions.reduce((s, p) => {
     if (p.currentValue != null && p.dte > 0) return s + p.currentValue / p.dte;
     if (p.dte > 0) return s + p.creditReceived / p.dte;
@@ -3224,7 +3245,7 @@ function SummaryBar({ positions, th }: { positions: Position[]; th: typeof THEME
         { label: 'P&L Open',        value: `${totalPnlOpen >= 0 ? '+' : ''}$${Math.abs(totalPnlOpen).toFixed(0)}`,          sub: `of $${totalCredit.toFixed(0)} credit · ${capturedPct.toFixed(0)}%`,                                                                           color: totalPnlOpen >= 0 ? 'text-emerald-400' : 'text-red-400' },
         { label: 'P&L Day',         value: hasDayPnl ? `${totalPnlDay >= 0 ? '+' : ''}$${Math.abs(totalPnlDay).toFixed(0)}` : '—', sub: hasDayPnl ? `${posWithDay.length} position${posWithDay.length !== 1 ? 's' : ''} with live prices` : 'refresh for live prices',       color: !hasDayPnl ? th.textFaint : totalPnlDay >= 0 ? 'text-emerald-400' : 'text-red-400' },
         { label: `${positions.length > 0 ? Math.round(positions.reduce((s,p) => s + p.profitTarget, 0) / positions.length * 100) : 50}% Target`, value: `$${Math.round(positions.reduce((s,p) => s + p.targetPrice, 0))}`, sub: `${totalCredit > 0 ? Math.round((totalPnlOpen / Math.max(positions.reduce((s,p) => s + p.targetPrice, 0), 1)) * 100) : 0}% of target`, color: 'text-yellow-400' },
-        { label: 'At Risk',         value: `$${totalAtRisk.toFixed(0)}`,                                                     sub: 'max loss if expired',                                                                                                                         color: th.textMuted },
+        { label: 'At Risk',         value: `$${totalAtRisk.toFixed(0)}`,                                                     sub: `${totalRiskUsedPct.toFixed(1)}% risk used`,                                                                                                  color: riskUsedColor(totalRiskUsedPct) },
         { label: 'Est. Theta/Day',  value: totalTheta > 0 ? `+$${totalTheta.toFixed(2)}` : '—',                             sub: 'daily decay',                                                                                                                                 color: 'text-blue-400' },
         { label: 'Collateral',      value: `$${totalCredit.toFixed(0)}`,                                                     sub: `${positions.length} spread${positions.length !== 1 ? 's' : ''}`,                                                                             color: th.textMuted },
       ].map((item, i, arr) => (
@@ -5033,6 +5054,9 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   }, [pos.symbol]);
 
   const rec = getRecommendation(pos, trend);
+  const displayPnlForRisk = pos.pnl ?? pos.plOpen;
+  const usedRiskPct = riskUsedPct(displayPnlForRisk, pos.maxRisk);
+  const remainingRiskAmount = remainingRisk(displayPnlForRisk, pos.maxRisk);
 
   const shortPuts  = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Short');
   const longPuts   = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Long');
@@ -5315,6 +5339,22 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                         ({displayPnl >= 0 ? '+' : ''}{(displayPnl / Math.abs(pos.creditReceived) * 100).toFixed(1)}%)
                       </p>
                     )}
+                    <div className={`mt-1.5 pt-1.5 border-t ${th.borderLight}`}>
+                      <p className={`text-[8px] ${th.textFaint} uppercase tracking-wider`}>Capital at Risk</p>
+                      <p className={`text-[11px] font-bold ${th.textMuted}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                        ${pos.maxRisk.toFixed(0)}
+                      </p>
+                      {usedRiskPct != null && (
+                        <p className={`text-[9px] font-bold ${riskUsedColor(usedRiskPct)}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                          {usedRiskPct.toFixed(1)}% used
+                        </p>
+                      )}
+                      {remainingRiskAmount != null && (
+                        <p className={`text-[8px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                          ${remainingRiskAmount.toFixed(0)} remaining
+                        </p>
+                      )}
+                    </div>
                   </>
                 );
               })()}
