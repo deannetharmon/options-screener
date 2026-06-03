@@ -1421,7 +1421,7 @@ export default function RinseRepeatPage() {
         {!loading && results.length === 0 && profiles.length === 0 && (
           <div className={`text-center py-16 ${th.textFaint}`}>
             <div className="text-4xl mb-3 opacity-20">↺</div>
-            <p className="text-sm font-medium">No winning trades found in the last {range === '3m' ? '3 months' : range === '6m' ? '6 months' : '12 months'}</p>
+            <p className="text-sm font-medium">No winning trades found in the last {range === '1w' ? '1 week' : range === '2w' ? '2 weeks' : range === '1m' ? '1 month' : range === '3m' ? '3 months' : range === '6m' ? '6 months' : '12 months'}</p>
             <p className="text-[10px] mt-2 opacity-60">Make sure your Trade Log is synced, or try a longer range.</p>
             <Link href="/trade-log" className="inline-block mt-3 text-[10px] text-blue-400 hover:ac-text underline">Go to Trade Log →</Link>
           </div>
