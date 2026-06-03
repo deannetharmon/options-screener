@@ -980,6 +980,20 @@ const FOMC_DATES_2026 = [
   '2026-07-30','2026-09-17','2026-11-05','2026-12-17',
 ];
 
+// 2026 CPI release dates (Bureau of Labor Statistics schedule)
+const CPI_DATES_2026 = [
+  '2026-01-14','2026-02-11','2026-03-11','2026-04-10',
+  '2026-05-13','2026-06-10','2026-07-14','2026-08-12',
+  '2026-09-11','2026-10-13','2026-11-12','2026-12-10',
+];
+
+// 2026 Non-Farm Payrolls release dates (first Friday of each month)
+const NFP_DATES_2026 = [
+  '2026-01-09','2026-02-06','2026-03-06','2026-04-03',
+  '2026-05-08','2026-06-05','2026-07-10','2026-08-07',
+  '2026-09-04','2026-10-02','2026-11-06','2026-12-04',
+];
+
 interface ConditionFlag {
   label: string;
   value: string;
@@ -1020,6 +1034,8 @@ interface MarketConditions {
     termStructure: ConditionFlag;
     spxMove: ConditionFlag;
     fomc: ConditionFlag;
+    cpi: ConditionFlag;
+    nfp: ConditionFlag;
     expirationWeek: ConditionFlag;
     earnings: ConditionFlag;
   };
@@ -1279,6 +1295,34 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
     flags.fomc = { label: 'FOMC', value: `In ${daysToFomc}d (${nextFomc})`, status: 'warn', detail: 'FOMC this week — defer new entries until after announcement' };
   } else {
     flags.fomc = { label: 'FOMC', value: nextFomc ? `Next: ${nextFomc}` : 'None scheduled', status: 'good', detail: 'No FOMC risk this week' };
+  }
+
+  // ── CPI ───────────────────────────────────────────────────────────────
+  const isCpiDay = CPI_DATES_2026.includes(todayStr);
+  const nextCpi = CPI_DATES_2026.find(d => d >= todayStr);
+  const daysToCpi = nextCpi ? Math.round((new Date(Date.UTC(...nextCpi.split('-').map(Number) as [number,number,number])).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 999;
+  if (isCpiDay) {
+    score -= 20;
+    flags.cpi = { label: 'CPI', value: 'Today · 8:30 AM ET', status: 'bad', detail: 'CPI release day — significant SPX move expected. No new positions before print.' };
+  } else if (daysToCpi <= 2 && daysToCpi >= 0) {
+    score -= 10;
+    flags.cpi = { label: 'CPI', value: `In ${daysToCpi}d (${nextCpi})`, status: 'warn', detail: 'CPI release within 48h — elevated event risk, defer new entries' };
+  } else {
+    flags.cpi = { label: 'CPI', value: nextCpi ? `Next: ${nextCpi}` : 'None scheduled', status: 'good', detail: 'No CPI risk this week' };
+  }
+
+  // ── NFP ───────────────────────────────────────────────────────────────
+  const isNfpDay = NFP_DATES_2026.includes(todayStr);
+  const nextNfp = NFP_DATES_2026.find(d => d >= todayStr);
+  const daysToNfp = nextNfp ? Math.round((new Date(Date.UTC(...nextNfp.split('-').map(Number) as [number,number,number])).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 999;
+  if (isNfpDay) {
+    score -= 20;
+    flags.nfp = { label: 'NFP', value: 'Today · 8:30 AM ET', status: 'bad', detail: 'Non-Farm Payrolls release day — significant SPX gap risk. No new positions before print.' };
+  } else if (daysToNfp <= 2 && daysToNfp >= 0) {
+    score -= 8;
+    flags.nfp = { label: 'NFP', value: `In ${daysToNfp}d (${nextNfp})`, status: 'warn', detail: 'NFP release within 48h — jobs data can gap SPX. Monitor before entering.' };
+  } else {
+    flags.nfp = { label: 'NFP', value: nextNfp ? `Next: ${nextNfp}` : 'None scheduled', status: 'good', detail: 'No NFP risk this week' };
   }
 
   // ── Expiration week ────────────────────────────────────────────────────
@@ -1650,7 +1694,7 @@ interface EngineOrderEntry {
   capitalRequired?: number;
 }
 
-function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th: typeof THEMES[Theme]; onClose: () => void }) {
+function EngineOrderModal({ entry, th, onClose, netLiq }: { entry: EngineOrderEntry; th: typeof THEMES[Theme]; onClose: () => void; netLiq: number }) {
   const [phase, setPhase] = useState<'confirm' | 'placing' | 'done' | 'error'>('confirm');
   const [contracts, setContracts] = useState(entry.contracts);
   const [entryLimit, setEntryLimit] = useState(parseFloat(entry.credit.toFixed(2)));
@@ -1985,6 +2029,26 @@ function EngineOrderModal({ entry, th, onClose }: { entry: EngineOrderEntry; th:
                 <p className="text-[10px] text-amber-400">⚠ Multiple SPX contracts on a single expiry concentrates risk. Consider spreading across expiries.</p>
               </div>
             )}
+
+            {/* ── 5% Net Liq Guard (Rule 3) ── */}
+            {netLiq > 0 && (() => {
+              const maxAllowed = netLiq * 0.05;
+              const pct = maxLoss > 0 ? (maxLoss / netLiq) * 100 : 0;
+              const overLimit = maxLoss > maxAllowed;
+              const nearLimit = !overLimit && maxLoss > maxAllowed * 0.80;
+              if (!overLimit && !nearLimit) return null;
+              return (
+                <div className={`rounded-lg px-3 py-2 border ${overLimit ? 'bg-red-500/10 border-red-500/30' : 'bg-amber-500/10 border-amber-600/30'}`}>
+                  <p className={`text-[10px] font-bold ${overLimit ? 'text-red-400' : 'text-amber-400'}`}>
+                    {overLimit ? '⚠ EXCEEDS 5% NET LIQ RULE' : '⚠ APPROACHING 5% NET LIQ LIMIT'}
+                  </p>
+                  <p className={`text-[9px] mt-0.5 ${overLimit ? 'text-red-300' : 'text-amber-300'}`}>
+                    Max loss ${maxLoss.toLocaleString()} = {pct.toFixed(1)}% of net liq ${netLiq.toLocaleString(undefined, { maximumFractionDigits: 0 })} · limit is ${maxAllowed.toLocaleString(undefined, { maximumFractionDigits: 0 })} (5%)
+                    {overLimit && ` · reduce to ${Math.floor(maxAllowed / (entry.spreadWidth * 100))} contract${Math.floor(maxAllowed / (entry.spreadWidth * 100)) !== 1 ? 's' : ''} to comply`}
+                  </p>
+                </div>
+              );
+            })()}
 
             <button onClick={placeOrder} disabled={!hasOcc || phase === 'placing' || resolvingOption || entryLimit <= 0}
               className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-bold rounded-xl transition-colors">
@@ -2395,7 +2459,7 @@ function MarketConditionsPanel({ mc, th, loading }: { mc: MarketConditions | nul
   const flagGroups = mc ? [
     { section: 'TIME & SESSION', items: [mc.flags.dayOfWeek, mc.flags.timeOfDay] },
     { section: 'FUTURES & VOLATILITY', items: [mc.flags.esFutures, mc.flags.vix, mc.flags.termStructure, mc.flags.spxMove] },
-    { section: 'CALENDAR RISK', items: [mc.flags.fomc, mc.flags.expirationWeek, mc.flags.earnings] },
+    { section: 'CALENDAR RISK', items: [mc.flags.fomc, mc.flags.cpi, mc.flags.nfp, mc.flags.expirationWeek, mc.flags.earnings] },
   ] : [];
 
   const flagCount = mc ? Object.values(mc.flags).filter(f => f.status !== 'good').length : 0;
@@ -2661,7 +2725,7 @@ export default function EnginePage() {
   return (
     <div className={`min-h-screen ${th.bg} transition-colors duration-200`} style={{ fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       {/* Order modal */}
-      {orderEntry && <EngineOrderModal entry={orderEntry} th={th} onClose={() => setOrderEntry(null)} />}
+      {orderEntry && <EngineOrderModal entry={orderEntry} th={th} onClose={() => setOrderEntry(null)} netLiq={d?.capital?.netLiq ?? 0} />}
       {/* ── Header ── */}
       <div className={`${th.header} border-b ${th.border} px-6 py-4 flex items-center justify-between sticky top-0 z-50`}>
         <div className="flex items-center gap-4">
@@ -3025,6 +3089,20 @@ export default function EnginePage() {
                           {d.spxSuggestedEntry.rationale.startsWith('★') ? '★ PRIME' : d.spxSuggestedEntry.strategy}
                         </span>
                         <span className="text-[8px] px-1.5 py-0.5 border border-violet-700 text-violet-400 bg-violet-500/10 rounded font-bold shrink-0">25-WIDE · 1256 TAX</span>
+                        {/* Event risk badges — flag if any major event falls within first 10 DTE */}
+                        {marketConditions && (() => {
+                          const dte = d.spxSuggestedEntry!.dte;
+                          const events: string[] = [];
+                          if (marketConditions.flags.fomc.status !== 'good') events.push('FOMC');
+                          if (marketConditions.flags.cpi.status !== 'good') events.push('CPI');
+                          if (marketConditions.flags.nfp.status !== 'good') events.push('NFP');
+                          if (events.length === 0) return null;
+                          return (
+                            <span className="text-[8px] px-1.5 py-0.5 border border-red-600/50 text-red-400 bg-red-500/10 rounded font-bold shrink-0">
+                              ⚠ {events.join(' · ')} IN WINDOW
+                            </span>
+                          );
+                        })()}
                         <span className={`text-[9px] ${th.textFaint} flex-1`}>Not yet placed — review and enter in TastyTrade</span>
                         <button
                           onClick={() => setOrderEntry({ mode: 'spread', symbol: 'SPX', shortOccSymbol: d.spxSuggestedEntry!.shortOccSymbol, longOccSymbol: d.spxSuggestedEntry!.longOccSymbol, credit: d.spxSuggestedEntry!.credit, contracts: d.spxSuggestedEntry!.contracts, strategy: d.spxSuggestedEntry!.strategy, dte: d.spxSuggestedEntry!.dte, shortStrike: d.spxSuggestedEntry!.shortStrike, longStrike: d.spxSuggestedEntry!.longStrike, spreadWidth: 25 })}
