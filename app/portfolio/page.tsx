@@ -4945,37 +4945,42 @@ function vegaTint(vega: number | null): string {
 }
 
 // ── Buffer Color Helpers ──────────────────────────────────────────────────
+// Buffer color based on Prosper BPS OTM guide thresholds
+// Guidelines: 7d=2.5-3.5%, 14d=3.5-5%, 21d=5-7%, 30d=6-8%, 45d=7-10% (index)
+// Equities need ~2% more buffer at each DTE
 function bufferColor(buffer: number | null, dte: number): string {
   if (buffer == null) return 'text-[#808080]';
+  if (buffer <= 0) return 'text-red-400'; // breached
 
-  // Breached or effectively at the short strike is the only true red condition.
-  if (buffer <= 0) return 'text-red-400';
-
-  // DTE-aware coloring: the same buffer is less dangerous with fewer days remaining.
-  // Short-dated positions should warn, not panic, unless the strike is breached.
+  // Thresholds: [red_below, amber_below, green_at_or_above]
+  // Based on index guidelines — equities should run ~2% higher
   if (dte <= 7) {
-    if (buffer < 1) return 'text-orange-400';
-    if (buffer < 2) return 'text-yellow-400';
+    // guideline: 2.5-3.5%
+    if (buffer < 1.5) return 'text-red-400';
+    if (buffer < 2.5) return 'text-amber-400';
+    return 'text-emerald-400';
+  }
+  if (dte <= 14) {
+    // guideline: 3.5-5%
+    if (buffer < 2.0) return 'text-red-400';
+    if (buffer < 3.5) return 'text-amber-400';
     return 'text-emerald-400';
   }
   if (dte <= 21) {
-    if (buffer < 1) return 'text-orange-400';
-    if (buffer < 2) return 'text-yellow-400';
-    if (buffer < 3) return 'text-yellow-400';
+    // guideline: 5-7%
+    if (buffer < 3.0) return 'text-red-400';
+    if (buffer < 5.0) return 'text-amber-400';
     return 'text-emerald-400';
   }
   if (dte <= 30) {
-    if (buffer < 1) return 'text-red-400';
-    if (buffer < 2) return 'text-orange-400';
-    if (buffer < 3) return 'text-yellow-400';
-    if (buffer < 5) return 'text-yellow-400';
+    // guideline: 6-8%
+    if (buffer < 4.0) return 'text-red-400';
+    if (buffer < 6.0) return 'text-amber-400';
     return 'text-emerald-400';
   }
-
-  // Longer-dated positions need a wider cushion because there is more time to move.
-  if (buffer < 1) return 'text-red-400';
-  if (buffer < 2) return 'text-orange-400';
-  if (buffer < 5) return 'text-yellow-400';
+  // 31-45+ DTE guideline: 7-10%
+  if (buffer < 5.0) return 'text-red-400';
+  if (buffer < 7.0) return 'text-amber-400';
   return 'text-emerald-400';
 }
 
