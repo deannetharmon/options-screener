@@ -375,17 +375,6 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   capital.spxDeployed = spxDeployed;
   capital.spxAvailable = Math.max(0, capital.spxTarget - spxDeployed);
 
-  // Backfill bufferPct now that currentPricesMap is populated
-  const spxPrice = currentPricesMap['SPX'] ?? currentPricesMap['SPXW'] ?? 0;
-  const spyPrice = currentPricesMap['SPY'] ?? 0;
-  for (const pos of spxPositions) {
-    const price = pos.symbol === 'SPY' ? spyPrice : spxPrice;
-    if (price > 0) pos.bufferPct = ((price - pos.shortStrike) / price) * 100;
-  }
-  for (const pos of spyPositions) {
-    if (spyPrice > 0) pos.bufferPct = ((spyPrice - pos.shortStrike) / spyPrice) * 100;
-  }
-
   // Parse wheel positions
   const wheelPositions: WheelPosition[] = [];
   let wheelDeployed = 0;
@@ -479,6 +468,17 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
   }
   capital.wheelDeployed = wheelDeployed;
   capital.wheelAvailable = Math.max(0, capital.wheelTarget - wheelDeployed);
+
+  // Backfill bufferPct on SPX/SPY positions now that currentPricesMap is populated
+  const spxLivePrice = currentPricesMap['SPX'] ?? currentPricesMap['SPXW'] ?? 0;
+  const spyLivePrice = currentPricesMap['SPY'] ?? 0;
+  for (const pos of spxPositions) {
+    const price = spxLivePrice;
+    if (price > 0) pos.bufferPct = ((price - pos.shortStrike) / price) * 100;
+  }
+  for (const pos of spyPositions) {
+    if (spyLivePrice > 0) pos.bufferPct = ((spyLivePrice - pos.shortStrike) / spyLivePrice) * 100;
+  }
 
   // ── Hunter spreads (non-SPX/SPY, non-wheel) ───────────────────────────
   // These are spreads placed via the Hunter screener on individual stocks/ETFs.
