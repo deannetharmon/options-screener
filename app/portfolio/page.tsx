@@ -2227,6 +2227,48 @@ function BatchConfirmModal({
     return () => { cancelled = true; };
   }, [initialItems]);
 
+  const fetchRollGuidance = async (posKey: string, pos: Position, suggestion: any | null) => {
+    setRollAiGuidance(prev => ({ ...prev, [posKey]: { loading: true, text: '', error: '' } }));
+    try {
+      const ri = rollInputs[posKey];
+      const suggestionText = suggestion
+        ? `Rule-based suggestion: Expiry ${suggestion.expiry} (${suggestion.dte}d DTE) · Short ${suggestion.shortStrike} / Long ${suggestion.longStrike} · Credit mid $${suggestion.creditMid?.toFixed(2)} · Limit $${suggestion.credit?.toFixed(2)} · Delta ${suggestion.delta?.toFixed(2)} · Credit ratio ${(suggestion.creditRatio * 100)?.toFixed(0)}% · Violations: ${suggestion.ruleViolations?.join(', ') || 'none'}`
+        : 'No rule-based suggestion available (chain data not loaded).';
+      const userInputText = ri?.expiry
+        ? `User-entered roll: Expiry ${ri.expiry} · Short ${ri.shortStrike} / Long ${ri.longStrike} · Credit $${ri.credit}`
+        : 'User has not entered roll parameters yet.';
+      const prompt = `You are reviewing a roll decision for an options spread.
+
+CURRENT POSITION:
+Symbol: ${pos.symbol} · Strategy: ${pos.strategy}
+DTE remaining: ${pos.dte}d · Credit received: $${pos.creditReceived.toFixed(2)} · Current P&L: ${pos.pnl != null ? (pos.pnl >= 0 ? '+' : '') + '$' + pos.pnl.toFixed(2) : 'N/A'} (${pos.pnlPct != null ? pos.pnlPct.toFixed(1) + '%' : 'N/A'})
+Buffer: ${pos.buffer != null ? pos.buffer.toFixed(1) + '%' : 'N/A'} · IVR: ${pos.ivr != null ? pos.ivr + '%' : 'N/A'} · Stock price: ${pos.stockPrice != null ? '$' + pos.stockPrice.toFixed(2) : 'N/A'}
+
+${suggestionText}
+${userInputText}
+
+PROSPER RULES: Roll at 21 DTE or 2x credit loss. Roll out 35-45 DTE, same width. New credit >= 1/3 of width. Short delta 0.20-0.30. IVR >= 30.
+
+Assess this roll in 3-4 sentences: (1) roll vs close, (2) do the suggested strikes/expiry make sense, (3) one specific thing to watch. Direct, no disclaimers.`;
+
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514', max_tokens: 350,
+          system: 'You are a brutally honest options trading coach. Give specific, direct guidance. No hedging, no disclaimers. 3-4 sentences max.',
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      const data = await res.json();
+      const text = data?.content?.find((b: any) => b.type === 'text')?.text ?? '';
+      setRollAiGuidance(prev => ({ ...prev, [posKey]: { loading: false, text, error: '' } }));
+    } catch (e: any) {
+      setRollAiGuidance(prev => ({ ...prev, [posKey]: { loading: false, text: '', error: e.message } }));
+    }
+  };
+
   const activeItems = batchItems
     .filter(i => !excluded.has(i.pos.key))
     .map(i => {
