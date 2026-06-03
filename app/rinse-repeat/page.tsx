@@ -1174,7 +1174,8 @@ function RRCard({ result, th, existingPositions }: {
     {showEnterModal && result.candidate && (
       <EnterTradeModal result={result} th={th} onClose={() => setShowEnterModal(false)} />
     )}
-  </>;
+  </>
+  );
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
