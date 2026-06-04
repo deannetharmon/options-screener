@@ -737,13 +737,15 @@ async function fetchFreshPositionPrice(pos: Position, token: string): Promise<nu
 }
 
 // ── Roll Chain Suggestion ──────────────────────────────────────────────────
-async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSuggestion | null> {
+async function fetchRollSuggestion(pos: Position, token: string, deltaOverride?: [number, number]): Promise<RollSuggestion | null> {
   try {
     const optType = pos.strategy === 'BCS' ? 'C' : 'P';
-    // Delta targets: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
-    const targetDelta = pos.strategy === 'BCS' ? 0.25 : -0.25;
-    const deltaMin = pos.strategy === 'BCS' ?  0.20 : -0.30;
-    const deltaMax = pos.strategy === 'BCS' ?  0.30 : -0.20;
+    const savedRules = getSavedEtfRules();
+    const dMin = deltaOverride?.[0] ?? savedRules.SPREAD_DELTA_MIN;
+    const dMax = deltaOverride?.[1] ?? savedRules.SPREAD_DELTA_MAX;
+    const targetDelta = pos.strategy === 'BCS' ?  ((dMin + dMax) / 2) : -((dMin + dMax) / 2);
+    const deltaMin    = pos.strategy === 'BCS' ?  dMin : -dMax;
+    const deltaMax    = pos.strategy === 'BCS' ?  dMax : -dMin;
 
     // Step 1: get expirations, find one in 30-45 DTE window
     const chainData = await ttFetch(`/option-chains/${encodeURIComponent(pos.symbol)}/expirations`, token);
@@ -2116,6 +2118,10 @@ function BatchConfirmModal({
   const [rollMode, setRollMode] = useState<Record<string, string>>({});
   const [rollAiGuidance, setRollAiGuidance] = useState<Record<string, { loading: boolean; text: string; error: string }>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
+  const [rollDeltaRange, setRollDeltaRange] = useState<[number, number]>(() => {
+    const r = getSavedEtfRules();
+    return [r.SPREAD_DELTA_MIN, r.SPREAD_DELTA_MAX];
+  });
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
   const [limitOverrides, setLimitOverrides] = useState<Record<string, string>>({});
@@ -2198,7 +2204,7 @@ function BatchConfirmModal({
           };
 
           if (action === 'CLOSE_ROLL') {
-            const suggestion = await fetchRollSuggestion(pos, token).catch(() => null);
+            const suggestion = await fetchRollSuggestion(pos, token, rollDeltaRange).catch(() => null);
             if (!cancelled) setRollSuggestions(prev => ({ ...prev, [pos.key]: suggestion }));
             if (suggestion && !rollInputs[pos.key]) {
               setRollInputs(prev => ({
@@ -2803,6 +2809,35 @@ Assess in 4-5 sentences: (1) explicitly state close-only cost vs net roll cost a
                               )}
                             </div>
                           )}
+                          {/* Delta Range control for this roll */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-[9px] ${th.textFaint} tracking-wider`}>Δ RANGE</span>
+                            {([
+                              { label: 'Conservative', min: 0.15, max: 0.20 },
+                              { label: 'Standard',     min: 0.20, max: 0.25 },
+                              { label: 'Aggressive',   min: 0.25, max: 0.30 },
+                            ] as { label: string; min: number; max: number }[]).map(p => (
+                              <button key={p.label}
+                                onClick={async () => {
+                                  const range: [number, number] = [p.min, p.max];
+                                  setRollDeltaRange(range);
+                                  const token = await getAccessToken();
+                                  const s = await fetchRollSuggestion(item.pos, token, range).catch(() => null);
+                                  if (s) setRollSuggestions(prev => ({ ...prev, [item.pos.key]: s }));
+                                }}
+                                className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                                  rollDeltaRange[0] === p.min && rollDeltaRange[1] === p.max
+                                    ? 'border-blue-500 text-blue-300 bg-blue-500/15'
+                                    : `${th.border} ${th.textFaint} hover:border-blue-500/50 hover:text-blue-400`
+                                }`}>
+                                {p.label}
+                              </button>
+                            ))}
+                            <span className={`text-[9px] ${th.textFaint}`}>
+                              ({rollDeltaRange[0].toFixed(2)}–{rollDeltaRange[1].toFixed(2)})
+                            </span>
+                          </div>
+
                           {suggestion && (
                             <div className={`rounded-lg border p-3 space-y-2 ${
                               rollIsBlocking(suggestion) ? 'border-red-500/50 bg-red-500/5' :
