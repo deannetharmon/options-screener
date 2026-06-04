@@ -5499,6 +5499,72 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
       {/* Expanded legs */}
       {expanded && (
         <div className={`border-t ${th.border} px-4 py-3`}>
+
+          {/* ── MID Tracker ─────────────────────────────────────────────── */}
+          {(() => {
+            const qty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
+            const credit = pos.creditReceived / 100;
+            const mid = pos.currentValue != null ? pos.currentValue / (qty * 100) : null;
+            const stopPrice = pos.stopLossPrice;
+            const target50 = credit * (1 - pos.profitTarget);
+            const breakeven = credit;
+            const barLeft  = stopPrice ?? credit * 2.0;
+            const barRight = 0;
+            const barRange = barLeft - barRight || 1;
+            const pct = mid != null ? Math.max(0, Math.min(100, ((barLeft - mid) / barRange) * 100)) : null;
+            const breakevenPct = Math.max(0, Math.min(100, ((barLeft - breakeven) / barRange) * 100));
+            const targetPct    = Math.max(0, Math.min(100, ((barLeft - target50) / barRange) * 100));
+            const isProfit   = mid != null && mid < credit;
+            const isAtTarget = mid != null && mid <= target50;
+            const barColor   = mid == null ? '#4b5563'
+              : isAtTarget   ? '#10b981'
+              : isProfit     ? '#34d399'
+              : mid < credit * 1.2 ? '#facc15'
+              : '#f87171';
+            return (
+              <div className="mb-4">
+                <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>MID Tracker</p>
+                <div className="flex items-center gap-6 mb-2 flex-wrap">
+                  {[
+                    { label: 'Credit',     val: `$${credit.toFixed(2)}`,    cls: 'text-emerald-400' },
+                    { label: 'Current MID',val: mid != null ? `$${mid.toFixed(2)}` : '—',
+                      cls: mid == null ? th.textFaint : isProfit ? 'text-emerald-400' : 'text-red-400' },
+                    { label: 'Breakeven',  val: `$${breakeven.toFixed(2)}`, cls: 'text-yellow-400' },
+                    { label: `${Math.round(pos.profitTarget * 100)}% Target`, val: `$${target50.toFixed(2)}`, cls: 'text-blue-400' },
+                    { label: 'Stop',       val: stopPrice != null ? `$${stopPrice.toFixed(2)}` : '—', cls: 'text-red-400' },
+                    { label: 'To B/E',     val: mid != null ? (mid <= credit ? '✓ Profit' : `$${(mid - credit).toFixed(2)} away`) : '—',
+                      cls: mid != null && mid <= credit ? 'text-emerald-400' : 'text-yellow-400' },
+                  ].map(({ label, val, cls }) => (
+                    <div key={label}>
+                      <p className={`text-[8px] ${th.textFaint} uppercase tracking-wider`}>{label}</p>
+                      <p className={`text-[11px] font-bold ${cls}`} style={{ fontFamily: "'DM Mono', monospace" }}>{val}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="relative h-4 rounded-full overflow-visible" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                  {pct != null && (
+                    <div className="absolute top-0 left-0 h-full rounded-full transition-all duration-500"
+                      style={{ width: `${pct}%`, background: `linear-gradient(to right, #ef4444, ${barColor})` }} />
+                  )}
+                  <div className="absolute top-0 h-full w-px bg-yellow-400/70" style={{ left: `${breakevenPct}%` }}>
+                    <span className="absolute -top-4 text-[8px] text-yellow-400 -translate-x-1/2 whitespace-nowrap">B/E</span>
+                  </div>
+                  <div className="absolute top-0 h-full w-px bg-blue-400/70" style={{ left: `${targetPct}%` }}>
+                    <span className="absolute -top-4 text-[8px] text-blue-400 -translate-x-1/2 whitespace-nowrap">{Math.round(pos.profitTarget * 100)}%</span>
+                  </div>
+                  {pct != null && (
+                    <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow-lg transition-all duration-500"
+                      style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
+                  )}
+                  <div className="flex justify-between mt-5">
+                    <span className="text-[8px] text-red-400">STOP ${stopPrice?.toFixed(2) ?? '—'}</span>
+                    <span className="text-[8px] text-emerald-400">MAX PROFIT $0</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Legs</p>
           <div className="space-y-1.5">
             {pos.legs.map((leg, i) => (
