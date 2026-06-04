@@ -5503,7 +5503,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
           {/* ── MID Tracker ─────────────────────────────────────────────── */}
           {(() => {
             const qty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
-            const credit = pos.creditReceived / 100;
+            const credit = pos.creditReceived / (qty * 100);
             const mid = pos.currentValue != null ? pos.currentValue / (qty * 100) : null;
             const stopPrice = pos.stopLossPrice;
             const target50 = credit * (1 - pos.profitTarget);
