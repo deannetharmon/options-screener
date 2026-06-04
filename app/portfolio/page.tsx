@@ -767,7 +767,7 @@ async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSu
       `/option-chains/${encodeURIComponent(pos.symbol)}/nested?expiration-date=${expiry}`,
       token
     );
-    cconst expiryItems: any[] = strikeData?.data?.items ?? [];
+    const expiryItems: any[] = strikeData?.data?.items ?? [];
     const matchedExpiry = expiryItems.find((item: any) => item['expiration-date'] === expiry);
     const strikes: any[] = matchedExpiry?.strikes ?? [];
     
