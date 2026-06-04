@@ -740,9 +740,11 @@ async function fetchFreshPositionPrice(pos: Position, token: string): Promise<nu
 async function fetchRollSuggestion(pos: Position, token: string, deltaOverride?: [number, number]): Promise<RollSuggestion | null> {
   try {
     const optType = pos.strategy === 'BCS' ? 'C' : 'P';
-    const savedRules = getSavedEtfRules();
-    const dMin = deltaOverride?.[0] ?? savedRules.SPREAD_DELTA_MIN;
-    const dMax = deltaOverride?.[1] ?? savedRules.SPREAD_DELTA_MAX;
+    const savedRules = (() => {
+      try { return JSON.parse(localStorage.getItem('hunter-etf-rules') ?? '{}'); } catch { return {}; }
+    })();
+    const dMin = deltaOverride?.[0] ?? savedRules.SPREAD_DELTA_MIN ?? 0.20;
+    const dMax = deltaOverride?.[1] ?? savedRules.SPREAD_DELTA_MAX ?? 0.25;
     const targetDelta = pos.strategy === 'BCS' ?  ((dMin + dMax) / 2) : -((dMin + dMax) / 2);
     const deltaMin    = pos.strategy === 'BCS' ?  dMin : -dMax;
     const deltaMax    = pos.strategy === 'BCS' ?  dMax : -dMin;
@@ -2119,8 +2121,10 @@ function BatchConfirmModal({
   const [rollAiGuidance, setRollAiGuidance] = useState<Record<string, { loading: boolean; text: string; error: string }>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
   const [rollDeltaRange, setRollDeltaRange] = useState<[number, number]>(() => {
-    const r = getSavedEtfRules();
-    return [r.SPREAD_DELTA_MIN, r.SPREAD_DELTA_MAX];
+    try {
+      const r = JSON.parse(localStorage.getItem('hunter-etf-rules') ?? '{}');
+      return [r.SPREAD_DELTA_MIN ?? 0.20, r.SPREAD_DELTA_MAX ?? 0.25];
+    } catch { return [0.20, 0.25]; }
   });
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
