@@ -1495,6 +1495,33 @@ const statusColor = (s: string) => s === 'pass' ? 'text-emerald-500' : s === 'fa
 const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
 const trendColor = (t: string) => t === 'uptrend' ? 'text-emerald-500' : t === 'downtrend' ? 'text-red-500' : t === 'sideways' ? 'text-blue-500' : 'text-slate-400';
 const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '↓' : t === 'sideways' ? '→' : '?';
+function dteBadgeColor(dte: number): string {
+  if (dte < 7)  return 'text-red-500 border-red-700 bg-red-500/10';
+  if (dte < 14) return 'text-orange-500 border-orange-700 bg-orange-500/10';
+  if (dte < 21) return 'text-orange-400 border-orange-600 bg-orange-400/10';
+  if (dte < 31) return 'text-yellow-400 border-yellow-600 bg-yellow-400/10';
+  if (dte <= 45) return 'text-emerald-400 border-emerald-700 bg-emerald-500/10';
+  return 'text-blue-400 border-blue-700 bg-blue-500/10';
+}
+
+function runChecklistAllExpirations(
+  symbol: string, strategy: 'BPS' | 'BCS' | 'IC',
+  metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean },
+  price: number | null, sRules: RulesType, trendResult: TrendResult | undefined,
+  sLabel: string | undefined, eRules: RulesType, eLabel: string | undefined
+): ScreenResult[] {
+  const validExpirations = chainData.expirations.filter(exp => daysUntil(exp) >= 7);
+  const results: ScreenResult[] = [];
+  for (const exp of validExpirations) {
+    try {
+      const singleExpChainData = { ...chainData, expirations: [exp] };
+      const result = runChecklist(symbol, strategy, metrics, singleExpChainData, price, sRules, trendResult, sLabel, eRules, eLabel);
+      if (result.bestCandidate) results.push(result);
+    } catch {}
+  }
+  return results;
+}
+
 const strategyAccent = (s: string) => s === 'BPS' ? 'border-l-4 border-l-emerald-500' : s === 'BCS' ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500';
 
 // ── Theme Toggle ───────────────────────────────────────────────────────────
@@ -4413,6 +4440,9 @@ export default function Home() {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
   });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
+  const [rankTopN, setRankTopN] = useState<number>(20);
+  const [rankDteMin, setRankDteMin] = useState<number>(0);
+  const [rankDteMax, setRankDteMax] = useState<number>(999);
   const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
   useEffect(() => {
     loadExistingPositions().then(setExistingPositions).catch(() => {});
@@ -4551,17 +4581,25 @@ export default function Home() {
         setStatus(`Scanning ${symbol} (${i+1}/${autoList.length})...`);
         let trendResult: TrendResult | undefined;
         try { trendResult = await getTrend(symbol); } catch (e) { console.warn(e); }
-        const strategy: 'BPS' | 'BCS' | 'IC' =
+        const trendStrategy: 'BPS' | 'BCS' | 'IC' =
           trendResult?.strategy === 'BPS' || trendResult?.strategy === 'BCS' || trendResult?.strategy === 'IC'
             ? trendResult.strategy : 'IC';
+        const isRankMode = (modeOverride ?? screenMode) === 'rank';
+        const strategiesToScan: ('BPS' | 'BCS' | 'IC')[] = isRankMode ? ['BPS', 'BCS', 'IC'] : [trendStrategy];
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
           const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
-          scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
-          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+          for (const strategy of strategiesToScan) {
+            scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
+            if (isRankMode) {
+              screenResults.push(...runChecklistAllExpirations(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+            } else {
+              screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+            }
+          }
         } catch (e: any) {
-          screenResults.push(errResult(symbol, strategy, e.message, trendResult));
+          screenResults.push(errResult(symbol, trendStrategy, e.message, trendResult));
         }
       }
 
@@ -4573,12 +4611,20 @@ export default function Home() {
       ]) {
         for (const symbol of symbols) {
           setStatus(`Scanning ${symbol}...`);
+          const isRankMode = (modeOverride ?? screenMode) === 'rank';
+          const strategiesToScan: ('BPS' | 'BCS' | 'IC')[] = isRankMode ? ['BPS', 'BCS', 'IC'] : [strategy];
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
             const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
-            scanCache.push({ symbol, strategy, metrics, chainData, price });
-            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
+            for (const s of strategiesToScan) {
+              scanCache.push({ symbol, strategy: s, metrics, chainData, price });
+              if (isRankMode) {
+                screenResults.push(...runChecklistAllExpirations(symbol, s, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
+              } else {
+                screenResults.push(runChecklist(symbol, s, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
+              }
+            }
           } catch (e: any) {
             screenResults.push(errResult(symbol, strategy, e.message));
           }
@@ -4604,9 +4650,11 @@ export default function Home() {
       try { localStorage.setItem(LS_RAW_SCAN_CACHE, JSON.stringify(scanCache)); } catch {}
 
       // Remove duplicates and sort
-      const uniqueResults = screenResults.filter((r, index, self) =>
-        index === self.findIndex(t => t.symbol === r.symbol && t.strategy === r.strategy)
-      );
+      const uniqueResults = (modeOverride ?? screenMode) === 'rank'
+        ? screenResults
+        : screenResults.filter((r, index, self) =>
+            index === self.findIndex(t => t.symbol === r.symbol && t.strategy === r.strategy)
+          );
 
       if ((modeOverride ?? screenMode) === 'rank') {
         // Sort by score descending; no-candidate results go to the bottom
@@ -4943,13 +4991,61 @@ export default function Home() {
                 </>
               ) : (
                 <div>
-                  <p className="text-[9px] text-purple-400 tracking-widest mb-2 font-medium">⬡ RANKED — ALL OPPORTUNITIES</p>
-                  <div className="space-y-2">{results.map((r, i) => (
-                    <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
-                      <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} /></div>
+                  <div className="flex items-center gap-3 mb-3 flex-wrap">
+                    <p className="text-[9px] text-purple-400 tracking-widest font-medium">⬡ RANKED — ALL OPPORTUNITIES</p>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[9px] ${th.textFaint}`}>Show top</span>
+                      {[10, 20, 50, 999].map(n => (
+                        <button key={n} onClick={() => setRankTopN(n)}
+                          className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                            rankTopN === n
+                              ? 'border-purple-500 text-purple-300 bg-purple-500/15'
+                              : `${th.border} ${th.textFaint} hover:border-purple-500/50`
+                          }`}>
+                          {n === 999 ? 'All' : n}
+                        </button>
+                      ))}
                     </div>
-                  ))}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[9px] ${th.textFaint}`}>DTE</span>
+                      {[
+                        { label: 'All', min: 0, max: 999 },
+                        { label: '< 21', min: 0, max: 20 },
+                        { label: '21-45', min: 21, max: 45 },
+                        { label: '> 45', min: 46, max: 999 },
+                      ].map(d => (
+                        <button key={d.label} onClick={() => { setRankDteMin(d.min); setRankDteMax(d.max); }}
+                          className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                            rankDteMin === d.min && rankDteMax === d.max
+                              ? 'border-blue-500 text-blue-300 bg-blue-500/15'
+                              : `${th.border} ${th.textFaint} hover:border-blue-500/50`
+                          }`}>
+                          {d.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {results
+                      .filter(r => {
+                        const dte = r.bestCandidate?.dte ?? 0;
+                        return dte >= rankDteMin && dte <= rankDteMax;
+                      })
+                      .slice(0, rankTopN)
+                      .map((r, i) => (
+                        <div key={`${r.symbol}-${r.strategy}-${r.bestCandidate?.expiration}`} className="flex items-start gap-2">
+                          <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
+                            <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{i + 1}</span>
+                            <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(r.bestCandidate?.dte ?? 0)}`}>
+                              {r.bestCandidate?.dte ?? '—'}d
+                            </span>
+                          </div>
+                          <div className="flex-1">
+                            <ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} />
+                          </div>
+                        </div>
+                      ))}
+                  </div>
                 </div>
               )}
             </div>
