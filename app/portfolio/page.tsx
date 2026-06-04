@@ -767,8 +767,16 @@ async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSu
       `/option-chains/${encodeURIComponent(pos.symbol)}/nested?expiration-date=${expiry}`,
       token
     );
-    const strikes: any[] = strikeData?.data?.items?.[0]?.strikes ?? [];
-
+    cconst expiryItems: any[] = strikeData?.data?.items ?? [];
+    const matchedExpiry = expiryItems.find((item: any) => item['expiration-date'] === expiry);
+    const strikes: any[] = matchedExpiry?.strikes ?? [];
+    
+    // DEBUG: check delta sign convention from TastyTrade
+    if (strikes.length > 0) {
+      const sample = strikes[Math.floor(strikes.length / 2)]; // pick a middle strike
+      console.log(`DELTA CHECK ${pos.symbol}: put delta=${sample?.put?.delta} call delta=${sample?.call?.delta} strike=${sample?.['strike-price']}`);
+    }
+    
     // Step 3: find best short strike — closest to target delta, within range
     const origShort = pos.legs.find(l => l.direction === 'Short');
     const origLong  = pos.legs.find(l => l.direction === 'Long');
@@ -778,13 +786,15 @@ async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSu
     let best: any = null;
     let bestDiff = Infinity;
     for (const s of strikes) {
-      const leg = s[optType === 'P' ? 'put' : 'call'];
-      if (!leg) continue;
-      const delta = parseFloat(leg?.delta ?? '0');
-      const diff = Math.abs(delta - targetDelta);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = {
+    const leg = s[optType === 'P' ? 'put' : 'call'];
+    if (!leg) continue;
+    const delta = parseFloat(leg?.delta ?? '0');
+    // Skip strikes outside the acceptable delta range
+    if (delta < Math.min(deltaMin, deltaMax) || delta > Math.max(deltaMin, deltaMax)) continue;
+    const diff = Math.abs(delta - targetDelta);
+    if (diff < bestDiff) {
+      bestDiff = diff;        
+      best = {
           strike: s['strike-price'],
           delta,
           bid:  parseFloat(leg?.bid  ?? '0'),
