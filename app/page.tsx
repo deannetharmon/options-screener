@@ -1055,7 +1055,7 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
     return last ?? (bid && ask ? (bid + ask) / 2 : null);
   } catch { return null; }
 }
-async function getChain(symbol: string, token: string, RULES: RulesType, rankMode = false): Promise<{ expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean }> {
+async function getChain(symbol: string, token: string, RULES: RulesType): Promise<{ expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean }> {
   const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
   // Detect ETF/Index from TastyTrade instrument-type — no hardcoded list needed
   const instrumentType: string = nested?.data?.items?.[0]?.['instrument-type'] ?? '';
@@ -1065,9 +1065,7 @@ async function getChain(symbol: string, token: string, RULES: RulesType, rankMod
   const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
   for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
     const expDate: string = expGroup['expiration-date']; if (!expDate) continue;
-    const dte = daysUntil(expDate);
-    // In rank mode fetch all expirations ≥7 DTE — runChecklistAllExpirations handles per-expiration scoring
-    if (rankMode) { if (dte < 7) continue; } else { if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue; }
+    const dte = daysUntil(expDate); if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
     for (const strike of expGroup.strikes ?? []) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
       const callSym: string = strike['call'], putSym: string = strike['put'];
@@ -1590,6 +1588,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
   });
 
   const presets: { label: string; days: number; hint: string }[] = [
+    { label: '+1d',  days: 1,  hint: 'Tomorrow' },
     { label: '+2d',  days: 2,  hint: 'Revisit soon' },
     { label: '+1wk', days: 5,  hint: 'Post-spike settle' },
     { label: '+2wk', days: 10, hint: 'Post-earnings' },
@@ -1679,21 +1678,22 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
           ))}
           <div className={`mt-2 pt-2 border-t ${th.border}`}>
             <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5 uppercase`}>Pick a date:</p>
-            <div className="flex gap-1 items-center">
+            <label className="flex gap-1 items-center cursor-pointer">
               <input
                 ref={dateInputRef}
                 type="date"
                 min={new Date().toISOString().split('T')[0]}
                 value={selectedDate}
                 onChange={e => handleDatePick(e.target.value)}
+                onClick={e => e.stopPropagation()}
                 className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} focus:outline-none focus:border-emerald-500 cursor-pointer`}
               />
-              <button
+              <span
                 onClick={e => { e.stopPropagation(); try { dateInputRef.current?.showPicker(); } catch { dateInputRef.current?.focus(); } }}
-                className={`px-1.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint} hover:text-emerald-400 hover:border-emerald-600 transition-colors text-xs`}
+                className={`px-1.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint} hover:text-emerald-400 hover:border-emerald-600 transition-colors text-xs cursor-pointer`}
                 title="Open calendar"
-              >📅</button>
-            </div>
+              >📅</span>
+            </label>
           </div>
         </div>
       )}
@@ -4591,7 +4591,7 @@ export default function Home() {
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
-          const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker), isRankMode), getQuote(symbol, token)]);
+          const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
           for (const strategy of strategiesToScan) {
             scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
             if (isRankMode) {
@@ -4618,7 +4618,7 @@ export default function Home() {
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
-            const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker), isRankMode), getQuote(symbol, token)]);
+            const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
             for (const s of strategiesToScan) {
               scanCache.push({ symbol, strategy: s, metrics, chainData, price });
               if (isRankMode) {
