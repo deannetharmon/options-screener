@@ -2104,7 +2104,16 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
     );
   }
   if (c.strategy === 'IC' && c.shortCallStrike != null && c.longCallStrike != null) {
-    return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={th.text}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}<span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>{widthTag(c.callWidth ?? c.spreadWidth)}</div>;
+return (
+      <div className="text-xs shrink-0">
+        <span className={th.label}>Strikes </span>
+        <span className={th.text}>{c.shortStrike}/{c.longStrike}</span>
+        {widthTag(c.spreadWidth)}
+        <br />
+        <span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>
+        {widthTag(c.callWidth ?? c.spreadWidth)}
+      </div>
+    );
   }
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
@@ -2843,7 +2852,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
           <div className={`text-xs ${th.label} w-20 shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
           {c && <>
             <div className="text-xs shrink-0 w-36"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= dteCloseTarget ? 'text-red-500' : c.dte <= dteAlertThreshold ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
-            <div className="w-28 shrink-0"><StrikesDisplay c={c} th={th} /></div>
+            <div className={`${c.strategy === 'IC' ? 'w-44' : 'w-28'} shrink-0`}><StrikesDisplay c={c} th={th} /></div>
             {c.strategy === 'PMCC' ? <>
               <div className="text-xs shrink-0 w-24"><span className={th.label}>Net Debit </span><span className="text-red-400 font-bold">${c.netDebit?.toFixed(2) ?? '—'}</span></div>
               <div className="text-xs shrink-0 w-24"><span className={th.label}>Short Credit </span><span className="text-emerald-500 font-bold">${c.credit.toFixed(2)}</span></div>
