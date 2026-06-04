@@ -1417,7 +1417,7 @@ function runPMCCChecklist(
   };
 }
 
-function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, STOCK_RULES: RulesType, trendResult?: TrendResult, stockPresetLabel?: string, ETF_RULES_PARAM?: RulesType, etfPresetLabel?: string): ScreenResult {
+function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, STOCK_RULES: RulesType, trendResult?: TrendResult, stockPresetLabel?: string, ETF_RULES_PARAM?: RulesType, etfPresetLabel?: string, strictOnly = false): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
   const isIndex = chainData.isEtfOrIndex ?? INDEX_TICKERS.has(symbol.toUpperCase());
   // Auto-select the right rule set based on ticker type
@@ -1452,12 +1452,12 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, effectiveRules) : findBestSpread(chainItems, strategy, exp, price, effectiveRules); if (bestCandidate) break; } }
   // Rank mode fallback: if strict rules found nothing, try relaxed rules first, then fully unfiltered
-  if (!bestCandidate && ivrCheck.status !== 'fail' && validExpirations.length > 0) {
+  if (!strictOnly && !bestCandidate && ivrCheck.status !== 'fail' && validExpirations.length > 0) {
     const relaxedRules: RulesType = { ...effectiveRules, CREDIT_RATIO_MIN: 0.15, ROC_MIN_SPREAD: 8, ROC_MIN_IC: 12, OI_MIN: 50, POP_MIN: 55, SPREAD_DELTA_MIN: 0.10, SPREAD_DELTA_MAX: 0.40, IC_DELTA_MIN: 0.10, IC_DELTA_MAX: 0.35 };
     for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, relaxedRules) : findBestSpread(chainItems, strategy, exp, price, relaxedRules); if (bestCandidate) break; }
   }
   // Last resort: fully unfiltered — show best available strike regardless of rules
-  if (!bestCandidate && validExpirations.length > 0) {
+  if (!strictOnly && !bestCandidate && validExpirations.length > 0) {
     for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestICUnfiltered(chainItems, exp, price) : findBestSpreadUnfiltered(chainItems, strategy, exp, price); if (bestCandidate) break; }
   }
   if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
@@ -1515,7 +1515,7 @@ function runChecklistAllExpirations(
   for (const exp of validExpirations) {
     try {
       const singleExpChainData = { ...chainData, expirations: [exp] };
-      const result = runChecklist(symbol, strategy, metrics, singleExpChainData, price, sRules, trendResult, sLabel, eRules, eLabel);
+      const result = runChecklist(symbol, strategy, metrics, singleExpChainData, price, sRules, trendResult, sLabel, eRules, eLabel, true);
       if (result.bestCandidate) results.push(result);
     } catch {}
   }
