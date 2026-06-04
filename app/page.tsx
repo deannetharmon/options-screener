@@ -5,7 +5,6 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { createPortal } from 'react-dom';
 
-
 // Inject accent CSS variable style
 if (typeof document !== 'undefined') {
   if (!document.getElementById('hunter-accent-style')) {
