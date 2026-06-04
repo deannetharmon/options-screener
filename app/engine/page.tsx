@@ -2514,6 +2514,15 @@ export default function EnginePage() {
   });
   const [watchlistInput, setWatchlistInput] = useState(watchlist.join(', '));
   const [showSettings, setShowSettings] = useState(false);
+  const [deltaRange, setDeltaRange] = useState<[number, number]>(() => {
+    const r = getSavedEtfRules();
+    return [r.SPREAD_DELTA_MIN, r.SPREAD_DELTA_MAX];
+  });
+  const saveDeltaRange = (min: number, max: number) => {
+    const r = getSavedEtfRules();
+    try { localStorage.setItem('hunter-etf-rules', JSON.stringify({ ...r, SPREAD_DELTA_MIN: min, SPREAD_DELTA_MAX: max })); } catch {}
+    setDeltaRange([min, max]);
+  };
   const [status, setStatus] = useState<EngineStatus>('idle');
   const [engineData, setEngineData] = useState<EngineData | null>(null);
   const [error, setError] = useState('');
@@ -2633,6 +2642,34 @@ export default function EnginePage() {
         </div>
         <div className="flex items-center gap-3">
           {d && <span className={`text-[9px] ${th.textFaint}`}>Updated {d.lastUpdated.toLocaleTimeString()}</span>}
+          {/* Delta Range inline control */}
+          <div className="flex items-center gap-1.5">
+            <span className={`text-[9px] ${th.textFaint} tracking-wider`}>Δ RANGE</span>
+            {([
+              { label: 'Conservative', min: 0.15, max: 0.20 },
+              { label: 'Standard',     min: 0.20, max: 0.25 },
+              { label: 'Aggressive',   min: 0.25, max: 0.30 },
+            ] as { label: string; min: number; max: number }[]).map(p => (
+              <button key={p.label}
+                onClick={() => { saveDeltaRange(p.min, p.max); runEngine(); }}
+                className={`text-[9px] px-2 py-1 rounded border transition-colors font-bold ${
+                  deltaRange[0] === p.min && deltaRange[1] === p.max
+                    ? 'border-blue-500 text-blue-300 bg-blue-500/15'
+                    : `${th.border} ${th.textFaint} hover:border-blue-500/50 hover:text-blue-400`
+                }`}>
+                {p.label} {deltaRange[0] === p.min && deltaRange[1] === p.max ? `(${p.min}–${p.max})` : ''}
+              </button>
+            ))}
+            <input type="number" min="0.05" max="0.30" step="0.01" value={deltaRange[0]}
+              onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) { saveDeltaRange(v, deltaRange[1]); } }}
+              className={`w-14 text-[9px] px-1.5 py-1 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-blue-500 text-center`}
+              style={{ fontFamily: "'DM Mono', monospace" }} />
+            <span className={`text-[9px] ${th.textFaint}`}>–</span>
+            <input type="number" min="0.10" max="0.35" step="0.01" value={deltaRange[1]}
+              onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) { saveDeltaRange(deltaRange[0], v); } }}
+              className={`w-14 text-[9px] px-1.5 py-1 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-blue-500 text-center`}
+              style={{ fontFamily: "'DM Mono', monospace" }} />
+          </div>
           <button onClick={runEngine} disabled={status === 'loading'}
             className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors disabled:opacity-40`}>
             {status === 'loading' ? '⟳ Loading...' : '↺ Refresh'}
