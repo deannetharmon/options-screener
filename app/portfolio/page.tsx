@@ -41,6 +41,89 @@ const LS_PROFIT_TARGETS = 'hunter-profit-targets';
 const LS_AUDIT_LOG = 'hunter-audit-log';
 const LS_MEMORY = 'hunter-trading-memory';
 const LS_DRY_RUN = 'hunter-dry-run';
+const LS_WHEEL_CYCLES = 'hunter-wheel-cycles';
+
+// ── Wheel Cycle Types ──────────────────────────────────────────────────────
+interface WheelCC {
+  id: string;
+  entryDate: string;
+  strike: number;
+  expiry: string;
+  premium: number;
+  closedAt: number | null;
+  status: 'open' | 'expired' | 'called_away' | 'closed';
+}
+
+interface WheelCycle {
+  id: string;
+  symbol: string;
+  status: 'csp_open' | 'assigned' | 'cc_open' | 'called_away' | 'closed';
+  cspEntryDate: string;
+  cspStrike: number;
+  cspExpiry: string;
+  cspPremium: number;
+  cspClosedAt: number | null;
+  assignmentDate: string | null;
+  assignmentPrice: number | null;
+  sharesHeld: number | null;
+  coveredCalls: WheelCC[];
+  totalPremiumCollected: number;
+  effectiveCostBasis: number | null;
+  exitDate: string | null;
+  exitPrice: number | null;
+  totalPnl: number | null;
+  dismissedBanner: boolean;
+}
+
+function readWheelCycles(): WheelCycle[] {
+  try { return JSON.parse(localStorage.getItem(LS_WHEEL_CYCLES) ?? '[]'); } catch { return []; }
+}
+function writeWheelCycles(cycles: WheelCycle[]) {
+  try { localStorage.setItem(LS_WHEEL_CYCLES, JSON.stringify(cycles)); } catch {}
+}
+function getWheelCycleForPos(pos: Position): WheelCycle | null {
+  const cycles = readWheelCycles();
+  return cycles.find(c =>
+    c.symbol === pos.symbol &&
+    c.cspExpiry === pos.expDate &&
+    ['csp_open', 'assigned', 'cc_open'].includes(c.status)
+  ) ?? null;
+}
+function startWheelCycle(pos: Position): WheelCycle {
+  const cycles = readWheelCycles();
+  const shortLeg = pos.legs.find(l => l.direction === 'Short');
+  const creditPerContract = pos.creditReceived / 100;
+  const cycle: WheelCycle = {
+    id: crypto.randomUUID(),
+    symbol: pos.symbol,
+    status: 'csp_open',
+    cspEntryDate: pos.entryDate ?? new Date().toISOString().slice(0, 10),
+    cspStrike: shortLeg?.strikePrice ?? 0,
+    cspExpiry: pos.expDate,
+    cspPremium: creditPerContract,
+    cspClosedAt: null,
+    assignmentDate: null,
+    assignmentPrice: null,
+    sharesHeld: null,
+    coveredCalls: [],
+    totalPremiumCollected: creditPerContract,
+    effectiveCostBasis: shortLeg ? shortLeg.strikePrice - creditPerContract : null,
+    exitDate: null,
+    exitPrice: null,
+    totalPnl: null,
+    dismissedBanner: false,
+  };
+  cycles.push(cycle);
+  writeWheelCycles(cycles);
+  return cycle;
+}
+function dismissWheelBanner(pos: Position) {
+  const cycles = readWheelCycles();
+  const idx = cycles.findIndex(c =>
+    c.symbol === pos.symbol && c.cspExpiry === pos.expDate
+  );
+  if (idx >= 0) { cycles[idx].dismissedBanner = true; writeWheelCycles(cycles); }
+}
 const MEMORY_RAW_TRADES_PER_SYMBOL = 5;   // keep this many raw; summarize older
 const MEMORY_RAW_ACTIONS = 20;            // ring buffer size for action history
 const MEMORY_SUMMARIZE_INTERVAL_DAYS = 7; // re-summarize behavior weekly
@@ -737,13 +820,17 @@ async function fetchFreshPositionPrice(pos: Position, token: string): Promise<nu
 }
 
 // ── Roll Chain Suggestion ──────────────────────────────────────────────────
-async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSuggestion | null> {
+async function fetchRollSuggestion(pos: Position, token: string, deltaOverride?: [number, number]): Promise<RollSuggestion | null> {
   try {
     const optType = pos.strategy === 'BCS' ? 'C' : 'P';
-    // Delta targets: BPS short put -0.20 to -0.30, BCS short call +0.20 to +0.30
-    const targetDelta = pos.strategy === 'BCS' ? 0.25 : -0.25;
-    const deltaMin = pos.strategy === 'BCS' ?  0.20 : -0.30;
-    const deltaMax = pos.strategy === 'BCS' ?  0.30 : -0.20;
+    const savedRules = (() => {
+      try { return JSON.parse(localStorage.getItem('hunter-etf-rules') ?? '{}'); } catch { return {}; }
+    })();
+    const dMin = deltaOverride?.[0] ?? savedRules.SPREAD_DELTA_MIN ?? 0.20;
+    const dMax = deltaOverride?.[1] ?? savedRules.SPREAD_DELTA_MAX ?? 0.25;
+    const targetDelta = pos.strategy === 'BCS' ?  ((dMin + dMax) / 2) : -((dMin + dMax) / 2);
+    const deltaMin    = pos.strategy === 'BCS' ?  dMin : -dMax;
+    const deltaMax    = pos.strategy === 'BCS' ?  dMax : -dMin;
 
     // Step 1: get expirations, find one in 30-45 DTE window
     const chainData = await ttFetch(`/option-chains/${encodeURIComponent(pos.symbol)}/expirations`, token);
@@ -767,8 +854,16 @@ async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSu
       `/option-chains/${encodeURIComponent(pos.symbol)}/nested?expiration-date=${expiry}`,
       token
     );
-    const strikes: any[] = strikeData?.data?.items?.[0]?.strikes ?? [];
-
+    const expiryItems: any[] = strikeData?.data?.items ?? [];
+    const matchedExpiry = expiryItems.find((item: any) => item['expiration-date'] === expiry);
+    const strikes: any[] = matchedExpiry?.strikes ?? [];
+    
+    // DEBUG: check delta sign convention from TastyTrade
+    if (strikes.length > 0) {
+      const sample = strikes[Math.floor(strikes.length / 2)]; // pick a middle strike
+      console.log(`DELTA CHECK ${pos.symbol}: put delta=${sample?.put?.delta} call delta=${sample?.call?.delta} strike=${sample?.['strike-price']}`);
+    }
+    
     // Step 3: find best short strike — closest to target delta, within range
     const origShort = pos.legs.find(l => l.direction === 'Short');
     const origLong  = pos.legs.find(l => l.direction === 'Long');
@@ -778,13 +873,15 @@ async function fetchRollSuggestion(pos: Position, token: string): Promise<RollSu
     let best: any = null;
     let bestDiff = Infinity;
     for (const s of strikes) {
-      const leg = s[optType === 'P' ? 'put' : 'call'];
-      if (!leg) continue;
-      const delta = parseFloat(leg?.delta ?? '0');
-      const diff = Math.abs(delta - targetDelta);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = {
+    const leg = s[optType === 'P' ? 'put' : 'call'];
+    if (!leg) continue;
+    const delta = parseFloat(leg?.delta ?? '0');
+    // Skip strikes outside the acceptable delta range
+    if (delta < Math.min(deltaMin, deltaMax) || delta > Math.max(deltaMin, deltaMax)) continue;
+    const diff = Math.abs(delta - targetDelta);
+    if (diff < bestDiff) {
+      bestDiff = diff;        
+      best = {
           strike: s['strike-price'],
           delta,
           bid:  parseFloat(leg?.bid  ?? '0'),
@@ -1557,6 +1654,8 @@ function isShortDateEntry(pos: Position): boolean {
 
 function getRecommendation(pos: Position, trend: TrendResult | null): Recommendation {
   const pnlPct = pos.pnl != null && pos.creditReceived !== 0 ? (pos.pnl / pos.creditReceived) * 100 : 0;
+  const shortPuts  = pos.legs.filter(l => l.optionType === 'P' && l.direction === 'Short');
+  const shortCalls = pos.legs.filter(l => l.optionType === 'C' && l.direction === 'Short');
   const targetPct = pos.profitTarget * 100;
   const trendAgainst = trend && ((pos.strategy === 'BPS' && trend.trend === 'downtrend') || (pos.strategy === 'BCS' && trend.trend === 'uptrend'));
   const trendAligns = trend && ((pos.strategy === 'BPS' && trend.trend === 'uptrend') || (pos.strategy === 'BCS' && trend.trend === 'downtrend') || (pos.strategy === 'IC' && trend.trend === 'sideways'));
@@ -1575,7 +1674,38 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
   if (pos.needsClose && pnlPct < 0)  return { action: 'MANAGE', detail: `${pos.dte} DTE with loss — review close/roll, don't auto-cut` };
 
-  // Hard exits: breached strike, explicit stop breach, or very large loss.
+  // CSP — assignment-aware breach handling
+  if (pos.strategy === 'PUT') {
+    if (breached) return { action: 'MANAGE', detail: `Strike breached — prepare for assignment or roll to avoid it` };
+    if (pos.dte <= 5 && breached) return { action: 'MANAGE', detail: `Expiry near + breached — assignment likely, confirm you want shares` };
+    if (pos.needsClose && pnlPct >= 0) return { action: 'TAKE_PROFIT', detail: `${pos.dte} DTE — take profit or let expire worthless` };
+    if (pos.needsClose && pnlPct < 0)  return { action: 'MANAGE', detail: `${pos.dte} DTE with loss — roll down/out or accept assignment` };
+    if (pos.hitTarget) return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target hit — close and sell next CSP` };
+    if (!pos.hasGtc)   return { action: 'PLACE_GTC', detail: 'CSP — place profit target GTC' };
+    return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE, theta working` };
+  }
+
+  // Covered Call — assignment means shares called away
+  if (pos.strategy === 'CALL') {
+    if (breached) return { action: 'MANAGE', detail: `Strike breached — shares may be called away at expiry` };
+    if (pos.needsClose && pnlPct >= 0) return { action: 'TAKE_PROFIT', detail: `${pos.dte} DTE — close or let expire, sell next CC` };
+    if (pos.hitTarget) return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target hit — close and sell next CC` };
+    if (!pos.hasGtc)   return { action: 'PLACE_GTC', detail: 'Covered call — place profit target GTC' };
+    return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE, theta working` };
+  }
+
+  // IC — identify which side is breached
+  if (pos.strategy === 'IC') {
+    if (breached) {
+      const putSideBreached  = pos.buffer != null && pos.buffer <= 0 && shortPuts.length > 0;
+      const callSideBreached = pos.buffer != null && pos.buffer <= 0 && shortCalls.length > 0;
+      if (putSideBreached)  return { action: 'MANAGE', detail: `Put side breached — consider closing tested leg` };
+      if (callSideBreached) return { action: 'MANAGE', detail: `Call side breached — consider closing tested leg` };
+      return { action: 'MANAGE', detail: `Strike breached — close tested side` };
+    }
+  }
+
+  // Hard exits: spreads only (BPS/BCS)
   if (breached) return { action: 'CUT_LOSSES', detail: `Short strike breached — exit or roll immediately` };
   if (stopLossBreached) return { action: 'CUT_LOSSES', detail: `Stop threshold reached — follow the risk plan` };
   if (veryLargeLoss && trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% and trend is adverse — exit or roll` };
@@ -2032,9 +2162,11 @@ async function getTrend(symbol: string): Promise<TrendResult> {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function stratColor(strategy: string) {
-  if (strategy === 'BPS') return 'text-emerald-400 border-emerald-700';
-  if (strategy === 'BCS') return 'text-red-400 border-red-700';
-  if (strategy === 'IC')  return 'text-blue-400 ac-border-faint';
+  if (strategy === 'BPS')  return 'text-emerald-400 border-emerald-700';
+  if (strategy === 'BCS')  return 'text-red-400 border-red-700';
+  if (strategy === 'IC')   return 'text-blue-400 ac-border-faint';
+  if (strategy === 'PUT')  return 'text-amber-400 border-amber-700';
+  if (strategy === 'CALL') return 'text-orange-400 border-orange-700';
   return 'text-slate-400 border-slate-700';
 }
 function pnlColor(pnl: number | null) { return pnl == null ? 'text-slate-400' : pnl >= 0 ? 'text-emerald-400' : 'text-red-400'; }
@@ -2106,6 +2238,12 @@ function BatchConfirmModal({
   const [rollMode, setRollMode] = useState<Record<string, string>>({});
   const [rollAiGuidance, setRollAiGuidance] = useState<Record<string, { loading: boolean; text: string; error: string }>>({});
   const [rollSuggestions, setRollSuggestions] = useState<Record<string, RollSuggestion | null>>({});
+  const [rollDeltaRange, setRollDeltaRange] = useState<[number, number]>(() => {
+    try {
+      const r = JSON.parse(localStorage.getItem('hunter-etf-rules') ?? '{}');
+      return [r.SPREAD_DELTA_MIN ?? 0.20, r.SPREAD_DELTA_MAX ?? 0.25];
+    } catch { return [0.20, 0.25]; }
+  });
   const [verdicts, setVerdicts] = useState<Record<string, ActionVerdict>>({});
   const [overrides, setOverrides] = useState<Set<string>>(new Set());
   const [limitOverrides, setLimitOverrides] = useState<Record<string, string>>({});
@@ -2188,7 +2326,7 @@ function BatchConfirmModal({
           };
 
           if (action === 'CLOSE_ROLL') {
-            const suggestion = await fetchRollSuggestion(pos, token).catch(() => null);
+            const suggestion = await fetchRollSuggestion(pos, token, rollDeltaRange).catch(() => null);
             if (!cancelled) setRollSuggestions(prev => ({ ...prev, [pos.key]: suggestion }));
             if (suggestion && !rollInputs[pos.key]) {
               setRollInputs(prev => ({
@@ -2793,6 +2931,35 @@ Assess in 4-5 sentences: (1) explicitly state close-only cost vs net roll cost a
                               )}
                             </div>
                           )}
+                          {/* Delta Range control for this roll */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-[9px] ${th.textFaint} tracking-wider`}>Δ RANGE</span>
+                            {([
+                              { label: 'Conservative', min: 0.15, max: 0.20 },
+                              { label: 'Standard',     min: 0.20, max: 0.25 },
+                              { label: 'Aggressive',   min: 0.25, max: 0.30 },
+                            ] as { label: string; min: number; max: number }[]).map(p => (
+                              <button key={p.label}
+                                onClick={async () => {
+                                  const range: [number, number] = [p.min, p.max];
+                                  setRollDeltaRange(range);
+                                  const token = await getAccessToken();
+                                  const s = await fetchRollSuggestion(item.pos, token, range).catch(() => null);
+                                  if (s) setRollSuggestions(prev => ({ ...prev, [item.pos.key]: s }));
+                                }}
+                                className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                                  rollDeltaRange[0] === p.min && rollDeltaRange[1] === p.max
+                                    ? 'border-blue-500 text-blue-300 bg-blue-500/15'
+                                    : `${th.border} ${th.textFaint} hover:border-blue-500/50 hover:text-blue-400`
+                                }`}>
+                                {p.label}
+                              </button>
+                            ))}
+                            <span className={`text-[9px] ${th.textFaint}`}>
+                              ({rollDeltaRange[0].toFixed(2)}–{rollDeltaRange[1].toFixed(2)})
+                            </span>
+                          </div>
+
                           {suggestion && (
                             <div className={`rounded-lg border p-3 space-y-2 ${
                               rollIsBlocking(suggestion) ? 'border-red-500/50 bg-red-500/5' :
@@ -4988,6 +5155,10 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 }) {
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
+  const [wheelCycle, setWheelCycle] = useState<WheelCycle | null>(() => getWheelCycleForPos(pos));
+  const isWheelCandidate = (pos.strategy === 'PUT' || pos.strategy === 'CALL') && !wheelCycle;
+  const showWheelBanner  = isWheelCandidate && !readWheelCycles().find(c => c.symbol === pos.symbol && c.cspExpiry === pos.expDate && c.dismissedBanner);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetInput, setTargetInput] = useState(String(Math.round(pos.profitTarget * 100)));
   const [analysis, setAnalysis] = useState<PositionAnalysis | null>(null);
@@ -5078,6 +5249,24 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
           <span className="text-xs text-emerald-400 font-bold tracking-wider">{Math.round(pos.profitTarget * 100)}% PROFIT TARGET HIT</span>
         </div>
       )}
+      {showWheelBanner && !bannerDismissed && (
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-1.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-amber-400 text-xs">⟳</span>
+            <span className="text-xs text-amber-300 tracking-wide">Wheel candidate detected — track as a wheel cycle?</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={() => { const c = startWheelCycle(pos); setWheelCycle(c); }}
+              className="text-[9px] px-2 py-0.5 border border-amber-500 text-amber-300 rounded font-bold hover:bg-amber-500/20 transition-colors">
+              Start Wheel
+            </button>
+            <button onClick={() => { dismissWheelBanner(pos); setBannerDismissed(true); }}
+              className="text-[9px] px-2 py-0.5 border border-white/10 text-white/30 rounded hover:border-white/30 hover:text-white/50 transition-colors">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-stretch">
         {/* Checkbox */}
@@ -5100,6 +5289,9 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             <div className="border-t-2 border-slate-600/60 pt-1">
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
               <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
+              {wheelCycle && (
+                <span className="ml-1 text-[9px] px-1 py-0.5 border border-amber-600/60 rounded text-amber-400 font-bold">WHEEL</span>
+              )}
               {/* Chart button */}
               <div className="relative mt-1">
                 <button
@@ -5503,7 +5695,11 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
           {/* ── MID Tracker ─────────────────────────────────────────────── */}
           {(() => {
             const qty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
+<<<<<<< HEAD
             const credit = pos.creditReceived / 100;
+=======
+            const credit = pos.creditReceived / (qty * 100);
+>>>>>>> feature/portfolio-intelligence
             const mid = pos.currentValue != null ? pos.currentValue / (qty * 100) : null;
             const stopPrice = pos.stopLossPrice;
             const target50 = credit * (1 - pos.profitTarget);
@@ -5565,6 +5761,40 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             );
           })()}
 
+<<<<<<< HEAD
+=======
+{/* ── Wheel Cycle Summary ─────────────────────────────────── */}
+          {(pos.strategy === 'PUT' || pos.strategy === 'CALL') && (
+            <div className="mb-4">
+              <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Wheel Cycle</p>
+              {wheelCycle ? (
+                <div className="flex items-center gap-6 flex-wrap">
+                  {[
+                    { label: 'Status',      val: wheelCycle.status.replace('_', ' ').toUpperCase(), cls: 'text-amber-400' },
+                    { label: 'CSP Strike',  val: `$${wheelCycle.cspStrike}`,                        cls: 'text-white' },
+                    { label: 'Premium In',  val: `$${wheelCycle.totalPremiumCollected.toFixed(2)}`,  cls: 'text-emerald-400' },
+                    { label: 'Eff. Basis',  val: wheelCycle.effectiveCostBasis != null ? `$${wheelCycle.effectiveCostBasis.toFixed(2)}` : '—', cls: 'text-blue-400' },
+                    { label: 'CCs Sold',    val: String(wheelCycle.coveredCalls.length),             cls: 'text-white' },
+                  ].map(({ label, val, cls }) => (
+                    <div key={label}>
+                      <p className={`text-[8px] ${th.textFaint} uppercase tracking-wider`}>{label}</p>
+                      <p className={`text-[11px] font-bold ${cls}`} style={{ fontFamily: "'DM Mono', monospace" }}>{val}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <p className={`text-[10px] ${th.textFaint}`}>Not tracked as a wheel cycle.</p>
+                  <button onClick={() => { const c = startWheelCycle(pos); setWheelCycle(c); }}
+                    className="text-[9px] px-2 py-0.5 border border-amber-600/60 text-amber-400 rounded font-bold hover:bg-amber-500/10 transition-colors">
+                    ⟳ Track as Wheel
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+>>>>>>> feature/portfolio-intelligence
           <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Legs</p>
           <div className="space-y-1.5">
             {pos.legs.map((leg, i) => (

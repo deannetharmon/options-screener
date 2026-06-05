@@ -5,7 +5,6 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { createPortal } from 'react-dom';
 
-
 // Inject accent CSS variable style
 if (typeof document !== 'undefined') {
   if (!document.getElementById('hunter-accent-style')) {
@@ -127,6 +126,7 @@ interface TrendResult {
     momentum20: number;
     momentum60: number;
     momentum90: number;
+    rsi14: number;
     ma20Slope: number;
     ma50Slope: number;
     range60: number;
@@ -376,36 +376,26 @@ function buildEntryCalUrl(result: ScreenResult, businessDays: number, directDate
 }
 
 // OCR + merge helpers
-const OCR_TICKER_BLACKLIST = new Set([
-  // Common Finviz / UI / financial-label fragments that OCR mistakes for tickers
-  'USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ',
-  'BPS','BCS','IC','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO',
-  'AI','AN','IS','IT','AT','OR','AS','BY','IN','ON','TO','OF','NO','ANY','ALL',
-  'EPS','TTM','EV','LT','TA','SMA','RSI','PEG','PE','PB','PS',
-  'BETA','AVG','PRICE','VOLUME','FLOAT','GAP','NEWS','BASIC','CUSTOM','FILTER','SIGNAL','TICKERS',
-  // Single characters — never a valid US ticker
-  'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
-  // Common 2-char OCR noise from vertical ticker list misreads
-  'EL','ME','AL','LE','RE','DE','VE','TE','SE','CE','FE','HE','BE','KE','NE','PE','WE',
-  'LI','TI','VI','GI','DI','RI','FI','MI','NI','PI','SI','HI','BI','KI',
-  'LO','DO','GO','HO','KO','MO','PO','SO','TO','VO','WO','YO',
-  'IL','IM','IP','IR','IX',
-  // Other common noise tokens
-  'EW','RN','TT','LL','MM','NN','RR','SS','TH','WH','CH','SH','PH',
-]);
+//
+// Important design rule:
+// - Manual user-entered ticker boxes should NOT use a blacklist. If the user types KO, C, F, T, X, etc., allow it.
+// - OCR should extract ticker-shaped candidates, then validate them against market data instead of guessing with a brittle blacklist.
+//
+// This prevents real tickers like KO, MO, C, F, T, X, V from being blocked while still keeping OCR imports clean.
 
 function normalizeTickerToken(raw: string): string | null {
   const token = raw.trim().toUpperCase().replace(/[–—]/g, '-').replace(/\.$/, '');
   if (!token) return null;
 
-  // Yahoo Finance uses hyphen for Berkshire class B.
+  // Yahoo-style class-share normalization.
   const normalized = token.replace('.', '-');
   if (normalized === 'BRK-B' || normalized === 'BRK/B') return 'BRK-B';
+  if (normalized === 'BF-B' || normalized === 'BF/B') return 'BF-B';
 
-  // Basic US ticker shape: 2–5 letters, optional class suffix e.g. BRK-B, BF-B.
-  // Minimum 2 characters — single letters are never valid tickers in this context.
-  if (!/^[A-Z]{2,5}(-[A-Z])?$/.test(normalized)) return null;
-  if (OCR_TICKER_BLACKLIST.has(normalized)) return null;
+  // Allow valid US ticker shapes, including one-character tickers:
+  // C, F, T, X, V, etc.
+  if (!/^[A-Z]{1,5}(-[A-Z])?$/.test(normalized)) return null;
+
   return normalized;
 }
 
@@ -422,6 +412,34 @@ function normalizeTickerInput(input: string): string[] {
       .map(normalizeTickerToken)
       .filter((t): t is string => Boolean(t))
   ));
+}
+
+async function validateTickersWithMarketData(tickers: string[]): Promise<string[]> {
+  const unique = Array.from(new Set(tickers));
+  if (unique.length === 0) return [];
+
+  let token: string;
+  try {
+    token = await getAccessToken();
+  } catch {
+    // If auth is unavailable, fall back to shape-valid candidates rather than dropping everything.
+    return unique;
+  }
+
+  const valid: string[] = [];
+
+  // Validate sequentially to avoid blasting the API when OCR produces noisy text.
+  // This is intentionally conservative and deterministic.
+  for (const symbol of unique) {
+    try {
+      const quote = await getQuote(symbol, token);
+      if (quote != null && quote > 0) valid.push(symbol);
+    } catch {
+      // Invalid/no-data symbols are ignored.
+    }
+  }
+
+  return valid;
 }
 
 async function extractTickersFromImage(file: File): Promise<string[]> {
@@ -452,16 +470,18 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
   const data = await response.json();
   const rawText: string = data?.text ?? '';
 
-  const tickers: string[] = [];
+  const candidates: string[] = [];
   for (const line of rawText.split('\n')) {
-    // Split each line into tokens to handle grid/badge layouts (multiple tickers per line)
+    // Split each line into tokens to handle grid/badge layouts (multiple tickers per line).
     for (const token of line.split(/[\s,|•·]+/)) {
       const ticker = normalizeTickerToken(token.trim());
-      if (ticker) tickers.push(ticker);
+      if (ticker) candidates.push(ticker);
     }
   }
 
-  return Array.from(new Set(tickers));
+  // OCR is allowed to capture short real tickers like KO, C, F, T, X, V.
+  // Market-data validation decides what is actually real.
+  return validateTickersWithMarketData(candidates);
 }
 
 function mergeTickers(existing: string, newTickers: string[]): string {
@@ -721,6 +741,7 @@ const LS_SESSION_LOADED_AT = 'hunter-session-loaded-at';
 const LS_RESULTS_CACHE = 'hunter-results-cache';
 const LS_RAW_SCAN_CACHE = 'hunter-raw-scan-cache';
 const LS_RESULTS_CACHE_AT = 'hunter-results-cache-at';
+const LS_DISMISSED_WARNINGS = 'hunter-dismissed-portfolio-warnings';
 
 // ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
@@ -1418,7 +1439,7 @@ function runPMCCChecklist(
   };
 }
 
-function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, STOCK_RULES: RulesType, trendResult?: TrendResult, stockPresetLabel?: string, ETF_RULES_PARAM?: RulesType, etfPresetLabel?: string): ScreenResult {
+function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex?: boolean }, price: number | null, STOCK_RULES: RulesType, trendResult?: TrendResult, stockPresetLabel?: string, ETF_RULES_PARAM?: RulesType, etfPresetLabel?: string, strictOnly = false): ScreenResult {
   const failReasons: string[] = [], ivrValue = metrics.ivRank, earningsDate = metrics.earningsExpectedDate;
   const isIndex = chainData.isEtfOrIndex ?? INDEX_TICKERS.has(symbol.toUpperCase());
   // Auto-select the right rule set based on ticker type
@@ -1453,12 +1474,12 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   let bestCandidate: SpreadCandidate | null = null;
   if (ivrCheck.status !== 'fail' && earningsCheck.status !== 'fail' && validExpirations.length > 0) { for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, effectiveRules) : findBestSpread(chainItems, strategy, exp, price, effectiveRules); if (bestCandidate) break; } }
   // Rank mode fallback: if strict rules found nothing, try relaxed rules first, then fully unfiltered
-  if (!bestCandidate && ivrCheck.status !== 'fail' && validExpirations.length > 0) {
+  if (!strictOnly && !bestCandidate && ivrCheck.status !== 'fail' && validExpirations.length > 0) {
     const relaxedRules: RulesType = { ...effectiveRules, CREDIT_RATIO_MIN: 0.15, ROC_MIN_SPREAD: 8, ROC_MIN_IC: 12, OI_MIN: 50, POP_MIN: 55, SPREAD_DELTA_MIN: 0.10, SPREAD_DELTA_MAX: 0.40, IC_DELTA_MIN: 0.10, IC_DELTA_MAX: 0.35 };
     for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestIC(chainItems, exp, price, relaxedRules) : findBestSpread(chainItems, strategy, exp, price, relaxedRules); if (bestCandidate) break; }
   }
   // Last resort: fully unfiltered — show best available strike regardless of rules
-  if (!bestCandidate && validExpirations.length > 0) {
+  if (!strictOnly && !bestCandidate && validExpirations.length > 0) {
     for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestICUnfiltered(chainItems, exp, price) : findBestSpreadUnfiltered(chainItems, strategy, exp, price); if (bestCandidate) break; }
   }
   if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
@@ -1496,6 +1517,33 @@ const statusColor = (s: string) => s === 'pass' ? 'text-emerald-500' : s === 'fa
 const statusIcon = (s: string) => s === 'pass' ? '✓' : s === 'fail' ? '✗' : s === 'warn' ? '⚠' : '—';
 const trendColor = (t: string) => t === 'uptrend' ? 'text-emerald-500' : t === 'downtrend' ? 'text-red-500' : t === 'sideways' ? 'text-blue-500' : 'text-slate-400';
 const trendIcon = (t: string) => t === 'uptrend' ? '↑' : t === 'downtrend' ? '↓' : t === 'sideways' ? '→' : '?';
+function dteBadgeColor(dte: number): string {
+  if (dte < 7)  return 'text-red-500 border-red-700 bg-red-500/10';
+  if (dte < 14) return 'text-orange-500 border-orange-700 bg-orange-500/10';
+  if (dte < 21) return 'text-orange-400 border-orange-600 bg-orange-400/10';
+  if (dte < 31) return 'text-yellow-400 border-yellow-600 bg-yellow-400/10';
+  if (dte <= 45) return 'text-emerald-400 border-emerald-700 bg-emerald-500/10';
+  return 'text-blue-400 border-blue-700 bg-blue-500/10';
+}
+
+function runChecklistAllExpirations(
+  symbol: string, strategy: 'BPS' | 'BCS' | 'IC',
+  metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean },
+  price: number | null, sRules: RulesType, trendResult: TrendResult | undefined,
+  sLabel: string | undefined, eRules: RulesType, eLabel: string | undefined
+): ScreenResult[] {
+  const validExpirations = chainData.expirations.filter(exp => daysUntil(exp) >= 7);
+  const results: ScreenResult[] = [];
+  for (const exp of validExpirations) {
+    try {
+      const singleExpChainData = { ...chainData, expirations: [exp] };
+      const result = runChecklist(symbol, strategy, metrics, singleExpChainData, price, sRules, trendResult, sLabel, eRules, eLabel, true);
+      if (result.bestCandidate) results.push(result);
+    } catch {}
+  }
+  return results;
+}
+
 const strategyAccent = (s: string) => s === 'BPS' ? 'border-l-4 border-l-emerald-500' : s === 'BCS' ? 'border-l-4 border-l-red-500' : 'border-l-4 border-l-blue-500';
 
 // ── Theme Toggle ───────────────────────────────────────────────────────────
@@ -1562,6 +1610,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
   });
 
   const presets: { label: string; days: number; hint: string }[] = [
+    { label: '+1d',  days: 1,  hint: 'Tomorrow' },
     { label: '+2d',  days: 2,  hint: 'Revisit soon' },
     { label: '+1wk', days: 5,  hint: 'Post-spike settle' },
     { label: '+2wk', days: 10, hint: 'Post-earnings' },
@@ -1651,21 +1700,22 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
           ))}
           <div className={`mt-2 pt-2 border-t ${th.border}`}>
             <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5 uppercase`}>Pick a date:</p>
-            <div className="flex gap-1 items-center">
+            <label className="flex gap-1 items-center cursor-pointer">
               <input
                 ref={dateInputRef}
                 type="date"
                 min={new Date().toISOString().split('T')[0]}
                 value={selectedDate}
                 onChange={e => handleDatePick(e.target.value)}
+                onClick={e => e.stopPropagation()}
                 className={`flex-1 ${th.input} border ${th.inputBorder} rounded px-2 py-1.5 text-xs ${th.text} focus:outline-none focus:border-emerald-500 cursor-pointer`}
               />
-              <button
+              <span
                 onClick={e => { e.stopPropagation(); try { dateInputRef.current?.showPicker(); } catch { dateInputRef.current?.focus(); } }}
-                className={`px-1.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint} hover:text-emerald-400 hover:border-emerald-600 transition-colors text-xs`}
+                className={`px-1.5 py-1.5 border ${th.inputBorder} rounded ${th.textFaint} hover:text-emerald-400 hover:border-emerald-600 transition-colors text-xs cursor-pointer`}
                 title="Open calendar"
-              >📅</button>
-            </div>
+              >📅</span>
+            </label>
           </div>
         </div>
       )}
@@ -2104,7 +2154,16 @@ function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme
     );
   }
   if (c.strategy === 'IC' && c.shortCallStrike != null && c.longCallStrike != null) {
-    return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={th.text}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}<span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>{widthTag(c.callWidth ?? c.spreadWidth)}</div>;
+return (
+      <div className="text-xs shrink-0">
+        <span className={th.label}>Strikes </span>
+        <span className={th.text}>{c.shortStrike}/{c.longStrike}</span>
+        {widthTag(c.spreadWidth)}
+        <br />
+        <span className={th.text}>{c.shortCallStrike}/{c.longCallStrike}</span>
+        {widthTag(c.callWidth ?? c.spreadWidth)}
+      </div>
+    );
   }
   return <div className="text-xs shrink-0"><span className={th.label}>Strikes </span><span className={`${th.text} font-medium`}>{c.shortStrike}/{c.longStrike}</span>{widthTag(c.spreadWidth)}</div>;
 }
@@ -2610,6 +2669,44 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   const c = result.bestCandidate;
   const t = result.trendResult;
   const matchingPositions = (existingPositions ?? []).filter(p => p.symbol === result.symbol);
+  const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(LS_DISMISSED_WARNINGS) ?? '[]'));
+    } catch {
+      return new Set();
+    }
+  });
+
+  const warningId = c
+    ? `${result.symbol}-${result.strategy}-${c.expiration}-${c.shortStrike}-${c.longStrike}-${portfolioRisk?.level ?? 'clear'}`
+    : `${result.symbol}-${result.strategy}-${portfolioRisk?.level ?? 'clear'}`;
+
+  const dismissWarning = () => {
+    const next = new Set(dismissedWarnings);
+    next.add(warningId);
+    setDismissedWarnings(next);
+    try {
+      localStorage.setItem(LS_DISMISSED_WARNINGS, JSON.stringify(Array.from(next)));
+    } catch {}
+  };
+
+  const showPortfolioWarning = Boolean(
+    portfolioRisk &&
+    portfolioRisk.level !== 'clear' &&
+    !dismissedWarnings.has(warningId)
+  );
+
+  const otmPct = (() => {
+    if (!c || result.price == null || result.price <= 0) return null;
+    if (c.strategy === 'BPS') return ((result.price - c.shortStrike) / result.price) * 100;
+    if (c.strategy === 'BCS') return ((c.shortStrike - result.price) / result.price) * 100;
+    if (c.strategy === 'IC' && c.shortCallStrike != null) {
+      const putOtm = ((result.price - c.shortStrike) / result.price) * 100;
+      const callOtm = ((c.shortCallStrike - result.price) / result.price) * 100;
+      return Math.min(putOtm, callOtm);
+    }
+    return null;
+  })();
 
   useEffect(() => {
     if (!existingPositions || existingPositions.length === 0) return;
@@ -2843,7 +2940,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
           <div className={`text-xs ${th.label} w-20 shrink-0`}>IVR <span className={result.ivr != null && result.ivr >= 30 ? 'text-emerald-500 font-bold' : 'text-red-500 font-bold'}>{result.ivr != null ? `${result.ivr.toFixed(1)}%` : 'N/A'}</span></div>
           {c && <>
             <div className="text-xs shrink-0 w-36"><span className={th.label}>Exp </span><span className={`${th.text} font-medium`}>{c.expiration}</span><span className={`ml-1 font-medium ${c.dte <= dteCloseTarget ? 'text-red-500' : c.dte <= dteAlertThreshold ? 'text-yellow-500' : th.textFaint}`}>({c.dte}d)</span></div>
-            <div className="w-28 shrink-0"><StrikesDisplay c={c} th={th} /></div>
+            <div className={`${c.strategy === 'IC' ? 'w-44' : 'w-28'} shrink-0`}><StrikesDisplay c={c} th={th} /></div>
             {c.strategy === 'PMCC' ? <>
               <div className="text-xs shrink-0 w-24"><span className={th.label}>Net Debit </span><span className="text-red-400 font-bold">${c.netDebit?.toFixed(2) ?? '—'}</span></div>
               <div className="text-xs shrink-0 w-24"><span className={th.label}>Short Credit </span><span className="text-emerald-500 font-bold">${c.credit.toFixed(2)}</span></div>
@@ -2851,10 +2948,22 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               <div className="text-xs shrink-0 w-20"><span className={th.label}>Max P </span><span className="text-emerald-400 font-bold">${c.maxProfit?.toFixed(2) ?? '—'}</span></div>
               <div className="text-xs shrink-0 w-20"><span className={th.label}>LEAPS </span><span className={`${th.text} font-medium`}>{c.longDte}d</span></div>
             </> : <>
-              <div className="text-xs shrink-0 w-20"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-              <div className="text-xs shrink-0 w-16"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
-              <div className="text-xs shrink-0 w-16"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
-              <div className="text-xs shrink-0 w-20"><span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+              <div className="text-xs shrink-0 w-20">
+                <div><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+                <div><span className={th.label}>Width </span><span className={th.textFaint}>{(c.creditRatio * 100).toFixed(0)}%</span></div>
+              </div>
+              <div className="text-xs shrink-0 w-16">
+                <div><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
+                <div className="text-[10px]"><span className={th.label}>ROC </span><span className={th.textFaint}>{c.roc.toFixed(0)}%</span></div>
+              </div>
+              <div className="text-xs shrink-0 w-20">
+                <div><span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+                <div><span className={th.label}>RSI </span><span className={th.textFaint}>{result.trendResult?.metrics?.rsi14?.toFixed(0) ?? '—'}</span></div>
+              </div>
+              <div className="text-xs shrink-0 w-16">
+                <div><span className={th.label}>OTM </span><span className={`${otmPct != null && otmPct >= 5 ? 'text-emerald-400' : 'text-amber-400'} font-medium`}>{otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}</span></div>
+                <div className="text-[10px]"><span className={th.label}>OI </span><span className={th.textFaint}>{Math.min(c.shortOI, c.longOI)}</span></div>
+              </div>
             </>}
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
             {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
@@ -2973,7 +3082,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
       )}
 
       {/* Portfolio risk banner */}
-      {portfolioRisk && portfolioRisk.level !== 'clear' && (
+      {showPortfolioWarning && portfolioRisk && (
         <div className={`border-t px-4 py-2.5 rounded-b-lg ${
           portfolioRisk.level === 'same_strikes'
             ? 'border-red-500/40 bg-red-500/8'
@@ -2997,6 +3106,16 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                 }`}>{w}</p>
               ))}
             </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                dismissWarning();
+              }}
+              className="ml-auto text-[9px] px-2 py-0.5 border border-white/20 rounded text-white/50 hover:text-white hover:border-white/40 transition-colors"
+              title="Hide this warning for this specific setup"
+            >
+              Dismiss
+            </button>
           </div>
           {/* Recommendation */}
           <p className={`text-[10px] leading-relaxed ml-5 ${
@@ -3681,8 +3800,27 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     const sign = value >= 0 ? 1 : -1;
     return sign * Math.min(1, Math.abs(value) / fullAt) * maxPoints;
   };
+  const calcRsi = (values: number[], period = 14): number | null => {
+    if (values.length < period + 1) return null;
+
+    let gains = 0;
+    let losses = 0;
+    for (let i = values.length - period; i < values.length; i++) {
+      const change = values[i] - values[i - 1];
+      if (change >= 0) gains += change;
+      else losses += Math.abs(change);
+    }
+
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    if (avgLoss === 0) return 100;
+
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+  };
 
   const currentPrice = closes[closes.length - 1];
+  const rsi14 = calcRsi(closes, 14) ?? 50;
   const ma20 = avg(closes.slice(-20));
   const ma50 = avg(closes.slice(-50));
   const ma200 = closes.length >= 200 ? avg(closes.slice(-200)) : avg(closes);
@@ -3829,6 +3967,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     momentum40,
     momentum60,
     momentum90,
+    rsi14,
     ma20Slope,
     ma50Slope,
     range60,
@@ -4405,6 +4544,9 @@ export default function Home() {
     try { const k = localStorage.getItem(LS_ACTIVE_PRESET_ETF); return RULE_PRESETS.find(p => p.key === k)?.label ?? 'ETF Custom'; } catch { return 'ETF Custom'; }
   });
   const [autoTrendEntries, setAutoTrendEntries] = useState<AutoTrendEntry[]>([]);
+  const [rankTopN, setRankTopN] = useState<number>(20);
+  const [rankDteMin, setRankDteMin] = useState<number>(0);
+  const [rankDteMax, setRankDteMax] = useState<number>(999);
   const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
   useEffect(() => {
     loadExistingPositions().then(setExistingPositions).catch(() => {});
@@ -4543,17 +4685,28 @@ export default function Home() {
         setStatus(`Scanning ${symbol} (${i+1}/${autoList.length})...`);
         let trendResult: TrendResult | undefined;
         try { trendResult = await getTrend(symbol); } catch (e) { console.warn(e); }
-        const strategy: 'BPS' | 'BCS' | 'IC' =
+        const trendStrategy: 'BPS' | 'BCS' | 'IC' =
           trendResult?.strategy === 'BPS' || trendResult?.strategy === 'BCS' || trendResult?.strategy === 'IC'
             ? trendResult.strategy : 'IC';
+        const isRankMode = (modeOverride ?? screenMode) === 'rank';
+        const strategiesToScan: ('BPS' | 'BCS' | 'IC')[] = isRankMode ? ['BPS', 'BCS', 'IC'] : [trendStrategy];
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
-          const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+          let trendResult: TrendResult | undefined;
+          try { trendResult = await getTrend(symbol); } catch {}
+          
+          const [chainData, price] = await Promise.all([
+            getChain(symbol, token, getChainRules(isEtfTicker)),
+            getQuote(symbol, token),
+          ]);
+          
           scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
           screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+            }
+          }
         } catch (e: any) {
-          screenResults.push(errResult(symbol, strategy, e.message, trendResult));
+          screenResults.push(errResult(symbol, trendStrategy, e.message, trendResult));
         }
       }
 
@@ -4565,12 +4718,20 @@ export default function Home() {
       ]) {
         for (const symbol of symbols) {
           setStatus(`Scanning ${symbol}...`);
+          const isRankMode = (modeOverride ?? screenMode) === 'rank';
+          const strategiesToScan: ('BPS' | 'BCS' | 'IC')[] = isRankMode ? ['BPS', 'BCS', 'IC'] : [strategy];
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
             const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
-            scanCache.push({ symbol, strategy, metrics, chainData, price });
-            screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
+            for (const s of strategiesToScan) {
+              scanCache.push({ symbol, strategy: s, metrics, chainData, price });
+              if (isRankMode) {
+                screenResults.push(...runChecklistAllExpirations(symbol, s, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
+              } else {
+                screenResults.push(runChecklist(symbol, s, metrics, chainData, price, sRules, undefined, sLabel, eRules, eLabel));
+              }
+            }
           } catch (e: any) {
             screenResults.push(errResult(symbol, strategy, e.message));
           }
@@ -4596,9 +4757,11 @@ export default function Home() {
       try { localStorage.setItem(LS_RAW_SCAN_CACHE, JSON.stringify(scanCache)); } catch {}
 
       // Remove duplicates and sort
-      const uniqueResults = screenResults.filter((r, index, self) =>
-        index === self.findIndex(t => t.symbol === r.symbol && t.strategy === r.strategy)
-      );
+      const uniqueResults = (modeOverride ?? screenMode) === 'rank'
+        ? screenResults
+        : screenResults.filter((r, index, self) =>
+            index === self.findIndex(t => t.symbol === r.symbol && t.strategy === r.strategy)
+          );
 
       if ((modeOverride ?? screenMode) === 'rank') {
         // Sort by score descending; no-candidate results go to the bottom
@@ -4643,12 +4806,12 @@ export default function Home() {
             <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-            <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>HUNTER</span>
-            <a href="/portfolio"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
+            <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
             <a href="/engine" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">ENGINE</a>
-            <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</a>
-            <a href="/trade-log"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
-            <a href="/performance"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
+            <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>HUNTER</span>
+            <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE -&gt; REPEAT</a>
+            <a href="/trade-log" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
+            <a href="/performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
           </nav>
         </div>
         
@@ -4935,13 +5098,61 @@ export default function Home() {
                 </>
               ) : (
                 <div>
-                  <p className="text-[9px] text-purple-400 tracking-widest mb-2 font-medium">⬡ RANKED — ALL OPPORTUNITIES</p>
-                  <div className="space-y-2">{results.map((r, i) => (
-                    <div key={`${r.symbol}-${r.strategy}`} className="flex items-start gap-2">
-                      <span className={`text-[9px] ${th.textFaint} w-5 text-right shrink-0 mt-4`}>{i + 1}</span>
-                      <div className="flex-1"><ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} /></div>
+                  <div className="flex items-center gap-3 mb-3 flex-wrap">
+                    <p className="text-[9px] text-purple-400 tracking-widest font-medium">⬡ RANKED — ALL OPPORTUNITIES</p>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[9px] ${th.textFaint}`}>Show top</span>
+                      {[10, 20, 50, 999].map(n => (
+                        <button key={n} onClick={() => setRankTopN(n)}
+                          className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                            rankTopN === n
+                              ? 'border-purple-500 text-purple-300 bg-purple-500/15'
+                              : `${th.border} ${th.textFaint} hover:border-purple-500/50`
+                          }`}>
+                          {n === 999 ? 'All' : n}
+                        </button>
+                      ))}
                     </div>
-                  ))}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[9px] ${th.textFaint}`}>DTE</span>
+                      {[
+                        { label: 'All', min: 0, max: 999 },
+                        { label: '< 21', min: 0, max: 20 },
+                        { label: '21-45', min: 21, max: 45 },
+                        { label: '> 45', min: 46, max: 999 },
+                      ].map(d => (
+                        <button key={d.label} onClick={() => { setRankDteMin(d.min); setRankDteMax(d.max); }}
+                          className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                            rankDteMin === d.min && rankDteMax === d.max
+                              ? 'border-blue-500 text-blue-300 bg-blue-500/15'
+                              : `${th.border} ${th.textFaint} hover:border-blue-500/50`
+                          }`}>
+                          {d.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {results
+                      .filter(r => {
+                        const dte = r.bestCandidate?.dte ?? 0;
+                        return dte >= rankDteMin && dte <= rankDteMax;
+                      })
+                      .slice(0, rankTopN)
+                      .map((r, i) => (
+                        <div key={`${r.symbol}-${r.strategy}-${r.bestCandidate?.expiration}`} className="flex items-start gap-2">
+                          <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
+                            <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{i + 1}</span>
+                            <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(r.bestCandidate?.dte ?? 0)}`}>
+                              {r.bestCandidate?.dte ?? '—'}d
+                            </span>
+                          </div>
+                          <div className="flex-1">
+                            <ResultCard result={r} th={th} rules={r.isEtf ? runtimeEtfRules : runtimeStockRules} screenMode={screenMode} rankConfig={rankConfig} onTrade={setTradeResult} cachedEntry={rawScanCache.find(e => e.symbol === r.symbol && e.strategy === r.strategy)} existingPositions={existingPositions} />
+                          </div>
+                        </div>
+                      ))}
+                  </div>
                 </div>
               )}
             </div>
