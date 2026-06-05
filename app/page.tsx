@@ -2666,7 +2666,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
     next.add(warningId);
     setDismissedWarnings(next);
     try {
-      localStorage.setItem(LS_DISMISSED_WARNINGS, JSON.stringify([...next]));
+      localStorage.setItem(LS_DISMISSED_WARNINGS, JSON.stringify(Array.from(next)));
     } catch {}
   };
 
