@@ -376,36 +376,26 @@ function buildEntryCalUrl(result: ScreenResult, businessDays: number, directDate
 }
 
 // OCR + merge helpers
-const OCR_TICKER_BLACKLIST = new Set([
-  // Common Finviz / UI / financial-label fragments that OCR mistakes for tickers
-  'USA','ETF','CEO','IPO','NYSE','NASDAQ','OTC','ADR','INC','LLC','LTD','PLC','THE','AND','FOR','REQ',
-  'BPS','BCS','IC','PUT','CALL','OTM','ITM','ATM','IVR','DTE','ROC','POP','GTC','OCO',
-  'AI','AN','IS','IT','AT','OR','AS','BY','IN','ON','TO','OF','NO','ANY','ALL',
-  'EPS','TTM','EV','LT','TA','SMA','RSI','PEG','PE','PB','PS',
-  'BETA','AVG','PRICE','VOLUME','FLOAT','GAP','NEWS','BASIC','CUSTOM','FILTER','SIGNAL','TICKERS',
-  // Single characters — never a valid US ticker
-  'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
-  // Common 2-char OCR noise from vertical ticker list misreads
-  'EL','ME','AL','LE','RE','DE','VE','TE','SE','CE','FE','HE','BE','KE','NE','PE','WE',
-  'LI','TI','VI','GI','DI','RI','FI','MI','NI','PI','SI','HI','BI','KI',
-  'LO','DO','GO','HO','KO','MO','PO','SO','TO','VO','WO','YO',
-  'IL','IM','IP','IR','IX',
-  // Other common noise tokens
-  'EW','RN','TT','LL','MM','NN','RR','SS','TH','WH','CH','SH','PH',
-]);
+//
+// Important design rule:
+// - Manual user-entered ticker boxes should NOT use a blacklist. If the user types KO, C, F, T, X, etc., allow it.
+// - OCR should extract ticker-shaped candidates, then validate them against market data instead of guessing with a brittle blacklist.
+//
+// This prevents real tickers like KO, MO, C, F, T, X, V from being blocked while still keeping OCR imports clean.
 
 function normalizeTickerToken(raw: string): string | null {
   const token = raw.trim().toUpperCase().replace(/[–—]/g, '-').replace(/\.$/, '');
   if (!token) return null;
 
-  // Yahoo Finance uses hyphen for Berkshire class B.
+  // Yahoo-style class-share normalization.
   const normalized = token.replace('.', '-');
   if (normalized === 'BRK-B' || normalized === 'BRK/B') return 'BRK-B';
+  if (normalized === 'BF-B' || normalized === 'BF/B') return 'BF-B';
 
-  // Basic US ticker shape: 2–5 letters, optional class suffix e.g. BRK-B, BF-B.
-  // Minimum 2 characters — single letters are never valid tickers in this context.
-  if (!/^[A-Z]{2,5}(-[A-Z])?$/.test(normalized)) return null;
-  if (OCR_TICKER_BLACKLIST.has(normalized)) return null;
+  // Allow valid US ticker shapes, including one-character tickers:
+  // C, F, T, X, V, etc.
+  if (!/^[A-Z]{1,5}(-[A-Z])?$/.test(normalized)) return null;
+
   return normalized;
 }
 
@@ -422,6 +412,34 @@ function normalizeTickerInput(input: string): string[] {
       .map(normalizeTickerToken)
       .filter((t): t is string => Boolean(t))
   ));
+}
+
+async function validateTickersWithMarketData(tickers: string[]): Promise<string[]> {
+  const unique = Array.from(new Set(tickers));
+  if (unique.length === 0) return [];
+
+  let token: string;
+  try {
+    token = await getAccessToken();
+  } catch {
+    // If auth is unavailable, fall back to shape-valid candidates rather than dropping everything.
+    return unique;
+  }
+
+  const valid: string[] = [];
+
+  // Validate sequentially to avoid blasting the API when OCR produces noisy text.
+  // This is intentionally conservative and deterministic.
+  for (const symbol of unique) {
+    try {
+      const quote = await getQuote(symbol, token);
+      if (quote != null && quote > 0) valid.push(symbol);
+    } catch {
+      // Invalid/no-data symbols are ignored.
+    }
+  }
+
+  return valid;
 }
 
 async function extractTickersFromImage(file: File): Promise<string[]> {
@@ -452,16 +470,18 @@ async function extractTickersFromImage(file: File): Promise<string[]> {
   const data = await response.json();
   const rawText: string = data?.text ?? '';
 
-  const tickers: string[] = [];
+  const candidates: string[] = [];
   for (const line of rawText.split('\n')) {
-    // Split each line into tokens to handle grid/badge layouts (multiple tickers per line)
+    // Split each line into tokens to handle grid/badge layouts (multiple tickers per line).
     for (const token of line.split(/[\s,|•·]+/)) {
       const ticker = normalizeTickerToken(token.trim());
-      if (ticker) tickers.push(ticker);
+      if (ticker) candidates.push(ticker);
     }
   }
 
-  return Array.from(new Set(tickers));
+  // OCR is allowed to capture short real tickers like KO, C, F, T, X, V.
+  // Market-data validation decides what is actually real.
+  return validateTickersWithMarketData(candidates);
 }
 
 function mergeTickers(existing: string, newTickers: string[]): string {
