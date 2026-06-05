@@ -126,6 +126,7 @@ interface TrendResult {
     momentum20: number;
     momentum60: number;
     momentum90: number;
+    rsi14: number;
     ma20Slope: number;
     ma50Slope: number;
     range60: number;
@@ -720,6 +721,7 @@ const LS_SESSION_LOADED_AT = 'hunter-session-loaded-at';
 const LS_RESULTS_CACHE = 'hunter-results-cache';
 const LS_RAW_SCAN_CACHE = 'hunter-raw-scan-cache';
 const LS_RESULTS_CACHE_AT = 'hunter-results-cache-at';
+const LS_DISMISSED_WARNINGS = 'hunter-dismissed-portfolio-warnings';
 
 // ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
@@ -2647,6 +2649,44 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   const c = result.bestCandidate;
   const t = result.trendResult;
   const matchingPositions = (existingPositions ?? []).filter(p => p.symbol === result.symbol);
+  const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(LS_DISMISSED_WARNINGS) ?? '[]'));
+    } catch {
+      return new Set();
+    }
+  });
+
+  const warningId = c
+    ? `${result.symbol}-${result.strategy}-${c.expiration}-${c.shortStrike}-${c.longStrike}-${portfolioRisk?.level ?? 'clear'}`
+    : `${result.symbol}-${result.strategy}-${portfolioRisk?.level ?? 'clear'}`;
+
+  const dismissWarning = () => {
+    const next = new Set(dismissedWarnings);
+    next.add(warningId);
+    setDismissedWarnings(next);
+    try {
+      localStorage.setItem(LS_DISMISSED_WARNINGS, JSON.stringify([...next]));
+    } catch {}
+  };
+
+  const showPortfolioWarning = Boolean(
+    portfolioRisk &&
+    portfolioRisk.level !== 'clear' &&
+    !dismissedWarnings.has(warningId)
+  );
+
+  const otmPct = (() => {
+    if (!c || result.price == null || result.price <= 0) return null;
+    if (c.strategy === 'BPS') return ((result.price - c.shortStrike) / result.price) * 100;
+    if (c.strategy === 'BCS') return ((c.shortStrike - result.price) / result.price) * 100;
+    if (c.strategy === 'IC' && c.shortCallStrike != null) {
+      const putOtm = ((result.price - c.shortStrike) / result.price) * 100;
+      const callOtm = ((c.shortCallStrike - result.price) / result.price) * 100;
+      return Math.min(putOtm, callOtm);
+    }
+    return null;
+  })();
 
   useEffect(() => {
     if (!existingPositions || existingPositions.length === 0) return;
@@ -2888,10 +2928,22 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               <div className="text-xs shrink-0 w-20"><span className={th.label}>Max P </span><span className="text-emerald-400 font-bold">${c.maxProfit?.toFixed(2) ?? '—'}</span></div>
               <div className="text-xs shrink-0 w-20"><span className={th.label}>LEAPS </span><span className={`${th.text} font-medium`}>{c.longDte}d</span></div>
             </> : <>
-              <div className="text-xs shrink-0 w-20"><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-              <div className="text-xs shrink-0 w-16"><span className={th.label}>ROC </span><span className={`${th.text} font-medium`}>{c.roc.toFixed(0)}%</span></div>
-              <div className="text-xs shrink-0 w-16"><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
-              <div className="text-xs shrink-0 w-20"><span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+              <div className="text-xs shrink-0 w-20">
+                <div><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
+                <div className="text-[10px]"><span className={th.label}>Width </span><span className={th.textFaint}>{(c.creditRatio * 100).toFixed(0)}%</span></div>
+              </div>
+              <div className="text-xs shrink-0 w-16">
+                <div><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
+                <div className="text-[10px]"><span className={th.label}>ROC </span><span className={th.textFaint}>{c.roc.toFixed(0)}%</span></div>
+              </div>
+              <div className="text-xs shrink-0 w-20">
+                <div><span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+                <div className="text-[10px]"><span className={th.label}>RSI </span><span className={th.textFaint}>{result.trendResult?.metrics?.rsi14?.toFixed(0) ?? '—'}</span></div>
+              </div>
+              <div className="text-xs shrink-0 w-16">
+                <div><span className={th.label}>OTM </span><span className={`${otmPct != null && otmPct >= 5 ? 'text-emerald-400' : 'text-amber-400'} font-medium`}>{otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}</span></div>
+                <div className="text-[10px]"><span className={th.label}>OI </span><span className={th.textFaint}>{Math.min(c.shortOI, c.longOI)}</span></div>
+              </div>
             </>}
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
             {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
@@ -3010,7 +3062,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
       )}
 
       {/* Portfolio risk banner */}
-      {portfolioRisk && portfolioRisk.level !== 'clear' && (
+      {showPortfolioWarning && portfolioRisk && (
         <div className={`border-t px-4 py-2.5 rounded-b-lg ${
           portfolioRisk.level === 'same_strikes'
             ? 'border-red-500/40 bg-red-500/8'
@@ -3034,6 +3086,16 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                 }`}>{w}</p>
               ))}
             </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                dismissWarning();
+              }}
+              className="ml-auto text-[9px] px-2 py-0.5 border border-white/20 rounded text-white/50 hover:text-white hover:border-white/40 transition-colors"
+              title="Hide this warning for this specific setup"
+            >
+              Dismiss
+            </button>
           </div>
           {/* Recommendation */}
           <p className={`text-[10px] leading-relaxed ml-5 ${
@@ -3718,8 +3780,27 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     const sign = value >= 0 ? 1 : -1;
     return sign * Math.min(1, Math.abs(value) / fullAt) * maxPoints;
   };
+  const calcRsi = (values: number[], period = 14): number | null => {
+    if (values.length < period + 1) return null;
+
+    let gains = 0;
+    let losses = 0;
+    for (let i = values.length - period; i < values.length; i++) {
+      const change = values[i] - values[i - 1];
+      if (change >= 0) gains += change;
+      else losses += Math.abs(change);
+    }
+
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    if (avgLoss === 0) return 100;
+
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+  };
 
   const currentPrice = closes[closes.length - 1];
+  const rsi14 = calcRsi(closes, 14) ?? 50;
   const ma20 = avg(closes.slice(-20));
   const ma50 = avg(closes.slice(-50));
   const ma200 = closes.length >= 200 ? avg(closes.slice(-200)) : avg(closes);
@@ -3866,6 +3947,7 @@ async function getTrend(symbol: string): Promise<TrendResult> {
     momentum40,
     momentum60,
     momentum90,
+    rsi14,
     ma20Slope,
     ma50Slope,
     range60,
@@ -4701,12 +4783,12 @@ export default function Home() {
             <p className="text-[10px] text-white/50 mt-0.5 tracking-wider" style={{ fontFamily: "'DM Mono', monospace" }}>BPS · BCS · IRON CONDOR</p>
           </div>
           <nav className="flex items-center gap-1 bg-black/20 rounded-lg p-1">
-            <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>HUNTER</span>
-            <a href="/portfolio"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
+            <a href="/portfolio" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</a>
             <a href="/engine" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">ENGINE</a>
-            <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE & REPEAT</a>
-            <a href="/trade-log"    className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
-            <a href="/performance"  className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
+            <span className="text-xs px-3 py-1.5 rounded text-white tracking-wider active-nav" style={{ backgroundColor: `rgba(var(--accent-r),var(--accent-g),var(--accent-b),0.25)`, borderBottom: `2px solid var(--accent)` }}>HUNTER</span>
+            <a href="/rinse-repeat" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">RINSE -&gt; REPEAT</a>
+            <a href="/trade-log" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
+            <a href="/performance" className="text-xs px-3 py-1.5 rounded text-white/50 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
           </nav>
         </div>
         
