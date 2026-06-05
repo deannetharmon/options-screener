@@ -2930,7 +2930,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
             </> : <>
               <div className="text-xs shrink-0 w-20">
                 <div><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-                <div className="text-[10px]"><span className={th.label}>Width </span><span className={th.textFaint}>{(c.creditRatio * 100).toFixed(0)}%</span></div>
+                <div><span className={th.label}>Width </span><span className={th.textFaint}>{(c.creditRatio * 100).toFixed(0)}%</span></div>
               </div>
               <div className="text-xs shrink-0 w-16">
                 <div><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
@@ -2938,7 +2938,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               </div>
               <div className="text-xs shrink-0 w-20">
                 <div><span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
-                <div className="text-[10px]"><span className={th.label}>RSI </span><span className={th.textFaint}>{result.trendResult?.metrics?.rsi14?.toFixed(0) ?? '—'}</span></div>
+                <div><span className={th.label}>RSI </span><span className={th.textFaint}>{result.trendResult?.metrics?.rsi14?.toFixed(0) ?? '—'}</span></div>
               </div>
               <div className="text-xs shrink-0 w-16">
                 <div><span className={th.label}>OTM </span><span className={`${otmPct != null && otmPct >= 5 ? 'text-emerald-400' : 'text-amber-400'} font-medium`}>{otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}</span></div>
@@ -4673,13 +4673,16 @@ export default function Home() {
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
-          const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
-          for (const strategy of strategiesToScan) {
-            scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
-            if (isRankMode) {
-              screenResults.push(...runChecklistAllExpirations(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
-            } else {
-              screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+          let trendResult: TrendResult | undefined;
+          try { trendResult = await getTrend(symbol); } catch {}
+          
+          const [chainData, price] = await Promise.all([
+            getChain(symbol, token, getChainRules(isEtfTicker)),
+            getQuote(symbol, token),
+          ]);
+          
+          scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
+          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
             }
           }
         } catch (e: any) {
