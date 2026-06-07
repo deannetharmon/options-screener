@@ -4845,15 +4845,13 @@ function TargetedScanResultsPanel({
       : [...prev, s]
   );
 
-  const sortedEntries = useMemo(() => {
-    return [...entries]
-      .filter(e => !hiddenSymbols.has(e.symbol))
-      .filter(e => e.pop >= filterPopMin)
-      .filter(e => filterStrategies.includes(e.strategy))
-      .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
-      .sort(sortFn)
-      .slice(0, showTopN);
-  }, [entries, hiddenSymbols, filterPopMin, filterStrategies, filterTrendOnly, sortFn, showTopN]);
+  const sortedEntries = [...entries]
+    .filter(e => !hiddenSymbols.has(e.symbol))
+    .filter(e => e.pop >= filterPopMin)
+    .filter(e => filterStrategies.includes(e.strategy))
+    .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
+    .sort(sortFn)
+    .slice(0, showTopN);
 
   if (entries.length === 0) return null;
 
