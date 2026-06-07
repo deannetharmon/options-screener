@@ -4668,6 +4668,7 @@ async function runTargetedScan(
               if (strat === 'IC') {
                 const candidate = findBestICUnfiltered(chainItems, exp, price);
                 if (!candidate || (candidate.pop ?? 0) < popMin) continue;
+                if (candidate.dte < dteMin || candidate.dte > dteMax) continue;
                 const result = runChecklist(symbol, strat, metrics, singleExpChain, price, appliedRules, trendResult, undefined, isEtf ? etfRules : undefined, undefined, true);
                 const displayResult: ScreenResult = {
                   ...result,
@@ -4726,6 +4727,8 @@ async function runTargetedScan(
                   }
                 }
                 if (!bestCandidate) continue;
+                // Hard guard — never push entries outside user's DTE range
+                if (bestCandidate.dte < dteMin || bestCandidate.dte > dteMax) continue;
 
                 // Build display result with this specific candidate
                 const syntheticChain = {
