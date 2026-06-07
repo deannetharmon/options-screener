@@ -1526,6 +1526,25 @@ function dteBadgeColor(dte: number): string {
   return 'text-blue-400 border-blue-700 bg-blue-500/10';
 }
 
+// ── Targeted Scan Types ────────────────────────────────────────────────────
+interface TargetedScanEntry {
+  symbol: string;
+  primaryStrategy: 'BPS' | 'BCS' | 'IC';
+  expiration: string;
+  dte: number;
+  strategy: 'BPS' | 'BCS' | 'IC';
+  candidate: SpreadCandidate;
+  screenResult: ScreenResult;
+  pop: number;
+  score: number;
+  ivr: number | null;
+  price: number | null;
+  isEtf: boolean;
+  trendResult?: TrendResult;
+  cachedEntry: RawScanEntry;
+  allStrategies: { strategy: 'BPS' | 'BCS' | 'IC'; candidate: SpreadCandidate; pop: number; score: number }[];
+}
+
 function runChecklistAllExpirations(
   symbol: string, strategy: 'BPS' | 'BCS' | 'IC',
   metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean },
@@ -2653,7 +2672,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   result: ScreenResult;
   th: typeof THEMES[Theme];
   rules: RulesType;
-  screenMode?: 'filter' | 'rank';
+  screenMode?: 'filter' | 'rank' | 'targeted';
   rankConfig?: RankConfig;
   onTrade?: (result: ScreenResult) => void;
   cachedEntry?: RawScanEntry;
@@ -3380,42 +3399,54 @@ const FILTER_PRESETS = [
   { key: 'intermediate',label: 'Intermediate', color: 'border-amber-500 text-amber-400',    desc: '15–29 DTE — active management' },
 ];
 
-function RunModeModal({ th, lastMode, lastPreset, onRun, onClose }: {
+function RunModeModal({ th, lastMode, lastPreset, lastTargetedDteMin, lastTargetedDteMax, lastTargetedPopMin, lastTargetedPreset, onRun, onClose }: {
   th: typeof THEMES[Theme];
-  lastMode: 'filter' | 'rank';
+  lastMode: 'filter' | 'rank' | 'targeted';
   lastPreset: string;
-  onRun: (mode: 'filter' | 'rank', preset?: string) => void;
+  lastTargetedDteMin: number;
+  lastTargetedDteMax: number;
+  lastTargetedPopMin: number;
+  lastTargetedPreset: string;
+  onRun: (mode: 'filter' | 'rank' | 'targeted', preset?: string, targetedOpts?: { dteMin: number; dteMax: number; popMin: number; preset: string }) => void;
   onClose: () => void;
 }) {
-  const [mode, setMode] = useState<'filter' | 'rank'>(lastMode);
+  const [mode, setMode] = useState<'filter' | 'rank' | 'targeted'>(lastMode);
   const [preset, setPreset] = useState(lastPreset || 'course');
+  const [tDteMin, setTDteMin] = useState(lastTargetedDteMin);
+  const [tDteMax, setTDteMax] = useState(lastTargetedDteMax);
+  const [tPopMin, setTPopMin] = useState(lastTargetedPopMin);
+  const [tPreset, setTPreset] = useState(lastTargetedPreset || 'course');
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className={`${th.card} border ${th.border} rounded-2xl shadow-2xl w-[420px] p-6 flex flex-col gap-5`}>
+      <div className={`${th.card} border ${th.border} rounded-2xl shadow-2xl w-[480px] p-6 flex flex-col gap-5`}>
         <div className="flex items-center justify-between">
           <p className={`text-sm font-bold tracking-widest ${th.text}`}>RUN HUNTER</p>
           <button onClick={onClose} className={`${th.textFaint} hover:${th.text} text-lg leading-none`}>✕</button>
         </div>
 
         {/* Mode selection */}
-        <div className="flex gap-3">
-          {(['filter', 'rank'] as const).map(m => (
+        <div className="flex gap-2">
+          {([
+            { m: 'filter' as const, icon: '⊘', label: 'FILTER', desc: 'Gate by rules — pass/fail' },
+            { m: 'rank' as const, icon: '⬡', label: 'RANK', desc: 'Score & sort all tickers' },
+            { m: 'targeted' as const, icon: '⊕', label: 'TARGETED', desc: 'Deep scan by DTE + POP' },
+          ]).map(({ m, icon, label, desc }) => (
             <button key={m} onClick={() => setMode(m)}
               className={`flex-1 py-3 rounded-xl border text-xs font-bold tracking-wider transition-all ${
                 mode === m
-                  ? m === 'filter' ? 'ac-bg-20 ac-btn' : 'bg-purple-500/20 border-purple-500 text-purple-400'
+                  ? m === 'filter'   ? 'ac-bg-20 ac-btn'
+                  : m === 'rank'     ? 'bg-purple-500/20 border-purple-500 text-purple-400'
+                  :                    'bg-teal-500/20 border-teal-500 text-teal-300'
                   : `${th.card} ${th.border} ${th.textFaint} hover:${th.textMuted}`
               }`}>
-              {m === 'filter' ? '⊘ FILTER' : '⬡ RANK'}
-              <p className={`text-[9px] mt-1 font-normal opacity-70`}>
-                {m === 'filter' ? 'Gate by rules — pass/fail' : 'Score & sort all tickers'}
-              </p>
+              {icon} {label}
+              <p className={`text-[9px] mt-1 font-normal opacity-70`}>{desc}</p>
             </button>
           ))}
         </div>
 
-        {/* Preset selection — only shown in filter mode */}
+        {/* Preset selection — filter mode */}
         {mode === 'filter' && (
           <div className="flex flex-col gap-2">
             <p className={`text-[9px] tracking-widest font-medium ${th.textFaint}`}>SELECT PRESET</p>
@@ -3431,7 +3462,86 @@ function RunModeModal({ th, lastMode, lastPreset, onRun, onClose }: {
           </div>
         )}
 
-        <button onClick={() => onRun(mode, mode === 'filter' ? preset : undefined)}
+        {/* Targeted scan config */}
+        {mode === 'targeted' && (
+          <div className="flex flex-col gap-4">
+            <p className={`text-[9px] tracking-widest font-medium ${th.textFaint}`}>SCAN CONFIG</p>
+
+            {/* Filter preset */}
+            <div>
+              <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5`}>FILTER PRESET (base rules)</p>
+              <div className="flex gap-1.5 flex-wrap">
+                {FILTER_PRESETS.map(p => (
+                  <button key={p.key} onClick={() => setTPreset(p.key)}
+                    className={`text-[9px] px-2.5 py-1 rounded border font-bold transition-colors ${
+                      tPreset === p.key ? p.color + ' bg-white/5' : `${th.border} ${th.textFaint}`
+                    }`}>{p.label}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* DTE range */}
+            <div>
+              <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5`}>DTE RANGE</p>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-[9px] ${th.textFaint}`}>Min</span>
+                  <input type="number" value={tDteMin} onChange={e => setTDteMin(Math.max(0, parseInt(e.target.value) || 0))}
+                    className={`w-16 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[11px] ${th.text} text-center focus:outline-none`} />
+                </div>
+                <span className={`text-[9px] ${th.textFaint}`}>→</span>
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-[9px] ${th.textFaint}`}>Max</span>
+                  <input type="number" value={tDteMax} onChange={e => setTDteMax(Math.max(tDteMin + 1, parseInt(e.target.value) || 45))}
+                    className={`w-16 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[11px] ${th.text} text-center focus:outline-none`} />
+                </div>
+                <span className={`text-[9px] ${th.textFaint}`}>days</span>
+              </div>
+              <div className="flex gap-1.5 mt-2 flex-wrap">
+                {[
+                  { label: '7–14', min: 7, max: 14 },
+                  { label: '14–21', min: 14, max: 21 },
+                  { label: '21–45', min: 21, max: 45 },
+                  { label: '30–45', min: 30, max: 45 },
+                  { label: '21–60', min: 21, max: 60 },
+                ].map(r => (
+                  <button key={r.label} onClick={() => { setTDteMin(r.min); setTDteMax(r.max); }}
+                    className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                      tDteMin === r.min && tDteMax === r.max
+                        ? 'border-teal-500 text-teal-300 bg-teal-500/15'
+                        : `${th.border} ${th.textFaint}`
+                    }`}>{r.label}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* POP floor */}
+            <div>
+              <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5`}>MIN POP %</p>
+              <div className="flex items-center gap-2">
+                <input type="number" min={50} max={95} value={tPopMin} onChange={e => setTPopMin(Math.min(95, Math.max(50, parseInt(e.target.value) || 70)))}
+                  className={`w-20 ${th.input} border ${th.inputBorder} rounded px-2 py-1 text-[11px] ${th.text} text-center focus:outline-none`} />
+                <span className={`text-[9px] ${th.textFaint}`}>%</span>
+                <div className="flex gap-1.5">
+                  {[65, 70, 75, 80].map(v => (
+                    <button key={v} onClick={() => setTPopMin(v)}
+                      className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                        tPopMin === v ? 'border-teal-500 text-teal-300 bg-teal-500/15' : `${th.border} ${th.textFaint}`
+                      }`}>{v}%</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <button onClick={() => {
+          if (mode === 'targeted') {
+            onRun(mode, undefined, { dteMin: tDteMin, dteMax: tDteMax, popMin: tPopMin, preset: tPreset });
+          } else {
+            onRun(mode, mode === 'filter' ? preset : undefined);
+          }
+        }}
           className="w-full ac-btn-solid text-white py-2.5 rounded-xl text-xs font-bold tracking-widest transition-colors shadow-lg border ac-border/30">
           RUN HUNTER →
         </button>
@@ -4495,6 +4605,235 @@ interface RawScanEntry {
   trendResult?: TrendResult;
 }
 
+// ── Targeted Scan Runner ──────────────────────────────────────────────────
+async function runTargetedScan(
+  bpsTickers: string[], bcsTickers: string[], icTickers: string[],
+  dteMin: number, dteMax: number, popMin: number,
+  rules: RulesType, etfRules: RulesType, rankConfig: RankConfig,
+  setLoading: (v: boolean) => void, setStatus: (v: string) => void, setError: (v: string) => void,
+  setTargetedResults: (v: TargetedScanEntry[]) => void,
+): Promise<void> {
+  // PMCC excluded — different philosophy, not a spread strategy
+  const strategyMap: { symbol: string; primary: 'BPS' | 'BCS' | 'IC' }[] = [
+    ...bpsTickers.map(s => ({ symbol: s, primary: 'BPS' as const })),
+    ...bcsTickers.map(s => ({ symbol: s, primary: 'BCS' as const })),
+    ...icTickers.map(s => ({ symbol: s, primary: 'IC' as const })),
+  ];
+  const allSymbols = Array.from(new Set(strategyMap.map(e => e.symbol)));
+
+  if (allSymbols.length === 0) { setError('No tickers in BPS / BCS / IC boxes.'); return; }
+  setError(''); setLoading(true); setTargetedResults([]);
+
+  try {
+    const token = await getAccessToken();
+    setStatus('Fetching market metrics...');
+    const metricsArray = await getMarketMetrics(allSymbols, token);
+    const metricsMap = Object.fromEntries(metricsArray.map((m: any) => [m.symbol, m]));
+
+    const entries: TargetedScanEntry[] = [];
+
+    for (let i = 0; i < strategyMap.length; i++) {
+      const { symbol, primary } = strategyMap[i];
+      setStatus(`Scanning ${symbol} (${i + 1}/${strategyMap.length})...`);
+      try {
+        const isEtf = INDEX_TICKERS.has(symbol.toUpperCase());
+        // Use real rules but with user-specified DTE range
+        const appliedRules: RulesType = { ...(isEtf ? etfRules : rules), DTE_MIN: dteMin, DTE_MAX: dteMax };
+        const [chainData, price] = await Promise.all([
+          getChain(symbol, token, appliedRules),
+          getQuote(symbol, token),
+        ]);
+        const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
+        let trendResult: TrendResult | undefined;
+        try { trendResult = await getTrend(symbol); } catch {}
+
+        const validExps = chainData.expirations.filter(exp => {
+          const dte = daysUntil(exp);
+          return dte >= dteMin && dte <= dteMax;
+        });
+
+        for (const exp of validExps) {
+          const dte = daysUntil(exp);
+          const singleExpChain = { ...chainData, expirations: [exp] };
+          const strategies: ('BPS' | 'BCS' | 'IC')[] = ['BPS', 'BCS', 'IC'];
+          const allStrats: TargetedScanEntry['allStrategies'] = [];
+          let primaryScreenResult: ScreenResult | null = null;
+
+          for (const strat of strategies) {
+            try {
+              // Run real checklist — this is what populates the card's checklist/checks
+              const result = runChecklist(
+                symbol, strat, metrics, singleExpChain, price,
+                appliedRules, trendResult, undefined,
+                isEtf ? etfRules : undefined, undefined, true
+              );
+              const c = result.bestCandidate;
+              if (!c) continue;
+              const pop = c.pop ?? 0;
+              // POP is our gate — skip if below floor
+              if (pop < popMin) continue;
+
+              const scored = scoreCandidate(result, rankConfig);
+              allStrats.push({ strategy: strat, candidate: c, pop, score: scored?.score ?? 0 });
+
+              // Store the real ScreenResult for the primary strategy
+              if (strat === primary) primaryScreenResult = result;
+            } catch {}
+          }
+
+          if (allStrats.length === 0) continue;
+
+          allStrats.sort((a, b) => b.score - a.score);
+
+          const primaryStrat = allStrats.find(s => s.strategy === primary) ?? allStrats[0];
+          // Use the real ScreenResult for whichever strategy won
+          const winningResult = primaryScreenResult && primaryStrat.strategy === primary
+            ? primaryScreenResult
+            : (() => {
+                try {
+                  return runChecklist(symbol, primaryStrat.strategy, metrics, singleExpChain, price, appliedRules, trendResult, undefined, isEtf ? etfRules : undefined, undefined, true);
+                } catch { return null; }
+              })();
+
+          if (!winningResult) continue;
+
+          const cachedEntry: RawScanEntry = {
+            symbol, strategy: primaryStrat.strategy, metrics, chainData, price, trendResult,
+          };
+
+          entries.push({
+            symbol,
+            primaryStrategy: primary,
+            expiration: exp,
+            dte,
+            strategy: primaryStrat.strategy,
+            candidate: primaryStrat.candidate,
+            screenResult: winningResult,
+            pop: primaryStrat.pop,
+            score: primaryStrat.score,
+            ivr: metrics.ivRank ?? null,
+            price,
+            isEtf,
+            trendResult,
+            cachedEntry,
+            allStrategies: allStrats,
+          });
+        }
+      } catch (e: any) {
+        console.warn(`Targeted scan error for ${symbol}: ${e.message}`);
+      }
+    }
+
+    entries.sort((a, b) => b.score - a.score);
+    setTargetedResults(entries);
+  } catch (e: any) {
+    setError(e.message);
+  } finally {
+    setStatus(''); setLoading(false);
+  }
+}
+
+// ── Targeted Scan Results Panel ────────────────────────────────────────────
+function TargetedScanResultsPanel({
+  entries, sortBy, setSortBy, popMin, th, rankConfig, rules, etfRules, existingPositions,
+}: {
+  entries: TargetedScanEntry[];
+  sortBy: 'score' | 'pop' | 'credit' | 'roc';
+  setSortBy: (v: 'score' | 'pop' | 'credit' | 'roc') => void;
+  popMin: number;
+  th: typeof THEMES[Theme];
+  rankConfig: RankConfig;
+  rules: RulesType;
+  etfRules: RulesType;
+  existingPositions: ExistingPosition[];
+}) {
+  if (entries.length === 0) return null;
+
+  const sortFn = (a: TargetedScanEntry, b: TargetedScanEntry) => {
+    if (sortBy === 'pop') return b.pop - a.pop;
+    if (sortBy === 'credit') return (b.candidate.credit ?? 0) - (a.candidate.credit ?? 0);
+    if (sortBy === 'roc') return b.candidate.roc - a.candidate.roc;
+    return b.score - a.score;
+  };
+
+  const dteBuckets: { label: string; min: number; max: number }[] = [
+    { label: '< 21 DTE', min: 0, max: 20 },
+    { label: '21–30 DTE', min: 21, max: 30 },
+    { label: '31–45 DTE', min: 31, max: 45 },
+    { label: '> 45 DTE', min: 46, max: 999 },
+  ];
+
+  const sortLabels: { key: 'score' | 'pop' | 'credit' | 'roc'; label: string }[] = [
+    { key: 'score', label: 'Score' },
+    { key: 'pop', label: 'POP %' },
+    { key: 'credit', label: 'Credit $' },
+    { key: 'roc', label: 'ROC %' },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <p className="text-[9px] text-teal-400 tracking-widest font-medium">⊕ TARGETED SCAN — {entries.length} OPPORTUNITIES</p>
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[9px] ${th.textFaint}`}>Sort by</span>
+          {sortLabels.map(sl => (
+            <button key={sl.key} onClick={() => setSortBy(sl.key)}
+              className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                sortBy === sl.key ? 'border-teal-500 text-teal-300 bg-teal-500/15' : `${th.border} ${th.textFaint} hover:border-teal-500/50`
+              }`}>
+              {sl.label}
+            </button>
+          ))}
+        </div>
+        <span className={`text-[9px] ${th.textFaint}`}>POP ≥ {popMin}%</span>
+      </div>
+
+      {dteBuckets.map(bucket => {
+        const bucketEntries = entries
+          .filter(e => e.dte >= bucket.min && e.dte <= bucket.max)
+          .sort(sortFn);
+        if (bucketEntries.length === 0) return null;
+
+        return (
+          <div key={bucket.label}>
+            <div className="flex items-center gap-2 mb-2">
+              <span className={`text-[9px] px-2 py-0.5 rounded border font-bold ${dteBadgeColor(Math.round((bucket.min + Math.min(bucket.max, 60)) / 2))}`}>
+                {bucket.label}
+              </span>
+              <span className={`text-[9px] ${th.textFaint}`}>{bucketEntries.length} setups</span>
+            </div>
+            <div className="space-y-2">
+              {bucketEntries.map((entry, i) => {
+                const appliedRules = entry.isEtf ? etfRules : rules;
+                return (
+                  <div key={`${entry.symbol}-${entry.strategy}-${entry.expiration}`} className="flex items-start gap-2">
+                    <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
+                      <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{i + 1}</span>
+                      <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(entry.dte)}`}>{entry.dte}d</span>
+                    </div>
+                    <div className="flex-1">
+                      <ResultCard
+                        result={entry.screenResult}
+                        th={th}
+                        rules={appliedRules}
+                        screenMode="targeted"
+                        rankConfig={rankConfig}
+                        onTrade={() => {}}
+                        cachedEntry={entry.cachedEntry}
+                        existingPositions={existingPositions}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
@@ -4531,8 +4870,8 @@ export default function Home() {
   const [runtimeStockRules, setRuntimeStockRules] = useState<RulesType>(getSavedRules);
   const [runtimeEtfRules, setRuntimeEtfRules] = useState<RulesType>(getSavedEtfRules);
   const [rankConfig, setRankConfig] = useState<RankConfig>(getSavedRankConfig);
-  const [screenMode, setScreenMode] = useState<'filter' | 'rank'>(() => {
-    try { return (localStorage.getItem(LS_SCREEN_MODE) as 'filter' | 'rank') ?? 'filter'; } catch { return 'filter'; }
+  const [screenMode, setScreenMode] = useState<'filter' | 'rank' | 'targeted'>(() => {
+    try { const m = localStorage.getItem(LS_SCREEN_MODE); return (m === 'filter' || m === 'rank' || m === 'targeted') ? m : 'filter'; } catch { return 'filter'; }
   });
   const [sessionLoadedAt, setSessionLoadedAt] = useState<{ name: string; at: number } | null>(() => {
     try { const s = localStorage.getItem(LS_SESSION_LOADED_AT); return s ? JSON.parse(s) : null; } catch { return null; }
@@ -4547,6 +4886,14 @@ export default function Home() {
   const [rankTopN, setRankTopN] = useState<number>(20);
   const [rankDteMin, setRankDteMin] = useState<number>(0);
   const [rankDteMax, setRankDteMax] = useState<number>(999);
+
+  // ── Targeted Scan state ────────────────────────────────────────────────────
+  const [targetedDteMin, setTargetedDteMin] = useState<number>(21);
+  const [targetedDteMax, setTargetedDteMax] = useState<number>(45);
+  const [targetedPopMin, setTargetedPopMin] = useState<number>(70);
+  const [targetedSortBy, setTargetedSortBy] = useState<'score' | 'pop' | 'credit' | 'roc'>('score');
+  const [targetedResults, setTargetedResults] = useState<TargetedScanEntry[]>([]);
+  const [targetedPreset, setTargetedPreset] = useState<string>('course');
   const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
   useEffect(() => {
     loadExistingPositions().then(setExistingPositions).catch(() => {});
@@ -4595,7 +4942,7 @@ export default function Home() {
   // ── Apply rules client-side against cached raw scan data ──────────────────
   // Called instead of runScreen when rules change but tickers haven't changed.
   // Zero API calls — instant re-filter.
-  const applyRules = useCallback((sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
+  const applyRules = useCallback((sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank' | 'targeted') => {
     if (rawScanCache.length === 0) return; // No cache yet — need a full scan first
 
     const screenResults: ScreenResult[] = rawScanCache.map(entry => {
@@ -4634,7 +4981,7 @@ export default function Home() {
     } catch {}
   }, [rawScanCache, screenMode, rankConfig]);
 
-  const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank') => {
+  const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank' | 'targeted') => {
     setError('');
     setResults([]); setResultsCachedAt(null);
     try { localStorage.removeItem(LS_RESULTS_CACHE); localStorage.removeItem(LS_RESULTS_CACHE_AT); } catch {}
@@ -5005,7 +5352,7 @@ export default function Home() {
             );
           })()}
 
-          {results.length === 0 && !loading && autoTrendEntries.length === 0 && (
+          {results.length === 0 && targetedResults.length === 0 && !loading && autoTrendEntries.length === 0 && (
             <div className={`h-full flex flex-col items-center justify-center ${th.textFaint}`}>
               <div className="text-4xl mb-3 opacity-20">◈</div>
               <p className={`text-[10px] tracking-widest ${th.textMuted}`}>ADD TICKERS AND RUN HUNTER</p>
@@ -5020,7 +5367,7 @@ export default function Home() {
               <AutoTrendDebugPanel entries={autoTrendEntries} th={th} />
             </div>
           )}
-          {results.length > 0 && (
+          {(results.length > 0 || targetedResults.length > 0) && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex gap-4 text-[10px] tracking-wider font-medium">
@@ -5028,6 +5375,11 @@ export default function Home() {
                     <>
                       <span className="text-emerald-500">{qualified.length} QUALIFIED</span>
                       <span className={th.textFaint}>{disqualified.length} DISQUALIFIED</span>
+                    </>
+                  ) : screenMode === 'targeted' ? (
+                    <>
+                      <span className="text-teal-400">{targetedResults.length} SETUPS</span>
+                      <span className={th.textFaint}>{Array.from(new Set(targetedResults.map(e => e.symbol))).length} SYMBOLS</span>
                     </>
                   ) : (
                     <>
@@ -5037,7 +5389,7 @@ export default function Home() {
                       <span className="text-red-400">{results.filter(r => { const s = scoreCandidate(r, rankConfig)?.score ?? 0; return s < rankConfig.thresholdOrange; }).length} 🔴</span>
                     </>
                   )}
-                  <span className={th.textFaint}>{results.length} SCANNED</span>
+                  <span className={th.textFaint}>{screenMode === 'targeted' ? `${targetedResults.length} ENTRIES` : `${results.length} SCANNED`}</span>
                   {results.length > 0 && resultsCachedAt && (
                     <span className="text-purple-400 border border-purple-700 rounded px-1.5 py-0.5 text-[9px]" title="Results restored from last scan — click RUN HUNTER to rescan">
                       {rawScanCache.length > 0 ? '⚡ cached' : '↺ restored'}{' '}
@@ -5065,7 +5417,7 @@ export default function Home() {
                   )}
                   <button onClick={downloadCSV} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} ac-hover-border ac-hover-text transition-colors tracking-wider`}>↓ CSV</button>
                   <button onClick={() => setShowRunModal(true)} className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-purple-500 hover:text-purple-400 transition-colors tracking-wider`}>
-                    {screenMode === 'filter' ? '⊘ Filter' : '⬡ Rank'} ↺
+                    {screenMode === 'filter' ? '⊘ Filter' : screenMode === 'rank' ? '⬡ Rank' : '⊕ Targeted'} ↺
                   </button>
                 </div>
               </div>
@@ -5081,7 +5433,19 @@ export default function Home() {
                 }} />
               )}
 
-              {screenMode === 'filter' ? (
+              {screenMode === 'targeted' ? (
+                <TargetedScanResultsPanel
+                  entries={targetedResults}
+                  sortBy={targetedSortBy}
+                  setSortBy={setTargetedSortBy}
+                  popMin={targetedPopMin}
+                  th={th}
+                  rankConfig={rankConfig}
+                  rules={runtimeStockRules}
+                  etfRules={runtimeEtfRules}
+                  existingPositions={existingPositions}
+                />
+              ) : screenMode === 'filter' ? (
                 <>
                   {qualified.length > 0 && (
                     <div>
@@ -5167,12 +5531,29 @@ export default function Home() {
           th={th}
           lastMode={screenMode}
           lastPreset={stockPresetLabel}
+          lastTargetedDteMin={targetedDteMin}
+          lastTargetedDteMax={targetedDteMax}
+          lastTargetedPopMin={targetedPopMin}
+          lastTargetedPreset={targetedPreset}
           onClose={() => setShowRunModal(false)}
-          onRun={(mode, preset) => {
+          onRun={(mode, preset, targetedOpts) => {
             setShowRunModal(false);
             setScreenMode(mode);
             try { localStorage.setItem(LS_SCREEN_MODE, mode); } catch {}
-            if (mode === 'rank') {
+            if (mode === 'targeted' && targetedOpts) {
+              setTargetedDteMin(targetedOpts.dteMin);
+              setTargetedDteMax(targetedOpts.dteMax);
+              setTargetedPopMin(targetedOpts.popMin);
+              setTargetedPreset(targetedOpts.preset);
+              // Find rules for chosen preset
+              const foundPreset = RULE_PRESETS.find(p => p.key === targetedOpts.preset);
+              const tRules: RulesType = foundPreset ? { ...DEFAULT_RULES, ...foundPreset.rules } : runtimeStockRules;
+              const tEtfRules: RulesType = foundPreset ? { ...DEFAULT_ETF_RULES, ...foundPreset.rules } : runtimeEtfRules;
+              const bps = parseTickers(bpsTickers);
+              const bcs = parseTickers(bcsTickers);
+              const ic = parseTickers(icTickers);
+              runTargetedScan(bps, bcs, ic, targetedOpts.dteMin, targetedOpts.dteMax, targetedOpts.popMin, tRules, tEtfRules, rankConfig, setLoading, setStatus, setError, setTargetedResults);
+            } else if (mode === 'rank') {
               runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel, 'rank');
             } else {
               const found = FILTER_PRESETS.find(p => p.key === preset);
