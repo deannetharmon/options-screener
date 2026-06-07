@@ -2981,7 +2981,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               </div>
               <div className="text-xs shrink-0 w-16">
                 <div><span className={th.label}>OTM </span><span className={`${otmPct != null && otmPct >= 5 ? 'text-emerald-400' : 'text-amber-400'} font-medium`}>{otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}</span></div>
-                <div className="text-[10px]"><span className={th.label}>OI </span><span className={th.textFaint}>{Math.min(c.shortOI, c.longOI)}</span></div>
+                <div className="text-[10px]"><span className={th.label}>OI </span><span className={th.textFaint}>{c.shortOI}/{c.longOI}</span></div>
               </div>
             </>}
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
@@ -4657,7 +4657,12 @@ async function runTargetedScan(
                 const candidate = findBestICUnfiltered(chainItems, exp, price);
                 if (!candidate || (candidate.pop ?? 0) < popMin) continue;
                 const result = runChecklist(symbol, strat, metrics, singleExpChain, price, appliedRules, trendResult, undefined, isEtf ? etfRules : undefined, undefined, true);
-                const displayResult: ScreenResult = { ...result, bestCandidate: result.bestCandidate ?? candidate };
+                const displayResult: ScreenResult = {
+                  ...result,
+                  bestCandidate: result.bestCandidate ?? candidate,
+                  qualified: true,
+                  failReasons: result.failReasons.filter(r => !r.includes('qualifying strikes') && !r.includes('No 30-45 DTE')),
+                };
                 const scored = scoreCandidate(displayResult, rankConfig);
                 const cachedEntry: RawScanEntry = { symbol, strategy: strat, metrics, chainData, price, trendResult };
                 entries.push({
@@ -4717,7 +4722,12 @@ async function runTargetedScan(
                   chains: { [exp]: chainItems },
                 };
                 const result = runChecklist(symbol, strat, metrics, syntheticChain, price, appliedRules, trendResult, undefined, isEtf ? etfRules : undefined, undefined, true);
-                const displayResult: ScreenResult = { ...result, bestCandidate: bestCandidate };
+                const displayResult: ScreenResult = {
+                  ...result,
+                  bestCandidate: bestCandidate,
+                  qualified: true,
+                  failReasons: result.failReasons.filter(r => !r.includes('qualifying strikes') && !r.includes('No 30-45 DTE')),
+                };
                 const scored = scoreCandidate(displayResult, rankConfig);
                 const cachedEntry: RawScanEntry = { symbol, strategy: strat, metrics, chainData, price, trendResult };
 
