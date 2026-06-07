@@ -4643,6 +4643,12 @@ async function runTargetedScan(
           const dte = daysUntil(exp);
           const singleExpChain = { ...chainData, expirations: [exp] };
           const chainItems = chainData.chains[exp] ?? [];
+          // Use trend to determine recommended strategy — not the ticker box
+          // Fall back to box strategy if trend is NO_TRADE or unavailable
+          const trendStrategy: 'BPS' | 'BCS' | 'IC' =
+            trendResult?.strategy === 'BPS' || trendResult?.strategy === 'BCS' || trendResult?.strategy === 'IC'
+              ? trendResult.strategy : primary;
+
           const strategies: ('BPS' | 'BCS' | 'IC')[] = ['BPS', 'BCS', 'IC'];
 
           for (const strat of strategies) {
@@ -4666,7 +4672,7 @@ async function runTargetedScan(
                 const scored = scoreCandidate(displayResult, rankConfig);
                 const cachedEntry: RawScanEntry = { symbol, strategy: strat, metrics, chainData, price, trendResult };
                 entries.push({
-                  symbol, primaryStrategy: primary, expiration: exp, dte, strategy: strat,
+                  symbol, primaryStrategy: trendStrategy, expiration: exp, dte, strategy: strat,
                   candidate, screenResult: displayResult, pop: candidate.pop ?? 0,
                   score: scored?.score ?? 0, ivr: metrics.ivRank ?? null, price, isEtf, trendResult, cachedEntry,
                   allStrategies: [],
@@ -4724,15 +4730,23 @@ async function runTargetedScan(
                 const result = runChecklist(symbol, strat, metrics, syntheticChain, price, appliedRules, trendResult, undefined, isEtf ? etfRules : undefined, undefined, true);
                 const displayResult: ScreenResult = {
                   ...result,
-                  bestCandidate: bestCandidate,
+                  bestCandidate: bestCandidate,  // always our specific strike, never runChecklist's pick
                   qualified: true,
                   failReasons: result.failReasons.filter(r => !r.includes('qualifying strikes') && !r.includes('No 30-45 DTE')),
+                  checks: {
+                    ...result.checks,
+                    credit: { status: 'pass', value: `$${bestCandidate.credit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` },
+                    delta: { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Short leg delta' },
+                    pop: { status: 'pass', value: `${bestCandidate.pop.toFixed(0)}%`, reason: `≥ ${popMin}% gate` },
+                    roc: { status: result.checks.roc.status, value: `${bestCandidate.roc.toFixed(0)}%`, reason: result.checks.roc.reason },
+                    oi: { status: result.checks.oi.status, value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: result.checks.oi.reason },
+                  },
                 };
                 const scored = scoreCandidate(displayResult, rankConfig);
                 const cachedEntry: RawScanEntry = { symbol, strategy: strat, metrics, chainData, price, trendResult };
 
                 entries.push({
-                  symbol, primaryStrategy: primary, expiration: exp, dte, strategy: strat,
+                  symbol, primaryStrategy: trendStrategy, expiration: exp, dte, strategy: strat,
                   candidate: bestCandidate, screenResult: displayResult,
                   pop: bestCandidate.pop ?? 0, score: scored?.score ?? 0,
                   ivr: metrics.ivRank ?? null, price, isEtf, trendResult, cachedEntry,
@@ -4871,11 +4885,19 @@ function TargetedScanResultsPanel({
               {bucketEntries.map(entry => {
                 const globalRank = globalRankMap.get(`${entry.symbol}-${entry.strategy}-${entry.expiration}`) ?? 0;
                 const appliedRules = entry.isEtf ? etfRules : rules;
+                const isTrendAligned = entry.strategy === entry.primaryStrategy;
+                const isAgainstTrend = entry.trendResult?.strategy !== 'NO_TRADE' && !isTrendAligned && entry.strategy !== 'IC';
                 return (
                   <div key={`${entry.symbol}-${entry.strategy}-${entry.expiration}`} className="flex items-start gap-2">
                     <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{globalRank}</span>
                       <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(entry.dte)}`}>{entry.dte}d</span>
+                      {isTrendAligned && (
+                        <span className="text-[8px] text-emerald-400" title="Trend-aligned strategy">↑✓</span>
+                      )}
+                      {isAgainstTrend && (
+                        <span className="text-[8px] text-amber-400" title="Against trend">⚠</span>
+                      )}
                     </div>
                     <div className="flex-1">
                       <ResultCard
