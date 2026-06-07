@@ -4799,13 +4799,10 @@ function TargetedScanResultsPanel({
 
   const toggleSymbol = (sym: string) => {
     setHiddenSymbols(prev => {
-      const n = new Set(prev);
-      if (n.has(sym)) {
-        n.delete(sym);
-      } else {
-        n.add(sym);
-      }
-      return n;
+      const next = new Set(prev);
+      if (next.has(sym)) next.delete(sym);
+      else next.add(sym);
+      return next;
     });
   };
 
@@ -4845,6 +4842,7 @@ function TargetedScanResultsPanel({
       : [...prev, s]
   );
 
+  // Clean direct filtering — guaranteed to update when buttons are clicked
   const sortedEntries = [...entries]
     .filter(e => !hiddenSymbols.has(e.symbol))
     .filter(e => e.pop >= filterPopMin)
