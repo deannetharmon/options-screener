@@ -5500,13 +5500,59 @@ export default function Home() {
         {/* Main content */}
         <div className="flex-1 overflow-auto p-5">
 
+          {/* Real-time Interactive Preset Filter Bar */}
+          {screenMode === 'filter' && (
+            <div className={`mb-4 p-3 ${th.card} border ${th.border} rounded-xl flex items-center justify-between gap-4 flex-wrap`}>
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] font-bold uppercase tracking-wider ${th.textFaint}`}>Quick Rule Presets:</span>
+                <div className="flex gap-1.5 flex-wrap">
+                  {[
+                    { key: 'strict', label: 'Strict', rules: { IVR_MIN: 40, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.35, ROC_MIN_SPREAD: 25, ROC_MIN_IC: 35 } },
+                    { key: 'course', label: 'Course', rules: { IVR_MIN: 30, OI_MIN: 500, BID_ASK_MAX: 0.10, CREDIT_RATIO_MIN: 0.33, ROC_MIN_SPREAD: 20, ROC_MIN_IC: 30 } },
+                    { key: 'relaxed', label: 'Relaxed', rules: { IVR_MIN: 25, OI_MIN: 300, BID_ASK_MAX: 0.15, CREDIT_RATIO_MIN: 0.28, ROC_MIN_SPREAD: 15, ROC_MIN_IC: 25 } },
+                    { key: 'lowvol', label: 'Low Vol', rules: { IVR_MIN: 20, OI_MIN: 200, BID_ASK_MAX: 0.20, CREDIT_RATIO_MIN: 0.22, ROC_MIN_SPREAD: 12, ROC_MIN_IC: 20 } },
+                  ].map(p => {
+                    const isActive = stockPresetLabel === p.label;
+                    return (
+                      <button
+                        key={p.key}
+                        onClick={() => {
+                          const updatedRules = { ...runtimeStockRules, ...p.rules };
+                          setRuntimeStockRules(updatedRules);
+                          setStockPresetLabel(p.label);
+                          try { localStorage.setItem('hunter-active-preset', p.key); } catch {}
+                          
+                          // Run instant client-side calculation if cache is populated
+                          if (rawScanCache.length > 0) {
+                            applyRules(updatedRules, runtimeEtfRules, p.label, etfPresetLabel);
+                          }
+                        }}
+                        className={`px-2.5 py-1 text-[10px] font-bold border rounded-lg transition-all ${
+                          isActive 
+                            ? 'bg-blue-500/10 border-blue-500 text-blue-400' 
+                            : `${th.border} ${th.textFaint} hover:border-slate-500`
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className={`text-[10px] ${th.textFaint}`}>
+                Active Stock DTE: <span className={`${th.text} font-medium`}>{runtimeStockRules.DTE_MIN}–{runtimeStockRules.DTE_MAX}d</span>
+              </div>
+            </div>
+          )}
+
           {/* Stale session warning */}
           {sessionLoadedAt && (() => {
             const daysSince = (Date.now() - sessionLoadedAt.at) / (1000 * 60 * 60 * 24);
             if (daysSince < 2) return null;
             return (
               <div className="mb-4 px-4 py-3 border border-yellow-600/50 bg-yellow-500/8 rounded-lg flex items-start gap-3">
-                <span className="text-yellow-400 text-sm mt-0.5">⚠</span>
+                <span className="text-yellow-400 text-sm mt-0.5"> </span>
                 <div className="flex-1">
                   <p className="text-xs text-yellow-400 font-bold tracking-wider">STALE SESSION — "{sessionLoadedAt.name}"</p>
                   <p className="text-[10px] text-yellow-400/70 mt-0.5">
@@ -5536,7 +5582,6 @@ export default function Home() {
               </div>
             );
           })()}
-
           {results.length === 0 && targetedResults.length === 0 && !loading && autoTrendEntries.length === 0 && (
             <div className={`h-full flex flex-col items-center justify-center ${th.textFaint}`}>
               <div className="text-4xl mb-3 opacity-20">◈</div>
