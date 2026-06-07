@@ -4794,33 +4794,64 @@ function TargetedScanResultsPanel({
   etfRules: RulesType;
   existingPositions: ExistingPosition[];
 }) {
-  // ── All hooks before any early return ──────────────────────────────────────
-  // Use arrays (not Sets) — React doesn't reliably detect Set mutations
-  const [hiddenSymbols, setHiddenSymbols] = useState<string[]>([]);
-  const [showTopN, setShowTopN]           = useState<number>(50);
-  const [filterPopMin, setFilterPopMin]   = useState<number>(popMin);
-  const [filterStrategies, setFilterStrategies] = useState<string[]>(['BPS', 'BCS', 'IC']);
-  const [filterTrendOnly, setFilterTrendOnly]   = useState<boolean>(false);
-  // localSort owned here so changes immediately re-render without round-trip to parent
-  const [localSort, setLocalSort] = useState<'score' | 'pop' | 'credit' | 'creditRatio' | 'roc'>(sortBy);
-
-  // Keep localSort in sync if parent changes it externally
-  useEffect(() => { setLocalSort(sortBy); }, [sortBy]);
-  // Only reset filters when a genuinely new scan comes in (length changes)
-  const prevEntriesLenRef = useRef(0);
+  // ── State — all arrays, no Sets, no useMemo ─────────────────────────────
+  const [hiddenSymbols, setHiddenSymbols]       = useState<string[]>([]);
+  const [showTopN, setShowTopN]                 = useState<number>(50);
+  const [activePopMin, setActivePopMin]         = useState<number>(popMin);
+  const [activeStrategies, setActiveStrategies] = useState<string[]>(['BPS', 'BCS', 'IC']);
+  const [activeTrendOnly, setActiveTrendOnly]   = useState<boolean>(false);
+  const [activeSort, setActiveSort]             = useState(sortBy);
+  // Track scan identity so we reset filters only on genuinely new scan
+  const scanIdRef = useRef(0);
+  const lastLenRef = useRef(0);
+  if (entries.length !== lastLenRef.current) {
+    lastLenRef.current = entries.length;
+    scanIdRef.current += 1;
+  }
+  const [resetKey, setResetKey] = useState(0);
   useEffect(() => {
-    if (entries.length !== prevEntriesLenRef.current) {
-      prevEntriesLenRef.current = entries.length;
-      setFilterPopMin(popMin);
-      setHiddenSymbols([]);
-      setFilterStrategies(['BPS', 'BCS', 'IC']);
-      setFilterTrendOnly(false);
-    }
-  }, [entries.length, popMin]);
+    setActivePopMin(popMin);
+    setHiddenSymbols([]);
+    setActiveStrategies(['BPS', 'BCS', 'IC']);
+    setActiveTrendOnly(false);
+    setActiveSort(sortBy);
+    setResetKey(k => k + 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanIdRef.current]);
 
-  const toggleSymbol   = (sym: string) => setHiddenSymbols(prev => prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym]);
-  const toggleStrategy = (s: string)   => setFilterStrategies(prev => prev.includes(s) ? (prev.length === 1 ? prev : prev.filter(x => x !== s)) : [...prev, s]);
-  const handleSetSort  = (k: typeof localSort) => { setLocalSort(k); setSortBy(k); };
+  if (entries.length === 0) return null;
+
+  // ── Handlers ────────────────────────────────────────────────────────────
+  const toggleSymbol = (sym: string) =>
+    setHiddenSymbols(prev => prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym]);
+  const toggleStrategy = (s: string) =>
+    setActiveStrategies(prev => prev.includes(s) ? (prev.length === 1 ? prev : prev.filter(x => x !== s)) : [...prev, s]);
+  const changeSort = (k: typeof activeSort) => { setActiveSort(k); setSortBy(k); };
+
+  // ── Inline filter + sort — runs every render, no caching ───────────────
+  const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
+
+  let pool = entries.slice(); // shallow copy
+  // 1. ticker filter
+  if (hiddenSymbols.length > 0) pool = pool.filter(e => !hiddenSymbols.includes(e.symbol));
+  // 2. POP floor
+  pool = pool.filter(e => e.pop >= activePopMin);
+  // 3. strategy filter
+  pool = pool.filter(e => activeStrategies.includes(e.strategy));
+  // 4. trend only
+  if (activeTrendOnly) pool = pool.filter(e => e.strategy === e.primaryStrategy);
+  // 5. sort
+  pool.sort((a, b) => {
+    if (activeSort === 'pop')         return b.pop - a.pop;
+    if (activeSort === 'credit')      return (b.candidate.credit ?? 0) - (a.candidate.credit ?? 0);
+    if (activeSort === 'creditRatio') return (b.candidate.creditRatio ?? 0) - (a.candidate.creditRatio ?? 0);
+    if (activeSort === 'roc')         return b.candidate.roc - a.candidate.roc;
+    return b.score - a.score;
+  });
+
+  const totalVisible  = pool.length;
+  const display       = pool.slice(0, showTopN);
+  const globalRankMap = new Map(display.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}-${e.candidate.shortStrike}`, i + 1]));
 
   const dteBuckets = [
     { label: '< 21 · Closing Zone', min: 0,  max: 20  },
@@ -4830,55 +4861,31 @@ function TargetedScanResultsPanel({
     { label: '> 60 · Far Out',      min: 61, max: 999 },
   ];
 
-  const sortLabels = [
-    { key: 'score'       as const, label: 'Score'    },
-    { key: 'pop'         as const, label: 'POP %'    },
-    { key: 'credit'      as const, label: 'Credit $' },
-    { key: 'creditRatio' as const, label: 'Credit %' },
-    { key: 'roc'         as const, label: 'ROC %'    },
+  const sortLabels: { key: typeof activeSort; label: string }[] = [
+    { key: 'score',       label: 'Score'    },
+    { key: 'pop',         label: 'POP %'    },
+    { key: 'credit',      label: 'Credit $' },
+    { key: 'creditRatio', label: 'Credit %' },
+    { key: 'roc',         label: 'ROC %'    },
   ];
-
-  if (entries.length === 0) return null;
-
-  // ── Filter + sort pipeline ─────────────────────────────────────────────────
-  const filtered = useMemo(() => {
-    const sortFn = (a: TargetedScanEntry, b: TargetedScanEntry) => {
-      if (localSort === 'pop')         return b.pop - a.pop;
-      if (localSort === 'credit')      return (b.candidate.credit ?? 0) - (a.candidate.credit ?? 0);
-      if (localSort === 'creditRatio') return (b.candidate.creditRatio ?? 0) - (a.candidate.creditRatio ?? 0);
-      if (localSort === 'roc')         return b.candidate.roc - a.candidate.roc;
-      return b.score - a.score;
-    };
-    return [...entries]
-      .filter(e => !hiddenSymbols.includes(e.symbol))
-      .filter(e => e.pop >= filterPopMin)
-      .filter(e => filterStrategies.includes(e.strategy))
-      .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
-      .sort(sortFn);
-  }, [entries, hiddenSymbols, filterPopMin, filterStrategies, filterTrendOnly, localSort]);
-
-  const sortedEntries  = filtered.slice(0, showTopN);
-  const totalVisible   = filtered.length;
-  const allSymbols     = Array.from(new Set(entries.map(e => e.symbol))).sort();
-  const globalRankMap  = new Map(sortedEntries.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}`, i + 1]));
 
   return (
     <div className="flex flex-col" style={{ minHeight: 0 }}>
 
       {/* ── Sticky filter header ─────────────────────────────────────────── */}
-      <div className={`sticky top-0 z-20 pb-2 space-y-2 ${th.bg} border-b ${th.border}`}>
+      <div className={`sticky top-0 z-20 pb-3 pt-1 space-y-2 ${th.bg} border-b ${th.border}`}>
 
         {/* Row 1: count + sort + show top */}
         <div className="flex items-center gap-3 flex-wrap">
           <p className="text-[9px] text-teal-400 tracking-widest font-medium shrink-0">
-            ⊕ TARGETED — {sortedEntries.length} of {totalVisible} SHOWN
+            ⊕ TARGETED — {display.length} of {totalVisible} SHOWN
           </p>
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className={`text-[9px] ${th.textFaint}`}>Sort</span>
             {sortLabels.map(sl => (
-              <button key={sl.key} onClick={() => handleSetSort(sl.key)}
+              <button key={sl.key} onClick={() => changeSort(sl.key)}
                 className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
-                  localSort === sl.key
+                  activeSort === sl.key
                     ? 'border-teal-500 text-teal-300 bg-teal-500/15'
                     : `${th.border} ${th.textFaint} hover:border-teal-500/50`
                 }`}>
@@ -4906,9 +4913,9 @@ function TargetedScanResultsPanel({
           <div className="flex items-center gap-1.5">
             <span className={`text-[9px] ${th.textFaint} shrink-0`}>POP ≥</span>
             {[65, 70, 75, 80, 85].map(v => (
-              <button key={v} onClick={() => setFilterPopMin(v)}
+              <button key={v} onClick={() => setActivePopMin(v)}
                 className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
-                  filterPopMin === v
+                  activePopMin === v
                     ? 'border-teal-500 text-teal-300 bg-teal-500/15'
                     : `${th.border} ${th.textFaint} hover:border-teal-500/50`
                 }`}>
@@ -4920,14 +4927,14 @@ function TargetedScanResultsPanel({
           <div className="flex items-center gap-1.5">
             <span className={`text-[9px] ${th.textFaint} shrink-0`}>Strategy</span>
             {(['BPS', 'BCS', 'IC'] as const).map(s => {
-              const active = filterStrategies.includes(s);
-              const color  = s === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
-                           : s === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
-                           :               'border-blue-600 text-blue-400 bg-blue-500/10';
+              const on = activeStrategies.includes(s);
+              const c  = s === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
+                       : s === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
+                       :               'border-blue-600 text-blue-400 bg-blue-500/10';
               return (
                 <button key={s} onClick={() => toggleStrategy(s)}
                   className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
-                    active ? color : `${th.border} ${th.textFaint} opacity-40`
+                    on ? c : `${th.border} ${th.textFaint} opacity-40`
                   }`}>
                   {s}
                 </button>
@@ -4935,9 +4942,9 @@ function TargetedScanResultsPanel({
             })}
           </div>
           <div className={`w-px h-4 ${th.border} border-l`} />
-          <button onClick={() => setFilterTrendOnly(v => !v)}
+          <button onClick={() => setActiveTrendOnly(v => !v)}
             className={`text-[9px] px-2.5 py-0.5 rounded border transition-colors font-bold ${
-              filterTrendOnly
+              activeTrendOnly
                 ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10'
                 : `${th.border} ${th.textFaint} hover:border-emerald-500/50`
             }`}>
@@ -4973,9 +4980,9 @@ function TargetedScanResultsPanel({
       </div>
 
       {/* ── Scrollable results ───────────────────────────────────────────── */}
-      <div className="space-y-4 overflow-y-auto">
+      <div className="space-y-4 pt-3" key={`results-${resetKey}`}>
         {dteBuckets.map(bucket => {
-          const bucketEntries = sortedEntries.filter(e => e.dte >= bucket.min && e.dte <= bucket.max);
+          const bucketEntries = display.filter(e => e.dte >= bucket.min && e.dte <= bucket.max);
           if (bucketEntries.length === 0) return null;
           return (
             <div key={bucket.label}>
@@ -4987,23 +4994,23 @@ function TargetedScanResultsPanel({
               </div>
               <div className="space-y-2">
                 {bucketEntries.map(entry => {
-                  const globalRank    = globalRankMap.get(`${entry.symbol}-${entry.strategy}-${entry.expiration}`) ?? 0;
-                  const appliedRules  = entry.isEtf ? etfRules : rules;
-                  const isTrendAligned = entry.strategy === entry.primaryStrategy;
-                  const isAgainstTrend = entry.trendResult?.strategy !== 'NO_TRADE' && !isTrendAligned && entry.strategy !== 'IC';
+                  const rk = globalRankMap.get(`${entry.symbol}-${entry.strategy}-${entry.expiration}-${entry.candidate.shortStrike}`) ?? 0;
+                  const ar = entry.isEtf ? etfRules : rules;
+                  const aligned = entry.strategy === entry.primaryStrategy;
+                  const against = entry.trendResult?.strategy !== 'NO_TRADE' && !aligned && entry.strategy !== 'IC';
                   return (
-                    <div key={`${entry.symbol}-${entry.strategy}-${entry.expiration}`} className="flex items-start gap-2">
+                    <div key={`${entry.symbol}-${entry.strategy}-${entry.expiration}-${entry.candidate.shortStrike}`} className="flex items-start gap-2">
                       <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
-                        <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{globalRank}</span>
+                        <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{rk}</span>
                         <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(entry.dte)}`}>{entry.dte}d</span>
-                        {isTrendAligned  && <span className="text-[8px] text-emerald-400" title="Trend aligned">↑✓</span>}
-                        {isAgainstTrend  && <span className="text-[8px] text-amber-400"   title="Against trend">⚠</span>}
+                        {aligned && <span className="text-[8px] text-emerald-400" title="Trend aligned">↑✓</span>}
+                        {against && <span className="text-[8px] text-amber-400"   title="Against trend">⚠</span>}
                       </div>
                       <div className="flex-1">
                         <ResultCard
                           result={entry.screenResult}
                           th={th}
-                          rules={appliedRules}
+                          rules={ar}
                           screenMode="targeted"
                           rankConfig={rankConfig}
                           onTrade={() => {}}
