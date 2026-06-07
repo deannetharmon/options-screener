@@ -2969,7 +2969,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
             </> : <>
               <div className="text-xs shrink-0 w-20">
                 <div><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-                <div><span className={th.label}>Width </span><span className={th.textFaint}>{(c.creditRatio * 100).toFixed(0)}%</span></div>
+                <div><span className={th.label}>Cr Ratio </span><span className={th.textFaint}>{(c.creditRatio * 100).toFixed(0)}% of width</span></div>
               </div>
               <div className="text-xs shrink-0 w-16">
                 <div><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
