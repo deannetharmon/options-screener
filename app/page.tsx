@@ -4826,18 +4826,39 @@ function TargetedScanResultsPanel({
     { key: 'roc', label: 'ROC %' },
   ];
 
+  // Post-scan filters — no rescan needed
+  const [filterPopMin, setFilterPopMin] = useState<number>(popMin);
+  const [filterStrategies, setFilterStrategies] = useState<Set<string>>(new Set(['BPS', 'BCS', 'IC']));
+  const [filterTrendOnly, setFilterTrendOnly] = useState<boolean>(false);
+
+  // Sync POP filter floor to scan's popMin when entries change (new scan)
+  useEffect(() => { setFilterPopMin(popMin); }, [entries, popMin]);
+    const n = new Set(prev);
+    if (n.has(s) && n.size === 1) return prev; // keep at least one
+    n.has(s) ? n.delete(s) : n.add(s);
+    return n;
+  });
+
   if (entries.length === 0) return null;
 
   const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
 
-  // Sort globally, filter by hidden symbols, then cap at showTopN
+  // Sort globally, apply all filters, then cap at showTopN
   const sortedEntries = [...entries]
     .filter(e => !hiddenSymbols.has(e.symbol))
+    .filter(e => e.pop >= filterPopMin)
+    .filter(e => filterStrategies.has(e.strategy))
+    .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
     .sort(sortFn)
     .slice(0, showTopN);
 
   const globalRankMap = new Map(sortedEntries.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}`, i + 1]));
-  const totalVisible = entries.filter(e => !hiddenSymbols.has(e.symbol)).length;
+  const totalVisible = entries
+    .filter(e => !hiddenSymbols.has(e.symbol))
+    .filter(e => e.pop >= filterPopMin)
+    .filter(e => filterStrategies.has(e.strategy))
+    .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
+    .length;
 
   return (
     <div className="space-y-4">
@@ -4866,6 +4887,49 @@ function TargetedScanResultsPanel({
           ))}
         </div>
         <span className={`text-[9px] ${th.textFaint}`}>POP ≥ {popMin}%</span>
+      </div>
+
+      {/* Post-scan filters */}
+      <div className="flex items-center gap-4 flex-wrap">
+        {/* POP floor */}
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[9px] ${th.textFaint} shrink-0`}>POP ≥</span>
+          {[65, 70, 75, 80, 85].map(v => (
+            <button key={v} onClick={() => setFilterPopMin(v)}
+              className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                filterPopMin === v ? 'border-teal-500 text-teal-300 bg-teal-500/15' : `${th.border} ${th.textFaint} hover:border-teal-500/50`
+              }`}>
+              {v}%
+            </button>
+          ))}
+        </div>
+        <div className={`w-px h-4 ${th.border} border-l`} />
+        {/* Strategy toggles */}
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[9px] ${th.textFaint} shrink-0`}>Strategy</span>
+          {(['BPS', 'BCS', 'IC'] as const).map(s => {
+            const active = filterStrategies.has(s);
+            const color = s === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
+                        : s === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
+                        : 'border-blue-600 text-blue-400 bg-blue-500/10';
+            return (
+              <button key={s} onClick={() => toggleStrategy(s)}
+                className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                  active ? color : `${th.border} ${th.textFaint} opacity-40`
+                }`}>
+                {s}
+              </button>
+            );
+          })}
+        </div>
+        <div className={`w-px h-4 ${th.border} border-l`} />
+        {/* Trend aligned only */}
+        <button onClick={() => setFilterTrendOnly(v => !v)}
+          className={`text-[9px] px-2.5 py-0.5 rounded border transition-colors font-bold flex items-center gap-1 ${
+            filterTrendOnly ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : `${th.border} ${th.textFaint} hover:border-emerald-500/50`
+          }`}>
+          ↑✓ Trend aligned only
+        </button>
       </div>
 
       {/* Ticker filter toggles */}
