@@ -4737,7 +4737,7 @@ async function runTargetedScan(
                     ...result.checks,
                     credit: { status: 'pass', value: `$${bestCandidate.credit.toFixed(2)}`, reason: `${(bestCandidate.creditRatio * 100).toFixed(0)}% of width` },
                     delta: { status: 'pass', value: bestCandidate.shortDelta.toFixed(2), reason: 'Short leg delta' },
-                    pop: { status: 'pass', value: `${bestCandidate.pop.toFixed(0)}%`, reason: `≥ ${popMin}% gate` },
+                    pop: { status: 'pass', value: `${(bestCandidate.pop ?? 0).toFixed(0)}%`, reason: `≥ ${popMin}% gate` },
                     roc: { status: result.checks.roc.status, value: `${bestCandidate.roc.toFixed(0)}%`, reason: result.checks.roc.reason },
                     oi: { status: result.checks.oi.status, value: `${bestCandidate.shortOI}/${bestCandidate.longOI}`, reason: result.checks.oi.reason },
                   },
