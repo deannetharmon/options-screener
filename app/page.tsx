@@ -4734,8 +4734,8 @@ function TargetedScanResultsPanel({
   entries, sortBy, setSortBy, popMin, th, rankConfig, rules, etfRules, existingPositions,
 }: {
   entries: TargetedScanEntry[];
-  sortBy: 'score' | 'pop' | 'credit' | 'roc';
-  setSortBy: (v: 'score' | 'pop' | 'credit' | 'roc') => void;
+  sortBy: 'score' | 'pop' | 'credit' | 'creditRatio' | 'roc';
+  setSortBy: (v: 'score' | 'pop' | 'credit' | 'creditRatio' | 'roc') => void;
   popMin: number;
   th: typeof THEMES[Theme];
   rankConfig: RankConfig;
@@ -4748,6 +4748,7 @@ function TargetedScanResultsPanel({
   const sortFn = (a: TargetedScanEntry, b: TargetedScanEntry) => {
     if (sortBy === 'pop') return b.pop - a.pop;
     if (sortBy === 'credit') return (b.candidate.credit ?? 0) - (a.candidate.credit ?? 0);
+    if (sortBy === 'creditRatio') return (b.candidate.creditRatio ?? 0) - (a.candidate.creditRatio ?? 0);
     if (sortBy === 'roc') return b.candidate.roc - a.candidate.roc;
     return b.score - a.score;
   };
@@ -4759,10 +4760,11 @@ function TargetedScanResultsPanel({
     { label: '> 45 DTE', min: 46, max: 999 },
   ];
 
-  const sortLabels: { key: 'score' | 'pop' | 'credit' | 'roc'; label: string }[] = [
+  const sortLabels: { key: 'score' | 'pop' | 'credit' | 'creditRatio' | 'roc'; label: string }[] = [
     { key: 'score', label: 'Score' },
     { key: 'pop', label: 'POP %' },
     { key: 'credit', label: 'Credit $' },
+    { key: 'creditRatio', label: 'Credit %' },
     { key: 'roc', label: 'ROC %' },
   ];
 
@@ -4887,7 +4889,7 @@ export default function Home() {
   const [targetedDteMin, setTargetedDteMin] = useState<number>(21);
   const [targetedDteMax, setTargetedDteMax] = useState<number>(45);
   const [targetedPopMin, setTargetedPopMin] = useState<number>(70);
-  const [targetedSortBy, setTargetedSortBy] = useState<'score' | 'pop' | 'credit' | 'roc'>('score');
+  const [targetedSortBy, setTargetedSortBy] = useState<'score' | 'pop' | 'credit' | 'creditRatio' | 'roc'>('score');
   const [targetedResults, setTargetedResults] = useState<TargetedScanEntry[]>([]);
   const [targetedPreset, setTargetedPreset] = useState<string>('course');
   const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
