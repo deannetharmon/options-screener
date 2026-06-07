@@ -4831,7 +4831,25 @@ function TargetedScanResultsPanel({
   const [filterStrategies, setFilterStrategies] = useState<string[]>(['BPS', 'BCS', 'IC']);
   const [filterTrendOnly, setFilterTrendOnly] = useState<boolean>(false);
 
-  useEffect(() => { setFilterPopMin(popMin); }, [entries, popMin]);
+  useEffect(() => { setFilterPopMin(popMin); }, [popMin]);
+
+  const toggleStrategy = (s: string) => setFilterStrategies(prev =>
+    prev.includes(s)
+      ? prev.length === 1 ? prev : prev.filter(x => x !== s)
+      : [...prev, s]
+  );
+
+  // === THIS IS THE KEY FIX ===
+  const sortedEntries = useMemo(() => {
+    return [...entries]
+      .filter(e => !hiddenSymbols.has(e.symbol))
+      .filter(e => e.pop >= filterPopMin)
+      .filter(e => filterStrategies.includes(e.strategy))
+      .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
+      .sort(sortFn)
+      .slice(0, showTopN);
+  }, [entries, hiddenSymbols, filterPopMin, filterStrategies, filterTrendOnly, sortFn, showTopN]);
+  // ============================
 
   const toggleStrategy = (s: string) => setFilterStrategies(prev =>
     prev.includes(s)
@@ -4843,14 +4861,15 @@ function TargetedScanResultsPanel({
 
   const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
 
-  // Sort globally, apply all filters, then cap at showTopN
-  const sortedEntries = [...entries]
-    .filter(e => !hiddenSymbols.has(e.symbol))
-    .filter(e => e.pop >= filterPopMin)
-    .filter(e => filterStrategies.includes(e.strategy))
-    .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
-    .sort(sortFn)
-    .slice(0, showTopN);
+  const sortedEntries = useMemo(() => {
+    return [...entries]
+      .filter(e => !hiddenSymbols.has(e.symbol))
+      .filter(e => e.pop >= filterPopMin)
+      .filter(e => filterStrategies.includes(e.strategy))
+      .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
+      .sort(sortFn)
+      .slice(0, showTopN);
+  }, [entries, hiddenSymbols, filterPopMin, filterStrategies, filterTrendOnly, sortFn, showTopN]);
 
   const globalRankMap = new Map(sortedEntries.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}`, i + 1]));
   const totalVisible = entries
