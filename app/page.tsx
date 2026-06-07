@@ -3467,19 +3467,6 @@ function RunModeModal({ th, lastMode, lastPreset, lastTargetedDteMin, lastTarget
           <div className="flex flex-col gap-4">
             <p className={`text-[9px] tracking-widest font-medium ${th.textFaint}`}>SCAN CONFIG</p>
 
-            {/* Filter preset */}
-            <div>
-              <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5`}>FILTER PRESET (base rules)</p>
-              <div className="flex gap-1.5 flex-wrap">
-                {FILTER_PRESETS.map(p => (
-                  <button key={p.key} onClick={() => setTPreset(p.key)}
-                    className={`text-[9px] px-2.5 py-1 rounded border font-bold transition-colors ${
-                      tPreset === p.key ? p.color + ' bg-white/5' : `${th.border} ${th.textFaint}`
-                    }`}>{p.label}</button>
-                ))}
-              </div>
-            </div>
-
             {/* DTE range */}
             <div>
               <p className={`text-[8px] ${th.textFaint} tracking-widest mb-1.5`}>DTE RANGE</p>
