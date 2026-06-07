@@ -4599,6 +4599,7 @@ async function runTargetedScan(
   rules: RulesType, etfRules: RulesType, rankConfig: RankConfig,
   setLoading: (v: boolean) => void, setStatus: (v: string) => void, setError: (v: string) => void,
   setTargetedResults: (v: TargetedScanEntry[]) => void,
+  cancelRef: React.MutableRefObject<boolean>,
 ): Promise<void> {
   // PMCC excluded — different philosophy, not a spread strategy
   const strategyMap: { symbol: string; primary: 'BPS' | 'BCS' | 'IC' }[] = [
@@ -4610,6 +4611,7 @@ async function runTargetedScan(
 
   if (allSymbols.length === 0) { setError('No tickers in BPS / BCS / IC boxes.'); return; }
   setError(''); setLoading(true); setTargetedResults([]);
+  cancelRef.current = false;
 
   try {
     const token = await getAccessToken();
@@ -4620,6 +4622,10 @@ async function runTargetedScan(
     const entries: TargetedScanEntry[] = [];
 
     for (let i = 0; i < strategyMap.length; i++) {
+      if (cancelRef.current) {
+        setStatus(`Stopped — ${entries.length} results loaded`);
+        break;
+      }
       const { symbol, primary } = strategyMap[i];
       setStatus(`Scanning ${symbol} (${i + 1}/${strategyMap.length})...`);
       try {
@@ -4997,6 +5003,7 @@ export default function Home() {
   const [targetedSortBy, setTargetedSortBy] = useState<'score' | 'pop' | 'credit' | 'creditRatio' | 'roc'>('score');
   const [targetedResults, setTargetedResults] = useState<TargetedScanEntry[]>([]);
   const [targetedPreset, setTargetedPreset] = useState<string>('course');
+  const targetedCancelRef = useRef<boolean>(false);
   const [existingPositions, setExistingPositions] = useState<ExistingPosition[]>([]);
   useEffect(() => {
     loadExistingPositions().then(setExistingPositions).catch(() => {});
@@ -5383,6 +5390,12 @@ export default function Home() {
             className="w-full text-white py-2.5 rounded-lg text-xs font-bold tracking-widest transition-colors disabled:opacity-40 shadow-lg" style={{ background: `var(--accent)` }}>
             {loading ? 'SCANNING...' : 'RUN HUNTER'}
           </button>
+          {loading && screenMode === 'targeted' && (
+            <button onClick={() => { targetedCancelRef.current = true; }}
+              className="w-full py-2 rounded-lg text-xs font-bold tracking-widest border border-red-600 text-red-400 hover:bg-red-600/20 transition-colors">
+              ⏹ STOP SCAN
+            </button>
+          )}
 
           {/* Last Rules Used — hidden in rank mode */}
           {screenMode === 'filter' && <div className={`text-[9px] space-y-1 border-t ${th.border} pt-3`}>
@@ -5655,7 +5668,7 @@ export default function Home() {
               const bps = parseTickers(bpsTickers);
               const bcs = parseTickers(bcsTickers);
               const ic = parseTickers(icTickers);
-              runTargetedScan(bps, bcs, ic, targetedOpts.dteMin, targetedOpts.dteMax, targetedOpts.popMin, tRules, tEtfRules, rankConfig, setLoading, setStatus, setError, setTargetedResults);
+              runTargetedScan(bps, bcs, ic, targetedOpts.dteMin, targetedOpts.dteMax, targetedOpts.popMin, tRules, tEtfRules, rankConfig, setLoading, setStatus, setError, setTargetedResults, targetedCancelRef);
             } else if (mode === 'rank') {
               runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel, 'rank');
             } else {
