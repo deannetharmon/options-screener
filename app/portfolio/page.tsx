@@ -3431,7 +3431,7 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
   const [input, setInput] = useState('');
   const [pendingImage, setPendingImage] = useState(null as { base64: string; mediaType: string; preview: string } | null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(null as string | null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -3942,11 +3942,11 @@ function assessExtendConditions(pos: Position): {
 function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<'success' | 'error' | null>(null);
+  const [result, setResult] = useState(null as 'success' | 'error' | null);
   const [resultMsg, setResultMsg] = useState('');
-  const [verdict, setVerdict] = useState<ActionVerdict | null>(null);
+  const [verdict, setVerdict] = useState(null as ActionVerdict | null);
   const [verdictLoading, setVerdictLoading] = useState(false);
-  const [selectedPct, setSelectedPct] = useState<number | null>(null);
+  const [selectedPct, setSelectedPct] = useState(null as number | null);
 
   if (!pos.hasGtc) return null;
 
@@ -4425,21 +4425,21 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   const [open, setOpen]       = useState(false);
   const [loading, setLoading] = useState(false);
   const [phase, setPhase]     = useState('');
-  const [result, setResult]   = useState<'success' | 'error' | null>(null);
+  const [result, setResult]   = useState(null as 'success' | 'error' | null);
   const [resultMsg, setResultMsg] = useState('');
   const [stopPrice, setStopPrice] = useState('');
   const [stopPct,   setStopPct]   = useState('200');  // default: 200% of credit = 2× rule
   const [gtcPrice,  setGtcPrice]  = useState('');
 
   // AI suggestion
-  const [suggestion, setSuggestion]           = useState<StopGtcSuggestion | null>(null);
+  const [suggestion, setSuggestion]           = useState(null as StopGtcSuggestion | null);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
-  const [suggestionError, setSuggestionError]   = useState<string | null>(null);
+  const [suggestionError, setSuggestionError]   = useState(null as string | null);
 
   // Live price fetch state
-  const [livePrice, setLivePrice]         = useState<number | null>(null);  // per-contract
+  const [livePrice, setLivePrice]         = useState(null as number | null);  // per-contract
   const [livePriceLoading, setLivePriceLoading] = useState(false);
-  const [livePriceError, setLivePriceError]   = useState<string | null>(null);
+  const [livePriceError, setLivePriceError]   = useState(null as string | null);
 
   // Confirmation step before destructive OCO replace
   const [confirming, setConfirming] = useState(false);
@@ -5154,16 +5154,16 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   onExecute: (pos: Position, action: ActionType) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [trend, setTrend] = useState<TrendResult | null>(null);
-  const [wheelCycle, setWheelCycle] = useState<WheelCycle | null>(() => getWheelCycleForPos(pos));
+  const [trend, setTrend] = useState(null as TrendResult | null);
+  const [wheelCycle, setWheelCycle] = useState(getWheelCycleForPos(pos) as WheelCycle | null);
   const isWheelCandidate = (pos.strategy === 'PUT' || pos.strategy === 'CALL') && !wheelCycle;
   const showWheelBanner  = isWheelCandidate && !readWheelCycles().find(c => c.symbol === pos.symbol && c.cspExpiry === pos.expDate && c.dismissedBanner);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetInput, setTargetInput] = useState(String(Math.round(pos.profitTarget * 100)));
-  const [analysis, setAnalysis] = useState<PositionAnalysis | null>(null);
+  const [analysis, setAnalysis] = useState(null as PositionAnalysis | null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [analysisError, setAnalysisError] = useState(null as string | null);
   const [showAnalysis, setShowAnalysis] = useState(false);
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState(null as number[] | null);
@@ -6122,14 +6122,14 @@ export default function PortfolioPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [lastRefresh, setLastRefresh] = useState(null as Date | null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [batchItems, setBatchItems] = useState(null as { pos: Position; action: ActionType }[] | null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
-  const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
+  const [portfolioAnalysis, setPortfolioAnalysis] = useState(null as PortfolioAnalysis | null);
   const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
 
   // Trigger weekly behavior summarization silently on load
