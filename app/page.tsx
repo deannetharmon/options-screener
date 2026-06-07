@@ -4833,6 +4833,8 @@ function TargetedScanResultsPanel({
 
   // Sync POP filter floor to scan's popMin when entries change (new scan)
   useEffect(() => { setFilterPopMin(popMin); }, [entries, popMin]);
+
+  const toggleStrategy = (s: string) => setFilterStrategies(prev => {
     const n = new Set(prev);
     if (n.has(s) && n.size === 1) return prev; // keep at least one
     n.has(s) ? n.delete(s) : n.add(s);
