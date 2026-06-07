@@ -3486,10 +3486,11 @@ function RunModeModal({ th, lastMode, lastPreset, lastTargetedDteMin, lastTarget
               </div>
               <div className="flex gap-1.5 mt-2 flex-wrap">
                 {[
-                  { label: '7–14', min: 7, max: 14 },
-                  { label: '14–21', min: 14, max: 21 },
-                  { label: '21–45', min: 21, max: 45 },
+                  { label: '7–13', min: 7, max: 13 },
+                  { label: '14–20', min: 14, max: 20 },
+                  { label: '21–29', min: 21, max: 29 },
                   { label: '30–45', min: 30, max: 45 },
+                  { label: '46–60', min: 46, max: 60 },
                   { label: '21–60', min: 21, max: 60 },
                 ].map(r => (
                   <button key={r.label} onClick={() => { setTDteMin(r.min); setTDteMax(r.max); }}
@@ -4810,10 +4811,11 @@ function TargetedScanResultsPanel({
   };
 
   const dteBuckets: { label: string; min: number; max: number }[] = [
-    { label: '< 21 DTE', min: 0, max: 20 },
-    { label: '21–30 DTE', min: 21, max: 30 },
-    { label: '31–45 DTE', min: 31, max: 45 },
-    { label: '> 45 DTE', min: 46, max: 999 },
+    { label: '< 21 · Closing Zone', min: 0, max: 20 },
+    { label: '21–29 · Short Entry', min: 21, max: 29 },
+    { label: '30–45 · Target Zone', min: 30, max: 45 },
+    { label: '46–60 · Extended', min: 46, max: 60 },
+    { label: '> 60 · Far Out', min: 61, max: 999 },
   ];
 
   const sortLabels: { key: 'score' | 'pop' | 'credit' | 'creditRatio' | 'roc'; label: string }[] = [
