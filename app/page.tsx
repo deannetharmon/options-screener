@@ -4768,10 +4768,25 @@ function TargetedScanResultsPanel({
     { key: 'roc', label: 'ROC %' },
   ];
 
+  // Get unique symbols for ticker filter
+  const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
+  const [hiddenSymbols, setHiddenSymbols] = useState<Set<string>>(new Set());
+  const toggleSymbol = (sym: string) => setHiddenSymbols(prev => {
+    const n = new Set(prev);
+    n.has(sym) ? n.delete(sym) : n.add(sym);
+    return n;
+  });
+
+  // Sort ALL entries globally first, then assign global rank, then group by DTE
+  const sortedEntries = [...entries]
+    .filter(e => !hiddenSymbols.has(e.symbol))
+    .sort(sortFn);
+  const globalRankMap = new Map(sortedEntries.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}`, i + 1]));
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3 flex-wrap">
-        <p className="text-[9px] text-teal-400 tracking-widest font-medium">⊕ TARGETED SCAN — {entries.length} OPPORTUNITIES</p>
+        <p className="text-[9px] text-teal-400 tracking-widest font-medium">⊕ TARGETED SCAN — {sortedEntries.length} OPPORTUNITIES</p>
         <div className="flex items-center gap-1.5">
           <span className={`text-[9px] ${th.textFaint}`}>Sort by</span>
           {sortLabels.map(sl => (
@@ -4786,10 +4801,35 @@ function TargetedScanResultsPanel({
         <span className={`text-[9px] ${th.textFaint}`}>POP ≥ {popMin}%</span>
       </div>
 
+      {/* Ticker filter toggles */}
+      {allSymbols.length > 1 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className={`text-[9px] ${th.textFaint} shrink-0`}>Tickers</span>
+          {allSymbols.map(sym => {
+            const hidden = hiddenSymbols.has(sym);
+            const count = sortedEntries.filter(e => e.symbol === sym).length + (hidden ? entries.filter(e => e.symbol === sym).length : 0);
+            return (
+              <button key={sym} onClick={() => toggleSymbol(sym)}
+                className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                  hidden
+                    ? `${th.border} ${th.textFaint} line-through opacity-40`
+                    : 'border-teal-600 text-teal-300 bg-teal-500/10'
+                }`}>
+                {sym} <span className="opacity-60">({entries.filter(e => e.symbol === sym).length})</span>
+              </button>
+            );
+          })}
+          {hiddenSymbols.size > 0 && (
+            <button onClick={() => setHiddenSymbols(new Set())}
+              className={`text-[9px] px-2 py-0.5 rounded border ${th.border} ${th.textFaint} hover:border-teal-500/50`}>
+              Show all
+            </button>
+          )}
+        </div>
+      )}
+
       {dteBuckets.map(bucket => {
-        const bucketEntries = entries
-          .filter(e => e.dte >= bucket.min && e.dte <= bucket.max)
-          .sort(sortFn);
+        const bucketEntries = sortedEntries.filter(e => e.dte >= bucket.min && e.dte <= bucket.max);
         if (bucketEntries.length === 0) return null;
 
         return (
@@ -4801,12 +4841,13 @@ function TargetedScanResultsPanel({
               <span className={`text-[9px] ${th.textFaint}`}>{bucketEntries.length} setups</span>
             </div>
             <div className="space-y-2">
-              {bucketEntries.map((entry, i) => {
+              {bucketEntries.map(entry => {
+                const globalRank = globalRankMap.get(`${entry.symbol}-${entry.strategy}-${entry.expiration}`) ?? 0;
                 const appliedRules = entry.isEtf ? etfRules : rules;
                 return (
                   <div key={`${entry.symbol}-${entry.strategy}-${entry.expiration}`} className="flex items-start gap-2">
                     <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
-                      <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{i + 1}</span>
+                      <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{globalRank}</span>
                       <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(entry.dte)}`}>{entry.dte}d</span>
                     </div>
                     <div className="flex-1">
