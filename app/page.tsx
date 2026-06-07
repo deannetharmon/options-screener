@@ -4806,8 +4806,17 @@ function TargetedScanResultsPanel({
 
   // Keep localSort in sync if parent changes it externally
   useEffect(() => { setLocalSort(sortBy); }, [sortBy]);
-  // Sync POP floor when a new scan runs
-  useEffect(() => { setFilterPopMin(popMin); setHiddenSymbols([]); setFilterStrategies(['BPS','BCS','IC']); setFilterTrendOnly(false); }, [entries]);
+  // Only reset filters when a genuinely new scan comes in (length changes)
+  const prevEntriesLenRef = useRef(0);
+  useEffect(() => {
+    if (entries.length !== prevEntriesLenRef.current) {
+      prevEntriesLenRef.current = entries.length;
+      setFilterPopMin(popMin);
+      setHiddenSymbols([]);
+      setFilterStrategies(['BPS', 'BCS', 'IC']);
+      setFilterTrendOnly(false);
+    }
+  }, [entries.length, popMin]);
 
   const toggleSymbol   = (sym: string) => setHiddenSymbols(prev => prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym]);
   const toggleStrategy = (s: string)   => setFilterStrategies(prev => prev.includes(s) ? (prev.length === 1 ? prev : prev.filter(x => x !== s)) : [...prev, s]);
@@ -4857,7 +4866,7 @@ function TargetedScanResultsPanel({
     <div className="flex flex-col" style={{ minHeight: 0 }}>
 
       {/* ── Sticky filter header ─────────────────────────────────────────── */}
-      <div className="sticky top-0 z-20 pb-2 space-y-2" style={{ background: 'var(--bg, inherit)' }}>
+      <div className={`sticky top-0 z-20 pb-2 space-y-2 ${th.bg} border-b ${th.border}`}>
 
         {/* Row 1: count + sort + show top */}
         <div className="flex items-center gap-3 flex-wrap">
