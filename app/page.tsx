@@ -5040,16 +5040,16 @@ export default function Home() {
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
-          let trendResult: TrendResult | undefined;
-          try { trendResult = await getTrend(symbol); } catch {}
-          
           const [chainData, price] = await Promise.all([
             getChain(symbol, token, getChainRules(isEtfTicker)),
             getQuote(symbol, token),
           ]);
-          
-          scanCache.push({ symbol, strategy, metrics, chainData, price, trendResult });
-          screenResults.push(runChecklist(symbol, strategy, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+          for (const s of strategiesToScan) {
+            scanCache.push({ symbol, strategy: s, metrics, chainData, price, trendResult });
+            if (isRankMode) {
+              screenResults.push(...runChecklistAllExpirations(symbol, s, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+            } else {
+              screenResults.push(runChecklist(symbol, s, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
             }
           }
         } catch (e: any) {
