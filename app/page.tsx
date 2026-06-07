@@ -4797,9 +4797,17 @@ function TargetedScanResultsPanel({
   const [hiddenSymbols, setHiddenSymbols] = useState<Set<string>>(new Set());
   const [showTopN, setShowTopN] = useState<number>(50);
 
-  const toggleSymbol = (sym: string) => setHiddenSymbols(prev => {
-    const n = new Set(prev); n.has(sym) ? n.delete(sym) : n.add(sym); return n;
-  });
+  const toggleSymbol = (sym: string) => {
+    setHiddenSymbols(prev => {
+      const n = new Set(prev);
+      if (n.has(sym)) {
+        n.delete(sym);
+      } else {
+        n.add(sym);
+      }
+      return n;
+    });
+  };
 
   const sortFn = (a: TargetedScanEntry, b: TargetedScanEntry) => {
     if (sortBy === 'pop') return b.pop - a.pop;
