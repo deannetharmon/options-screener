@@ -4794,7 +4794,6 @@ function TargetedScanResultsPanel({
   etfRules: RulesType;
   existingPositions: ExistingPosition[];
 }) {
-  // All hooks must be before any early returns
   const [hiddenSymbols, setHiddenSymbols] = useState<Set<string>>(new Set());
   const [showTopN, setShowTopN] = useState<number>(50);
 
@@ -4810,7 +4809,7 @@ function TargetedScanResultsPanel({
     return b.score - a.score;
   };
 
-  const dteBuckets: { label: string; min: number; max: number }[] = [
+  const dteBuckets = [
     { label: '< 21 · Closing Zone', min: 0, max: 20 },
     { label: '21–29 · Short Entry', min: 21, max: 29 },
     { label: '30–45 · Target Zone', min: 30, max: 45 },
@@ -4818,15 +4817,14 @@ function TargetedScanResultsPanel({
     { label: '> 60 · Far Out', min: 61, max: 999 },
   ];
 
-  const sortLabels: { key: 'score' | 'pop' | 'credit' | 'creditRatio' | 'roc'; label: string }[] = [
-    { key: 'score', label: 'Score' },
-    { key: 'pop', label: 'POP %' },
-    { key: 'credit', label: 'Credit $' },
-    { key: 'creditRatio', label: 'Credit %' },
-    { key: 'roc', label: 'ROC %' },
+  const sortLabels = [
+    { key: 'score' as const, label: 'Score' },
+    { key: 'pop' as const, label: 'POP %' },
+    { key: 'credit' as const, label: 'Credit $' },
+    { key: 'creditRatio' as const, label: 'Credit %' },
+    { key: 'roc' as const, label: 'ROC %' },
   ];
 
-    // Post-scan filters — no rescan needed
   const [filterPopMin, setFilterPopMin] = useState<number>(popMin);
   const [filterStrategies, setFilterStrategies] = useState<string[]>(['BPS', 'BCS', 'IC']);
   const [filterTrendOnly, setFilterTrendOnly] = useState<boolean>(false);
@@ -4852,27 +4850,6 @@ function TargetedScanResultsPanel({
   if (entries.length === 0) return null;
 
   const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
-  // ============================
-
-  const toggleStrategy = (s: string) => setFilterStrategies(prev =>
-    prev.includes(s)
-      ? prev.length === 1 ? prev : prev.filter(x => x !== s)
-      : [...prev, s]
-  );
-
-  if (entries.length === 0) return null;
-
-  const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
-
-  const sortedEntries = useMemo(() => {
-    return [...entries]
-      .filter(e => !hiddenSymbols.has(e.symbol))
-      .filter(e => e.pop >= filterPopMin)
-      .filter(e => filterStrategies.includes(e.strategy))
-      .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
-      .sort(sortFn)
-      .slice(0, showTopN);
-  }, [entries, hiddenSymbols, filterPopMin, filterStrategies, filterTrendOnly, sortFn, showTopN]);
 
   const globalRankMap = new Map(sortedEntries.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}`, i + 1]));
   const totalVisible = entries
@@ -4913,7 +4890,6 @@ function TargetedScanResultsPanel({
 
       {/* Post-scan filters */}
       <div className="flex items-center gap-4 flex-wrap">
-        {/* POP floor */}
         <div className="flex items-center gap-1.5">
           <span className={`text-[9px] ${th.textFaint} shrink-0`}>POP ≥</span>
           {[65, 70, 75, 80, 85].map(v => (
@@ -4926,7 +4902,6 @@ function TargetedScanResultsPanel({
           ))}
         </div>
         <div className={`w-px h-4 ${th.border} border-l`} />
-        {/* Strategy toggles */}
         <div className="flex items-center gap-1.5">
           <span className={`text-[9px] ${th.textFaint} shrink-0`}>Strategy</span>
           {(['BPS', 'BCS', 'IC'] as const).map(s => {
@@ -4945,7 +4920,6 @@ function TargetedScanResultsPanel({
           })}
         </div>
         <div className={`w-px h-4 ${th.border} border-l`} />
-        {/* Trend aligned only */}
         <button onClick={() => setFilterTrendOnly(v => !v)}
           className={`text-[9px] px-2.5 py-0.5 rounded border transition-colors font-bold flex items-center gap-1 ${
             filterTrendOnly ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : `${th.border} ${th.textFaint} hover:border-emerald-500/50`
@@ -4954,13 +4928,11 @@ function TargetedScanResultsPanel({
         </button>
       </div>
 
-      {/* Ticker filter toggles */}
       {allSymbols.length > 1 && (
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className={`text-[9px] ${th.textFaint} shrink-0`}>Tickers</span>
           {allSymbols.map(sym => {
             const hidden = hiddenSymbols.has(sym);
-            const count = sortedEntries.filter(e => e.symbol === sym).length + (hidden ? entries.filter(e => e.symbol === sym).length : 0);
             return (
               <button key={sym} onClick={() => toggleSymbol(sym)}
                 className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
@@ -5004,12 +4976,8 @@ function TargetedScanResultsPanel({
                     <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
                       <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{globalRank}</span>
                       <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(entry.dte)}`}>{entry.dte}d</span>
-                      {isTrendAligned && (
-                        <span className="text-[8px] text-emerald-400" title="Trend-aligned strategy">↑✓</span>
-                      )}
-                      {isAgainstTrend && (
-                        <span className="text-[8px] text-amber-400" title="Against trend">⚠</span>
-                      )}
+                      {isTrendAligned && <span className="text-[8px] text-emerald-400">↑✓</span>}
+                      {isAgainstTrend && <span className="text-[8px] text-amber-400">⚠</span>}
                     </div>
                     <div className="flex-1">
                       <ResultCard
@@ -5033,7 +5001,6 @@ function TargetedScanResultsPanel({
     </div>
   );
 }
-
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
