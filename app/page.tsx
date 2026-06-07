@@ -4642,29 +4642,37 @@ async function runTargetedScan(
         for (const exp of validExps) {
           const dte = daysUntil(exp);
           const singleExpChain = { ...chainData, expirations: [exp] };
+          const chainItems = chainData.chains[exp] ?? [];
           const strategies: ('BPS' | 'BCS' | 'IC')[] = ['BPS', 'BCS', 'IC'];
           const allStrats: TargetedScanEntry['allStrategies'] = [];
           let primaryScreenResult: ScreenResult | null = null;
 
           for (const strat of strategies) {
             try {
-              // Run real checklist — this is what populates the card's checklist/checks
+              // Use unfiltered finder to get best candidate — POP is our only gate
+              // This ensures we surface all strikes meeting POP threshold regardless
+              // of credit ratio, OI, delta range etc. (those show as pass/fail on card)
+              const candidate = strat === 'IC'
+                ? findBestICUnfiltered(chainItems, exp, price)
+                : findBestSpreadUnfiltered(chainItems, strat, exp, price);
+
+              if (!candidate) continue;
+              const pop = candidate.pop ?? 0;
+              if (pop < popMin) continue;
+
+              // Run real checklist for the card display (honest pass/fail)
               const result = runChecklist(
                 symbol, strat, metrics, singleExpChain, price,
                 appliedRules, trendResult, undefined,
                 isEtf ? etfRules : undefined, undefined, true
               );
-              const c = result.bestCandidate;
-              if (!c) continue;
-              const pop = c.pop ?? 0;
-              // POP is our gate — skip if below floor
-              if (pop < popMin) continue;
+              // Override bestCandidate with our unfiltered one so we always have strike data
+              const displayResult: ScreenResult = { ...result, bestCandidate: result.bestCandidate ?? candidate };
 
-              const scored = scoreCandidate(result, rankConfig);
-              allStrats.push({ strategy: strat, candidate: c, pop, score: scored?.score ?? 0 });
+              const scored = scoreCandidate(displayResult, rankConfig);
+              allStrats.push({ strategy: strat, candidate, pop, score: scored?.score ?? 0 });
 
-              // Store the real ScreenResult for the primary strategy
-              if (strat === primary) primaryScreenResult = result;
+              if (strat === primary) primaryScreenResult = displayResult;
             } catch {}
           }
 
@@ -4678,7 +4686,8 @@ async function runTargetedScan(
             ? primaryScreenResult
             : (() => {
                 try {
-                  return runChecklist(symbol, primaryStrat.strategy, metrics, singleExpChain, price, appliedRules, trendResult, undefined, isEtf ? etfRules : undefined, undefined, true);
+                  const r = runChecklist(symbol, primaryStrat.strategy, metrics, singleExpChain, price, appliedRules, trendResult, undefined, isEtf ? etfRules : undefined, undefined, true);
+                  return { ...r, bestCandidate: r.bestCandidate ?? primaryStrat.candidate };
                 } catch { return null; }
               })();
 
