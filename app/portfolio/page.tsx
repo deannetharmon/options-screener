@@ -3429,9 +3429,9 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
     { role: 'assistant', content: initialContext },
   ]);
   const [input, setInput] = useState('');
-  const [pendingImage, setPendingImage] = useState(null as { base64: string; mediaType: string; preview: string } | null);
+  const [pendingImage, setPendingImage] = useState<{ base64: string; mediaType: string; preview: string } | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null as string | null);
+  const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -3942,11 +3942,11 @@ function assessExtendConditions(pos: Position): {
 function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null as 'success' | 'error' | null);
+  const [result, setResult] = useState<'success' | 'error' | null>(null);
   const [resultMsg, setResultMsg] = useState('');
-  const [verdict, setVerdict] = useState(null as ActionVerdict | null);
+  const [verdict, setVerdict] = useState<ActionVerdict | null>(null);
   const [verdictLoading, setVerdictLoading] = useState(false);
-  const [selectedPct, setSelectedPct] = useState(null as number | null);
+  const [selectedPct, setSelectedPct] = useState<number | null>(null);
 
   if (!pos.hasGtc) return null;
 
@@ -4425,21 +4425,21 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   const [open, setOpen]       = useState(false);
   const [loading, setLoading] = useState(false);
   const [phase, setPhase]     = useState('');
-  const [result, setResult]   = useState(null as 'success' | 'error' | null);
+  const [result, setResult]   = useState<'success' | 'error' | null>(null);
   const [resultMsg, setResultMsg] = useState('');
   const [stopPrice, setStopPrice] = useState('');
   const [stopPct,   setStopPct]   = useState('200');  // default: 200% of credit = 2× rule
   const [gtcPrice,  setGtcPrice]  = useState('');
 
   // AI suggestion
-  const [suggestion, setSuggestion]           = useState(null as StopGtcSuggestion | null);
+  const [suggestion, setSuggestion]           = useState<StopGtcSuggestion | null>(null);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
-  const [suggestionError, setSuggestionError]   = useState(null as string | null);
+  const [suggestionError, setSuggestionError]   = useState<string | null>(null);
 
   // Live price fetch state
-  const [livePrice, setLivePrice]         = useState(null as number | null);  // per-contract
+  const [livePrice, setLivePrice]         = useState<number | null>(null);  // per-contract
   const [livePriceLoading, setLivePriceLoading] = useState(false);
-  const [livePriceError, setLivePriceError]   = useState(null as string | null);
+  const [livePriceError, setLivePriceError]   = useState<string | null>(null);
 
   // Confirmation step before destructive OCO replace
   const [confirming, setConfirming] = useState(false);
@@ -5154,23 +5154,23 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   onExecute: (pos: Position, action: ActionType) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [trend, setTrend] = useState(null as TrendResult | null);
-  const [wheelCycle, setWheelCycle] = useState(getWheelCycleForPos(pos) as WheelCycle | null);
+  const [trend, setTrend] = useState<TrendResult | null>(null);
+  const [wheelCycle, setWheelCycle] = useState<WheelCycle | null>(() => getWheelCycleForPos(pos));
   const isWheelCandidate = (pos.strategy === 'PUT' || pos.strategy === 'CALL') && !wheelCycle;
   const showWheelBanner  = isWheelCandidate && !readWheelCycles().find(c => c.symbol === pos.symbol && c.cspExpiry === pos.expDate && c.dismissedBanner);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetInput, setTargetInput] = useState(String(Math.round(pos.profitTarget * 100)));
-  const [analysis, setAnalysis] = useState(null as PositionAnalysis | null);
+  const [analysis, setAnalysis] = useState<PositionAnalysis | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [analysisError, setAnalysisError] = useState(null as string | null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [showAnalysis, setShowAnalysis] = useState(false);
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState(null as number[] | null);
   const [sparkLoading, setSparkLoading] = useState(false);
   const chartPopupRef = useRef(null as HTMLDivElement | null);
   const chartButtonRef = useRef<HTMLButtonElement>(null);
-  const [chartPopupPos, setChartPopupPos] = useState(null as { top: number; left: number } | null);
+  const [chartPopupPos, setChartPopupPos] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!showChart) return;
@@ -5695,11 +5695,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
           {/* ── MID Tracker ─────────────────────────────────────────────── */}
           {(() => {
             const qty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
-<<<<<<< HEAD
-            const credit = pos.creditReceived / 100;
-=======
             const credit = pos.creditReceived / (qty * 100);
->>>>>>> feature/portfolio-intelligence
             const mid = pos.currentValue != null ? pos.currentValue / (qty * 100) : null;
             const stopPrice = pos.stopLossPrice;
             const target50 = credit * (1 - pos.profitTarget);
@@ -5761,8 +5757,6 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             );
           })()}
 
-<<<<<<< HEAD
-=======
 {/* ── Wheel Cycle Summary ─────────────────────────────────── */}
           {(pos.strategy === 'PUT' || pos.strategy === 'CALL') && (
             <div className="mb-4">
@@ -5794,7 +5788,6 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             </div>
           )}
 
->>>>>>> feature/portfolio-intelligence
           <p className={`text-[9px] ${th.textFaint} uppercase tracking-widest mb-2`}>Legs</p>
           <div className="space-y-1.5">
             {pos.legs.map((leg, i) => (
@@ -6122,14 +6115,14 @@ export default function PortfolioPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [lastRefresh, setLastRefresh] = useState(null as Date | null);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [batchItems, setBatchItems] = useState(null as { pos: Position; action: ActionType }[] | null);
+  const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
-  const [portfolioAnalysis, setPortfolioAnalysis] = useState(null as PortfolioAnalysis | null);
+  const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
   const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
 
   // Trigger weekly behavior summarization silently on load
