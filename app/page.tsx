@@ -4828,18 +4828,16 @@ function TargetedScanResultsPanel({
 
   // Post-scan filters — no rescan needed
   const [filterPopMin, setFilterPopMin] = useState<number>(popMin);
-  const [filterStrategies, setFilterStrategies] = useState<Set<string>>(new Set(['BPS', 'BCS', 'IC']));
+  const [filterStrategies, setFilterStrategies] = useState<string[]>(['BPS', 'BCS', 'IC']);
   const [filterTrendOnly, setFilterTrendOnly] = useState<boolean>(false);
 
-  // Sync POP filter floor to scan's popMin when entries change (new scan)
   useEffect(() => { setFilterPopMin(popMin); }, [entries, popMin]);
 
-  const toggleStrategy = (s: string) => setFilterStrategies(prev => {
-    const n = new Set(prev);
-    if (n.has(s) && n.size === 1) return prev; // keep at least one
-    n.has(s) ? n.delete(s) : n.add(s);
-    return n;
-  });
+  const toggleStrategy = (s: string) => setFilterStrategies(prev =>
+    prev.includes(s)
+      ? prev.length === 1 ? prev : prev.filter(x => x !== s)
+      : [...prev, s]
+  );
 
   if (entries.length === 0) return null;
 
@@ -4849,7 +4847,7 @@ function TargetedScanResultsPanel({
   const sortedEntries = [...entries]
     .filter(e => !hiddenSymbols.has(e.symbol))
     .filter(e => e.pop >= filterPopMin)
-    .filter(e => filterStrategies.has(e.strategy))
+    .filter(e => filterStrategies.includes(e.strategy))
     .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
     .sort(sortFn)
     .slice(0, showTopN);
@@ -4858,7 +4856,7 @@ function TargetedScanResultsPanel({
   const totalVisible = entries
     .filter(e => !hiddenSymbols.has(e.symbol))
     .filter(e => e.pop >= filterPopMin)
-    .filter(e => filterStrategies.has(e.strategy))
+    .filter(e => filterStrategies.includes(e.strategy))
     .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
     .length;
 
@@ -4910,7 +4908,7 @@ function TargetedScanResultsPanel({
         <div className="flex items-center gap-1.5">
           <span className={`text-[9px] ${th.textFaint} shrink-0`}>Strategy</span>
           {(['BPS', 'BCS', 'IC'] as const).map(s => {
-            const active = filterStrategies.has(s);
+            const active = filterStrategies.includes(s);
             const color = s === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
                         : s === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
                         : 'border-blue-600 text-blue-400 bg-blue-500/10';
