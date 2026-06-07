@@ -4826,7 +4826,7 @@ function TargetedScanResultsPanel({
     { key: 'roc', label: 'ROC %' },
   ];
 
-  // Post-scan filters — no rescan needed
+    // Post-scan filters — no rescan needed
   const [filterPopMin, setFilterPopMin] = useState<number>(popMin);
   const [filterStrategies, setFilterStrategies] = useState<string[]>(['BPS', 'BCS', 'IC']);
   const [filterTrendOnly, setFilterTrendOnly] = useState<boolean>(false);
@@ -4839,7 +4839,6 @@ function TargetedScanResultsPanel({
       : [...prev, s]
   );
 
-  // === THIS IS THE KEY FIX ===
   const sortedEntries = useMemo(() => {
     return [...entries]
       .filter(e => !hiddenSymbols.has(e.symbol))
@@ -4849,6 +4848,10 @@ function TargetedScanResultsPanel({
       .sort(sortFn)
       .slice(0, showTopN);
   }, [entries, hiddenSymbols, filterPopMin, filterStrategies, filterTrendOnly, sortFn, showTopN]);
+
+  if (entries.length === 0) return null;
+
+  const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
   // ============================
 
   const toggleStrategy = (s: string) => setFilterStrategies(prev =>
