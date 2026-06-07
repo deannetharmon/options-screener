@@ -5091,9 +5091,33 @@ export default function Home() {
     setResults([]); setRawScanCache([]); setResultsCachedAt(null);
     try { localStorage.removeItem(LS_RESULTS_CACHE); localStorage.removeItem(LS_RAW_SCAN_CACHE); localStorage.removeItem(LS_RESULTS_CACHE_AT); } catch {}
   };
-  const handleBpsChange = (v: string) => { setBpsTickers(v); clearResultsCache(); try { localStorage.setItem(LS_BPS, v); } catch {} };
-  const handleBcsChange = (v: string) => { setBcsTickers(v); clearResultsCache(); try { localStorage.setItem(LS_BCS, v); } catch {} };
-  const handleIcChange = (v: string) => { setIcTickers(v); clearResultsCache(); try { localStorage.setItem(LS_IC, v); } catch {} };
+  const handleBpsChange = (v: string) => { 
+  setBpsTickers(v); 
+  clearResultsCache(); 
+  try { localStorage.setItem(LS_BPS, v); } catch {} 
+  // Force re-run if we have data
+  setTimeout(() => {
+    if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+  }, 50);
+  };
+  
+  const handleBcsChange = (v: string) => { 
+    setBcsTickers(v); 
+    clearResultsCache(); 
+    try { localStorage.setItem(LS_BCS, v); } catch {} 
+    setTimeout(() => {
+      if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+    }, 50);
+  };
+  
+  const handleIcChange = (v: string) => { 
+    setIcTickers(v); 
+    clearResultsCache(); 
+    try { localStorage.setItem(LS_IC, v); } catch {} 
+    setTimeout(() => {
+      if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+    }, 50);
+  };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
   const handlePmccChange = (v: string) => { setPmccTickers(v); clearResultsCache(); try { localStorage.setItem(LS_PMCC, v); } catch {} };
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); if (!newBps && !newBcs && !newIc && !newBroken) { setResults([]); setAutoTrendEntries([]); } };
@@ -5121,8 +5145,9 @@ export default function Home() {
     // ── Apply rules client-side against cached raw scan data ──────────────────
   // Called instead of runScreen when rules change but tickers haven't changed.
   // Zero API calls — instant re-filter.
-  const applyRules = useCallback((sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank' | 'targeted') => {
-    if (rawScanCache.length === 0) return; // No cache yet — need a full scan first
+    // ── Apply rules client-side against cached raw scan data ──────────────────
+  const applyRules = useCallback((sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string) => {
+    if (rawScanCache.length === 0) return;
 
     const screenResults: ScreenResult[] = rawScanCache.map(entry => {
       try {
@@ -5136,20 +5161,11 @@ export default function Home() {
       }
     });
 
-    const effectiveMode = modeOverride ?? screenMode;
-    if (effectiveMode === 'rank') {
-      screenResults.sort((a, b) => {
-        const sA = scoreCandidate(a, rankConfig)?.score ?? 0;
-        const sB = scoreCandidate(b, rankConfig)?.score ?? 0;
-        return sB - sA;
-      });
-    } else {
-      screenResults.sort((a, b) => {
-        if (a.qualified && !b.qualified) return -1;
-        if (!a.qualified && b.qualified) return 1;
-        return (b.ivr ?? 0) - (a.ivr ?? 0);
-      });
-    }
+    screenResults.sort((a, b) => {
+      if (a.qualified && !b.qualified) return -1;
+      if (!a.qualified && b.qualified) return 1;
+      return (b.ivr ?? 0) - (a.ivr ?? 0);
+    });
 
     setResults(screenResults);
     const applyTs = Date.now();
@@ -5158,15 +5174,14 @@ export default function Home() {
       localStorage.setItem(LS_RESULTS_CACHE, JSON.stringify(screenResults));
       localStorage.setItem(LS_RESULTS_CACHE_AT, String(applyTs));
     } catch {}
-  }, [rawScanCache, screenMode, rankConfig]);
+  }, [rawScanCache]);
 
-  // Auto-reapply rules whenever runtime rules change (makes presets live/dynamic)
+  // Live update when rules change
   useEffect(() => {
     if (rawScanCache.length > 0 && screenMode === 'filter') {
       applyRules(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
     }
   }, [runtimeStockRules, runtimeEtfRules, rawScanCache, screenMode, stockPresetLabel, etfPresetLabel, applyRules]);
-
   const runScreen = async (sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank' | 'targeted') => {    setError('');
     setResults([]); setResultsCachedAt(null);
     try { localStorage.removeItem(LS_RESULTS_CACHE); localStorage.removeItem(LS_RESULTS_CACHE_AT); } catch {}
