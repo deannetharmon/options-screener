@@ -3429,7 +3429,7 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
     { role: 'assistant', content: initialContext },
   ]);
   const [input, setInput] = useState('');
-  const [pendingImage, setPendingImage] = useState<{ base64: string; mediaType: string; preview: string } | null>(null);
+  const [pendingImage, setPendingImage] = useState(null as { base64: string; mediaType: string; preview: string } | null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -5170,7 +5170,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   const [sparkLoading, setSparkLoading] = useState(false);
   const chartPopupRef = useRef(null as HTMLDivElement | null);
   const chartButtonRef = useRef<HTMLButtonElement>(null);
-  const [chartPopupPos, setChartPopupPos] = useState<{ top: number; left: number } | null>(null);
+  const [chartPopupPos, setChartPopupPos] = useState(null as { top: number; left: number } | null);
 
   useEffect(() => {
     if (!showChart) return;
@@ -6124,7 +6124,7 @@ export default function PortfolioPage() {
   const [error, setError] = useState('');
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [batchItems, setBatchItems] = useState<{ pos: Position; action: ActionType }[] | null>(null);
+  const [batchItems, setBatchItems] = useState(null as { pos: Position; action: ActionType }[] | null);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [showPerformance, setShowPerformance] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
