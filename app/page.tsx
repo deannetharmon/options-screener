@@ -4794,217 +4794,226 @@ function TargetedScanResultsPanel({
   etfRules: RulesType;
   existingPositions: ExistingPosition[];
 }) {
-  const [hiddenSymbols, setHiddenSymbols] = useState<Set<string>>(new Set());
-  const [showTopN, setShowTopN] = useState<number>(50);
+  // ── All hooks before any early return ──────────────────────────────────────
+  // Use arrays (not Sets) — React doesn't reliably detect Set mutations
+  const [hiddenSymbols, setHiddenSymbols] = useState<string[]>([]);
+  const [showTopN, setShowTopN]           = useState<number>(50);
+  const [filterPopMin, setFilterPopMin]   = useState<number>(popMin);
+  const [filterStrategies, setFilterStrategies] = useState<string[]>(['BPS', 'BCS', 'IC']);
+  const [filterTrendOnly, setFilterTrendOnly]   = useState<boolean>(false);
+  // localSort owned here so changes immediately re-render without round-trip to parent
+  const [localSort, setLocalSort] = useState<'score' | 'pop' | 'credit' | 'creditRatio' | 'roc'>(sortBy);
 
-  const toggleSymbol = (sym: string) => {
-    setHiddenSymbols(prev => {
-      const next = new Set(prev);
-      if (next.has(sym)) next.delete(sym);
-      else next.add(sym);
-      return next;
-    });
-  };
+  // Keep localSort in sync if parent changes it externally
+  useEffect(() => { setLocalSort(sortBy); }, [sortBy]);
+  // Sync POP floor when a new scan runs
+  useEffect(() => { setFilterPopMin(popMin); setHiddenSymbols([]); setFilterStrategies(['BPS','BCS','IC']); setFilterTrendOnly(false); }, [entries]);
 
-  const sortFn = (a: TargetedScanEntry, b: TargetedScanEntry) => {
-    if (sortBy === 'pop') return b.pop - a.pop;
-    if (sortBy === 'credit') return (b.candidate.credit ?? 0) - (a.candidate.credit ?? 0);
-    if (sortBy === 'creditRatio') return (b.candidate.creditRatio ?? 0) - (a.candidate.creditRatio ?? 0);
-    if (sortBy === 'roc') return b.candidate.roc - a.candidate.roc;
-    return b.score - a.score;
-  };
+  const toggleSymbol   = (sym: string) => setHiddenSymbols(prev => prev.includes(sym) ? prev.filter(s => s !== sym) : [...prev, sym]);
+  const toggleStrategy = (s: string)   => setFilterStrategies(prev => prev.includes(s) ? (prev.length === 1 ? prev : prev.filter(x => x !== s)) : [...prev, s]);
+  const handleSetSort  = (k: typeof localSort) => { setLocalSort(k); setSortBy(k); };
 
   const dteBuckets = [
-    { label: '< 21 · Closing Zone', min: 0, max: 20 },
-    { label: '21–29 · Short Entry', min: 21, max: 29 },
-    { label: '30–45 · Target Zone', min: 30, max: 45 },
-    { label: '46–60 · Extended', min: 46, max: 60 },
-    { label: '> 60 · Far Out', min: 61, max: 999 },
+    { label: '< 21 · Closing Zone', min: 0,  max: 20  },
+    { label: '21–29 · Short Entry', min: 21, max: 29  },
+    { label: '30–45 · Target Zone', min: 30, max: 45  },
+    { label: '46–60 · Extended',    min: 46, max: 60  },
+    { label: '> 60 · Far Out',      min: 61, max: 999 },
   ];
 
   const sortLabels = [
-    { key: 'score' as const, label: 'Score' },
-    { key: 'pop' as const, label: 'POP %' },
-    { key: 'credit' as const, label: 'Credit $' },
+    { key: 'score'       as const, label: 'Score'    },
+    { key: 'pop'         as const, label: 'POP %'    },
+    { key: 'credit'      as const, label: 'Credit $' },
     { key: 'creditRatio' as const, label: 'Credit %' },
-    { key: 'roc' as const, label: 'ROC %' },
+    { key: 'roc'         as const, label: 'ROC %'    },
   ];
-
-  const [filterPopMin, setFilterPopMin] = useState<number>(popMin);
-  const [filterStrategies, setFilterStrategies] = useState<string[]>(['BPS', 'BCS', 'IC']);
-  const [filterTrendOnly, setFilterTrendOnly] = useState<boolean>(false);
-
-  useEffect(() => { setFilterPopMin(popMin); }, [popMin]);
-
-  const toggleStrategy = (s: string) => setFilterStrategies(prev =>
-    prev.includes(s)
-      ? prev.length === 1 ? prev : prev.filter(x => x !== s)
-      : [...prev, s]
-  );
-
-  // Clean direct filtering — guaranteed to update when buttons are clicked
-  const sortedEntries = [...entries]
-    .filter(e => !hiddenSymbols.has(e.symbol))
-    .filter(e => e.pop >= filterPopMin)
-    .filter(e => filterStrategies.includes(e.strategy))
-    .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
-    .sort(sortFn)
-    .slice(0, showTopN);
 
   if (entries.length === 0) return null;
 
-  const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
+  // ── Filter + sort pipeline ─────────────────────────────────────────────────
+  const filtered = useMemo(() => {
+    const sortFn = (a: TargetedScanEntry, b: TargetedScanEntry) => {
+      if (localSort === 'pop')         return b.pop - a.pop;
+      if (localSort === 'credit')      return (b.candidate.credit ?? 0) - (a.candidate.credit ?? 0);
+      if (localSort === 'creditRatio') return (b.candidate.creditRatio ?? 0) - (a.candidate.creditRatio ?? 0);
+      if (localSort === 'roc')         return b.candidate.roc - a.candidate.roc;
+      return b.score - a.score;
+    };
+    return [...entries]
+      .filter(e => !hiddenSymbols.includes(e.symbol))
+      .filter(e => e.pop >= filterPopMin)
+      .filter(e => filterStrategies.includes(e.strategy))
+      .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
+      .sort(sortFn);
+  }, [entries, hiddenSymbols, filterPopMin, filterStrategies, filterTrendOnly, localSort]);
 
-  const globalRankMap = new Map(sortedEntries.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}`, i + 1]));
-  const totalVisible = entries
-    .filter(e => !hiddenSymbols.has(e.symbol))
-    .filter(e => e.pop >= filterPopMin)
-    .filter(e => filterStrategies.includes(e.strategy))
-    .filter(e => !filterTrendOnly || e.strategy === e.primaryStrategy)
-    .length;
+  const sortedEntries  = filtered.slice(0, showTopN);
+  const totalVisible   = filtered.length;
+  const allSymbols     = Array.from(new Set(entries.map(e => e.symbol))).sort();
+  const globalRankMap  = new Map(sortedEntries.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}`, i + 1]));
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <p className="text-[9px] text-teal-400 tracking-widest font-medium">⊕ TARGETED SCAN — {sortedEntries.length} of {totalVisible} SHOWN</p>
-        <div className="flex items-center gap-1.5">
-          <span className={`text-[9px] ${th.textFaint}`}>Sort by</span>
-          {sortLabels.map(sl => (
-            <button key={sl.key} onClick={() => setSortBy(sl.key)}
-              className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
-                sortBy === sl.key ? 'border-teal-500 text-teal-300 bg-teal-500/15' : `${th.border} ${th.textFaint} hover:border-teal-500/50`
-              }`}>
-              {sl.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className={`text-[9px] ${th.textFaint}`}>Show top</span>
-          {[25, 50, 100, 999].map(n => (
-            <button key={n} onClick={() => setShowTopN(n)}
-              className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
-                showTopN === n ? 'border-teal-500 text-teal-300 bg-teal-500/15' : `${th.border} ${th.textFaint} hover:border-teal-500/50`
-              }`}>
-              {n === 999 ? 'All' : n}
-            </button>
-          ))}
-        </div>
-        <span className={`text-[9px] ${th.textFaint}`}>POP ≥ {popMin}%</span>
-      </div>
+    <div className="flex flex-col" style={{ minHeight: 0 }}>
 
-      {/* Post-scan filters */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex items-center gap-1.5">
-          <span className={`text-[9px] ${th.textFaint} shrink-0`}>POP ≥</span>
-          {[65, 70, 75, 80, 85].map(v => (
-            <button key={v} onClick={() => setFilterPopMin(v)}
-              className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
-                filterPopMin === v ? 'border-teal-500 text-teal-300 bg-teal-500/15' : `${th.border} ${th.textFaint} hover:border-teal-500/50`
-              }`}>
-              {v}%
-            </button>
-          ))}
-        </div>
-        <div className={`w-px h-4 ${th.border} border-l`} />
-        <div className="flex items-center gap-1.5">
-          <span className={`text-[9px] ${th.textFaint} shrink-0`}>Strategy</span>
-          {(['BPS', 'BCS', 'IC'] as const).map(s => {
-            const active = filterStrategies.includes(s);
-            const color = s === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
-                        : s === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
-                        : 'border-blue-600 text-blue-400 bg-blue-500/10';
-            return (
-              <button key={s} onClick={() => toggleStrategy(s)}
+      {/* ── Sticky filter header ─────────────────────────────────────────── */}
+      <div className="sticky top-0 z-20 pb-2 space-y-2" style={{ background: 'var(--bg, inherit)' }}>
+
+        {/* Row 1: count + sort + show top */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <p className="text-[9px] text-teal-400 tracking-widest font-medium shrink-0">
+            ⊕ TARGETED — {sortedEntries.length} of {totalVisible} SHOWN
+          </p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className={`text-[9px] ${th.textFaint}`}>Sort</span>
+            {sortLabels.map(sl => (
+              <button key={sl.key} onClick={() => handleSetSort(sl.key)}
                 className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
-                  active ? color : `${th.border} ${th.textFaint} opacity-40`
+                  localSort === sl.key
+                    ? 'border-teal-500 text-teal-300 bg-teal-500/15'
+                    : `${th.border} ${th.textFaint} hover:border-teal-500/50`
                 }`}>
-                {s}
+                {sl.label}
               </button>
-            );
-          })}
-        </div>
-        <div className={`w-px h-4 ${th.border} border-l`} />
-        <button onClick={() => setFilterTrendOnly(v => !v)}
-          className={`text-[9px] px-2.5 py-0.5 rounded border transition-colors font-bold flex items-center gap-1 ${
-            filterTrendOnly ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : `${th.border} ${th.textFaint} hover:border-emerald-500/50`
-          }`}>
-          ↑✓ Trend aligned only
-        </button>
-      </div>
-
-      {allSymbols.length > 1 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`text-[9px] ${th.textFaint} shrink-0`}>Tickers</span>
-          {allSymbols.map(sym => {
-            const hidden = hiddenSymbols.has(sym);
-            return (
-              <button key={sym} onClick={() => toggleSymbol(sym)}
-                className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
-                  hidden
-                    ? `${th.border} ${th.textFaint} line-through opacity-40`
-                    : 'border-teal-600 text-teal-300 bg-teal-500/10'
-                }`}>
-                {sym} <span className="opacity-60">({entries.filter(e => e.symbol === sym).length})</span>
-              </button>
-            );
-          })}
-          {hiddenSymbols.size > 0 && (
-            <button onClick={() => setHiddenSymbols(new Set())}
-              className={`text-[9px] px-2 py-0.5 rounded border ${th.border} ${th.textFaint} hover:border-teal-500/50`}>
-              Show all
-            </button>
-          )}
-        </div>
-      )}
-
-      {dteBuckets.map(bucket => {
-        const bucketEntries = sortedEntries.filter(e => e.dte >= bucket.min && e.dte <= bucket.max);
-        if (bucketEntries.length === 0) return null;
-
-        return (
-          <div key={bucket.label}>
-            <div className="flex items-center gap-2 mb-2">
-              <span className={`text-[9px] px-2 py-0.5 rounded border font-bold ${dteBadgeColor(Math.round((bucket.min + Math.min(bucket.max, 60)) / 2))}`}>
-                {bucket.label}
-              </span>
-              <span className={`text-[9px] ${th.textFaint}`}>{bucketEntries.length} setups</span>
-            </div>
-            <div className="space-y-2">
-              {bucketEntries.map(entry => {
-                const globalRank = globalRankMap.get(`${entry.symbol}-${entry.strategy}-${entry.expiration}`) ?? 0;
-                const appliedRules = entry.isEtf ? etfRules : rules;
-                const isTrendAligned = entry.strategy === entry.primaryStrategy;
-                const isAgainstTrend = entry.trendResult?.strategy !== 'NO_TRADE' && !isTrendAligned && entry.strategy !== 'IC';
-                return (
-                  <div key={`${entry.symbol}-${entry.strategy}-${entry.expiration}`} className="flex items-start gap-2">
-                    <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
-                      <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{globalRank}</span>
-                      <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(entry.dte)}`}>{entry.dte}d</span>
-                      {isTrendAligned && <span className="text-[8px] text-emerald-400">↑✓</span>}
-                      {isAgainstTrend && <span className="text-[8px] text-amber-400">⚠</span>}
-                    </div>
-                    <div className="flex-1">
-                      <ResultCard
-                        result={entry.screenResult}
-                        th={th}
-                        rules={appliedRules}
-                        screenMode="targeted"
-                        rankConfig={rankConfig}
-                        onTrade={() => {}}
-                        cachedEntry={entry.cachedEntry}
-                        existingPositions={existingPositions}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            ))}
           </div>
-        );
-      })}
+          <div className="flex items-center gap-1.5">
+            <span className={`text-[9px] ${th.textFaint}`}>Show</span>
+            {[25, 50, 100, 999].map(n => (
+              <button key={n} onClick={() => setShowTopN(n)}
+                className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                  showTopN === n
+                    ? 'border-teal-500 text-teal-300 bg-teal-500/15'
+                    : `${th.border} ${th.textFaint} hover:border-teal-500/50`
+                }`}>
+                {n === 999 ? 'All' : n}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Row 2: POP + strategy + trend filters */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <span className={`text-[9px] ${th.textFaint} shrink-0`}>POP ≥</span>
+            {[65, 70, 75, 80, 85].map(v => (
+              <button key={v} onClick={() => setFilterPopMin(v)}
+                className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                  filterPopMin === v
+                    ? 'border-teal-500 text-teal-300 bg-teal-500/15'
+                    : `${th.border} ${th.textFaint} hover:border-teal-500/50`
+                }`}>
+                {v}%
+              </button>
+            ))}
+          </div>
+          <div className={`w-px h-4 ${th.border} border-l`} />
+          <div className="flex items-center gap-1.5">
+            <span className={`text-[9px] ${th.textFaint} shrink-0`}>Strategy</span>
+            {(['BPS', 'BCS', 'IC'] as const).map(s => {
+              const active = filterStrategies.includes(s);
+              const color  = s === 'BPS' ? 'border-emerald-600 text-emerald-400 bg-emerald-500/10'
+                           : s === 'BCS' ? 'border-red-600 text-red-400 bg-red-500/10'
+                           :               'border-blue-600 text-blue-400 bg-blue-500/10';
+              return (
+                <button key={s} onClick={() => toggleStrategy(s)}
+                  className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                    active ? color : `${th.border} ${th.textFaint} opacity-40`
+                  }`}>
+                  {s}
+                </button>
+              );
+            })}
+          </div>
+          <div className={`w-px h-4 ${th.border} border-l`} />
+          <button onClick={() => setFilterTrendOnly(v => !v)}
+            className={`text-[9px] px-2.5 py-0.5 rounded border transition-colors font-bold ${
+              filterTrendOnly
+                ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10'
+                : `${th.border} ${th.textFaint} hover:border-emerald-500/50`
+            }`}>
+            ↑✓ Trend aligned only
+          </button>
+        </div>
+
+        {/* Row 3: Ticker toggles */}
+        {allSymbols.length > 1 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className={`text-[9px] ${th.textFaint} shrink-0`}>Tickers</span>
+            {allSymbols.map(sym => {
+              const hidden = hiddenSymbols.includes(sym);
+              return (
+                <button key={sym} onClick={() => toggleSymbol(sym)}
+                  className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                    hidden
+                      ? `${th.border} ${th.textFaint} line-through opacity-40`
+                      : 'border-teal-600 text-teal-300 bg-teal-500/10'
+                  }`}>
+                  {sym} <span className="opacity-60">({entries.filter(e => e.symbol === sym).length})</span>
+                </button>
+              );
+            })}
+            {hiddenSymbols.length > 0 && (
+              <button onClick={() => setHiddenSymbols([])}
+                className={`text-[9px] px-2 py-0.5 rounded border ${th.border} ${th.textFaint} hover:border-teal-500/50`}>
+                Show all
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Scrollable results ───────────────────────────────────────────── */}
+      <div className="space-y-4 overflow-y-auto">
+        {dteBuckets.map(bucket => {
+          const bucketEntries = sortedEntries.filter(e => e.dte >= bucket.min && e.dte <= bucket.max);
+          if (bucketEntries.length === 0) return null;
+          return (
+            <div key={bucket.label}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`text-[9px] px-2 py-0.5 rounded border font-bold ${dteBadgeColor(Math.round((bucket.min + Math.min(bucket.max, 60)) / 2))}`}>
+                  {bucket.label}
+                </span>
+                <span className={`text-[9px] ${th.textFaint}`}>{bucketEntries.length} setups</span>
+              </div>
+              <div className="space-y-2">
+                {bucketEntries.map(entry => {
+                  const globalRank    = globalRankMap.get(`${entry.symbol}-${entry.strategy}-${entry.expiration}`) ?? 0;
+                  const appliedRules  = entry.isEtf ? etfRules : rules;
+                  const isTrendAligned = entry.strategy === entry.primaryStrategy;
+                  const isAgainstTrend = entry.trendResult?.strategy !== 'NO_TRADE' && !isTrendAligned && entry.strategy !== 'IC';
+                  return (
+                    <div key={`${entry.symbol}-${entry.strategy}-${entry.expiration}`} className="flex items-start gap-2">
+                      <div className="flex flex-col items-center gap-1 shrink-0 mt-3">
+                        <span className={`text-[9px] ${th.textFaint} w-5 text-right`}>{globalRank}</span>
+                        <span className={`text-[9px] px-1.5 py-0.5 border rounded font-bold ${dteBadgeColor(entry.dte)}`}>{entry.dte}d</span>
+                        {isTrendAligned  && <span className="text-[8px] text-emerald-400" title="Trend aligned">↑✓</span>}
+                        {isAgainstTrend  && <span className="text-[8px] text-amber-400"   title="Against trend">⚠</span>}
+                      </div>
+                      <div className="flex-1">
+                        <ResultCard
+                          result={entry.screenResult}
+                          th={th}
+                          rules={appliedRules}
+                          screenMode="targeted"
+                          rankConfig={rankConfig}
+                          onTrade={() => {}}
+                          cachedEntry={entry.cachedEntry}
+                          existingPositions={existingPositions}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
+
 // ── Main App ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
