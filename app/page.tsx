@@ -4784,7 +4784,13 @@ function TargetedScanResultsPanel({
   etfRules: RulesType;
   existingPositions: ExistingPosition[];
 }) {
-  if (entries.length === 0) return null;
+  // All hooks must be before any early returns
+  const [hiddenSymbols, setHiddenSymbols] = useState<Set<string>>(new Set());
+  const [showTopN, setShowTopN] = useState<number>(50);
+
+  const toggleSymbol = (sym: string) => setHiddenSymbols(prev => {
+    const n = new Set(prev); n.has(sym) ? n.delete(sym) : n.add(sym); return n;
+  });
 
   const sortFn = (a: TargetedScanEntry, b: TargetedScanEntry) => {
     if (sortBy === 'pop') return b.pop - a.pop;
@@ -4809,25 +4815,23 @@ function TargetedScanResultsPanel({
     { key: 'roc', label: 'ROC %' },
   ];
 
-  // Get unique symbols for ticker filter
-  const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
-  const [hiddenSymbols, setHiddenSymbols] = useState<Set<string>>(new Set());
-  const toggleSymbol = (sym: string) => setHiddenSymbols(prev => {
-    const n = new Set(prev);
-    n.has(sym) ? n.delete(sym) : n.add(sym);
-    return n;
-  });
+  if (entries.length === 0) return null;
 
-  // Sort ALL entries globally first, then assign global rank, then group by DTE
+  const allSymbols = Array.from(new Set(entries.map(e => e.symbol))).sort();
+
+  // Sort globally, filter by hidden symbols, then cap at showTopN
   const sortedEntries = [...entries]
     .filter(e => !hiddenSymbols.has(e.symbol))
-    .sort(sortFn);
+    .sort(sortFn)
+    .slice(0, showTopN);
+
   const globalRankMap = new Map(sortedEntries.map((e, i) => [`${e.symbol}-${e.strategy}-${e.expiration}`, i + 1]));
+  const totalVisible = entries.filter(e => !hiddenSymbols.has(e.symbol)).length;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3 flex-wrap">
-        <p className="text-[9px] text-teal-400 tracking-widest font-medium">⊕ TARGETED SCAN — {sortedEntries.length} OPPORTUNITIES</p>
+        <p className="text-[9px] text-teal-400 tracking-widest font-medium">⊕ TARGETED SCAN — {sortedEntries.length} of {totalVisible} SHOWN</p>
         <div className="flex items-center gap-1.5">
           <span className={`text-[9px] ${th.textFaint}`}>Sort by</span>
           {sortLabels.map(sl => (
@@ -4836,6 +4840,17 @@ function TargetedScanResultsPanel({
                 sortBy === sl.key ? 'border-teal-500 text-teal-300 bg-teal-500/15' : `${th.border} ${th.textFaint} hover:border-teal-500/50`
               }`}>
               {sl.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className={`text-[9px] ${th.textFaint}`}>Show top</span>
+          {[25, 50, 100, 999].map(n => (
+            <button key={n} onClick={() => setShowTopN(n)}
+              className={`text-[9px] px-2 py-0.5 rounded border transition-colors font-bold ${
+                showTopN === n ? 'border-teal-500 text-teal-300 bg-teal-500/15' : `${th.border} ${th.textFaint} hover:border-teal-500/50`
+              }`}>
+              {n === 999 ? 'All' : n}
             </button>
           ))}
         </div>
