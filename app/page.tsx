@@ -5121,17 +5121,54 @@ export default function Home() {
   // ── Apply rules client-side against cached raw scan data ──────────────────
   // Called instead of runScreen when rules change but tickers haven't changed.
   // Zero API calls — instant re-filter.
+    // ── Apply rules client-side against cached raw scan data ──────────────────
+  // Called instead of runScreen when rules change but tickers haven't changed.
+  // Zero API calls — instant re-filter.
   const applyRules = useCallback((sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank' | 'targeted') => {
-      }, [rawScanCache, screenMode, rankConfig]);
-
-// === ADD THIS NEW useEffect RIGHT HERE ===
-useEffect(() => {
-  if (rawScanCache.length > 0 && screenMode === 'filter') {
-    applyRules(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
-  }
-}, [runtimeStockRules, runtimeEtfRules, rawScanCache, screenMode, stockPresetLabel, etfPresetLabel, applyRules]);
-// ==========================================
     if (rawScanCache.length === 0) return; // No cache yet — need a full scan first
+
+    const screenResults: ScreenResult[] = rawScanCache.map(entry => {
+      try {
+        return runChecklist(entry.symbol, entry.strategy, entry.metrics, entry.chainData, entry.price, sRules, entry.trendResult, sLabel, eRules, eLabel);
+      } catch (e: any) {
+        return {
+          symbol: entry.symbol, strategy: entry.strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+          failReasons: [e.message], trendResult: entry.trendResult,
+          checks: { ivr: { status: 'fail' as const, value: 'Error', reason: e.message }, earnings: { status: 'pending' as const, value: '—', reason: '—' }, oi: { status: 'pending' as const, value: '—', reason: '—' }, delta: { status: 'pending' as const, value: '—', reason: '—' }, credit: { status: 'pending' as const, value: '—', reason: '—' }, roc: { status: 'pending' as const, value: '—', reason: '—' }, pop: { status: 'pending' as const, value: '—', reason: '—' } }
+        };
+      }
+    });
+
+    const effectiveMode = modeOverride ?? screenMode;
+    if (effectiveMode === 'rank') {
+      screenResults.sort((a, b) => {
+        const sA = scoreCandidate(a, rankConfig)?.score ?? 0;
+        const sB = scoreCandidate(b, rankConfig)?.score ?? 0;
+        return sB - sA;
+      });
+    } else {
+      screenResults.sort((a, b) => {
+        if (a.qualified && !b.qualified) return -1;
+        if (!a.qualified && b.qualified) return 1;
+        return (b.ivr ?? 0) - (a.ivr ?? 0);
+      });
+    }
+
+    setResults(screenResults);
+    const applyTs = Date.now();
+    setResultsCachedAt(applyTs);
+    try {
+      localStorage.setItem(LS_RESULTS_CACHE, JSON.stringify(screenResults));
+      localStorage.setItem(LS_RESULTS_CACHE_AT, String(applyTs));
+    } catch {}
+  }, [rawScanCache, screenMode, rankConfig]);
+
+  // Auto-reapply rules whenever runtime rules or cache changes (live filtering)
+  useEffect(() => {
+    if (rawScanCache.length > 0 && screenMode === 'filter') {
+      applyRules(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+    }
+  }, [runtimeStockRules, runtimeEtfRules, rawScanCache, screenMode, stockPresetLabel, etfPresetLabel, applyRules]);
 
     const screenResults: ScreenResult[] = rawScanCache.map(entry => {
       try {
