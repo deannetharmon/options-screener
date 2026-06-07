@@ -5122,6 +5122,15 @@ export default function Home() {
   // Called instead of runScreen when rules change but tickers haven't changed.
   // Zero API calls — instant re-filter.
   const applyRules = useCallback((sRules: RulesType, eRules: RulesType, sLabel?: string, eLabel?: string, modeOverride?: 'filter' | 'rank' | 'targeted') => {
+      }, [rawScanCache, screenMode, rankConfig]);
+
+// === ADD THIS NEW useEffect RIGHT HERE ===
+useEffect(() => {
+  if (rawScanCache.length > 0 && screenMode === 'filter') {
+    applyRules(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
+  }
+}, [runtimeStockRules, runtimeEtfRules, rawScanCache, screenMode, stockPresetLabel, etfPresetLabel, applyRules]);
+// ==========================================
     if (rawScanCache.length === 0) return; // No cache yet — need a full scan first
 
     const screenResults: ScreenResult[] = rawScanCache.map(entry => {
@@ -5520,12 +5529,9 @@ export default function Home() {
                           const updatedRules = { ...runtimeStockRules, ...p.rules };
                           setRuntimeStockRules(updatedRules);
                           setStockPresetLabel(p.label);
-                          try { localStorage.setItem('hunter-active-preset', p.key); } catch {}
-                          
-                          // Run instant client-side calculation if cache is populated
-                          if (rawScanCache.length > 0) {
-                            applyRules(updatedRules, runtimeEtfRules, p.label, etfPresetLabel);
-                          }
+                          try { 
+                            localStorage.setItem('hunter-active-preset', p.key); 
+                          } catch (e) {}
                         }}
                         className={`px-2.5 py-1 text-[10px] font-bold border rounded-lg transition-all ${
                           isActive 
