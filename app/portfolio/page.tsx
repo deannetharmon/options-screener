@@ -1554,6 +1554,7 @@ async function loadPositions(): Promise<Position[]> {
 
     const positionLegs: PositionLeg[] = legs.map((l: any) => {
       const parsed = parseOptionSymbol(l.symbol);
+      console.log(`LEG QTY DEBUG: symbol=${l.symbol} quantity=${l['quantity']} direction=${l['quantity-direction']}`);
       return {
         symbol: l.symbol, optionType: parsed.optionType, strikePrice: parsed.strikePrice,
         direction: l['quantity-direction'] as 'Short' | 'Long',
