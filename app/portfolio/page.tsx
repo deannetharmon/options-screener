@@ -2079,7 +2079,7 @@ DTE DISTRIBUTION:
 > 30 DTE: ${positions.filter(p => p.dte > 30).length} positions
 
 MARKET CONTEXT:
-ES Futures: ${futures ? `${futures.label} — bias ${futures.bias}` : 'unavailable'}
+ES Futures: ${futures ? futures.label + ' — bias ' + futures.bias : 'unavailable'}
 ${futures?.bias === 'bearish' ? 'WARNING: Futures bearish — BPS positions face directional headwind. Weight cut/manage recommendations higher.' : ''}
 ${futures?.bias === 'bullish' ? 'NOTE: Futures bullish — BPS positions have tailwind. Factor into urgency of cut recommendations.' : ''}
 
