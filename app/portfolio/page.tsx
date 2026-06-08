@@ -181,6 +181,7 @@ interface Position {
   hasGtc: boolean;
   gtcOrderId: string | null;       // ID of the working profit-target GTC order
   gtcOrderPrice: number | null;    // current limit price on that GTC order
+  gtcIsStale: boolean;             // true when GTC limit price > current spread value (order will never fill)
   stopLossStatus: StopStatus;
   stopLossPrice: number | null;
   stockPrice: number | null;
@@ -386,6 +387,25 @@ function isMarketOpen(): boolean {
 function getMarketStatus(): { open: boolean; label: string } {
   const open = isMarketOpen();
   return { open, label: open ? '● Market Open' : '○ Market Closed' };
+}
+
+function getMarketTimeContext(): string {
+  const now = new Date();
+  const etOffset = -5 * 60;
+  const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const etMin = utcMin + etOffset;
+  const openMin = MARKET_OPEN_HOUR * 60 + MARKET_OPEN_MIN;
+  const closeMin = MARKET_CLOSE_HOUR * 60;
+  const day = now.getDay();
+
+  if (day === 0 || day === 6) return 'Market closed (weekend) — prices are stale, use caution on any action.';
+  if (etMin < openMin - 60) return 'Pre-market (>1hr before open) — overnight futures may not reflect opening price action. Wait for open before acting on recommendations.';
+  if (etMin < openMin) return `Pre-market (${openMin - etMin} min before open) — gap risk is real. Avoid market orders. Limit orders only.`;
+  if (etMin < openMin + 30) return `Early session (market opened ${etMin - openMin} min ago) — early volatility, price discovery still happening. Wait 15-30 min before acting on cut/close recommendations.`;
+  if (etMin > closeMin - 30) return `Late session (${closeMin - etMin} min to close) — if cutting or closing, act now or wait for tomorrow's open. Day orders expire at close.`;
+  if (etMin > closeMin) return 'After hours — market closed. Any Day orders expired. Use GTC orders only. Prices are stale.';
+  const hoursIn = ((etMin - openMin) / 60).toFixed(1);
+  return `Mid-session (${hoursIn}h into trading day) — normal conditions, prices are live.`;
 }
 
 // ── Audit Log ──────────────────────────────────────────────────────────────
@@ -1618,6 +1638,18 @@ async function loadPositions(): Promise<Position[]> {
         const match = findProfitGtcOrder(positionLegs, gtcOrders);
         return match ? parseFloat(match.price) || null : null;
       })(),
+      gtcIsStale: (() => {
+        const match = findProfitGtcOrder(positionLegs, gtcOrders);
+        if (!match) return false;
+        const gtcPrice = parseFloat(match.price);
+        if (isNaN(gtcPrice) || gtcPrice <= 0) return false;
+        // GTC is stale when current spread value is already below the GTC limit
+        // meaning the market blew past it without filling
+        const qty = positionLegs.find(l => l.direction === 'Short')?.quantity ?? 1;
+        const currentPerContract = hasCurrentPrices ? Math.abs(currentValue) / (qty * 100) : null;
+        if (currentPerContract == null) return false;
+        return currentPerContract < gtcPrice - 0.01; // spread is cheaper than GTC limit — stale
+      })(),
       stopLossStatus: stopLoss.status, stopLossPrice: stopLoss.price,
       stockPrice: stockPrices[symbol] ?? null,
       buffer: (() => {
@@ -1841,7 +1873,11 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     if (pos.dte > 25 && (absDelta == null || absDelta < 0.10) && buffer > 3) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta?.toFixed(2) ?? 'low'}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta working, hold and monitor` };
     return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
   }
-  if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
+if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
+  // Gamma-aware late take-profit: high capture + near expiry = don't wait for formal target
+  if (pnlPct >= 70 && pos.dte <= 10) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% captured with only ${pos.dte} DTE — gamma risk rising fast, lock it in` };
+  if (pnlPct >= 80 && pos.dte <= 14) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% captured, ${pos.dte} DTE — leaving very little on the table, close and redeploy` };
+  
   // Mid-loss watch: down 20-50% with tightening buffer but not yet in manage territory
   if (pnlPct < -20) {
     const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
@@ -1968,9 +2004,10 @@ Theta: ${pos.theta?.toFixed(4) ?? 'unknown'} (daily decay)
 Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
 
 OPERATIONAL STATUS:
-GTC order: ${pos.hasGtc ? 'Yes — profit target working' : 'No — unprotected'}
+GTC order: ${!pos.hasGtc ? 'No — unprotected' : pos.gtcIsStale ? `STALE — GTC at $${pos.gtcOrderPrice?.toFixed(2)} is below current spread value $${pos.currentValue != null ? (pos.currentValue / ((pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1) * 100)).toFixed(2) : '?'} — order will never fill, position effectively unprotected` : 'Yes — profit target working'}
 Stop loss: ${pos.stopLossStatus} ${pos.stopLossPrice ? `@ $${pos.stopLossPrice}` : ''}
 Earnings within expiry: ${pos.earningsDate ? `Yes — ${pos.earningsDate}` : 'No'}
+Market time context: ${getMarketTimeContext()}
 Stop loss status: ${pos.stopLossStatus}${pos.stopLossStatus === 'bypassed' ? ` — STOP WAS BYPASSED. Order at $${pos.stopLossPrice?.toFixed(2)} was gapped past and never filled. Position is currently unprotected. Recommend immediate manual intervention.` : pos.stopLossPrice ? ` @ $${pos.stopLossPrice}` : ''}
 
 TREND ANALYSIS:
@@ -2135,9 +2172,10 @@ Stock price: $${pos.stockPrice?.toFixed(2) ?? 'unknown'}
 Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
 IVR: ${pos.ivr ?? 'unknown'} | IV: ${pos.iv ?? 'unknown'}% | HV30: ${pos.hv30 ?? 'unknown'}%
 Theta/day: ${pos.theta?.toFixed(4) ?? 'unknown'} | Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
-GTC working: ${pos.hasGtc ? 'Yes' : 'No'}
+GTC working: ${!pos.hasGtc ? 'No — unprotected' : pos.gtcIsStale ? `STALE — limit $${pos.gtcOrderPrice?.toFixed(2)} already below market, will never fill` : 'Yes'}
 Stop loss: ${pos.stopLossStatus}${pos.stopLossStatus === 'bypassed' ? ` — BYPASSED at $${pos.stopLossPrice?.toFixed(2)}, never filled, UNPROTECTED` : pos.stopLossPrice ? ` @ $${pos.stopLossPrice}` : ''}
 Earnings: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None within expiry'}
+Market time context: ${getMarketTimeContext()}
 
 Flags: ${[
     pos.needsClose ? 'AT 21 DTE (standard entry — must close/roll)' : '',
@@ -5787,8 +5825,18 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             {/* ── ORDERS ─────────────────────────────── */}
             <div className="border-t-2 border-amber-600/50 pt-1">
               <p className={`text-[9px] ${th.textFaint}`}>GTC</p>
-              <p className={`text-xs font-bold ${pos.hasGtc ? 'text-emerald-400' : 'text-red-400'}`}>{pos.hasGtc ? '✓ Live' : '✕ None'}</p>
-            </div>
+              <p className={`text-xs font-bold ${
+                !pos.hasGtc ? 'text-red-400' :
+                pos.gtcIsStale ? 'text-yellow-400' :
+                'text-emerald-400'
+              }`}>
+                {!pos.hasGtc ? '✕ None' : pos.gtcIsStale ? '⚠ Stale' : '✓ Live'}
+              </p>
+              {pos.gtcIsStale && pos.gtcOrderPrice != null && (
+                <p className="text-[8px] text-yellow-400/70 leading-tight">
+                  GTC ${pos.gtcOrderPrice.toFixed(2)} below market
+                </p>
+              )}            </div>
 
             <div className="border-t-2 border-amber-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
               <p className={`text-[9px] ${th.textFaint}`}>Stop Loss</p>
