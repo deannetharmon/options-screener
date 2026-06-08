@@ -1762,7 +1762,12 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   // Risk-adjust the recommendation: low delta + wide buffer = theta still dominates, watch instead of close.
   if (pos.needsClose) {
     const risk = classify21DteRisk(pos);
-    if (pnlPct < 0) return { action: 'MANAGE', detail: `${pos.dte} DTE with loss — review close/roll, don't auto-cut` };
+    if (pnlPct < 0) {
+      // Don't blanket MANAGE on a loss at 21 DTE — check if Greeks support holding
+      if (risk === 'low')    return { action: 'WATCH',  detail: `${pos.dte} DTE, minor loss but δ${pos.netDelta?.toFixed(2)} + ${pos.buffer?.toFixed(1)}% buffer — theta still working, monitor daily` };
+      if (risk === 'medium') return { action: 'WATCH',  detail: `${pos.dte} DTE with loss — delta manageable, watch buffer closely` };
+      return                        { action: 'MANAGE', detail: `${pos.dte} DTE with loss — review close/roll, don't auto-cut` };
+    }
     if (risk === 'low')    return { action: 'WATCH',      detail: `${pos.dte} DTE but δ${pos.netDelta?.toFixed(2)} + ${pos.buffer?.toFixed(1)}% buffer — theta dominates, monitor daily` };
     if (risk === 'medium') return { action: 'WATCH',      detail: `${pos.dte} DTE — low delta but tightening, watch buffer closely` };
     return                        { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
