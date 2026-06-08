@@ -1733,9 +1733,36 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   }
 
   // Hard exits: spreads only (BPS/BCS)
+  // CUT_LOSSES requires multiple confirming signals — loss % alone is never enough.
+  // A low-delta, wide-buffer position with 30+ DTE has a genuine recovery path via theta.
   if (breached) return { action: 'CUT_LOSSES', detail: `Short strike breached — exit or roll immediately` };
-  if (stopLossBreached) return { action: 'CUT_LOSSES', detail: `Stop threshold reached — follow the risk plan` };
-  if (veryLargeLoss && trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% and trend is adverse — exit or roll` };
+
+  // Bypassed stop: position is unprotected AND loss is meaningful — act now
+  if (pos.stopLossStatus === 'bypassed' && pnlPct < -50) {
+    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const buffer   = pos.buffer ?? 0;
+    if (absDelta > 0.20 || buffer < 2) return { action: 'CUT_LOSSES', detail: `Stop bypassed + delta ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer — unprotected, exit now` };
+    return { action: 'MANAGE', detail: `Stop bypassed but delta ${absDelta.toFixed(2)} is low — set a new stop immediately, then hold` };
+  }
+
+  // Stop threshold: only cut if delta is also elevated or buffer is critical
+  if (stopLossBreached) {
+    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const buffer   = pos.buffer ?? 0;
+    if (absDelta > 0.20 || buffer < 2) return { action: 'CUT_LOSSES', detail: `Stop triggered + delta ${absDelta.toFixed(2)} confirms — follow the risk plan` };
+    if (absDelta > 0.10 || buffer < 5) return { action: 'MANAGE', detail: `Stop triggered but delta ${absDelta.toFixed(2)} is manageable — review carefully` };
+    return { action: 'WATCH', detail: `Stop level hit but δ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer — theta may recover this, monitor closely` };
+  }
+
+  // Large loss: only cut when thesis is broken (trend against) AND position is exposed (high delta or thin buffer)
+  if (veryLargeLoss) {
+    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const buffer   = pos.buffer ?? 0;
+    if (trendAgainst && (absDelta > 0.20 || buffer < 2)) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}%, trend adverse, delta ${absDelta.toFixed(2)} — thesis broken, exit` };
+    if (trendAgainst) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — delta ${absDelta.toFixed(2)} manageable but watch closely` };
+    if (absDelta > 0.20 || buffer < 2) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + exposed Greeks — manage actively` };
+    return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer + ${pos.dte} DTE — theta has room to work` };
+  }
 
   // Short-dated entry: maximize profit, but do not treat ordinary red P/L as a failure.
   if (shortDate) {
@@ -1754,9 +1781,19 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   // Standard entry
   if (pos.hitTarget)                  return { action: 'TAKE_PROFIT', detail: `${Math.round(targetPct)}% target — lock in $${pos.pnl?.toFixed(2)}` };
   if (!pos.hasGtc)                    return { action: 'PLACE_GTC', detail: 'No GTC order set — place profit target' };
-  if (pnlPct < -150 && trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend confirms — exit` };
+  if (pnlPct < -150 && trendAgainst) {
+    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const buffer   = pos.buffer ?? 0;
+    if (absDelta > 0.20 || buffer < 2) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend + delta ${absDelta.toFixed(2)} — thesis broken, exit` };
+    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend but δ${absDelta.toFixed(2)} is low — monitor, don't panic-cut` };
+  }
   if (pnlPct < -50 && trendAgainst)  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — manage actively` };
-  if (pnlPct < -50)                  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
+  if (pnlPct < -50) {
+    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const buffer   = pos.buffer ?? 0;
+    if (pos.dte > 25 && absDelta < 0.10 && buffer > 3) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta.toFixed(2)}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta working, hold and monitor` };
+    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
+  }
   if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
