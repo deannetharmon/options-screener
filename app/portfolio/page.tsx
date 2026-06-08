@@ -1749,9 +1749,12 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   if (stopLossBreached) {
     const absDelta = Math.abs(pos.netDelta ?? 0.30);
     const buffer   = pos.buffer ?? 0;
-    if (absDelta > 0.20 || buffer < 2) return { action: 'CUT_LOSSES', detail: `Stop triggered + delta ${absDelta.toFixed(2)} confirms — follow the risk plan` };
-    if (absDelta > 0.10 || buffer < 5) return { action: 'MANAGE', detail: `Stop triggered but delta ${absDelta.toFixed(2)} is manageable — review carefully` };
-    return { action: 'WATCH', detail: `Stop level hit but δ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer — theta may recover this, monitor closely` };
+    // CUT: delta is high OR strike is nearly breached regardless of DTE
+    if (absDelta > 0.20 || buffer < 1) return { action: 'CUT_LOSSES', detail: `Stop triggered + delta ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer — follow the risk plan` };
+    // MANAGE: meaningful delta exposure or very short DTE
+    if (absDelta > 0.10 || (buffer < 3 && pos.dte < 21)) return { action: 'MANAGE', detail: `Stop triggered, delta ${absDelta.toFixed(2)} — review carefully` };
+    // WATCH: low delta + reasonable buffer + time remaining — theta has a path
+    return { action: 'WATCH', detail: `Stop bypassed but δ${absDelta.toFixed(2)}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta working, set a new stop` };
   }
 
   // Large loss: only cut when thesis is broken (trend against) AND position is exposed (high delta or thin buffer)
