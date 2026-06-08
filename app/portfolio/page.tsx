@@ -4689,6 +4689,19 @@ function estimateSpreadAtPrice(
   return Math.max(0.01, parseFloat((estimated / (qty * 100)).toFixed(2)));
 }
 
+function estimateSpreadAtPrice(
+  pos: Position,
+  targetPrice: number,
+  currentSpreadPerContract: number
+): number {
+  const currentStock = pos.stockPrice;
+  if (currentStock == null || currentStock === 0) return currentSpreadPerContract;
+  const absDelta = Math.abs(pos.netDelta ?? 0.10);
+  const priceDiff = currentStock - targetPrice;
+  const spreadChange = absDelta * priceDiff;
+  return Math.max(0.01, parseFloat((currentSpreadPerContract + spreadChange).toFixed(2)));
+}
+
 function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   // ── Price bounds ──────────────────────────────────────────────────────────
   // All valid GTC and stop prices must respect these hard bounds derived from
@@ -5164,73 +5177,71 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
             </button>
           </div>
 
-          {livePriceError && (
+{livePriceError && (
             <p className="text-[9px] text-yellow-400 mb-2">⚠ {livePriceError}</p>
           )}
 
-          {/* Price → Spread value scenario table */}
-          {priceScenarios && priceScenarios.length > 1 && (
-            <div className={`mb-3 rounded-lg border ${th.borderLight} overflow-hidden`}>
-              <div className={`px-3 py-2 ${th.card} flex items-center justify-between`}>
-                <span className={`text-[9px] font-bold uppercase tracking-widest ${th.textFaint}`}>
-                  If {pos.symbol} falls to... → spread becomes
-                </span>
-                <span className={`text-[9px] ${th.textFaint}`}>tap row to set stop</span>
-              </div>
-              <div className="divide-y divide-white/5">
-                {priceScenarios.map((s, i) => {
-                  const isNow = s.label === 'Now';
-                  const isBreach = s.note === 'breach level';
-                  const isMaxLoss = s.note === 'max loss';
-                  const rowColor = isNow ? th.textFaint : isBreach ? 'text-orange-400' : isMaxLoss ? 'text-red-400' : th.textMuted;
-                  const canSetStop = !isNow && s.spreadValue > (livePrice ?? liveValuePerContract ?? 0);
-                  return (
-                    <div
-                      key={i}
-                      onClick={() => {
-                        if (!canSetStop) return;
-                        const val = s.spreadValue.toFixed(2);
-                        setStopFromPrice(val);
-                      }}
-                      className={`flex items-center justify-between px-3 py-2 ${canSetStop ? 'cursor-pointer hover:bg-white/5 transition-colors' : ''}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[10px] font-bold ${rowColor}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                          {pos.symbol} {s.price.toLocaleString()}
-                        </span>
-                        <span className={`text-[9px] ${th.textFaint}`}>{s.note}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[10px] font-bold ${rowColor}`} style={{ fontFamily: "'DM Mono', monospace" }}>
-                          ${s.spreadValue.toFixed(2)}/ct
-                        </span>
-                        {canSetStop && (
-                          <span className="text-[9px] text-orange-400 font-bold">← set stop</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {/* Quick-set: stop at breach */}
-              {(() => {
-                const breachScenario = priceScenarios.find(s => s.note === 'breach level');
-                if (!breachScenario) return null;
-                return (
-                  <div className={`px-3 py-2 border-t border-orange-500/20 bg-orange-500/5`}>
-                    <button
-                      onClick={() => setStopFromPrice(breachScenario.spreadValue.toFixed(2))}
-                      className="text-[9px] font-bold text-orange-400 hover:text-orange-300 transition-colors"
-                    >
-                      ⚡ Quick-set: stop if {pos.symbol} hits short strike ({pos.legs.find(l => l.direction === 'Short')?.strikePrice}) → ${breachScenario.spreadValue.toFixed(2)}/ct
-                    </button>
-                  </div>
-                );
-              })()}
-            </div>
-          )}
+          {/* Price → Spread scenario table with guidance */}
+          {effectiveLiveDisplay != null && pos.stockPrice != null && (() => {
+            const shortStrike = pos.legs.find(l => l.direction === 'Short')?.strikePrice ?? 0;
+            const longStrike  = pos.legs.find(l => l.direction === 'Long')?.strikePrice ?? 0;
+            const stock = pos.stockPrice!;
+            const live  = effectiveLiveDisplay!;
+            const isIndex = ['SPX','NDX','RUT','VIX'].includes(pos.symbol.toUpperCase());
 
-          {/* OCO info */}
+            const scenarios = [
+              { label: 'Now',            price: stock,                              note: 'current',      tier: 'current'      },
+              { label: '-1%',            price: parseFloat((stock*0.99).toFixed(2)), note: '1% drop',     tier: 'conservative' },
+              { label: '-2%',            price: parseFloat((stock*0.98).toFixed(2)), note: '2% drop',     tier: 'moderate'     },
+              { label: `${shortStrike}`, price: shortStrike,                         note: 'short strike', tier: 'aggressive'   },
+              ...(longStrike > 0 ? [{ label: `${longStrike}`, price: longStrike, note: 'max loss', tier: 'toolate' }] : []),
+            ].filter(s => s.price > 0 && s.price <= stock);
+
+            const tierConfig: Record<string, { color: string; badge: string }> = {
+              current:      { color: th.textFaint,       badge: ''                   },
+              conservative: { color: 'text-emerald-400', badge: '✓ Before breach'   },
+              moderate:     { color: 'text-yellow-400',  badge: '~ Moderate'         },
+              aggressive:   { color: 'text-orange-400',  badge: '⚠ At breach'       },
+              toolate:      { color: 'text-red-400',     badge: '✕ Max loss'         },
+            };
+
+            const stopVal = parseFloat(stopPrice || '0');
+            const breachSpread = estimateSpreadAtPrice(pos, shortStrike, live);
+            const stopTooLate = stopVal > 0 && stopVal > breachSpread;
+
+            return (
+              <div className={`mb-3 rounded-lg border ${th.borderLight} overflow-hidden`}>
+                <div className={`px-3 py-2 ${th.card}`}>
+                  <p className={`text-[9px] font-bold uppercase tracking-widest ${th.textFaint}`}>
+                    If {pos.symbol} falls to... → spread value
+                  </p>
+                  <p className={`text-[9px] ${th.textFaint} mt-0.5`}>Tap a row to set that as your stop trigger</p>
+                </div>
+
+                <div className="divide-y divide-white/5">
+                  {scenarios.map((s, i) => {
+                    const spreadVal = s.tier === 'current'
+                      ? live
+                      : estimateSpreadAtPrice(pos, s.price, live);
+                    const cfg = tierConfig[s.tier];
+                    const canSet = s.tier !== 'current' && spreadVal > live;
+                    return (
+                      <div
+                        key={i}
+                        onClick={() => canSet ? setStopFromPrice(spreadVal.toFixed(2)) : undefined}
+                        className={`flex items-center justify-between px-3 py-2.5 ${canSet ? 'cursor-pointer hover:bg-white/5 active:bg-white/10 transition-colors' : ''}`}
+                      >
+                        <div className="flex items-center gap-2 flex-1">
+                          <span className={`text-[10px] font-bold ${cfg.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                            {isIndex ? `${pos.symbol} ${s.price.toLocaleString()}` : `$${s.price.toFixed(2)}`}
+                          </span>
+                          <span className={`text-[9px] ${th.textFaint}`}>{s.note}</span>
+                          {cfg.badge && <span className={`text-[8px] font-bold ${cfg.color}`}>{cfg.badge}</span>}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`text-[10px] font-bold ${cfg.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                            ${spreadVal.toFixed(2)}/ct
+                          </span>
           {needsOco && (
             <div className="mb-3 p-2.5 rounded-lg border border-yellow-600/40 bg-yellow-500/5">
               <p className="text-[10px] text-yellow-300 leading-relaxed">
