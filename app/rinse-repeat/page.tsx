@@ -1455,12 +1455,20 @@ export default function RinseRepeatPage() {
               {t}
             </button>
           ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-0 w-full border-t border-white/10">
+          <Link href="/"             className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
+          <Link href="/portfolio"    className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
+          <Link href="/engine"       className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">ENGINE</Link>
+          <span                      className="text-[10px] font-bold px-3 py-2 tracking-wider" style={{ color: '#00d4aa', borderBottom: '2px solid #00d4aa' }}>RINSE → REPEAT</span>
+          <Link href="/trade-log"    className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</Link>
+          <Link href="/performance"  className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</Link>
         </div>
       </div>
 
       {/* Sticky controls */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40`}>
-        <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40`}>        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
             {/* Range */}
             <div className="flex items-center gap-1">

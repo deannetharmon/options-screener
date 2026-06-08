@@ -1249,26 +1249,36 @@ export default function PerformancePage() {
             ))}
           </div>
           <div className="w-px h-4 bg-white/20 mr-1" />
-          {(['dark','medium','light'] as Theme[]).map(t => (
+ {(['dark','medium','light'] as Theme[]).map(t => (
             <button key={t} onClick={() => { setTheme(t); try { localStorage.setItem(LS_THEME, t); } catch {} }}
               className={`text-[9px] px-2 py-1 border rounded transition-colors ${theme === t ? 'ac-btn' : `${th.border} ${th.textFaint} hover:ac-border-faint`}`}>
               {t}
             </button>
           ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-0 w-full border-t border-white/10">
+          <Link href="/"             className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">HUNTER</Link>
+          <Link href="/portfolio"    className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">PORTFOLIO</Link>
+          <Link href="/engine"       className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">ENGINE</Link>
+          <Link href="/rinse-repeat" className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">RINSE → REPEAT</Link>
+          <Link href="/trade-log"    className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</Link>
+          <span                      className="text-[10px] font-bold px-3 py-2 tracking-wider" style={{ color: '#00d4aa', borderBottom: '2px solid #00d4aa' }}>PERFORMANCE</span>
         </div>
       </div>
 
       {/* Sticky controls bar */}
-        <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
-          <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-1">
-              {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
-                <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
-                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${
-                    range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint ac-hover-text`
-                  }`}>
-                  {label}
-                </button>
+      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40
+      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[57px] z-40 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-1">
+            {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
+              <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
+                className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${
+                  range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint ac-hover-text`
+                }`}>
+                {label}
+              </button>
             ))}
             {!loading && trades.length > 0 && (
               <span className={`ml-2 text-[9px] ${th.textFaint}`}>
