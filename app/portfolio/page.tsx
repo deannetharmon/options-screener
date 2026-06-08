@@ -5128,9 +5128,11 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
       </button>
 
       {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => { setOpen(false); setConfirming(false); }}>
         <div
-          className={`absolute bottom-full mb-2 left-0 z-30 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-4 w-96`}
+          className={`${th.sidebar} border ${th.border} rounded-xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col`}
           onClick={e => e.stopPropagation()}>
+          <div className="overflow-y-auto flex-1 p-4">
 
           {/* Header */}
           <div className="flex items-center justify-between mb-3">
@@ -5433,6 +5435,8 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
           <button onClick={() => { setOpen(false); setConfirming(false); }} className={`w-full mt-2 text-[9px] ${th.textFaint} hover:${th.text} text-center`}>
             Cancel
           </button>
+          </div>
+        </div>
         </div>
       )}
 
