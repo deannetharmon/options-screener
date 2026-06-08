@@ -1259,15 +1259,16 @@ export default function PerformancePage() {
       </div>
 
       {/* Sticky controls bar */}
-        <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-1">
-            {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
-              <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
-                className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${
-                  range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint ac-hover-text`
-                }`}>
-                {label}
-              </button>
+        <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-1">
+              {([['1w','1 WK'],['2w','2 WK'],['1m','1 MO'],['3m','3 MO'],['6m','6 MO'],['12m','12 MO']] as [TimeRange,string][]).map(([r,label]) => (
+                <button key={r} onClick={() => handleRangeChange(r)} disabled={loading}
+                  className={`text-[10px] px-2.5 py-1.5 border rounded font-bold tracking-wider transition-colors disabled:opacity-50 ${
+                    range === r ? 'ac-btn ac-bg-10' : `${th.border} ${th.textFaint} hover:ac-border-faint ac-hover-text`
+                  }`}>
+                  {label}
+                </button>
             ))}
             {!loading && trades.length > 0 && (
               <span className={`ml-2 text-[9px] ${th.textFaint}`}>
