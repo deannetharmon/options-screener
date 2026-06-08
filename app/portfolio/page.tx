@@ -6,7 +6,6 @@ import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, get
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
-
 // Inject accent CSS variable style
 if (typeof document !== 'undefined') {
   if (!document.getElementById('hunter-accent-style')) {
