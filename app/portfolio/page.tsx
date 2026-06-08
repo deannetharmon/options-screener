@@ -1874,7 +1874,7 @@ Keep responses focused and concise — 3-6 sentences unless the question genuine
 const TRADING_SYSTEM_PROMPT = `You are a professional options trader and portfolio analyst with deep expertise in selling premium through credit spreads. You advise a trader who follows the Options Hunter methodology as a foundation — but you treat those rules as informed guidelines, not rigid constraints. You understand when deviation is appropriate.
 
 CORE METHODOLOGY (know it deeply, apply it intelligently):
-- Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound
+- Strategies: Bull Put Spread (BPS) for bullish/neutral, Bear Call Spread (BCS) for bearish, Iron Condor (IC) for range-bound, Cash-Secured Put (CSP, displayed as strategy=PUT) for bullish/wheel entries — single short put, no long leg, assignment risk at expiry, Covered Call (CC, displayed as strategy=CALL) for income on held shares
 - Entry rules (as guidelines): IVR ≥ 30, DTE 30-45, credit ≥ 1/3 spread width, OI ≥ 500, bid-ask ≤ $0.10
 - Target exits: 50% profit (place GTC at entry), hard close at 21 DTE regardless of P&L — BUT ONLY when entry DTE was > 21. Short-dated entries (entered at ≤ 21 DTE) follow a different framework: maximize profit quickly, lower the take-profit threshold to 30-40%, tighten the loss tolerance, and exit before expiry to avoid pin/assignment risk. The 21 DTE hard-close rule does NOT apply to intentional short-dated trades.
 - Short strike deltas: BPS -0.20 to -0.30, BCS +0.20 to +0.30, IC ±0.16 to ±0.20
@@ -1931,7 +1931,7 @@ function buildPositionPrompt(pos: Position, trend: TrendResult | null, futures?:
 
   return `Analyze this open options position:
 
-POSITION: ${pos.symbol} ${pos.strategy}
+POSITION: ${pos.symbol} ${pos.strategy}${pos.strategy === 'PUT' ? ' (Cash-Secured Put — single short put, no spread protection, assignment risk if breached)' : pos.strategy === 'CALL' ? ' (Covered Call — short call against held shares, assignment means shares called away)' : ''}
 Expiry: ${pos.expDate} | DTE: ${pos.dte} | Entry DTE: ${pos.entryDte}
 Strikes: ${pos.legs.map(l => `${l.direction} ${l.strikePrice}${l.optionType}`).join(', ')}
 Credit received: $${pos.creditReceived.toFixed(2)} | Current buyback: $${pos.currentValue?.toFixed(2) ?? 'unknown'}
@@ -1962,7 +1962,24 @@ TREND ANALYSIS:
 Direction: ${trend?.trend ?? 'unknown'} (confidence: ${trend?.confidence ?? 'unknown'}%)
 Suggested strategy: ${trend?.strategy ?? 'unknown'}
 Reason: ${trend?.reason ?? 'none'}
-ES Futures: ${futures ? `${futures.label} — market bias is ${futures.bias}. Factor this into directional risk for this ${pos.strategy} position.` : 'unavailable'}
+ES Futures: ${(() => {
+  if (!futures) return 'unavailable';
+  const beta = pos.beta ?? 1.0;
+  const betaAdj = parseFloat((futures.changePct * beta).toFixed(2));
+  const sign = betaAdj >= 0 ? '+' : '';
+  const bufferAfterMove = pos.buffer != null
+    ? parseFloat((pos.buffer + betaAdj).toFixed(1))
+    : null;
+  const bufferNote = bufferAfterMove != null
+    ? ` Effective buffer after beta-adjusted move: ~${bufferAfterMove}% (static buffer at load was ${pos.buffer?.toFixed(1)}%).`
+    : '';
+  const urgencyNote = bufferAfterMove != null && bufferAfterMove < pos.buffer!
+    ? ` Buffer is SHRINKING intraday — factor into urgency.`
+    : bufferAfterMove != null && bufferAfterMove > pos.buffer!
+    ? ` Buffer is IMPROVING intraday — reduce urgency of cut recommendations.`
+    : '';
+  return `${futures.label} — bias ${futures.bias}. Beta-adjusted impact on ${pos.symbol} (β${beta.toFixed(2)}): ${sign}${betaAdj}% today.${bufferNote}${urgencyNote}`;
+})()}
 
 Flags: ${[
   pos.needsClose ? '⚠ AT 21 DTE — must close or roll (entered at standard DTE)' : '',
