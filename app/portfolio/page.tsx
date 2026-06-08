@@ -4763,10 +4763,9 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
               legs: legsForComplex,
             },
             {
-              'order-type': 'Stop Limit',
+              'order-type': 'Stop',
               'time-in-force': 'GTC',
               'stop-trigger': stopTrigger.toFixed(2),
-              price: stopTrigger.toFixed(2),
               'price-effect': 'Debit',
               legs: legsForComplex,
             },
