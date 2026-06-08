@@ -231,7 +231,7 @@ interface ActionVerdict {
 
 type EvaluatedAction = 'EXTEND_PROFIT' | 'CLOSE_ROLL' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'PLACE_GTC';
 
-type StopStatus = 'live' | 'loose' | 'none' | 'unknown';
+type StopStatus = 'live' | 'loose' | 'none' | 'unknown' | 'bypassed';
 
 interface GtcOrderLeg { symbol: string; action: string; }
 interface GtcOrder {
@@ -1265,10 +1265,11 @@ async function fetchGtcOrders(accountNumber: string, token: string): Promise<Gtc
   } catch { return []; }
 }
 
-function classifyPositionStopLoss(position: Pick<Position, 'legs' | 'creditReceived'>, gtcOrders: GtcOrder[]): StopLossInfo {
+function classifyPositionStopLoss(position: Pick<Position, 'legs' | 'creditReceived'>, gtcOrders: GtcOrder[], currentValueTotal?: number): StopLossInfo {
   const shortLeg = position.legs.find(l => l.direction === 'Short');
   if (!shortLeg?.symbol) return { status: 'unknown', price: null };
-  const creditPerContract = shortLeg.quantity > 0 ? position.creditReceived / (shortLeg.quantity * 100) : position.creditReceived / 100;
+  const qty = shortLeg.quantity > 0 ? shortLeg.quantity : 1;
+  const creditPerContract = position.creditReceived / (qty * 100);
   const stopThreshold = parseFloat((creditPerContract * 2).toFixed(2));
   const shortSymbol = normalizeOccSymbol(shortLeg.symbol);
   const match = gtcOrders.find(order =>
@@ -1277,6 +1278,16 @@ function classifyPositionStopLoss(position: Pick<Position, 'legs' | 'creditRecei
   if (!match) return { status: 'none', price: null };
   const orderPrice = parseFloat(match.stopPrice ?? match.price);
   if (isNaN(orderPrice)) return { status: 'unknown', price: null };
+
+  // Detect bypassed stop: stop trigger exists but current spread value has already blown past it.
+  // This means the order gapped through and never filled — it's sitting useless.
+  if (currentValueTotal != null) {
+    const currentPerContract = currentValueTotal / (qty * 100);
+    if (currentPerContract > orderPrice + 0.01) {
+      return { status: 'bypassed', price: orderPrice };
+    }
+  }
+
   return orderPrice <= stopThreshold + 0.02 ? { status: 'live', price: orderPrice } : { status: 'loose', price: orderPrice };
 }
 
@@ -1521,8 +1532,9 @@ async function loadPositions(): Promise<Position[]> {
     // Stop loss tracking only applies to defined-risk spreads (BPS/BCS/IC).
     // CSPs and single-leg positions (PUT/CALL) have no spread width to stop out of.
     const isSpread = strategy === 'BPS' || strategy === 'BCS' || strategy === 'IC';
+    const currentValueForStop = hasCurrentPrices ? Math.abs(currentValue) : undefined;
     const stopLoss = isSpread
-      ? classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders)
+      ? classifyPositionStopLoss({ legs: positionLegs, creditReceived: Math.abs(creditReceived) }, gtcOrders, currentValueForStop)
       : { status: 'unknown' as const, price: null };
 
     // Only treat earnings as relevant if it occurs on or before this position's expiration.
@@ -1870,6 +1882,7 @@ OPERATIONAL STATUS:
 GTC order: ${pos.hasGtc ? 'Yes — profit target working' : 'No — unprotected'}
 Stop loss: ${pos.stopLossStatus} ${pos.stopLossPrice ? `@ $${pos.stopLossPrice}` : ''}
 Earnings within expiry: ${pos.earningsDate ? `Yes — ${pos.earningsDate}` : 'No'}
+Stop loss status: ${pos.stopLossStatus}${pos.stopLossStatus === 'bypassed' ? ` — STOP WAS BYPASSED. Order at $${pos.stopLossPrice?.toFixed(2)} was gapped past and never filled. Position is currently unprotected. Recommend immediate manual intervention.` : pos.stopLossPrice ? ` @ $${pos.stopLossPrice}` : ''}
 
 TREND ANALYSIS:
 Direction: ${trend?.trend ?? 'unknown'} (confidence: ${trend?.confidence ?? 'unknown'}%)
@@ -2011,6 +2024,7 @@ Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
 IVR: ${pos.ivr ?? 'unknown'} | IV: ${pos.iv ?? 'unknown'}% | HV30: ${pos.hv30 ?? 'unknown'}%
 Theta/day: ${pos.theta?.toFixed(4) ?? 'unknown'} | Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
 GTC working: ${pos.hasGtc ? 'Yes' : 'No'}
+Stop loss: ${pos.stopLossStatus}${pos.stopLossStatus === 'bypassed' ? ` — BYPASSED at $${pos.stopLossPrice?.toFixed(2)}, never filled, UNPROTECTED` : pos.stopLossPrice ? ` @ $${pos.stopLossPrice}` : ''}
 Earnings: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None within expiry'}
 
 Flags: ${[
@@ -5247,6 +5261,14 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
   return (
     <div className={`border ${borderClass} ${th.card} rounded-lg transition-all`}>
+      {pos.stopLossStatus === 'bypassed' && (
+        <div className="bg-orange-500/15 border-b border-orange-500/60 px-4 py-1.5 flex items-center gap-2">
+          <span className="text-orange-400 text-xs font-bold">✗</span>
+          <span className="text-xs text-orange-400 font-bold tracking-wider">
+            STOP BYPASSED — order at ${pos.stopLossPrice?.toFixed(2)} never filled, position is unprotected — set a new stop now
+          </span>
+        </div>
+      )}
       {pos.needsClose && (() => {
         const risk = classify21DteRisk(pos);
         if (risk === 'high') return (
@@ -5628,10 +5650,11 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                 <p className={`text-xs font-bold ${th.textFaint}`}>— N/A</p>
               ) : (() => {
                 const cfg =
-                  pos.stopLossStatus === 'live'  ? { icon: '✓', label: 'Stop',  cls: 'text-emerald-400' } :
-                  pos.stopLossStatus === 'loose' ? { icon: '⚠', label: 'Loose', cls: 'text-yellow-400'  } :
-                  pos.stopLossStatus === 'none'  ? { icon: '✕', label: 'None',  cls: 'text-red-400'     } :
-                                                   { icon: '—', label: '?',     cls: th.textFaint        };
+                  pos.stopLossStatus === 'live'     ? { icon: '✓', label: 'Stop',     cls: 'text-emerald-400' } :
+                  pos.stopLossStatus === 'loose'    ? { icon: '⚠', label: 'Loose',    cls: 'text-yellow-400'  } :
+                  pos.stopLossStatus === 'none'     ? { icon: '✕', label: 'None',     cls: 'text-red-400'     } :
+                  pos.stopLossStatus === 'bypassed' ? { icon: '✗', label: 'Bypassed', cls: 'text-orange-400'  } :
+                                                      { icon: '—', label: '?',        cls: th.textFaint       };
                 return (
                   <p className={`text-xs font-bold ${cfg.cls}`}>
                     {cfg.icon} {cfg.label}
