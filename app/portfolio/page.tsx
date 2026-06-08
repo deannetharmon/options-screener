@@ -1774,32 +1774,28 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
 
   // Bypassed stop: position is unprotected AND loss is meaningful — act now
   if (pos.stopLossStatus === 'bypassed' && pnlPct < -50) {
-    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
     const buffer   = pos.buffer ?? 0;
-    if (absDelta > 0.20 || buffer < 2) return { action: 'CUT_LOSSES', detail: `Stop bypassed + delta ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer — unprotected, exit now` };
-    return { action: 'MANAGE', detail: `Stop bypassed but delta ${absDelta.toFixed(2)} is low — set a new stop immediately, then hold` };
+    // Only CUT if delta is confirmed high OR buffer is critically thin — never assume worst if delta unknown
+    if ((absDelta != null && absDelta > 0.20) || buffer < 2) return { action: 'CUT_LOSSES', detail: `Stop bypassed + delta ${absDelta?.toFixed(2) ?? '?'} + ${buffer.toFixed(1)}% buffer — unprotected, exit now` };
+    return { action: 'MANAGE', detail: `Stop bypassed — set a new stop immediately. Delta ${absDelta?.toFixed(2) ?? 'unknown'} is manageable, then hold` };
   }
 
-  // Stop threshold: only cut if delta is also elevated or buffer is critical
   if (stopLossBreached) {
-    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
     const buffer   = pos.buffer ?? 0;
-    // CUT: delta is high OR strike is nearly breached regardless of DTE
-    if (absDelta > 0.20 || buffer < 1) return { action: 'CUT_LOSSES', detail: `Stop triggered + delta ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer — follow the risk plan` };
-    // MANAGE: meaningful delta exposure or very short DTE
-    if (absDelta > 0.10 || (buffer < 3 && pos.dte < 21)) return { action: 'MANAGE', detail: `Stop triggered, delta ${absDelta.toFixed(2)} — review carefully` };
-    // WATCH: low delta + reasonable buffer + time remaining — theta has a path
-    return { action: 'WATCH', detail: `Stop bypassed but δ${absDelta.toFixed(2)}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta working, set a new stop` };
+    if ((absDelta != null && absDelta > 0.20) || buffer < 1) return { action: 'CUT_LOSSES', detail: `Stop triggered + delta ${absDelta?.toFixed(2) ?? '?'} + ${buffer.toFixed(1)}% buffer — follow the risk plan` };
+    if ((absDelta != null && absDelta > 0.10) || (buffer < 3 && pos.dte < 21)) return { action: 'MANAGE', detail: `Stop triggered, delta ${absDelta?.toFixed(2) ?? 'unknown'} — review carefully` };
+    return { action: 'WATCH', detail: `Stop level hit but δ${absDelta?.toFixed(2) ?? 'low'}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta working, set a new stop` };
   }
 
-  // Large loss: only cut when thesis is broken (trend against) AND position is exposed (high delta or thin buffer)
   if (veryLargeLoss) {
-    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
     const buffer   = pos.buffer ?? 0;
-    if (trendAgainst && (absDelta > 0.20 || buffer < 2)) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}%, trend adverse, delta ${absDelta.toFixed(2)} — thesis broken, exit` };
-    if (trendAgainst) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — delta ${absDelta.toFixed(2)} manageable but watch closely` };
-    if (absDelta > 0.20 || buffer < 2) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + exposed Greeks — manage actively` };
-    return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer + ${pos.dte} DTE — theta has room to work` };
+    if (trendAgainst && ((absDelta != null && absDelta > 0.20) || buffer < 2)) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}%, trend adverse, delta ${absDelta?.toFixed(2) ?? '?'} — thesis broken, exit` };
+    if (trendAgainst) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — delta ${absDelta?.toFixed(2) ?? 'unknown'} manageable but watch closely` };
+    if ((absDelta != null && absDelta > 0.20) || buffer < 2) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + exposed Greeks — manage actively` };
+    return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta?.toFixed(2) ?? 'low'} + ${buffer.toFixed(1)}% buffer + ${pos.dte} DTE — theta has room to work` };
   }
 
   // Short-dated entry: maximize profit, but do not treat ordinary red P/L as a failure.
@@ -1827,9 +1823,9 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   }
   if (pnlPct < -50 && trendAgainst)  return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — manage actively` };
   if (pnlPct < -50) {
-    const absDelta = Math.abs(pos.netDelta ?? 0.30);
+    const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
     const buffer   = pos.buffer ?? 0;
-    if (pos.dte > 25 && absDelta < 0.10 && buffer > 3) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta.toFixed(2)}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta working, hold and monitor` };
+    if (pos.dte > 25 && (absDelta == null || absDelta < 0.10) && buffer > 3) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta?.toFixed(2) ?? 'low'}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta working, hold and monitor` };
     return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
   }
   if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
