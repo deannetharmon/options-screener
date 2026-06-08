@@ -4675,18 +4675,15 @@ async function fetchStopGtcSuggestion(pos: Position): Promise<StopGtcSuggestion>
 function estimateSpreadAtPrice(
   pos: Position,
   targetPrice: number,
-  currentSpreadValue: number
+  currentSpreadPerContract: number
 ): number {
   const currentStock = pos.stockPrice;
-  if (currentStock == null || currentStock === 0) return currentSpreadValue;
+  if (currentStock == null || currentStock === 0) return currentSpreadPerContract;
   const absDelta = Math.abs(pos.netDelta ?? 0.10);
-  const qty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
   const priceDiff = currentStock - targetPrice; // positive = stock fell
-  // For a BPS: stock falls → spread value increases by ~delta × move × 100 × qty
-  const spreadChange = absDelta * priceDiff * 100 * qty;
-  const estimated = currentSpreadValue + spreadChange;
-  // Per-contract value
-  return Math.max(0.01, parseFloat((estimated / (qty * 100)).toFixed(2)));
+  // delta is per-share, priceDiff is per-share → spread change is per-contract already
+  const spreadChange = absDelta * priceDiff;
+  return Math.max(0.01, parseFloat((currentSpreadPerContract + spreadChange).toFixed(2)));
 }
 
 function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
@@ -5182,7 +5179,8 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
               { label: '-2%',            price: parseFloat((stock*0.98).toFixed(2)), note: '2% drop',     tier: 'moderate'     },
               { label: `${shortStrike}`, price: shortStrike,                         note: 'short strike', tier: 'aggressive'   },
               ...(longStrike > 0 ? [{ label: `${longStrike}`, price: longStrike, note: 'max loss', tier: 'toolate' }] : []),
-            ].filter(s => s.price > 0 && s.price <= stock);
+            ].filter(s => s.price > 0 && s.price <= stock)
+             .sort((a, b) => b.price - a.price);
 
             const tierConfig: Record<string, { color: string; badge: string }> = {
               current:      { color: th.textFaint,       badge: ''                   },
