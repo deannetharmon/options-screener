@@ -1756,13 +1756,20 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE, theta working` };
   }
 
-  // IC — identify which side is breached
+  // IC — identify which side is breached using actual stock price vs strike prices
   if (pos.strategy === 'IC') {
     if (breached) {
-      const putSideBreached  = pos.buffer != null && pos.buffer <= 0 && shortPuts.length > 0;
-      const callSideBreached = pos.buffer != null && pos.buffer <= 0 && shortCalls.length > 0;
-      if (putSideBreached)  return { action: 'MANAGE', detail: `Put side breached — consider closing tested leg` };
-      if (callSideBreached) return { action: 'MANAGE', detail: `Call side breached — consider closing tested leg` };
+      const stock = pos.stockPrice;
+      const shortPutStrike  = shortPuts[0]?.strikePrice ?? 0;
+      const shortCallStrike = shortCalls[0]?.strikePrice ?? Infinity;
+      // Determine which leg is actually in the money
+      const putBreached  = stock != null ? stock < shortPutStrike  : pos.buffer != null && pos.buffer <= 0 && shortPuts.length > 0;
+      const callBreached = stock != null ? stock > shortCallStrike : pos.buffer != null && pos.buffer <= 0 && shortCalls.length > 0;
+      const putBuffer    = stock != null && shortPutStrike  > 0 ? ((stock - shortPutStrike)  / stock * 100).toFixed(1) : null;
+      const callBuffer   = stock != null && shortCallStrike < Infinity ? ((shortCallStrike - stock) / stock * 100).toFixed(1) : null;
+      if (putBreached && callBreached) return { action: 'CUT_LOSSES', detail: `Both sides breached — IC is fully in trouble, close immediately` };
+      if (putBreached)  return { action: 'MANAGE', detail: `Put side breached (${shortPutStrike}P, stock $${stock?.toFixed(2)}) — close put spread, leave call side open${callBuffer ? `, call has ${callBuffer}% buffer` : ''}` };
+      if (callBreached) return { action: 'MANAGE', detail: `Call side breached (${shortCallStrike}C, stock $${stock?.toFixed(2)}) — close call spread, leave put side open${putBuffer ? `, put has ${putBuffer}% buffer` : ''}` };
       return { action: 'MANAGE', detail: `Strike breached — close tested side` };
     }
   }
@@ -1793,10 +1800,15 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   if (veryLargeLoss) {
     const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
     const buffer   = pos.buffer ?? 0;
-    if (trendAgainst && ((absDelta != null && absDelta > 0.20) || buffer < 2)) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}%, trend adverse, delta ${absDelta?.toFixed(2) ?? '?'} — thesis broken, exit` };
-    if (trendAgainst) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — delta ${absDelta?.toFixed(2) ?? 'unknown'} manageable but watch closely` };
+    // Trend against + any meaningful exposure = cut. Don't need both delta AND buffer to be bad.
+    if (trendAgainst && ((absDelta != null && absDelta > 0.15) || buffer < 3)) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}%, trend adverse, δ${absDelta?.toFixed(2) ?? '?'} + ${buffer.toFixed(1)}% buffer — thesis broken, exit` };
+    // Trend against but Greeks are still ok — manage, don't panic cut
+    if (trendAgainst && pos.dte > 21) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend — δ${absDelta?.toFixed(2) ?? 'low'} manageable with ${pos.dte} DTE, monitor closely` };
+    if (trendAgainst) return { action: 'CUT_LOSSES', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + adverse trend + only ${pos.dte} DTE — not enough time to recover` };
+    // No adverse trend — evaluate purely on Greeks + DTE
     if ((absDelta != null && absDelta > 0.20) || buffer < 2) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% + exposed Greeks — manage actively` };
-    return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta?.toFixed(2) ?? 'low'} + ${buffer.toFixed(1)}% buffer + ${pos.dte} DTE — theta has room to work` };
+    if (pos.dte < 14) return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with only ${pos.dte} DTE — not enough theta time to recover, manage now` };
+    return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta?.toFixed(2) ?? 'low'}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta has room to work` };
   }
 
   // Short-dated entry: maximize profit, but do not treat ordinary red P/L as a failure.
@@ -1830,10 +1842,16 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
   }
   if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
+  // Mid-loss watch: down 20-50% with tightening buffer but not yet in manage territory
+  if (pnlPct < -20) {
+    const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
+    const buffer   = pos.buffer ?? 999;
+    if (buffer < 4 && pos.dte > 14) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with ${buffer.toFixed(1)}% buffer — theta working but monitor buffer daily` };
+    if ((absDelta != null && absDelta > 0.15) && pos.dte > 21) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with delta ${absDelta.toFixed(2)} — directional exposure growing, watch closely` };
+  }
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
   return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
-}
 
 // Separate function so getRecommendation stays clean — called in PositionCard render
 function getExtendSignal(pos: Position): string | null {
