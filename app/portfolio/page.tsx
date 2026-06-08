@@ -2171,7 +2171,7 @@ Stock price: $${pos.stockPrice?.toFixed(2) ?? 'unknown'}
 Buffer to short strike: ${pos.buffer?.toFixed(1) ?? 'unknown'}%
 IVR: ${pos.ivr ?? 'unknown'} | IV: ${pos.iv ?? 'unknown'}% | HV30: ${pos.hv30 ?? 'unknown'}%
 Theta/day: ${pos.theta?.toFixed(4) ?? 'unknown'} | Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
-GTC working: ${!pos.hasGtc ? 'No — unprotected' : pos.gtcIsStale ? `STALE — limit $${pos.gtcOrderPrice?.toFixed(2)} already below market, will never fill` : 'Yes'}
+GTC working: ${!pos.hasGtc ? 'No — unprotected' : pos.gtcIsStale ? 'STALE — limit already below market, will never fill' : 'Yes'}
 Stop loss: ${pos.stopLossStatus}${pos.stopLossStatus === 'bypassed' ? ` — BYPASSED at $${pos.stopLossPrice?.toFixed(2)}, never filled, UNPROTECTED` : pos.stopLossPrice ? ` @ $${pos.stopLossPrice}` : ''}
 Earnings: ${pos.earningsDate ? `YES — ${pos.earningsDate}` : 'None within expiry'}
 Market time context: ${getMarketTimeContext()}
