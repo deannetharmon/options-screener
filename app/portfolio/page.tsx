@@ -91,7 +91,7 @@ function getWheelCycleForPos(pos: Position): WheelCycle | null {
 function startWheelCycle(pos: Position): WheelCycle {
   const cycles = readWheelCycles();
   const shortLeg = pos.legs.find(l => l.direction === 'Short');
-  const creditPerContract = pos.creditReceived / 100;
+  const creditPerContract = pos.creditPerContract ?? pos.creditReceived / 100;
   const cycle: WheelCycle = {
     id: crypto.randomUUID(),
     symbol: pos.symbol,
@@ -159,6 +159,7 @@ interface Position {
   strategy: string;
   legs: PositionLeg[];
   creditReceived: number;
+  creditPerContract: number;   // creditReceived / (shortQty * 100) — correct for any qty
   currentValue: number | null;
   pnl: number | null;
   pnlPct: number | null;
@@ -1602,6 +1603,10 @@ console.log(`LEG QTY DEBUG: symbol=${l.symbol} quantity=${l['quantity']} directi
     return {
       key, symbol, expDate, dte, strategy, legs: positionLegs,
       creditReceived: Math.abs(creditReceived),
+      creditPerContract: (() => {
+        const shortQty = Math.abs(positionLegs.find(l => l.direction === 'Short')?.quantity ?? 1);
+        return parseFloat((Math.abs(creditReceived) / (shortQty * 100)).toFixed(4));
+      })(),
       currentValue: hasCurrentPrices ? Math.abs(currentValue) : null,
       pnl, pnlPct, targetPrice, profitTarget, hitTarget,
       plOpen: plBySymbol[key] != null ? Math.round(plBySymbol[key] * 100) / 100 : null,
@@ -2218,10 +2223,10 @@ OUTPUT FORMAT — JSON only, nothing else:
 function buildVerdictPrompt(pos: Position, action: EvaluatedAction, detail?: string): string {
   const pnlPct = pos.pnl != null && pos.creditReceived > 0
     ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
-  const creditPerContract = (pos.creditReceived / 100).toFixed(2);
+const creditPerContract = (pos.creditPerContract ?? pos.creditReceived / 100).toFixed(2);
 
   const actionDesc = action === 'EXTEND_PROFIT' && detail
-    ? `EXTEND_PROFIT — moving profit target from current to ${detail}% (new BTC price: $${((pos.creditReceived / 100) * (1 - parseInt(detail) / 100)).toFixed(2)})`
+    ? `EXTEND_PROFIT — moving profit target from current to ${detail}% (new BTC price: $${((pos.creditPerContract ?? pos.creditReceived / 100) * (1 - parseInt(detail) / 100)).toFixed(2)})`
     : action === 'CLOSE_ROLL'
     ? `CLOSE_ROLL — close current position and re-enter next expiry`
     : action === 'TAKE_PROFIT'
@@ -4235,7 +4240,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
   if (!pos.hasGtc) return null;
 
   const currentTargetPct = pos.gtcOrderPrice != null && pos.creditReceived > 0
-    ? Math.round((1 - pos.gtcOrderPrice / (pos.creditReceived / 100)) * 100)
+    ? Math.round((1 - pos.gtcOrderPrice / (pos.creditPerContract ?? pos.creditReceived / 100)) * 100)
     : Math.round(pos.profitTarget * 100);
 
   const options = [55, 60, 65, 70, 75, 80, 85, 90].filter(pct => pct > currentTargetPct);
@@ -4287,7 +4292,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
       if (!orderId) {
         throw new Error('Could not find a working GTC order for this position. It may have already been filled or cancelled. Refresh positions and try again.');
       }
-      const newPrice = parseFloat(((pos.creditReceived / 100) * (1 - targetPct / 100)).toFixed(2));
+const newPrice = parseFloat(((pos.creditPerContract ?? pos.creditReceived / 100) * (1 - targetPct / 100)).toFixed(2));
       await ttPatch(
         `/accounts/${pos.accountNumber}/orders/${orderId}`,
         token,
@@ -4371,7 +4376,7 @@ function ExtendProfitButton({ pos, th }: { pos: Position; th: typeof THEMES[Them
           {/* Target options */}
           <div className="space-y-1">
             {options.map(pct => {
-              const newPrice = ((pos.creditReceived / 100) * (1 - pct / 100)).toFixed(2);
+              const newPrice = ((pos.creditPerContract ?? pos.creditReceived / 100) * (1 - pct / 100)).toFixed(2);
               const isSelected = selectedPct === pct;
               const isStop = verdict?.verdict === 'STOP' && verdict.confidence === 'HIGH';
               return (
@@ -4595,7 +4600,7 @@ OUTPUT FORMAT — JSON only, nothing else:
 }`;
 
 function buildStopGtcPrompt(pos: Position): string {
-  const creditPerContract = pos.creditReceived / 100;
+  const creditPerContract = pos.creditPerContract ?? pos.creditReceived / 100;
   const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
   const currentValuePerContract = pos.currentValue != null ? pos.currentValue / (qty * 100) : null;
   const pnlPct = pos.pnl != null && pos.creditReceived > 0
@@ -4703,7 +4708,7 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
   //   Maximum reasonable stop: 3× credit per contract (beyond that = max loss anyway).
   //   Minimum: current spread value + $0.01
 
-  const creditPerContract = pos.creditReceived / 100;
+  const creditPerContract = pos.creditPerContract ?? pos.creditReceived / 100;
   const qty = pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1;
   // currentValue from pos is total across all contracts × 100
   // Per-contract spread value = currentValue / (qty * 100)
