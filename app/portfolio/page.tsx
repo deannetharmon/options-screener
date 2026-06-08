@@ -335,6 +335,41 @@ interface RollSuggestion {
 // ── Theme ──────────────────────────────────────────────────────────────────
 
 
+// ── Futures Data ───────────────────────────────────────────────────────────
+interface FuturesData {
+  price: number;
+  change: number;
+  changePct: number;
+  bias: 'bullish' | 'bearish' | 'neutral';
+  label: string;
+  fetchedAt: string;
+}
+
+async function fetchFuturesData(): Promise<FuturesData | null> {
+  try {
+    const res = await fetch('/api/chart?symbol=ES%3DF', { cache: 'no-store' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const bars: { c: number; o?: number }[] = data?.bars ?? [];
+    if (bars.length < 2) return null;
+    const latest = bars[bars.length - 1];
+    const prev   = bars[bars.length - 2];
+    const price     = latest.c;
+    const open      = latest.o ?? prev.c;
+    const change    = parseFloat((price - open).toFixed(2));
+    const changePct = parseFloat(((change / open) * 100).toFixed(2));
+    const bias: FuturesData['bias'] = changePct > 0.3 ? 'bullish' : changePct < -0.3 ? 'bearish' : 'neutral';
+    const sign = change >= 0 ? '+' : '';
+    return {
+      price, change, changePct, bias,
+      label: `ES ${price.toLocaleString()} ${sign}${changePct.toFixed(2)}%`,
+      fetchedAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ── Market Hours ───────────────────────────────────────────────────────────
 function isMarketOpen(): boolean {
   const now = new Date();
@@ -1890,7 +1925,7 @@ For portfolio analysis:
 
 Be direct. Be honest. If a position is in trouble, say so. If a rule should be broken, explain why.`;
 
-function buildPositionPrompt(pos: Position, trend: TrendResult | null): string {
+function buildPositionPrompt(pos: Position, trend: TrendResult | null, futures?: FuturesData | null): string {
   const pnlPct = pos.pnl != null && pos.creditReceived > 0 ? ((pos.pnl / pos.creditReceived) * 100).toFixed(1) : 'unknown';
   const ivEdge = pos.iv != null && pos.hv30 != null ? (pos.iv - pos.hv30) : null;
 
@@ -1927,6 +1962,7 @@ TREND ANALYSIS:
 Direction: ${trend?.trend ?? 'unknown'} (confidence: ${trend?.confidence ?? 'unknown'}%)
 Suggested strategy: ${trend?.strategy ?? 'unknown'}
 Reason: ${trend?.reason ?? 'none'}
+ES Futures: ${futures ? `${futures.label} — market bias is ${futures.bias}. Factor this into directional risk for this ${pos.strategy} position.` : 'unavailable'}
 
 Flags: ${[
   pos.needsClose ? '⚠ AT 21 DTE — must close or roll (entered at standard DTE)' : '',
@@ -1940,7 +1976,7 @@ Flags: ${[
 Provide your analysis as JSON only.`;
 }
 
-function buildPortfolioPrompt(positions: Position[]): string {
+function buildPortfolioPrompt(positions: Position[], futures?: FuturesData | null): string {
   const lines = positions.map(p => {
     const pnlPct = p.pnl != null && p.creditReceived > 0 ? ((p.pnl / p.creditReceived) * 100).toFixed(0) : '?';
     return `${p.symbol} ${p.strategy}: DTE ${p.dte}, P&L ${pnlPct}%, buffer ${p.buffer?.toFixed(1) ?? '?'}%, IVR ${p.ivr ?? '?'}, ${p.needsClose ? 'NEEDS CLOSE' : p.hitTarget ? 'TARGET HIT' : 'active'}`;
@@ -1973,6 +2009,11 @@ DTE DISTRIBUTION:
 < 21 DTE: ${positions.filter(p => p.dte < 21).length} positions
 21-30 DTE: ${positions.filter(p => p.dte >= 21 && p.dte <= 30).length} positions
 > 30 DTE: ${positions.filter(p => p.dte > 30).length} positions
+
+MARKET CONTEXT:
+ES Futures: ${futures ? `${futures.label} — bias ${futures.bias}` : 'unavailable'}
+${futures?.bias === 'bearish' ? 'WARNING: Futures bearish — BPS positions face directional headwind. Weight cut/manage recommendations higher.' : ''}
+${futures?.bias === 'bullish' ? 'NOTE: Futures bullish — BPS positions have tailwind. Factor into urgency of cut recommendations.' : ''}
 
 Provide portfolio-level analysis as JSON only.`;
 }
@@ -2174,8 +2215,8 @@ async function analyzePosition(pos: Position, trend: TrendResult | null): Promis
   };
 }
 
-async function analyzePortfolio(positions: Position[]): Promise<PortfolioAnalysis> {
-  const prompt = buildPortfolioPrompt(positions);
+async function analyzePortfolio(positions: Position[], futures?: FuturesData | null): Promise<PortfolioAnalysis> {
+  const prompt = buildPortfolioPrompt(positions, futures);
   const raw = await callAI(prompt);
   const parsed = JSON.parse(raw);
   return {
@@ -6251,15 +6292,24 @@ export default function PortfolioPage() {
   const [dryRunMode, setDryRunMode] = useState<boolean>(isDryRun);
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
   const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
+  const [futures, setFutures] = useState<FuturesData | null>(null);
 
   // Trigger weekly behavior summarization silently on load
   useEffect(() => { summarizeBehaviorProfile().catch(() => {}); }, []);
+
+  // Fetch ES futures on load and refresh every 5 minutes
+  useEffect(() => {
+    const load = () => fetchFuturesData().then(f => { if (f) setFutures(f); }).catch(() => {});
+    load();
+    const interval = setInterval(load, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleAnalyzePortfolio = async () => {
     if (positions.length === 0) return;
     setPortfolioAnalysisLoading(true);
     try {
-      const result = await analyzePortfolio(positions);
+const result = await analyzePortfolio(positions, futures ?? undefined);
       setPortfolioAnalysis(result);
     } catch (e: any) {
       setPortfolioAnalysis({ loading: false, error: e.message, netDelta: null, dominantRisk: '', sectorConcentration: [], thetaYield: '', topRisks: [], priorityActions: [], marketContext: '', summary: '', generatedAt: new Date().toISOString() });
@@ -6329,6 +6379,16 @@ export default function PortfolioPage() {
         </div>
         <div className="flex items-center gap-3">
           <span className={`text-[10px] font-bold ${marketStatus.open ? 'text-emerald-400' : 'text-yellow-400'}`}>{marketStatus.label}</span>
+          {futures && (
+            <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded border text-[10px] font-bold ${
+              futures.bias === 'bullish' ? 'border-emerald-700 text-emerald-400 bg-emerald-500/8' :
+              futures.bias === 'bearish' ? 'border-red-700 text-red-400 bg-red-500/8' :
+              'border-slate-700 text-slate-400'
+            }`}>
+              <span>{futures.bias === 'bullish' ? '▲' : futures.bias === 'bearish' ? '▼' : '◆'}</span>
+              <span style={{ fontFamily: "'DM Mono', monospace" }}>{futures.label}</span>
+            </div>
+          )}
           {lastRefresh && <span className="text-[10px] text-white/30">Updated {lastRefresh.toLocaleTimeString()}</span>}
           {/* Dry Run toggle — always visible */}
           <button
