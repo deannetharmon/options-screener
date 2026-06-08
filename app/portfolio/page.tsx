@@ -1722,6 +1722,54 @@ async function loadPositions(): Promise<Position[]> {
   return positions;
 }
 
+// ── Theta/Delta Crossover ──────────────────────────────────────────────────
+// Returns how many underlying points can move per day before delta overtakes theta.
+// When this number is small relative to normal daily range, delta is winning.
+interface ThetaDeltaRatio {
+  breakEvenMove: number;        // underlying points/day theta can absorb
+  status: 'theta_winning' | 'contested' | 'delta_winning';
+  label: string;                // human-readable status
+  dailyThetaDollars: number;    // $ earned per day from theta
+}
+
+function computeThetaDeltaRatio(pos: Position): ThetaDeltaRatio | null {
+  const theta = pos.theta;
+  const delta = pos.netDelta;
+  const stock = pos.stockPrice;
+  if (theta == null || delta == null || stock == null) return null;
+  if (Math.abs(delta) < 0.001) return null; // effectively zero delta
+
+  // Daily theta in dollars (theta is per-share, × 100 shares per contract × qty)
+  const shortQty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
+  const dailyThetaDollars = Math.abs(theta) * 100 * shortQty;
+
+  // Dollar move per 1-point underlying move = |delta| × 100 × qty
+  const dollarMovePerPoint = Math.abs(delta) * 100 * shortQty;
+
+  // Break-even: how many underlying points of adverse move theta can absorb in one day
+  const breakEvenMove = parseFloat((dailyThetaDollars / dollarMovePerPoint).toFixed(1));
+
+  // Average daily range heuristic — SPX ~40pts, stocks ~2-3%
+  const isIndex = ['SPX', 'NDX', 'RUT', 'VIX'].includes(pos.symbol.toUpperCase());
+  const avgDailyRange = isIndex ? 40 : stock * 0.02; // 2% for stocks
+
+  let status: ThetaDeltaRatio['status'];
+  let label: string;
+
+  if (breakEvenMove > avgDailyRange * 1.5) {
+    status = 'theta_winning';
+    label = 'Theta winning';
+  } else if (breakEvenMove > avgDailyRange * 0.5) {
+    status = 'contested';
+    label = 'Contested';
+  } else {
+    status = 'delta_winning';
+    label = 'Delta winning';
+  }
+
+  return { breakEvenMove, status, label, dailyThetaDollars };
+}
+
 // ── Recommendation Engine ──────────────────────────────────────────────────
 interface Recommendation { action: ActionType; detail: string; }
 
@@ -1757,6 +1805,9 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && shortQty > 0
     ? pos.currentValue >= (pos.stopLossPrice * 100 * shortQty)
     : false;
+  const tdr = computeThetaDeltaRatio(pos);
+  const deltaWinning = tdr?.status === 'delta_winning';
+  const thetaWinning = tdr?.status === 'theta_winning';
 
   // needsClose only fires for standard entries (entryDte > 21) — short-dated entries skip this.
   // Risk-adjust the recommendation: low delta + wide buffer = theta still dominates, watch instead of close.
@@ -1890,9 +1941,13 @@ if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pn
     if (buffer < 4 && pos.dte > 14) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with ${buffer.toFixed(1)}% buffer — theta working but monitor buffer daily` };
     if ((absDelta != null && absDelta > 0.15) && pos.dte > 21) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with delta ${absDelta.toFixed(2)} — directional exposure growing, watch closely` };
   }
-  if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
+if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
+  // Delta winning = time is working against you, not for you — upgrade urgency
+  if (pnlPct < 0 && deltaWinning)    return { action: 'MANAGE', detail: `Delta overtaking theta — time is not your friend here, monitor closely` };
+  if (trendAligns && thetaWinning)   return { action: 'HOLD', detail: `Trend confirms + theta winning — ${pnlPct.toFixed(0)}% profit, let it work` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
-return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
+  if (thetaWinning && pnlPct >= 0)   return { action: 'HOLD', detail: `Theta winning — ${pnlPct.toFixed(0)}% profit, decay working in your favor` };
+  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
 }
 
 // Separate function so getRecommendation stays clean — called in PositionCard render
@@ -2008,6 +2063,15 @@ Beta: ${pos.beta ?? 'unknown'}
 GREEKS (net position):
 Theta: ${pos.theta?.toFixed(4) ?? 'unknown'} (daily decay)
 Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
+Theta/Delta crossover: ${(() => {
+  const tdr = computeThetaDeltaRatio(pos);
+  if (!tdr) return 'unavailable';
+  return tdr.status === 'theta_winning'
+    ? 'THETA WINNING — theta earns $' + tdr.dailyThetaDollars.toFixed(2) + '/day, can absorb ' + tdr.breakEvenMove + '-point adverse move. Time is your ally.'
+    : tdr.status === 'contested'
+    ? 'CONTESTED — theta earns $' + tdr.dailyThetaDollars.toFixed(2) + '/day, break-even at ' + tdr.breakEvenMove + ' points. Normal daily moves can erase theta gains.'
+    : 'DELTA WINNING — only ' + tdr.breakEvenMove + ' points of adverse move before delta overtakes theta. Time is working AGAINST this position. Do not rely on theta to recover losses.';
+})()}
 
 OPERATIONAL STATUS:
 GTC order: ${!pos.hasGtc ? 'No — unprotected' : pos.gtcIsStale ? 'STALE — GTC limit is below current spread value, will never fill, position unprotected' : 'Yes — profit target working'}
@@ -5825,6 +5889,21 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               <p className={`text-xs font-bold ${pos.ivr != null ? (pos.ivr >= 30 ? 'text-emerald-400' : 'text-yellow-400') : th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                 {pos.ivr ?? '—'}
               </p>
+              {/* Theta/Delta crossover indicator */}
+              {(() => {
+                const tdr = computeThetaDeltaRatio(pos);
+                if (!tdr) return null;
+                const color = tdr.status === 'theta_winning' ? 'text-emerald-400' : tdr.status === 'contested' ? 'text-yellow-400' : 'text-red-400';
+                const icon  = tdr.status === 'theta_winning' ? '▲ θ' : tdr.status === 'contested' ? '◆ θ/δ' : '▼ δ';
+                return (
+                  <div className="mt-1">
+                    <p className={`text-[8px] font-bold ${color}`}>{icon}</p>
+                    <p className={`text-[8px] ${th.textFaint}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                      {tdr.breakEvenMove}pt/day
+                    </p>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* ── ORDERS ─────────────────────────────── */}
