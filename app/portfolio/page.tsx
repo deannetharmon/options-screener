@@ -4741,14 +4741,22 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
         console.log('CANCEL EXISTING GTC ORDER:', pos.gtcOrderId);
         const complexId = (pos as any).gtcComplexOrderId;
         console.log(`PLACE_GTC CANCEL: orderId=${pos.gtcOrderId} complexId=${complexId}`);
-        if (complexId) {
-          console.log(`Cancelling complex order ${complexId}`);
-          await ttDelete(`/accounts/${pos.accountNumber}/complex-orders/${complexId}`, token);
-        } else {
-          console.log(`Cancelling simple order ${pos.gtcOrderId}`);
-          await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+        try {
+          if (complexId) {
+            console.log(`Cancelling complex order ${complexId}`);
+            await ttDelete(`/accounts/${pos.accountNumber}/complex-orders/${complexId}`, token);
+          } else {
+            console.log(`Cancelling simple order ${pos.gtcOrderId}`);
+            await ttDelete(`/accounts/${pos.accountNumber}/orders/${pos.gtcOrderId}`, token);
+          }
+          console.log(`Cancel complete`);
+        } catch (cancelErr: any) {
+          // Cancel may fail if order is already in terminal state or was a complex order
+          // that needs manual cancellation. Log and proceed — TastyTrade will reject the
+          // new OCO if the old order is still truly active, giving a clear error.
+          console.warn(`Cancel failed for ${pos.symbol} order ${pos.gtcOrderId}:`, cancelErr.message);
+          setPhase('Cancel failed — attempting OCO placement anyway...');
         }
-        console.log(`Cancel complete, waiting 500ms...`);
         await new Promise(r => setTimeout(r, 500));
 
         setPhase('Placing OCO order...');
