@@ -1647,6 +1647,16 @@ async function loadPositions(): Promise<Position[]> {
 // ── Recommendation Engine ──────────────────────────────────────────────────
 interface Recommendation { action: ActionType; detail: string; }
 
+// Classifies risk of holding past 21 DTE based on delta and buffer.
+// Blanket CLOSE_ROLL only applies to high-risk profiles; low/medium get WATCH.
+function classify21DteRisk(pos: Position): 'low' | 'medium' | 'high' {
+  const absDelta = Math.abs(pos.netDelta ?? 0.30);
+  const buffer   = pos.buffer ?? 0;
+  if (absDelta < 0.10 && buffer > 5)  return 'low';
+  if (absDelta < 0.15 && buffer > 3)  return 'medium';
+  return 'high';
+}
+
 // Returns true when this was intentionally entered as a short-dated trade
 function isShortDateEntry(pos: Position): boolean {
   return pos.entryDte <= 21;
@@ -1670,9 +1680,15 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     ? pos.currentValue >= (pos.stopLossPrice * 100 * shortQty)
     : false;
 
-  // needsClose only fires for standard entries (entryDte > 21) — short-dated entries skip this
-  if (pos.needsClose && pnlPct >= 0) return { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
-  if (pos.needsClose && pnlPct < 0)  return { action: 'MANAGE', detail: `${pos.dte} DTE with loss — review close/roll, don't auto-cut` };
+  // needsClose only fires for standard entries (entryDte > 21) — short-dated entries skip this.
+  // Risk-adjust the recommendation: low delta + wide buffer = theta still dominates, watch instead of close.
+  if (pos.needsClose) {
+    const risk = classify21DteRisk(pos);
+    if (pnlPct < 0) return { action: 'MANAGE', detail: `${pos.dte} DTE with loss — review close/roll, don't auto-cut` };
+    if (risk === 'low')    return { action: 'WATCH',      detail: `${pos.dte} DTE but δ${pos.netDelta?.toFixed(2)} + ${pos.buffer?.toFixed(1)}% buffer — theta dominates, monitor daily` };
+    if (risk === 'medium') return { action: 'WATCH',      detail: `${pos.dte} DTE — low delta but tightening, watch buffer closely` };
+    return                        { action: 'CLOSE_ROLL', detail: `${pos.dte} DTE — close or roll to next expiry` };
+  }
 
   // CSP — assignment-aware breach handling
   if (pos.strategy === 'PUT') {
@@ -5231,12 +5247,27 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
   return (
     <div className={`border ${borderClass} ${th.card} rounded-lg transition-all`}>
-      {pos.needsClose && (
-        <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
-          <span className="text-red-400 text-xs">⚠</span>
-          <span className="text-xs text-red-400 font-bold tracking-wider">CLOSE NOW — {pos.dte} DTE</span>
-        </div>
-      )}
+      {pos.needsClose && (() => {
+        const risk = classify21DteRisk(pos);
+        if (risk === 'high') return (
+          <div className="bg-red-500/10 border-b border-red-500/40 px-4 py-1.5 flex items-center gap-2">
+            <span className="text-red-400 text-xs">⚠</span>
+            <span className="text-xs text-red-400 font-bold tracking-wider">CLOSE NOW — {pos.dte} DTE</span>
+          </div>
+        );
+        if (risk === 'medium') return (
+          <div className="bg-yellow-500/10 border-b border-yellow-500/30 px-4 py-1.5 flex items-center gap-2">
+            <span className="text-yellow-400 text-xs">⚠</span>
+            <span className="text-xs text-yellow-400 font-bold tracking-wider">WATCH — {pos.dte} DTE · low delta, monitor buffer daily</span>
+          </div>
+        );
+        return (
+          <div className="bg-blue-500/10 border-b border-blue-500/30 px-4 py-1.5 flex items-center gap-2">
+            <span className="text-blue-400 text-xs">◦</span>
+            <span className="text-xs text-blue-400 font-bold tracking-wider">THETA WORKING — {pos.dte} DTE · δ{pos.netDelta?.toFixed(2)}, {pos.buffer?.toFixed(1)}% buffer, consider holding</span>
+          </div>
+        );
+      })()}
       {!pos.needsClose && isShortDateEntry(pos) && (
         <div className="bg-purple-500/10 border-b border-purple-500/30 px-4 py-1.5 flex items-center gap-2">
           <span className="text-purple-400 text-xs">⚡</span>
