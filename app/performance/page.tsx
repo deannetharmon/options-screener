@@ -1,4 +1,5 @@
 // path: app/performance/page.tsx
+
 'use client';
 import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, getSavedAccent, applyAccent, injectAccentStyle } from '@/lib/theme';
 
