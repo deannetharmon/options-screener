@@ -1774,11 +1774,12 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
 
   // Bypassed stop: position is unprotected AND loss is meaningful — act now
   if (pos.stopLossStatus === 'bypassed' && pnlPct < -50) {
-    const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
+    const absDelta = Math.abs(pos.netDelta ?? 0.30);
     const buffer   = pos.buffer ?? 0;
-    // Only CUT if delta is confirmed high OR buffer is critically thin — never assume worst if delta unknown
-    if ((absDelta != null && absDelta > 0.20) || buffer < 2) return { action: 'CUT_LOSSES', detail: `Stop bypassed + delta ${absDelta?.toFixed(2) ?? '?'} + ${buffer.toFixed(1)}% buffer — unprotected, exit now` };
-    return { action: 'MANAGE', detail: `Stop bypassed — set a new stop immediately. Delta ${absDelta?.toFixed(2) ?? 'unknown'} is manageable, then hold` };
+    const dteFactor = pos.dte > 25 ? 1 : 2; // tighter buffer threshold when close to expiry
+    if (absDelta > 0.20 || buffer < dteFactor) return { action: 'CUT_LOSSES', detail: `Stop bypassed + delta ${absDelta.toFixed(2)} + ${buffer.toFixed(1)}% buffer — unprotected, exit now` };
+    if (absDelta > 0.10 || buffer < 3) return { action: 'MANAGE', detail: `Stop bypassed — set a new stop immediately. Delta ${absDelta.toFixed(2)}, ${buffer.toFixed(1)}% buffer` };
+    return { action: 'WATCH', detail: `Stop bypassed but δ${absDelta.toFixed(2)}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — set a new stop, then hold` };
   }
 
   if (stopLossBreached) {
