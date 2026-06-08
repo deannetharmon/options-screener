@@ -3521,7 +3521,7 @@ function ChatThread({ initialContext, systemPrompt, placeholder, th }: {
     setInput('');
     setError(null);
     const parts: ChatContentPart[] = [];
-    if (pendingImage) parts.push({ type: 'image', source: { type: 'base64', media_type: pendingImage.mediaType, data: pendingImage.base64 } });
+    if (pendingImage) parts.push({ type: 'image_url', image_url: { url: `data:${pendingImage.mediaType};base64,${pendingImage.base64}` } } as any);
     if (text) parts.push({ type: 'text', text });
     const userMsg: ChatMessage = { role: 'user', content: parts.length === 1 && !pendingImage ? text : parts };
     setPendingImage(null);
