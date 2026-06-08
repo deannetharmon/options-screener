@@ -4670,6 +4670,25 @@ async function fetchStopGtcSuggestion(pos: Position): Promise<StopGtcSuggestion>
   return JSON.parse(text) as StopGtcSuggestion;
 }
 
+// Estimates spread value at a given underlying price using a linear delta approximation.
+// Not Black-Scholes exact but directionally correct for the stop-setting decision.
+function estimateSpreadAtPrice(
+  pos: Position,
+  targetPrice: number,
+  currentSpreadValue: number
+): number {
+  const currentStock = pos.stockPrice;
+  if (currentStock == null || currentStock === 0) return currentSpreadValue;
+  const absDelta = Math.abs(pos.netDelta ?? 0.10);
+  const qty = Math.abs(pos.legs.find(l => l.direction === 'Short')?.quantity ?? 1);
+  const priceDiff = currentStock - targetPrice; // positive = stock fell
+  // For a BPS: stock falls → spread value increases by ~delta × move × 100 × qty
+  const spreadChange = absDelta * priceDiff * 100 * qty;
+  const estimated = currentSpreadValue + spreadChange;
+  // Per-contract value
+  return Math.max(0.01, parseFloat((estimated / (qty * 100)).toFixed(2)));
+}
+
 function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   // ── Price bounds ──────────────────────────────────────────────────────────
   // All valid GTC and stop prices must respect these hard bounds derived from
@@ -4726,6 +4745,32 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
 
   // Confirmation step before destructive OCO replace
   const [confirming, setConfirming] = useState(false);
+
+  // Price scenario table — shows spread value at key underlying prices
+  const priceScenarios = (() => {
+    const stock = pos.stockPrice;
+    const liveVal = (livePrice ?? liveValuePerContract);
+    if (stock == null || liveVal == null) return null;
+    const shortLeg = pos.legs.find(l => l.direction === 'Short');
+    const shortStrike = shortLeg?.strikePrice ?? 0;
+    const longLeg = pos.legs.find(l => l.direction === 'Long');
+    const longStrike = longLeg?.strikePrice ?? 0;
+    const isIndex = ['SPX', 'NDX', 'RUT', 'VIX'].includes(pos.symbol.toUpperCase());
+    // Key price levels to show
+    const levels = [
+      { label: 'Now', price: stock, note: 'current' },
+      { label: isIndex ? `-${Math.round(stock * 0.01)}pts` : `-1%`,  price: parseFloat((stock * 0.99).toFixed(2)), note: '1% drop' },
+      { label: isIndex ? `-${Math.round(stock * 0.02)}pts` : `-2%`,  price: parseFloat((stock * 0.98).toFixed(2)), note: '2% drop' },
+      { label: `Short ${shortStrike}`, price: shortStrike, note: 'breach level' },
+      ...(longStrike > 0 ? [{ label: `Long ${longStrike}`, price: longStrike, note: 'max loss' }] : []),
+    ].filter(l => l.price > 0 && l.price <= stock); // only show levels at or below current
+    return levels.map(l => ({
+      ...l,
+      spreadValue: l.label === 'Now'
+        ? liveVal
+        : estimateSpreadAtPrice(pos, l.price, liveVal * (pos.legs.find(ld => ld.direction === 'Short')?.quantity ?? 1) * 100),
+    }));
+  })();
 
   // ── Linked stop price ↔ pct setters ──────────────────────────────────────
   // Entering a $ amount updates the % display; entering a % updates the $ amount.
@@ -5119,6 +5164,68 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
 
           {livePriceError && (
             <p className="text-[9px] text-yellow-400 mb-2">⚠ {livePriceError}</p>
+          )}
+
+          {/* Price → Spread value scenario table */}
+          {priceScenarios && priceScenarios.length > 1 && (
+            <div className={`mb-3 rounded-lg border ${th.borderLight} overflow-hidden`}>
+              <div className={`px-3 py-2 ${th.card} flex items-center justify-between`}>
+                <span className={`text-[9px] font-bold uppercase tracking-widest ${th.textFaint}`}>
+                  If {pos.symbol} falls to... → spread becomes
+                </span>
+                <span className={`text-[9px] ${th.textFaint}`}>tap row to set stop</span>
+              </div>
+              <div className="divide-y divide-white/5">
+                {priceScenarios.map((s, i) => {
+                  const isNow = s.label === 'Now';
+                  const isBreach = s.note === 'breach level';
+                  const isMaxLoss = s.note === 'max loss';
+                  const rowColor = isNow ? th.textFaint : isBreach ? 'text-orange-400' : isMaxLoss ? 'text-red-400' : th.textMuted;
+                  const canSetStop = !isNow && s.spreadValue > (livePrice ?? liveValuePerContract ?? 0);
+                  return (
+                    <div
+                      key={i}
+                      onClick={() => {
+                        if (!canSetStop) return;
+                        const val = s.spreadValue.toFixed(2);
+                        setStopFromPrice(val);
+                      }}
+                      className={`flex items-center justify-between px-3 py-2 ${canSetStop ? 'cursor-pointer hover:bg-white/5 transition-colors' : ''}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold ${rowColor}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                          {pos.symbol} {s.price.toLocaleString()}
+                        </span>
+                        <span className={`text-[9px] ${th.textFaint}`}>{s.note}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold ${rowColor}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                          ${s.spreadValue.toFixed(2)}/ct
+                        </span>
+                        {canSetStop && (
+                          <span className="text-[9px] text-orange-400 font-bold">← set stop</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {/* Quick-set: stop at breach */}
+              {(() => {
+                const breachScenario = priceScenarios.find(s => s.note === 'breach level');
+                if (!breachScenario) return null;
+                return (
+                  <div className={`px-3 py-2 border-t border-orange-500/20 bg-orange-500/5`}>
+                    <button
+                      onClick={() => setStopFromPrice(breachScenario.spreadValue.toFixed(2))}
+                      className="text-[9px] font-bold text-orange-400 hover:text-orange-300 transition-colors"
+                    >
+                      ⚡ Quick-set: stop if {pos.symbol} hits short strike ({pos.legs.find(l => l.direction === 'Short')?.strikePrice}) → ${breachScenario.spreadValue.toFixed(2)}/ct
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
           )}
 
           {/* OCO info */}
