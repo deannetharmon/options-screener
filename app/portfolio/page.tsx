@@ -5242,6 +5242,40 @@ function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme
                           <span className={`text-[10px] font-bold ${cfg.color}`} style={{ fontFamily: "'DM Mono', monospace" }}>
                             ${spreadVal.toFixed(2)}/ct
                           </span>
+                          {canSet && <span className={`text-[9px] ${th.textFaint}`}>← tap</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Recommended stop */}
+                {(() => {
+                  const conservative = scenarios.find(s => s.tier === 'conservative');
+                  if (!conservative) return null;
+                  const spreadVal = estimateSpreadAtPrice(pos, conservative.price, live);
+                  return (
+                    <button
+                      onClick={() => setStopFromPrice(spreadVal.toFixed(2))}
+                      className="w-full px-3 py-2 border-t border-emerald-700/30 bg-emerald-500/5 text-[9px] font-bold text-emerald-400 hover:bg-emerald-500/10 transition-colors text-left"
+                    >
+                      ✓ Recommended: stop before breach → ${spreadVal.toFixed(2)}/ct
+                    </button>
+                  );
+                })()}
+
+                {stopTooLate && (
+                  <div className="px-3 py-2 border-t border-red-500/30 bg-red-500/5">
+                    <p className="text-[9px] text-red-400 font-bold">
+                      ⚠ Stop ${stopVal.toFixed(2)} fires AFTER breach (${breachSpread.toFixed(2)}) — consider tighter.
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* OCO info */}
           {needsOco && (
             <div className="mb-3 p-2.5 rounded-lg border border-yellow-600/40 bg-yellow-500/5">
               <p className="text-[10px] text-yellow-300 leading-relaxed">
