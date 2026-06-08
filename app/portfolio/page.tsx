@@ -4689,19 +4689,6 @@ function estimateSpreadAtPrice(
   return Math.max(0.01, parseFloat((estimated / (qty * 100)).toFixed(2)));
 }
 
-function estimateSpreadAtPrice(
-  pos: Position,
-  targetPrice: number,
-  currentSpreadPerContract: number
-): number {
-  const currentStock = pos.stockPrice;
-  if (currentStock == null || currentStock === 0) return currentSpreadPerContract;
-  const absDelta = Math.abs(pos.netDelta ?? 0.10);
-  const priceDiff = currentStock - targetPrice;
-  const spreadChange = absDelta * priceDiff;
-  return Math.max(0.01, parseFloat((currentSpreadPerContract + spreadChange).toFixed(2)));
-}
-
 function SetStopLossButton({ pos, th }: { pos: Position; th: typeof THEMES[Theme] }) {
   // ── Price bounds ──────────────────────────────────────────────────────────
   // All valid GTC and stop prices must respect these hard bounds derived from
