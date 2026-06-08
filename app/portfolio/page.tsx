@@ -2004,8 +2004,8 @@ Theta: ${pos.theta?.toFixed(4) ?? 'unknown'} (daily decay)
 Gamma: ${pos.gamma?.toFixed(4) ?? 'unknown'}
 
 OPERATIONAL STATUS:
-GTC order: ${!pos.hasGtc ? 'No — unprotected' : pos.gtcIsStale ? 'STALE — GTC limit is below current spread value, order will never fill, position effectively unprotected' : 'Yes — profit target working'}
-Stop loss: ${pos.stopLossStatus}${pos.stopLossStatus === 'bypassed' ? ' — STOP WAS BYPASSED. Order gapped past and never filled. Position is currently unprotected. Recommend immediate manual intervention.' : pos.stopLossPrice ? ' @ $' + pos.stopLossPrice.toFixed(2) : ''}
+GTC order: ${!pos.hasGtc ? 'No — unprotected' : pos.gtcIsStale ? 'STALE — GTC limit is below current spread value, will never fill, position unprotected' : 'Yes — profit target working'}
+Stop loss: ${pos.stopLossStatus}${pos.stopLossStatus === 'bypassed' ? ' — STOP WAS BYPASSED, never filled, position unprotected' : pos.stopLossPrice ? ' @ $' + pos.stopLossPrice.toFixed(2) : ''}
 Earnings within expiry: ${pos.earningsDate ? 'Yes — ' + pos.earningsDate : 'No'}
 Market time context: ${getMarketTimeContext()}
 
