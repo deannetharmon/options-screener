@@ -1929,11 +1929,11 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
     if (pos.dte > 25 && (absDelta == null || absDelta < 0.10) && buffer > 3) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% but δ${absDelta?.toFixed(2) ?? 'low'}, ${buffer.toFixed(1)}% buffer, ${pos.dte} DTE — theta working, hold and monitor` };
     return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% — manage actively` };
   }
-if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
+  if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% profit` };
   // Gamma-aware late take-profit: high capture + near expiry = don't wait for formal target
   if (pnlPct >= 70 && pos.dte <= 10) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% captured with only ${pos.dte} DTE — gamma risk rising fast, lock it in` };
   if (pnlPct >= 80 && pos.dte <= 14) return { action: 'TAKE_PROFIT', detail: `${pnlPct.toFixed(0)}% captured, ${pos.dte} DTE — leaving very little on the table, close and redeploy` };
-  
+
   // Mid-loss watch: down 20-50% with tightening buffer but not yet in manage territory
   if (pnlPct < -20) {
     const absDelta = pos.netDelta != null ? Math.abs(pos.netDelta) : null;
@@ -1941,10 +1941,23 @@ if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pn
     if (buffer < 4 && pos.dte > 14) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with ${buffer.toFixed(1)}% buffer — theta working but monitor buffer daily` };
     if ((absDelta != null && absDelta > 0.15) && pos.dte > 21) return { action: 'WATCH', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with delta ${absDelta.toFixed(2)} — directional exposure growing, watch closely` };
   }
-if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
-  // Delta winning = time is working against you, not for you — upgrade urgency
-  if (pnlPct < 0 && deltaWinning)    return { action: 'MANAGE', detail: `Delta overtaking theta — time is not your friend here, monitor closely` };
-  if (trendAligns && thetaWinning)   return { action: 'HOLD', detail: `Trend confirms + theta winning — ${pnlPct.toFixed(0)}% profit, let it work` };
+  if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
+
+  // Theta/delta crossover — three distinct cases
+  const tdr = computeThetaDeltaRatio(pos);
+  const deltaWinning = tdr?.status === 'delta_winning';
+  const thetaWinning = tdr?.status === 'theta_winning';
+
+  if (deltaWinning) {
+    // Case 1: delta winning + loss + meaningful DTE — time is working against you
+    if (pnlPct < 0 && pos.dte > 14) return { action: 'MANAGE', detail: `Delta overtaking theta (${tdr!.breakEvenMove}pt break-even/day) — time is not your ally, manage actively` };
+    // Case 2: delta winning + profitable — protect gains before they erode
+    if (pnlPct >= 0) return { action: 'WATCH', detail: `Delta winning vs theta — protect ${pnlPct.toFixed(0)}% profit, consider closing before it erodes` };
+    // Case 3: delta winning + loss + near expiry — theta too weak to help
+    return { action: 'MANAGE', detail: `Delta winning at ${pos.dte} DTE — theta too weak to recover this loss, manage now` };
+  }
+
+  if (trendAligns && thetaWinning)   return { action: 'HOLD', detail: `Trend confirms + theta winning (${tdr!.breakEvenMove}pt/day) — ${pnlPct.toFixed(0)}% profit, let it work` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
   if (thetaWinning && pnlPct >= 0)   return { action: 'HOLD', detail: `Theta winning — ${pnlPct.toFixed(0)}% profit, decay working in your favor` };
   return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
