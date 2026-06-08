@@ -1887,7 +1887,8 @@ if (pnlPct >= targetPct)           return { action: 'TAKE_PROFIT', detail: `${pn
   }
   if (pnlPct < 0 && trendAgainst)    return { action: 'MANAGE', detail: `Down ${Math.abs(pnlPct).toFixed(0)}% with adverse trend` };
   if (trendAligns)                   return { action: 'HOLD', detail: `Trend confirms ${pos.strategy} — ${pnlPct.toFixed(0)}% profit` };
-  return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
+return { action: 'HOLD', detail: `${pnlPct.toFixed(0)}% profit — ${pos.dte} DTE remaining` };
+}
 
 // Separate function so getRecommendation stays clean — called in PositionCard render
 function getExtendSignal(pos: Position): string | null {
