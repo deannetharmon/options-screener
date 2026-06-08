@@ -2852,8 +2852,17 @@ Assess in 4-5 sentences: (1) explicitly state close-only cost vs net roll cost a
                         )}
                       </div>
                       <div className="text-right shrink-0 space-y-1 min-w-[140px]">
+                        {/* Live spread value — shown prominently so user can sanity-check limit */}
+                        {item.freshPerContract != null && (
+                          <div className="flex items-center justify-end gap-1 mb-1">
+                            <span className={`text-[9px] ${th.textFaint}`}>Live spread</span>
+                            <span className="text-[11px] font-bold text-blue-300" style={{ fontFamily: "'DM Mono', monospace" }}>
+                              ${item.freshPerContract.toFixed(2)}/ct
+                            </span>
+                          </div>
+                        )}
                         <div className="flex items-center justify-end gap-1">
-                          <span className={`text-[9px} ${th.textFaint}`}>Limit $</span>
+                          <span className={`text-[9px] ${th.textFaint}`}>Limit $</span>
                           <input
                             type="number"
                             step="0.01"
@@ -2865,12 +2874,30 @@ Assess in 4-5 sentences: (1) explicitly state close-only cost vs net roll cost a
                               if (isNaN(v) || v <= 0) setLimitOverrides(prev => { const n = { ...prev }; delete n[item.pos.key]; return n; });
                               else setLimitOverrides(prev => ({ ...prev, [item.pos.key]: v.toFixed(2) }));
                             }}
-                            className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${item.priceError != null ? 'border-red-500/60 text-red-400' : 'border-blue-500/40 text-blue-400'} bg-transparent outline-none focus:ac-border`}
+                            className={`w-20 text-xs font-bold text-right px-1.5 py-0.5 rounded border ${
+                              item.freshPerContract != null && parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2)) < item.freshPerContract * 0.5
+                                ? 'border-orange-500/60 text-orange-400'  // limit looks suspiciously low vs live
+                                : item.priceError != null
+                                ? 'border-red-500/60 text-red-400'
+                                : 'border-blue-500/40 text-blue-400'
+                            } bg-transparent outline-none focus:ac-border`}
                             style={{ fontFamily: "'DM Mono', monospace" }}
                           />
                         </div>
+                        {/* Warn if limit is far below live spread value */}
+                        {item.freshPerContract != null && (() => {
+                          const enteredLimit = parseFloat(limitOverrides[item.pos.key] ?? item.limitPrice.toFixed(2));
+                          if (enteredLimit < item.freshPerContract * 0.5) {
+                            return (
+                              <p className="text-[9px] text-orange-400 font-bold">
+                                ⚠ limit far below live ${item.freshPerContract.toFixed(2)}
+                              </p>
+                            );
+                          }
+                          return null;
+                        })()}
                         {item.estPnl != null && (
-                          <p className={`text-[10px} font-bold ${item.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    <p className={`text-[10px} font-bold ${item.estPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {item.estPnl >= 0 ? '+' : ''}${item.estPnl.toFixed(2)}
                           </p>
                         )}
