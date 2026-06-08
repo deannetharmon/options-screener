@@ -1802,9 +1802,6 @@ function getRecommendation(pos: Position, trend: TrendResult | null): Recommenda
   const stopLossBreached = pos.stopLossPrice != null && pos.currentValue != null && shortQty > 0
     ? pos.currentValue >= (pos.stopLossPrice * 100 * shortQty)
     : false;
-  const tdr = computeThetaDeltaRatio(pos);
-  const deltaWinning = tdr?.status === 'delta_winning';
-  const thetaWinning = tdr?.status === 'theta_winning';
 
   // needsClose only fires for standard entries (entryDte > 21) — short-dated entries skip this.
   // Risk-adjust the recommendation: low delta + wide buffer = theta still dominates, watch instead of close.
