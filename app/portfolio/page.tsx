@@ -333,9 +333,6 @@ interface RollSuggestion {
   meetsBidAsk: boolean;         // bid-ask <= $0.10 on each leg
 }
 
-// ── Theme ──────────────────────────────────────────────────────────────────
-
-
 // ── Futures Data ───────────────────────────────────────────────────────────
 interface FuturesData {
   price: number;
