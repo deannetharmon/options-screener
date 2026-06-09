@@ -1642,14 +1642,15 @@ function runChecklistAllExpirations(
   symbol: string, strategy: 'BPS' | 'BCS' | 'IC',
   metrics: any, chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean },
   price: number | null, sRules: RulesType, trendResult: TrendResult | undefined,
-  sLabel: string | undefined, eRules: RulesType, eLabel: string | undefined
+  sLabel: string | undefined, eRules: RulesType, eLabel: string | undefined,
+  strictOnly = false
 ): ScreenResult[] {
   const validExpirations = chainData.expirations.filter(exp => daysUntil(exp) >= 7);
   const results: ScreenResult[] = [];
   for (const exp of validExpirations) {
     try {
       const singleExpChainData = { ...chainData, expirations: [exp] };
-      const result = runChecklist(symbol, strategy, metrics, singleExpChainData, price, sRules, trendResult, sLabel, eRules, eLabel, true);
+      const result = runChecklist(symbol, strategy, metrics, singleExpChainData, price, sRules, trendResult, sLabel, eRules, eLabel, strictOnly);
       if (result.bestCandidate) results.push(result);
     } catch {}
   }
@@ -5335,7 +5336,7 @@ export default function Home() {
           for (const s of strategiesToScan) {
             scanCache.push({ symbol, strategy: s, metrics, chainData, price, trendResult });
             if (isRankMode) {
-              screenResults.push(...runChecklistAllExpirations(symbol, s, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
+              screenResults.push(...runChecklistAllExpirations(symbol, s, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel, false));
             } else {
               screenResults.push(runChecklist(symbol, s, metrics, chainData, price, sRules, trendResult, sLabel, eRules, eLabel));
             }
