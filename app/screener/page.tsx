@@ -4905,9 +4905,11 @@ async function runTargetedScan(
         const isEtf = INDEX_TICKERS.has(symbol.toUpperCase());
         // Use real rules but with user-specified DTE range
         const appliedRules: RulesType = { ...(isEtf ? etfRules : rules), DTE_MIN: dteMin, DTE_MAX: dteMax };
-        const chainRules = isRankMode
-          ? { ...getChainRules(isEtfTicker), DTE_MIN: RANK_SCAN_DTE_MIN, DTE_MAX: RANK_SCAN_DTE_MAX }
-          : getChainRules(isEtfTicker);
+        const chainRules = {
+          ...getChainRules(isEtfTicker),
+          DTE_MIN: RANK_SCAN_DTE_MIN,
+          DTE_MAX: RANK_SCAN_DTE_MAX,
+        };
         
         const [chainData, price] = await Promise.all([
           getChain(symbol, token, chainRules),
