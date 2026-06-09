@@ -5543,10 +5543,12 @@ export default function Home() {
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
-            const chainRules = isRankMode
-              ? { ...getChainRules(isEtfTicker), DTE_MIN: RANK_SCAN_DTE_MIN, DTE_MAX: RANK_SCAN_DTE_MAX }
-              : getChainRules(isEtfTicker);
-            
+            const chainRules = {
+              ...getChainRules(isEtfTicker),
+              DTE_MIN: RANK_SCAN_DTE_MIN,
+              DTE_MAX: RANK_SCAN_DTE_MAX,
+            };
+                        
             const [chainData, price] = await Promise.all([
               getChain(symbol, token, chainRules),
               getQuote(symbol, token),
