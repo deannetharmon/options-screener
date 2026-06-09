@@ -798,6 +798,19 @@ function scoreBuffer(bufferPct: number | null | undefined, dte: number, type: 'i
 }
 // ── Rules ──────────────────────────────────────────────────────────────────
 // CHANGE 1: Added EARNINGS_BUFFER_DAYS and CREDIT_MIN_ABS
+
+const RANK_SCAN_DTE_MIN = 7;
+const RANK_SCAN_DTE_MAX = 60;
+
+const PMCC_SHORT_DTE_MIN = 21;
+const PMCC_SHORT_DTE_MAX = 45;
+
+const PMCC_LONG_DTE_MIN = 180;
+const PMCC_LONG_DTE_MAX = 730;
+
+const PMCC_LONG_DTE_SWEET_MIN = 300;
+const PMCC_LONG_DTE_SWEET_MAX = 540;
+
 const DEFAULT_RULES = {
   IVR_MIN: 30, IVR_IC_MAX: 70, OI_MIN: 500, BID_ASK_MAX: 0.10,
   CREDIT_RATIO_MIN: 0.33, SPREAD_DELTA_MIN: 0.20, SPREAD_DELTA_MAX: 0.30,
@@ -1297,8 +1310,8 @@ async function getPMCCChain(symbol: string, token: string): Promise<{ shortExpir
   for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
     const expDate: string = expGroup['expiration-date']; if (!expDate) continue;
     const dte = daysUntil(expDate);
-    const isShortWindow = dte >= 16 && dte <= 55;
-    const isLongWindow = dte >= 60 && dte <= 185;
+    const isShortWindow = dte >= PMCC_SHORT_DTE_MIN && dte <= PMCC_SHORT_DTE_MAX;
+    const isLongWindow = dte >= PMCC_LONG_DTE_MIN && dte <= PMCC_LONG_DTE_MAX;
     if (!isShortWindow && !isLongWindow) continue;
     for (const strike of expGroup.strikes ?? []) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
@@ -4641,8 +4654,11 @@ function BestOpportunityFinder({
       const [metricsArray, fetchedPrice] = await Promise.all([getMarketMetrics([symbol], token), getQuote(symbol, token)]);
       const metrics = metricsArray[0] || { symbol, ivRank: null, earningsExpectedDate: null };
       const price = fetchedPrice;
-      const baseChainData = await getChain(symbol, token, rules);
-
+      const baseChainData = await getChain(symbol, token, {
+        ...rules,
+        DTE_MIN: RANK_SCAN_DTE_MIN,
+        DTE_MAX: RANK_SCAN_DTE_MAX,
+      });
       const results: LevelResult[] = [];
       for (const level of levels) {
         const mergedRules = { ...rules, ...level.rules };
@@ -4889,8 +4905,12 @@ async function runTargetedScan(
         const isEtf = INDEX_TICKERS.has(symbol.toUpperCase());
         // Use real rules but with user-specified DTE range
         const appliedRules: RulesType = { ...(isEtf ? etfRules : rules), DTE_MIN: dteMin, DTE_MAX: dteMax };
+        const chainRules = isRankMode
+          ? { ...getChainRules(isEtfTicker), DTE_MIN: RANK_SCAN_DTE_MIN, DTE_MAX: RANK_SCAN_DTE_MAX }
+          : getChainRules(isEtfTicker);
+        
         const [chainData, price] = await Promise.all([
-          getChain(symbol, token, appliedRules),
+          getChain(symbol, token, chainRules),
           getQuote(symbol, token),
         ]);
         const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
@@ -5521,7 +5541,14 @@ export default function Home() {
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
-            const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+            const chainRules = isRankMode
+              ? { ...getChainRules(isEtfTicker), DTE_MIN: RANK_SCAN_DTE_MIN, DTE_MAX: RANK_SCAN_DTE_MAX }
+              : getChainRules(isEtfTicker);
+            
+            const [chainData, price] = await Promise.all([
+              getChain(symbol, token, chainRules),
+              getQuote(symbol, token),
+            ]);
             for (const s of strategiesToScan) {
               scanCache.push({ symbol, strategy: s, metrics, chainData, price });
               if (isRankMode) {
