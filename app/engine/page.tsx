@@ -2656,34 +2656,7 @@ export default function EnginePage() {
           </div>
           <div className="flex items-center gap-3">
           {d && <span className={`text-[9px] ${th.textFaint}`}>Updated {d.lastUpdated.toLocaleTimeString()}</span>}
-          {/* Delta Range inline control */}
-          <div className="flex items-center gap-1.5">
-            <span className={`text-[9px] ${th.textFaint} tracking-wider`}>Δ RANGE</span>
-            {([
-              { label: 'Conservative', min: 0.15, max: 0.20 },
-              { label: 'Standard',     min: 0.20, max: 0.25 },
-              { label: 'Aggressive',   min: 0.25, max: 0.30 },
-            ] as { label: string; min: number; max: number }[]).map(p => (
-              <button key={p.label}
-                onClick={() => { saveDeltaRange(p.min, p.max); runEngine(); }}
-                className={`text-[9px] px-2 py-1 rounded border transition-colors font-bold ${
-                  deltaRange[0] === p.min && deltaRange[1] === p.max
-                    ? 'border-blue-500 text-blue-300 bg-blue-500/15'
-                    : `${th.border} ${th.textFaint} hover:border-blue-500/50 hover:text-blue-400`
-                }`}>
-                {p.label} {deltaRange[0] === p.min && deltaRange[1] === p.max ? `(${p.min}–${p.max})` : ''}
-              </button>
-            ))}
-            <input type="number" min="0.05" max="0.30" step="0.01" value={deltaRange[0]}
-              onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) { saveDeltaRange(v, deltaRange[1]); } }}
-              className={`w-14 text-[9px] px-1.5 py-1 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-blue-500 text-center`}
-              style={{ fontFamily: "'DM Mono', monospace" }} />
-            <span className={`text-[9px] ${th.textFaint}`}>–</span>
-            <input type="number" min="0.10" max="0.35" step="0.01" value={deltaRange[1]}
-              onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) { saveDeltaRange(deltaRange[0], v); } }}
-              className={`w-14 text-[9px] px-1.5 py-1 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-blue-500 text-center`}
-              style={{ fontFamily: "'DM Mono', monospace" }} />
-          </div>
+
           <button onClick={runEngine} disabled={status === 'loading'}
             className={`text-[10px] px-3 py-1.5 border ${th.border} rounded-lg ${th.textMuted} hover:border-emerald-500 hover:text-emerald-400 transition-colors disabled:opacity-40`}>
             {status === 'loading' ? '⟳ Loading...' : '↺ Refresh'}
@@ -2973,9 +2946,37 @@ export default function EnginePage() {
               {(d.spxSuggestedEntry || d.spySuggestedEntry) && (
                 <div className="border-t-2 border-dashed border-emerald-600/40">
                   {/* Section header */}
-                  <div className="flex items-center gap-3 px-4 py-2 bg-emerald-500/5 border-b border-emerald-600/20">
+                  <div className="flex items-center gap-3 px-4 py-2 bg-emerald-500/5 border-b border-emerald-600/20 flex-wrap">
                     <span className="text-[9px] font-bold tracking-widest text-emerald-400 uppercase">✦ Suggested New Positions</span>
-                    <span className={`text-[9px] ${th.textFaint}`}>Engine recommends these entries based on available capital + market conditions</span>
+                    <span className={`text-[9px] ${th.textFaint} flex-1`}>Engine recommends these entries based on available capital + market conditions</span>
+                    {/* Delta Range control — lives here because it drives which strikes get suggested */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className={`text-[9px] ${th.textFaint} tracking-wider`}>Δ RANGE</span>
+                      {([
+                        { label: 'Conservative', min: 0.15, max: 0.20 },
+                        { label: 'Standard',     min: 0.20, max: 0.25 },
+                        { label: 'Aggressive',   min: 0.25, max: 0.30 },
+                      ] as { label: string; min: number; max: number }[]).map(p => (
+                        <button key={p.label}
+                          onClick={() => { saveDeltaRange(p.min, p.max); runEngine(); }}
+                          className={`text-[9px] px-2 py-1 rounded border transition-colors font-bold ${
+                            deltaRange[0] === p.min && deltaRange[1] === p.max
+                              ? 'border-blue-500 text-blue-300 bg-blue-500/15'
+                              : `${th.border} ${th.textFaint} hover:border-blue-500/50 hover:text-blue-400`
+                          }`}>
+                          {p.label}{deltaRange[0] === p.min && deltaRange[1] === p.max ? ` (${p.min}–${p.max})` : ''}
+                        </button>
+                      ))}
+                      <input type="number" min="0.05" max="0.30" step="0.01" value={deltaRange[0]}
+                        onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) { saveDeltaRange(v, deltaRange[1]); runEngine(); } }}
+                        className={`w-14 text-[9px] px-1.5 py-1 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-blue-500 text-center`}
+                        style={{ fontFamily: "'DM Mono', monospace" }} />
+                      <span className={`text-[9px] ${th.textFaint}`}>–</span>
+                      <input type="number" min="0.10" max="0.35" step="0.01" value={deltaRange[1]}
+                        onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) { saveDeltaRange(deltaRange[0], v); runEngine(); } }}
+                        className={`w-14 text-[9px] px-1.5 py-1 rounded border ${th.inputBorder} ${th.input} ${th.text} outline-none focus:border-blue-500 text-center`}
+                        style={{ fontFamily: "'DM Mono', monospace" }} />
+                    </div>
                   </div>
 
                 {/* ── AI COMPARISON — only when both suggestions exist ── */}
