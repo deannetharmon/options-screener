@@ -698,6 +698,23 @@ function scoreBuffer(bufferPct: number | null | undefined, dte: number, type: 'i
   };
 
   const T: Record<'index' | 'etf' | 'stock', number[][]> = {
+    index: [
+      [3, 4, 5, 6, 8],
+      [3, 4, 5, 6, 8],
+      [3, 5, 6, 7, 8],
+    ],
+    etf: [
+      [3, 3.5, 4, 5, 7],
+      [3, 3.5, 4, 5, 7],
+      [3, 4,   5, 6, 7],
+    ],
+    stock: [
+      [3, 5,  6,  8, 10],
+      [3, 6,  7,  8, 10],
+      [6, 8, 10, 11, 12],
+    ],
+  };
+
   const [crit, marg, ok, good, full] = T[type][dteBucket];
 
   if (bufferPct >= full) return 1.0;
