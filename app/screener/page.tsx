@@ -361,11 +361,30 @@ function formatCalDate(date: Date): string {
   return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function formatDisplayDate(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(`${date}T12:00:00`) : date;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function toIsoDate(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function getPostEarningsRescreenDate(earningsDate: string): Date {
+  return addBusinessDays(earningsDate, POST_EARNINGS_RESCREEN_DAYS);
+}
+
+function estimateNextEarningsDate(lastEarningsDate: string): Date {
+  const d = new Date(`${lastEarningsDate}T12:00:00`);
+  d.setDate(d.getDate() + ESTIMATED_EARNINGS_CYCLE_DAYS);
+  return d;
+}
+
 function buildEarningsCalUrl(symbol: string, strategy: string, earningsDate: string, ivr: number | null): string {
-  const followUp = addBusinessDays(earningsDate, 2);
+  const followUp = getPostEarningsRescreenDate(earningsDate);
   const end = new Date(followUp); end.setDate(end.getDate() + 1);
   const title = encodeURIComponent(`Re-screen ${symbol}`);
-  const details = encodeURIComponent(`Re-screen after earnings`);
+  const details = encodeURIComponent(`Re-screen ${symbol} ${POST_EARNINGS_RESCREEN_DAYS} trading days after earnings (${earningsDate}). Strategy: ${strategy}${ivr != null ? ` · IVR: ${ivr.toFixed(1)}%` : ''}`);
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${formatCalDate(followUp)}/${formatCalDate(end)}&details=${details}`;
 }
 
@@ -791,6 +810,8 @@ const LS_BROKEN = 'hunter-tickers-broken';
 const LS_CAL = 'hunter-cal-scheduled';
 const LS_CAL_ENTRY = 'hunter-cal-entry';
 const DTE_ALERT_THRESHOLD = 25;
+const POST_EARNINGS_RESCREEN_DAYS = 3;
+const ESTIMATED_EARNINGS_CYCLE_DAYS = 91; // ~13 weeks / one reporting cycle
 const HUNTER_URL = 'https://options-HUNTER-dun.vercel.app';
 const LS_SAVED_FILTERS = 'hunter-saved-filters';
 const LS_GLOBAL_SESSIONS = 'hunter-global-sessions';
@@ -1469,7 +1490,7 @@ function runPMCCChecklist(
     ? { status: 'pass', value: 'None found', reason: 'Safe to trade' }
     : (() => {
         const d = daysUntil(earningsDate);
-        if (d < 0) return { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
+        if (d < 0) return { status: 'pass', value: `${earningsDate} (past)`, reason: `Already reported · next est. ${formatDisplayDate(estimateNextEarningsDate(earningsDate))}` };
         if (d < 35) { failReasons.push(`Earnings in ${d}d — avoid PMCC near binary event`); return { status: 'fail' as const, value: `${d}d (${earningsDate})`, reason: 'Within 35d — binary risk threatens LEAPS' }; }
         return { status: 'pass', value: `${d}d (${earningsDate})`, reason: 'Outside earnings window' };
       })();
@@ -1540,7 +1561,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   } else {
     const d = daysUntil(earningsDate);
     if (d < 0) {
-      earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: 'Already reported' };
+      earningsCheck = { status: 'pass', value: `${earningsDate} (past)`, reason: `Already reported · next est. ${formatDisplayDate(estimateNextEarningsDate(earningsDate))}` };
     } else if (d < earningsBuffer) {
       if (strictOnly) {
         failReasons.push(`Earnings in ${d}d`);
@@ -1698,15 +1719,17 @@ function ThemeToggle({ theme, setTheme, accent, setAccent }: {
 
 // ── Calendar Buttons ───────────────────────────────────────────────────────
 function CalendarButton({ symbol, strategy, earningsDate, ivr, th }: { symbol: string; strategy: string; earningsDate: string; ivr: number | null; th: typeof THEMES[Theme] }) {
-  const key = `${symbol}-${earningsDate}`;
+  const followUpDate = getPostEarningsRescreenDate(earningsDate);
+  const followUpIso = toIsoDate(followUpDate);
+  const key = `${symbol}-${earningsDate}-${followUpIso}`;
   const [scheduled, setScheduled] = useState(() => { try { const s = localStorage.getItem(LS_CAL); return s ? JSON.parse(s)[key] === true : false; } catch { return false; } });
   const handleClick = () => {
     window.open(buildEarningsCalUrl(symbol, strategy, earningsDate, ivr), '_blank');
     try { const s = localStorage.getItem(LS_CAL); const all = s ? JSON.parse(s) : {}; all[key] = true; localStorage.setItem(LS_CAL, JSON.stringify(all)); } catch {}
     setScheduled(true);
   };
-  if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ scheduled</span>;
-  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors font-medium`} title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up after {earningsDate}</button>;
+  if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ scheduled {formatDisplayDate(followUpDate)}</span>;
+  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors font-medium`} title={`Schedule re-screen ${POST_EARNINGS_RESCREEN_DAYS} trading days after earnings (${followUpIso})`}>📅 +{POST_EARNINGS_RESCREEN_DAYS}D post earnings · {formatDisplayDate(followUpDate)}</button>;
 }
 function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme]; rules: RulesType; }) {
   const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
@@ -1717,16 +1740,21 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
   const btnRef = useRef<HTMLButtonElement>(null);
   const dateInputRef = useRef<HTMLInputElement>(null);
   const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
+  const postEarningsDate = result.earningsDate && daysUntil(result.earningsDate) < 0
+    ? getPostEarningsRescreenDate(result.earningsDate)
+    : null;
+
   const [selectedDate, setSelectedDate] = useState<string>(() => {
-    const d = addBusinessDays(new Date().toISOString().split('T')[0], 2);
-    return d.toISOString().split('T')[0];
+    const d = postEarningsDate ?? addBusinessDays(new Date().toISOString().split('T')[0], 2);
+    return toIsoDate(d);
   });
 
-  const presets: { label: string; days: number; hint: string }[] = [
+  const presets: { label: string; days: number; hint: string; directDate?: Date }[] = [
     { label: '+1d',  days: 1,  hint: 'Tomorrow' },
     { label: '+2d',  days: 2,  hint: 'Revisit soon' },
-    { label: '+1wk', days: 5,  hint: 'Post-spike settle' },
-    { label: '+2wk', days: 10, hint: 'Post-earnings' },
+    ...(postEarningsDate ? [{ label: `+${POST_EARNINGS_RESCREEN_DAYS}D Post Earnings`, days: 0, hint: formatDisplayDate(postEarningsDate), directDate: postEarningsDate }] : []),
+    { label: '+1wk', days: 5,  hint: 'One trading week' },
+    { label: '+2wk', days: 10, hint: 'Two trading weeks' },
   ];
 
   const handleOpen = (e: React.MouseEvent) => {
@@ -1743,12 +1771,14 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
     setOpen(!open);
   };
 
-  const handleSchedule = (days: number, label: string) => {
-    const url = buildEntryCalUrl(result, days);
+  const handleSchedule = (days: number, label: string, directDate?: Date) => {
+    const url = buildEntryCalUrl(result, days, directDate);
+    const scheduledValue = directDate ? `${label} ${toIsoDate(directDate)}` : label;
+    if (directDate) setSelectedDate(toIsoDate(directDate));
     const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
     document.body.appendChild(a); a.click(); setTimeout(() => document.body.removeChild(a), 100);
-    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = label; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
-    setScheduled(label);
+    try { const s = localStorage.getItem(LS_CAL_ENTRY); const all = s ? JSON.parse(s) : {}; all[key] = scheduledValue; localStorage.setItem(LS_CAL_ENTRY, JSON.stringify(all)); } catch {}
+    setScheduled(scheduledValue);
     setTimeout(() => setOpen(false), 150);
   };
 
@@ -1804,7 +1834,7 @@ function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof 
           {presets.map(p => (
             <button
               key={p.label}
-              onClick={() => handleSchedule(p.days, p.label)}
+              onClick={() => handleSchedule(p.days, p.label, p.directDate)}
               className={`w-full text-left px-2 py-2 rounded hover:bg-emerald-500/10 border border-transparent hover:border-emerald-700 transition-colors mb-1`}
             >
               <span className="text-emerald-400 font-bold text-xs">{p.label}</span>
@@ -3144,15 +3174,21 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
 
           {hasEarningsBlock && result.earningsDate && (
             <div className={`pt-2 border-t ${th.border} flex items-center gap-3`}>
-              <p className={`text-[10px] ${th.textFaint} flex-1`}>Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
+              <p className={`text-[10px] ${th.textFaint} flex-1`}>Schedule a re-screen +{POST_EARNINGS_RESCREEN_DAYS} trading days after earnings ({result.earningsDate})</p>
               <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>
             </div>
           )}
-          {hasPastEarnings && result.earningsDate && (
-            <div className={`pt-2 border-t ${th.border}`}>
-              <p className={`text-[10px] text-emerald-500/70`}>✓ Earnings reported {result.earningsDate} — binary event is behind you</p>
-            </div>
-          )}
+          {hasPastEarnings && result.earningsDate && (() => {
+            const postDate = getPostEarningsRescreenDate(result.earningsDate);
+            const nextEst = estimateNextEarningsDate(result.earningsDate);
+            return (
+              <div className={`pt-2 border-t ${th.border} space-y-1`}>
+                <p className={`text-[10px] text-emerald-500/70`}>✓ Earnings reported {formatDisplayDate(result.earningsDate)} — binary event is behind you</p>
+                <p className={`text-[10px] ${th.textFaint}`}>Eligible re-screen: +{POST_EARNINGS_RESCREEN_DAYS}D post earnings · {formatDisplayDate(postDate)} ({toIsoDate(postDate)})</p>
+                <p className={`text-[10px] ${th.textFaint}`}>Next earnings est.: {formatDisplayDate(nextEst)} ({toIsoDate(nextEst)})</p>
+              </div>
+            );
+          })()}
 
           {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
             <div className={`pt-2 border-t ${th.border}`}>
@@ -5764,7 +5800,8 @@ export default function Home() {
                       const toSchedule = results.filter(r => !r.qualified && r.earningsDate && daysUntil(r.earningsDate) >= 0 && r.failReasons.some(f => f.includes('Earnings')));
                       const stored = (() => { try { const s = localStorage.getItem(LS_CAL); return s ? JSON.parse(s) : {}; } catch { return {}; } })();
                       toSchedule.forEach((r, i) => {
-                        const key = `${r.symbol}-${r.earningsDate}`;
+                        const followUpIso = toIsoDate(getPostEarningsRescreenDate(r.earningsDate!));
+                        const key = `${r.symbol}-${r.earningsDate}-${followUpIso}`;
                         if (!stored[key]) {
                           setTimeout(() => window.open(buildEarningsCalUrl(r.symbol, r.strategy, r.earningsDate!, r.ivr), '_blank'), i * 300);
                           stored[key] = true;
