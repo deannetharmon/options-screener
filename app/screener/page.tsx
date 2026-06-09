@@ -321,6 +321,43 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+function getCreditColor(candidate: SpreadCandidate, isEtfOrIndex: boolean): string {
+  const target = isEtfOrIndex ? 0.25 : 0.33;
+  const ratio = candidate.creditRatio;
+
+  if (ratio >= target) return 'text-emerald-400';
+  if (ratio >= target * 0.8) return 'text-yellow-400';
+  return 'text-red-400';
+}
+
+function getRocColor(candidate: SpreadCandidate, isEtfOrIndex: boolean): string {
+  const target = isEtfOrIndex ? 25 : 33;
+  const roc = candidate.roc;
+
+  if (roc >= target) return 'text-emerald-400';
+  if (roc >= target * 0.8) return 'text-yellow-400';
+  return 'text-red-400';
+}
+
+function getOtmColor(otmPct: number | null, ivr: number | null, isEtfOrIndex: boolean): string {
+  if (otmPct == null) return 'text-slate-500';
+
+  const baseTarget = isEtfOrIndex ? 4 : 7;
+  const ivrBoost = ivr != null && ivr >= 60 ? 2 : ivr != null && ivr >= 40 ? 1 : 0;
+  const target = baseTarget + ivrBoost;
+
+  if (otmPct >= target) return 'text-emerald-400';
+  if (otmPct >= target * 0.75) return 'text-yellow-400';
+  return 'text-red-400';
+}
+
+function getRsiColor(rsi: number | null | undefined): string {
+  if (rsi == null) return 'text-slate-500';
+  if (rsi >= 70) return 'text-red-400';
+  if (rsi <= 30) return 'text-emerald-400';
+  return 'text-slate-300';
+}
+
 function findRankModeCandidatesForSymbol(
   symbol: string,
   strategy: 'BPS' | 'BCS' | 'IC',
@@ -942,6 +979,7 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
   const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
   const t = result.trendResult;
   const c = result.bestCandidate;
+  const rsi14 = result.trendResult?.metrics?.rsi14 ?? null;
 
   // ── Momentum (30pts) ──────────────────────────────────────────────────────
   // trend engine momentum is signed (-48..+48); normalize by direction alignment
@@ -3177,21 +3215,45 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               <div className="text-xs shrink-0 w-20"><span className={th.label}>LEAPS </span><span className={`${th.text} font-medium`}>{c.longDte}d</span></div>
             </> : <>
               <div className="text-xs shrink-0 w-20">
-                <div><span className={th.label}>Credit </span><span className="text-emerald-500 font-bold">${(c.totalCredit ?? c.credit).toFixed(2)}</span></div>
-                <div><span className={th.label}>Cr Ratio </span><span className={th.textFaint}>{(c.creditRatio * 100).toFixed(0)}% of width</span></div>
+                <div>
+                  <span className={th.label}>Credit </span>
+                  <span className={`${getCreditColor(c, result.isEtf ?? false)} font-bold`}>
+                    ${(c.totalCredit ?? c.credit).toFixed(2)}
+                  </span>
+                </div>
+                <div>
+                  <span className={th.label}>Cr Ratio </span>
+                  <span className={`${getCreditColor(c, result.isEtf ?? false)} font-medium`}>
+                    {(c.creditRatio * 100).toFixed(0)}% of width
+                  </span>
+                </div>
               </div>
               <div className="text-xs shrink-0 w-16">
                 <div><span className={th.label}>POP </span><span className={`${th.text} font-medium`}>{c.pop != null ? `${c.pop.toFixed(0)}%` : '—'}</span></div>
-                <div className="text-[10px]"><span className={th.label}>ROC </span><span className={th.textFaint}>{c.roc.toFixed(0)}%</span></div>
+                  <div className="text-[10px]">
+                    <span className={th.label}>ROC </span>
+                    <span className={`${getRocColor(c, result.isEtf ?? false)} font-medium`}>
+                      {c.roc.toFixed(0)}%
+                    </span>
+                  </div>
               </div>
               <div className="text-xs shrink-0 w-20">
-                <div><span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
-                <div><span className={th.label}>RSI </span><span className={th.textFaint}>{result.trendResult?.metrics?.rsi14?.toFixed(0) ?? '—'}</span></div>
+                <div>
+                  <span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
+                <div>
+                  <span className={`${getRsiColor(rsi14)} font-medium`}>
+                    {rsi14 != null ? rsi14.toFixed(0) : '—'}
+                  </span>
+                  <span className={th.textFaint}>{result.trendResult?.metrics?.rsi14?.toFixed(0) ?? '—'}</span></div>
               </div>
               <div className="text-xs shrink-0 w-16">
-                <div><span className={th.label}>OTM </span><span className={`${otmPct != null && otmPct >= 5 ? 'text-emerald-400' : 'text-amber-400'} font-medium`}>{otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}</span></div>
-                <div className="text-[10px]"><span className={th.label}>OI </span><span className={th.textFaint}>{c.shortOI}/{c.longOI}</span></div>
-              </div>
+                <div>
+                  <span className={th.label}>RSI </span>
+                
+                  <span className={`${getRsiColor(rsi14)} font-medium`}>
+                    {rsi14 != null ? rsi14.toFixed(0) : '—'}
+                  </span>
+                </div> 
             </>}
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
             {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
