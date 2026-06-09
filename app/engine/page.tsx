@@ -1532,7 +1532,6 @@ function SpxPositionRow({ pos, th, underlyingPrice }: { pos: SpxPosition; th: ty
           })() : <p className={`text-[9px] ${th.textFaint}`}>—</p>}
         </div>
         <div className="w-20 shrink-0 text-center">
-        <div className="w-20 shrink-0 text-center">
           <p className={`text-xs font-bold ${pos.pnl != null && pos.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
             {pos.pnlPct != null ? `${pos.pnlPct >= 0 ? '+' : ''}${pos.pnlPct.toFixed(0)}%` : '—'}
           </p>
