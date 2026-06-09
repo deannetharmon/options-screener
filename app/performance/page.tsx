@@ -1267,7 +1267,6 @@ export default function PerformancePage() {
       </div>
 
       {/* Sticky controls bar */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40
       <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[57px] z-40 transition-all duration-300 ${showAI ? 'mr-[480px]' : ''}`}>
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-1">
