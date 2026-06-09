@@ -1,5 +1,5 @@
 // path: app/screener/page.tsx
-// v2
+// v3
 
 'use client';
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
@@ -5126,6 +5126,7 @@ function TargetedScanResultsPanel({
 }
 
 // ── Main App ───────────────────────────────────────────────────────────────
+export const dynamic = 'force-dynamic';
 export default function Home() {
   const [theme, setTheme] = useState<Theme>(getSavedTheme);
   const [accent, setAccent] = useState<Accent>(getSavedAccent);
