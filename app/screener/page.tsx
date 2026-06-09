@@ -4652,13 +4652,18 @@ function BestOpportunityFinder({
         for (const strat of strategiesToRun) {
 
   const results = runChecklistAllExpirations(
-    symbol,
-    strat,
-    metrics,
-    baseChainData,
-    price,
-    mergedRules
-  );
+  symbol,
+  strat,
+  metrics,
+  baseChainData,
+  price,
+  mergedRules,
+  undefined,
+  level.presetLabel,
+  getSavedEtfRules(),
+  level.presetLabel,
+  level.presetKey === 'strict'
+);
 
   const rankedResults = results
     .filter(r => r.bestCandidate)
