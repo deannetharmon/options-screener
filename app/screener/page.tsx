@@ -148,9 +148,11 @@ interface ScreenResult {
   qualified: boolean; bestCandidate: SpreadCandidate | null;
   failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
   isEtf?: boolean;
+  underlyingType?: 'index' | 'etf' | 'stock';
   ruleSetApplied?: string;
   checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; iv: CheckResult; };
 }
+
 interface ExistingPosition {
   symbol: string;
   strategy: string;
@@ -646,6 +648,85 @@ async function deleteFilter(strategy: string, name: string): Promise<void> {
 const INDEX_TICKERS = new Set(['SPY', 'QQQ', 'IWM', 'DIA', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY', 'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX']);
 const INDEX_IVR_MIN = 15;
 
+// ── Underlying classification ──────────────────────────────────────────────
+// Three-way split drives buffer thresholds in scoring.
+// Index = broad market instruments that can move 1-2% intraday
+// ETF   = sector/thematic funds, less volatile than single stocks
+// Stock = individual equities, highest intraday swing potential
+const PURE_INDEX_TICKERS = new Set(['SPX', 'SPXW', 'NDX', 'RUT', 'VIX', 'SPY', 'QQQ', 'IWM', 'DIA']);
+const SECTOR_ETF_TICKERS = new Set(['GLD', 'SLV', 'TLT', 'HYG', 'LQD', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLRE', 'XLC', 'XLY', 'EEM', 'EFA', 'VXX', 'UVXY', 'ARKK', 'SMH', 'SOXX', 'XBI', 'IBB', 'GDX']);
+
+function classifyUnderlying(symbol: string, instrumentType?: string): 'index' | 'etf' | 'stock' {
+  const s = symbol.toUpperCase();
+  if (PURE_INDEX_TICKERS.has(s)) return 'index';
+  if (SECTOR_ETF_TICKERS.has(s)) return 'etf';
+  if (instrumentType) {
+    const t = instrumentType.toLowerCase();
+    if (t.includes('index') || t.includes('future')) return 'index';
+    if (t.includes('etf')) return 'etf';
+  }
+  return 'stock';
+}
+
+// Buffer thresholds by underlying type and DTE bucket.
+// Returns a 0–1 normalized score; caller multiplies by weightBuffer.
+// Negative raw score (-10pt) for critically under-buffered entries.
+function scoreBuffer(bufferPct: number | null | undefined, dte: number, type: 'index' | 'etf' | 'stock'): number {
+  if (bufferPct == null) return 0.4; // unknown — neutral, don't penalize
+  const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+
+  // DTE bucket: 0=tight(21-29), 1=mid(30-39), 2=sweet(40-45+)
+  const dteBucket = dte >= 40 ? 2 : dte >= 30 ? 1 : 0;
+
+  // [dteBucket 0, 1, 2] thresholds: [min_for_full, min_for_good, min_for_ok, min_for_marginal]
+  const thresholds: Record<'index' | 'etf' | 'stock', [number, number, number, number][]> = {
+    index: [
+      [5, 6, 8, 3],   // DTE 21-29: full@8%, good@6%, ok@5%, marginal@3%
+      [6, 7, 8, 3],   // DTE 30-39
+      [6, 7, 8, 3],   // DTE 40+   (same top end, slightly more forgiving)  -- wait, let me use spec values
+    ],
+    etf: [
+      [4, 5, 7, 3],
+      [4, 5, 7, 3],
+      [5, 6, 7, 3],
+    ],
+    stock: [
+      [6, 8, 10, 3],
+      [7, 8, 10, 3],
+      [8, 10, 12, 6],
+    ],
+  };
+
+  // Corrected thresholds matching spec exactly
+  const T: Record<'index' | 'etf' | 'stock', number[][]> = {
+    //              dteBucket:  0(21-29)   1(30-39)   2(40-45+)
+    // each row:    [crit, marginal, ok, good, full]
+    index: [
+      [3, 4, 5, 6, 8],
+      [3, 4, 5, 6, 8],
+      [3, 5, 6, 7, 8],
+    ],
+    etf: [
+      [3, 3.5, 4, 5, 7],
+      [3, 3.5, 4, 5, 7],
+      [3, 4,   5, 6, 7],
+    ],
+    stock: [
+      [3, 5,  6,  8, 10],
+      [3, 6,  7,  8, 10],
+      [6, 8, 10, 11, 12],
+    ],
+  };
+
+  const [crit, marg, ok, good, full] = T[type][dteBucket];
+
+  if (bufferPct >= full) return 1.0;
+  if (bufferPct >= good) return clamp(0.75 + (bufferPct - good) / (full - good) * 0.25);
+  if (bufferPct >= ok)   return clamp(0.5  + (bufferPct - ok)   / (good - ok)   * 0.25);
+  if (bufferPct >= marg) return clamp(0.25 + (bufferPct - marg) / (ok - marg)   * 0.25);
+  if (bufferPct >= crit) return clamp(0.05 + (bufferPct - crit) / (marg - crit) * 0.20);
+  return 0; // below critical — zero score
+}
 // ── Rules ──────────────────────────────────────────────────────────────────
 // CHANGE 1: Added EARNINGS_BUFFER_DAYS and CREDIT_MIN_ABS
 const DEFAULT_RULES = {
@@ -743,13 +824,13 @@ const LS_RAW_SCAN_CACHE = 'hunter-raw-scan-cache';
 const LS_RESULTS_CACHE_AT = 'hunter-results-cache-at';
 const LS_DISMISSED_WARNINGS = 'hunter-dismissed-portfolio-warnings';
 
-// ── Ranking / Scoring ──────────────────────────────────────────────────────
 interface RankConfig {
-  weightMomentum: number;  // 0–30
-  weightIvr: number;       // 0–25
-  weightRange: number;     // 0–20
-  weightTechnical: number; // 0–15
-  weightLiquidity: number; // 0–10
+  weightMomentum: number;  // 0–25
+  weightIvr: number;       // 0–20
+  weightRange: number;     // 0–15
+  weightTechnical: number; // 0–10
+  weightLiquidity: number; // 0–5
+  weightBuffer: number;    // 0–25
   dteSweetSpot: number;
   dteRange: number;
   thresholdGreen: number;
@@ -759,7 +840,7 @@ interface RankConfig {
 }
 
 const DEFAULT_RANK_CONFIG: RankConfig = {
-  weightMomentum: 30, weightIvr: 25, weightRange: 20, weightTechnical: 15, weightLiquidity: 10,
+  weightMomentum: 25, weightIvr: 20, weightRange: 15, weightTechnical: 10, weightLiquidity: 5, weightBuffer: 25,
   dteSweetSpot: 38, dteRange: 7,
   thresholdGreen: 75, thresholdYellow: 55, thresholdOrange: 35,
   weightCredit: 25, weightRoc: 20, weightPop: 15, weightDte: 15,
@@ -771,7 +852,7 @@ function getSavedRankConfig(): RankConfig {
 }
 
 interface DimensionScore {
-  momentum: number; ivr: number; range: number; technical: number; liquidity: number; total: number;
+  momentum: number; ivr: number; range: number; technical: number; liquidity: number; buffer: number; total: number;
 }
 
 function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
@@ -875,7 +956,25 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
   }
   const liquidityScore = clamp(liquidityRaw) * cfg.weightLiquidity;
 
-  const total = Math.round(momentumScore + ivrScore + rangeScore + technicalScore + liquidityScore);
+  // ── Buffer (25pts) ────────────────────────────────────────────────────────
+  // Derive buffer from result.price vs short strike.
+  // For BCS, buffer is distance above short call strike.
+  // underlyingType drives which threshold table is used.
+  let bufferScore = 0;
+  if (c && result.price != null) {
+    const bufferPct = c.strategy === 'BCS'
+      ? ((c.shortStrike - result.price) / result.price) * 100
+      : c.strategy === 'BPS'
+        ? ((result.price - c.shortStrike) / result.price) * 100
+        : Math.min(
+            ((result.price - c.shortStrike) / result.price) * 100,
+            ((c.shortCallStrike != null ? c.shortCallStrike - result.price : result.price) / result.price) * 100
+          );
+    const uType = result.underlyingType ?? classifyUnderlying(result.symbol);
+    bufferScore = scoreBuffer(bufferPct, c.dte, uType) * (cfg.weightBuffer ?? 25);
+  }
+
+  const total = Math.round(momentumScore + ivrScore + rangeScore + technicalScore + liquidityScore + bufferScore);
   return {
     score: Math.min(100, total),
     dims: {
@@ -884,6 +983,7 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
       range: Math.round(rangeScore),
       technical: Math.round(technicalScore),
       liquidity: Math.round(liquidityScore),
+      buffer: Math.round(bufferScore),
       total: Math.min(100, total),
     },
   };
@@ -1435,7 +1535,7 @@ function runPMCCChecklist(
 
   return {
     symbol, strategy: 'PMCC', price, ivr: ivrValue, qualified, bestCandidate, failReasons,
-    earningsDate, trendResult, isEtf: false, ruleSetApplied: 'PMCC',
+    earningsDate, trendResult, isEtf: false, underlyingType: classifyUnderlying(symbol), ruleSetApplied: 'PMCC',
     checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: { status: 'pending' as const, value: '—', reason: 'N/A for PMCC' } },
   };
 }
@@ -1520,7 +1620,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
         : { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'IV below realized — premium not elevated at this strike' };
 
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck } };
+  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, underlyingType: classifyUnderlying(symbol), ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck } };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
