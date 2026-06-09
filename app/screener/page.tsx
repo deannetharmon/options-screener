@@ -678,25 +678,6 @@ function scoreBuffer(bufferPct: number | null | undefined, dte: number, type: 'i
   // DTE bucket: 0=tight(21-29), 1=mid(30-39), 2=sweet(40-45+)
   const dteBucket = dte >= 40 ? 2 : dte >= 30 ? 1 : 0;
 
-  // [dteBucket 0, 1, 2] thresholds: [min_for_full, min_for_good, min_for_ok, min_for_marginal]
-  const thresholds: Record<'index' | 'etf' | 'stock', [number, number, number, number][]> = {
-    index: [
-      [5, 6, 8, 3],   // DTE 21-29: full@8%, good@6%, ok@5%, marginal@3%
-      [6, 7, 8, 3],   // DTE 30-39
-      [6, 7, 8, 3],   // DTE 40+   (same top end, slightly more forgiving)  -- wait, let me use spec values
-    ],
-    etf: [
-      [4, 5, 7, 3],
-      [4, 5, 7, 3],
-      [5, 6, 7, 3],
-    ],
-    stock: [
-      [6, 8, 10, 3],
-      [7, 8, 10, 3],
-      [8, 10, 12, 6],
-    ],
-  };
-
   const T: Record<'index' | 'etf' | 'stock', number[][]> = {
     index: [
       [3, 4, 5, 6, 8],
