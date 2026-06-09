@@ -2820,7 +2820,7 @@ export default function EnginePage() {
       )}
 
       {/* ── Sub-tab bar ── */}
-      <div className={`${th.sidebar} border-b ${th.border} px-6 sticky top-[57px] z-40`}>
+      <div className={`${th.sidebar} border-b ${th.border} px-6 sticky top-[85px] z-40`}>
         <div className="flex gap-0">
           {([
             { key: 'actions', label: 'Actions', icon: '⚡' },
