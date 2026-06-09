@@ -2394,6 +2394,9 @@ const INDEX_CHART_SYMBOLS: Record<string, string> = {
   'VIX': 'VIX',
   'DJX': 'DIA',
 };
+const TRADINGVIEW_SYMBOLS: Record<string, string> = {
+  'SPX': 'CBOE:SPX', 'SPXW': 'CBOE:SPX', 'NDX': 'NASDAQ:NDX', 'RUT': 'TVC:RUT', 'VIX': 'TVC:VIX',
+};
 
 async function getTrend(symbol: string): Promise<TrendResult> {
   const chartSymbol = INDEX_CHART_SYMBOLS[symbol.toUpperCase()] ?? symbol;
@@ -5758,10 +5761,16 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   onClick={e => {
                     e.stopPropagation();
                     if (!showChart) {
+                      if (chartButtonRef.current) {
+                        const r = chartButtonRef.current.getBoundingClientRect();
+                        const top = Math.min(r.bottom + window.scrollY + 4, window.innerHeight - 250);
+                        const left = Math.min(r.left + window.scrollX, window.innerWidth - 290);
+                        setChartPopupPos({ top, left });
+                      }
                       setShowChart(true);
                       if (!sparkData) {
                         setSparkLoading(true);
-                        fetch(`/api/chart?symbol=${encodeURIComponent(pos.symbol)}`)
+                        fetch(`/api/chart?symbol=${encodeURIComponent(INDEX_CHART_SYMBOLS[pos.symbol.toUpperCase()] ?? pos.symbol)}`)
                           .then(r => r.json())
                           .then(d => {
                             const closes = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null).slice(-90);
@@ -5837,7 +5846,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                         <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
                       )}
                     <a
-                      href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`}
+                      href={`https://www.tradingview.com/chart/?symbol=${TRADINGVIEW_SYMBOLS[pos.symbol.toUpperCase()] ?? pos.symbol}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={e => e.stopPropagation()}
