@@ -70,8 +70,6 @@ function applyAccent(accent: Accent) {
   }
 }
 
-
-
 const THEMES: Record<Theme, {
   bg: string; sidebar: string; card: string; cardQualified: string;
   border: string; borderLight: string; header: string;
@@ -100,6 +98,7 @@ interface SpreadCandidate {
   longCost?: number; netDebit?: number; maxProfit?: number; extrinsicCapture?: number;
   longOccSymbolPMCC?: string; shortOccSymbolPMCC?: string;
 }
+
 interface TrendResult {
   trend: 'uptrend' | 'downtrend' | 'sideways' | 'unknown';
   strategy: 'BPS' | 'BCS' | 'IC' | 'NO_TRADE';
