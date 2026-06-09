@@ -321,6 +321,78 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+function findRankModeCandidatesForSymbol(
+  symbol: string,
+  strategy: 'BPS' | 'BCS' | 'IC',
+  metrics: any,
+  chainData: { expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean },
+  price: number | null,
+  sRules: RulesType,
+  trendResult: TrendResult | undefined,
+  sLabel: string | undefined,
+  eRules: RulesType,
+  eLabel: string | undefined,
+  rankConfig: RankConfig,
+  strictOnly = false
+): TargetedScanEntry[] {
+  const results = runChecklistAllExpirations(
+    symbol,
+    strategy,
+    metrics,
+    chainData,
+    price,
+    sRules,
+    trendResult,
+    sLabel,
+    eRules,
+    eLabel,
+    strictOnly
+  );
+
+  const entries: TargetedScanEntry[] = [];
+
+  for (const result of results) {
+    if (!result.bestCandidate) continue;
+
+    const scored = scoreCandidate(result, rankConfig);
+    const candidate = result.bestCandidate;
+
+    entries.push({
+      symbol,
+      primaryStrategy: strategy,
+      expiration: candidate.expiration,
+      dte: candidate.dte,
+      strategy,
+      candidate,
+      screenResult: {
+        ...result,
+        qualified: true,
+        failReasons: result.failReasons.filter(
+          r =>
+            !r.includes('qualifying strikes') &&
+            !r.includes('No 30-45 DTE')
+        ),
+      },
+      pop: candidate.pop ?? 0,
+      score: scored?.score ?? 0,
+      ivr: metrics.ivRank ?? null,
+      price,
+      isEtf: chainData.isEtfOrIndex,
+      trendResult,
+      cachedEntry: {
+        symbol,
+        strategy,
+        metrics,
+        chainData,
+        price,
+        trendResult,
+      },
+      allStrategies: [],
+    });
+  }
+
+  return entries.sort((a, b) => b.score - a.score);
+}
 
 function getSavedTheme(): Theme {
   try { const t = localStorage.getItem(LS_THEME); return (t === 'dark' || t === 'medium' || t === 'light') ? t as Theme : 'dark'; }
@@ -1586,7 +1658,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   if (!strictOnly && !bestCandidate && validExpirations.length > 0) {
     for (const exp of validExpirations) { const chainItems = chainData.chains[exp] || []; bestCandidate = strategy === 'IC' ? findBestICUnfiltered(chainItems, exp, price) : findBestSpreadUnfiltered(chainItems, strategy, exp, price); if (bestCandidate) break; }
   }
-  if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('No 30-45 DTE expirations');
+  if (!bestCandidate && validExpirations.length === 0 && !failReasons.some(r => r.includes('IVR') || r.includes('Earnings'))) failReasons.push('`No ${rules.DTE_MIN}-${rules.DTE_MAX} DTE expirations`');
   else if (!bestCandidate && validExpirations.length > 0 && !failReasons.length) failReasons.push('No qualifying strikes found');
   const oiCheck: CheckResult = !bestCandidate
     ? { status: 'fail', value: 'None', reason: failReasons[failReasons.length - 1] || 'No candidate' }
@@ -4578,11 +4650,53 @@ function BestOpportunityFinder({
         const candidates: BestSetup[] = [];
         const failures: { strategy: string; reasons: string[] }[] = [];
         for (const strat of strategiesToRun) {
-          const result = runChecklist(symbol, strat, metrics, baseChainData, price, mergedRules);
-          const setup = scoreCandidateLocal(result, strat);
-          if (setup) candidates.push(setup);
-          else failures.push({ strategy: strat, reasons: result.failReasons.length > 0 ? result.failReasons : ['No qualifying strikes found'] });
-        }
+
+  const results = runChecklistAllExpirations(
+    symbol,
+    strat,
+    metrics,
+    baseChainData,
+    price,
+    mergedRules
+  );
+
+  const rankedResults = results
+    .filter(r => r.bestCandidate)
+    .map(r => ({
+      result: r,
+      scored: scoreCandidate(r, getSavedRankConfig())
+    }))
+    .sort((a, b) =>
+      (b.scored?.score ?? 0) - (a.scored?.score ?? 0)
+    );
+
+  if (rankedResults.length > 0) {
+    const bestResult = rankedResults[0].result;
+    const setup = scoreCandidateLocal(bestResult, strat);
+
+    if (setup) {
+      candidates.push(setup);
+      continue;
+    }
+  }
+
+  const diagnostic = runChecklist(
+    symbol,
+    strat,
+    metrics,
+    baseChainData,
+    price,
+    mergedRules
+  );
+
+  failures.push({
+    strategy: strat,
+    reasons:
+      diagnostic.failReasons.length > 0
+        ? diagnostic.failReasons
+        : ['No qualifying strikes found']
+  });
+}
         results.push({ presetKey: level.presetKey, presetLabel: level.presetLabel, presetColor: level.presetColor, rulesUsed: mergedRules, ruleDiffs, ranked: candidates.sort((a, b) => b.score - a.score), failures });
       }
       setLevelResults(results);
