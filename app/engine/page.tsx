@@ -1370,8 +1370,13 @@ function ActionCard({ item, th }: { item: ActionItem; th: typeof THEMES[Theme] }
 }
 
 // ── Reusable chart button — sparkline popup + TradingView link ─────────────
-function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] }) {
-  const [showChart, setShowChart] = useState(false);
+const INDEX_CHART_SYMBOLS: Record<string, string> = {
+  'SPX': 'SPY', 'SPXW': 'SPY', 'NDX': 'QQQ', 'RUT': 'IWM', 'VIX': 'VIX', 'DJX': 'DIA',
+};
+const TRADINGVIEW_SYMBOLS: Record<string, string> = {
+  'SPX': 'CBOE:SPX', 'SPXW': 'CBOE:SPX', 'NDX': 'NASDAQ:NDX', 'RUT': 'TVC:RUT', 'VIX': 'TVC:VIX',
+};
+function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] }) {  const [showChart, setShowChart] = useState(false);
   const [popupPos, setPopupPos] = useState<{ top: number; left: number } | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [sparkData, setSparkData] = useState(null as number[] | null);
@@ -1390,7 +1395,7 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
             setShowChart(true);
             if (!sparkData) {
               setSparkLoading(true);
-              fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`)
+              fetch(`/api/chart?symbol=${encodeURIComponent(INDEX_CHART_SYMBOLS[symbol.toUpperCase()] ?? symbol)}`)
                 .then(r => r.json())
                 .then(d => {
                   const closes = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null).slice(-90);
@@ -1467,7 +1472,7 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
               <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
             )}
           <a
-            href={`https://www.tradingview.com/chart/?symbol=${symbol}`}
+            href={`https://www.tradingview.com/chart/?symbol=${TRADINGVIEW_SYMBOLS[symbol.toUpperCase()] ?? symbol}`}
             target="_blank"
             rel="noopener noreferrer"
             onClick={e => e.stopPropagation()}
