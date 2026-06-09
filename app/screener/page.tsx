@@ -419,8 +419,7 @@ function getBidAskMax(price: number | null): number {
 }
 
 function addBusinessDays(dateStr: string, days: number): Date {
-  const date = new Date(dateStr);
-  let added = 0;
+const date = new Date(`${dateStr}T12:00:00`);  let added = 0;
   while (added < days) {
     date.setDate(date.getDate() + 1);
     const dow = date.getDay();
@@ -3245,35 +3244,40 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
           )}
 
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {Object.entries(result.checks).map(([key, check]) => (
-              <div key={key} className="flex items-start gap-2">
-                <span className={`text-xs mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
-                <div>
-                  <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{key}</p>
-                  <p className={`text-xs ${th.text} font-medium`}>{check.value}</p>
-                  <p className={`text-[10px] ${th.textMuted}`}>{check.reason}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+  {Object.entries(result.checks).map(([key, check]) => {
+    const isEarnings = key === 'earnings';
+    const postDate = isEarnings && result.earningsDate && daysUntil(result.earningsDate) < 0
+      ? getPostEarningsRescreenDate(result.earningsDate)
+      : null;
+    const nextEst = isEarnings && result.earningsDate && daysUntil(result.earningsDate) < 0
+      ? estimateNextEarningsDate(result.earningsDate)
+      : null;
 
-          {hasEarningsBlock && result.earningsDate && (
-            <div className={`pt-2 border-t ${th.border} flex items-center gap-3`}>
-              <p className={`text-[10px] ${th.textFaint} flex-1`}>Schedule a re-screen +{POST_EARNINGS_RESCREEN_DAYS} trading days after earnings ({result.earningsDate})</p>
-              <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>
-            </div>
+    return (
+      <div key={key} className={`flex items-start gap-2 ${isEarnings ? 'md:col-span-2' : ''}`}>
+        <span className={`text-xs mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
+        <div>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{key}</p>
+
+          {isEarnings && result.earningsDate && daysUntil(result.earningsDate) < 0 ? (
+            <>
+              <p className={`text-xs ${th.text} font-medium`}>Reported: {formatDisplayDate(result.earningsDate)}</p>
+              <p className={`text-[10px] ${th.textMuted}`}>Next Est: {nextEst ? formatDisplayDate(nextEst) : '—'}</p>
+              <p className={`text-[10px] text-emerald-500/80`}>
+                Eligible Re-screen: {postDate ? formatDisplayDate(postDate) : '—'}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className={`text-xs ${th.text} font-medium`}>{check.value}</p>
+              <p className={`text-[10px] ${th.textMuted}`}>{check.reason}</p>
+            </>
           )}
-          {hasPastEarnings && result.earningsDate && (() => {
-            const postDate = getPostEarningsRescreenDate(result.earningsDate);
-            const nextEst = estimateNextEarningsDate(result.earningsDate);
-            return (
-              <div className={`pt-2 border-t ${th.border} space-y-1`}>
-                <p className={`text-[10px] text-emerald-500/70`}>✓ Earnings reported {formatDisplayDate(result.earningsDate)} — binary event is behind you</p>
-                <p className={`text-[10px] ${th.textFaint}`}>Eligible re-screen: +{POST_EARNINGS_RESCREEN_DAYS}D post earnings · {formatDisplayDate(postDate)} ({toIsoDate(postDate)})</p>
-                <p className={`text-[10px] ${th.textFaint}`}>Next earnings est.: {formatDisplayDate(nextEst)} ({toIsoDate(nextEst)})</p>
-              </div>
-            );
-          })()}
+        </div>
+      </div>
+    );
+  })}
+</div>
 
           {c && c.strategy === 'IC' && c.callWidth != null && c.callWidth !== c.spreadWidth && (
             <div className={`pt-2 border-t ${th.border}`}>
