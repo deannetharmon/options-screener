@@ -3027,6 +3027,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
       && result.earningsDate
       && daysUntil(result.earningsDate) >= 0;
   const hasPastEarnings = result.earningsDate && daysUntil(result.earningsDate) < 0;
+  const rsi14 = result.trendResult?.metrics?.rsi14 ?? null;
 
   const scoreBorderL = light
     ? light.emoji === '🟢' ? 'border-l-4 border-l-emerald-500'
@@ -3240,16 +3241,9 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               <div className="text-xs shrink-0 w-20">
                 <div>
                   <span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
-                <div>
-                  <span className={`${getRsiColor(rsi14)} font-medium`}>
-                    {rsi14 != null ? rsi14.toFixed(0) : '—'}
-                  </span>
-                  <span className={th.textFaint}>{result.trendResult?.metrics?.rsi14?.toFixed(0) ?? '—'}</span></div>
-              </div>
               <div className="text-xs shrink-0 w-16">
                 <div>
-                  <span className={th.label}>RSI </span>
-                
+                  <span className={th.label}>RSI </span> 
                   <span className={`${getRsiColor(rsi14)} font-medium`}>
                     {rsi14 != null ? rsi14.toFixed(0) : '—'}
                   </span>
