@@ -1706,7 +1706,7 @@ function CalendarButton({ symbol, strategy, earningsDate, ivr, th }: { symbol: s
     setScheduled(true);
   };
   if (scheduled) return <span className="text-[9px] text-emerald-500 border border-emerald-600 rounded px-1.5 py-0.5 font-medium">✓ scheduled</span>;
-  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors font-medium`} title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up</button>;
+  return <button onClick={handleClick} className={`text-[9px] px-1.5 py-0.5 border ${th.inputBorder} rounded ${th.textMuted} ac-hover-border ac-hover-text transition-colors font-medium`} title={`Schedule follow-up 2 business days after earnings (${earningsDate})`}>📅 follow up after {earningsDate}</button>;
 }
 function EntryCalendarButton({ result, th }: { result: ScreenResult; th: typeof THEMES[Theme]; rules: RulesType; }) {
   const key = `entry-${result.symbol}-${result.bestCandidate?.expiration}`;
@@ -2872,8 +2872,9 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   const dteCloseTarget = isShortTerm ? Math.floor(rules.DTE_MIN / 2) : 21;
   const isApproaching = c && c.dte <= dteAlertThreshold;
   const hasEarningsBlock = result.failReasons.some(f => f.includes('Earnings'))
-    && result.earningsDate
-    && daysUntil(result.earningsDate) >= 0;
+      && result.earningsDate
+      && daysUntil(result.earningsDate) >= 0;
+  const hasPastEarnings = result.earningsDate && daysUntil(result.earningsDate) < 0;
 
   const scoreBorderL = light
     ? light.emoji === '🟢' ? 'border-l-4 border-l-emerald-500'
@@ -3145,6 +3146,11 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
             <div className={`pt-2 border-t ${th.border} flex items-center gap-3`}>
               <p className={`text-[10px] ${th.textFaint} flex-1`}>Schedule a re-screen 2 business days after earnings ({result.earningsDate})</p>
               <span onClick={e => e.stopPropagation()}><CalendarButton symbol={result.symbol} strategy={result.strategy} earningsDate={result.earningsDate} ivr={result.ivr} th={th} /></span>
+            </div>
+          )}
+          {hasPastEarnings && result.earningsDate && (
+            <div className={`pt-2 border-t ${th.border}`}>
+              <p className={`text-[10px] text-emerald-500/70`}>✓ Earnings reported {result.earningsDate} — binary event is behind you</p>
             </div>
           )}
 
