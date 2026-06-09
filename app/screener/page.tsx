@@ -5203,33 +5203,9 @@ export default function Home() {
     setResults([]); setRawScanCache([]); setResultsCachedAt(null);
     try { localStorage.removeItem(LS_RESULTS_CACHE); localStorage.removeItem(LS_RAW_SCAN_CACHE); localStorage.removeItem(LS_RESULTS_CACHE_AT); } catch {}
   };
-  const handleBpsChange = (v: string) => { 
-  setBpsTickers(v); 
-  clearResultsCache(); 
-  try { localStorage.setItem(LS_BPS, v); } catch {} 
-  // Force re-run if we have data
-  setTimeout(() => {
-    if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
-  }, 50);
-  };
-  
-  const handleBcsChange = (v: string) => { 
-    setBcsTickers(v); 
-    clearResultsCache(); 
-    try { localStorage.setItem(LS_BCS, v); } catch {} 
-    setTimeout(() => {
-      if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
-    }, 50);
-  };
-  
-  const handleIcChange = (v: string) => { 
-    setIcTickers(v); 
-    clearResultsCache(); 
-    try { localStorage.setItem(LS_IC, v); } catch {} 
-    setTimeout(() => {
-      if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
-    }, 50);
-  };
+  const handleBpsChange = (v: string) => { setBpsTickers(v); clearResultsCache(); try { localStorage.setItem(LS_BPS, v); } catch {} };
+  const handleBcsChange = (v: string) => { setBcsTickers(v); clearResultsCache(); try { localStorage.setItem(LS_BCS, v); } catch {} };
+  const handleIcChange = (v: string) => { setIcTickers(v); clearResultsCache(); try { localStorage.setItem(LS_IC, v); } catch {} };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
   const handlePmccChange = (v: string) => { setPmccTickers(v); clearResultsCache(); try { localStorage.setItem(LS_PMCC, v); } catch {} };
   const handleGlobalLoad = (newBps: string, newBcs: string, newIc: string, newBroken: string) => { handleBpsChange(newBps); handleBcsChange(newBcs); handleIcChange(newIc); handleBrokenChange(newBroken); if (!newBps && !newBcs && !newIc && !newBroken) { setResults([]); setAutoTrendEntries([]); } };
