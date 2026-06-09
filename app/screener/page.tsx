@@ -3101,13 +3101,14 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               <div className="flex items-center justify-between mb-2">
                 <p className={`text-[10px] font-bold ${light.color}`}>{light.emoji} Score {scored.score}/100 — {light.label}</p>
               </div>
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-6 gap-2">
                 {[
                   { label: 'Momentum', val: scored.dims.momentum, max: rankConfig!.weightMomentum },
                   { label: 'IV', val: scored.dims.ivr, max: rankConfig!.weightIvr },
                   { label: 'Range', val: scored.dims.range, max: rankConfig!.weightRange },
                   { label: 'Technical', val: scored.dims.technical, max: rankConfig!.weightTechnical },
                   { label: 'Liquidity', val: scored.dims.liquidity, max: rankConfig!.weightLiquidity },
+                  { label: 'Buffer', val: scored.dims.buffer, max: rankConfig!.weightBuffer },
                 ].map(d => (
                   <div key={d.label} className="text-center">
                     <p className={`text-[8px] ${th.textFaint} mb-1`}>{d.label}</p>
