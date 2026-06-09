@@ -133,6 +133,8 @@ interface EngineData {
   spxSuggestedEntry: SpxSuggestion | null;
   spySuggestedEntry: SpySuggestion | null;
   wheelSuggestions: WheelSuggestion[];
+  spxPrice: number | null;
+  spyPrice: number | null;
   lastUpdated: Date;
 }
 
@@ -893,11 +895,26 @@ async function loadEngineData(watchlist: string[], alloc: Allocation, esFuturesS
     }
   }
 
-  // Sort: urgent → review → entry → hold
+// Sort: urgent → review → entry → hold
   const priorityOrder: Record<ActionPriority, number> = { urgent: 0, review: 1, entry: 2, hold: 3 };
   actions.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
 
-  return { capital, spxPositions, spyPositions, wheelPositions: finalWheelPositions, actions, spxSuggestedEntry, spySuggestedEntry, wheelSuggestions, lastUpdated: new Date() };
+// Fetch SPX and SPY live prices for OTM% calculation
+  let spxPrice: number | null = null;
+  let spyPrice: number | null = null;
+  try {
+    const indexPriceData = await ttFetch(`/market-data/by-type?equity=SPY&index=SPX`, token);
+    for (const item of indexPriceData?.data?.items ?? []) {
+      const sym = item.symbol?.trim().toUpperCase();
+      const last = parseFloat(item.last ?? '0');
+      const bid = parseFloat(item.bid ?? '0');
+      const ask = parseFloat(item.ask ?? '0');
+      const price = last > 0 ? last : (bid + ask) / 2;
+      if (sym === 'SPX' || sym === '$SPX') spxPrice = price;
+      if (sym === 'SPY') spyPrice = price;
+    }
+  } catch {}
+  return { capital, spxPositions, spyPositions, wheelPositions: finalWheelPositions, actions, spxSuggestedEntry, spySuggestedEntry, wheelSuggestions, spxPrice, spyPrice, lastUpdated: new Date() };
 }
 
 // ── AI analysis ────────────────────────────────────────────────────────────
@@ -1491,7 +1508,7 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
   );
 }
 
-function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme] }) {
+function SpxPositionRow({ pos, th, underlyingPrice }: { pos: SpxPosition; th: typeof THEMES[Theme]; underlyingPrice?: number | null }) {
   const statusColors = { hold: 'text-emerald-400', watch: 'text-amber-400', close: 'text-blue-400', manage: 'text-red-400' };
   const statusBg = { hold: 'bg-emerald-500/10 border-emerald-700', watch: 'bg-amber-500/10 border-amber-700', close: 'bg-blue-500/10 border-blue-700', manage: 'bg-red-500/10 border-red-700' };
   return (
@@ -1505,6 +1522,16 @@ function SpxPositionRow({ pos, th }: { pos: SpxPosition; th: typeof THEMES[Theme
           <p className={`text-xs font-bold ${pos.pop >= 70 ? 'text-emerald-400' : pos.pop >= 60 ? 'text-amber-400' : 'text-red-400'}`}>{pos.pop.toFixed(0)}%</p>
           <p className={`text-[9px] ${th.textFaint}`}>POP</p>
         </div>
+        <div className="w-16 shrink-0 text-center">
+          {underlyingPrice && underlyingPrice > 0 ? (() => {
+            const otm = ((underlyingPrice - pos.shortStrike) / underlyingPrice) * 100;
+            return <>
+              <p className={`text-xs font-bold ${otm >= 8 ? 'text-emerald-400' : otm >= 5 ? 'text-amber-400' : 'text-red-400'}`}>{otm.toFixed(1)}%</p>
+              <p className={`text-[9px] ${th.textFaint}`}>OTM</p>
+            </>;
+          })() : <p className={`text-[9px] ${th.textFaint}`}>—</p>}
+        </div>
+        <div className="w-20 shrink-0 text-center">
         <div className="w-20 shrink-0 text-center">
           <p className={`text-xs font-bold ${pos.pnl != null && pos.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
             {pos.pnlPct != null ? `${pos.pnlPct >= 0 ? '+' : ''}${pos.pnlPct.toFixed(0)}%` : '—'}
@@ -2921,7 +2948,7 @@ export default function EnginePage() {
                     <div className={`w-16 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>Qty</div>
                     <div className="flex-1 text-right text-[8px] text-slate-500 uppercase tracking-widest">Status</div>
                   </div>
-                  {d.spxPositions.map((pos, i) => <SpxPositionRow key={i} pos={pos} th={th} />)}
+                  {d.spxPositions.map((pos, i) => <SpxPositionRow key={i} pos={pos} th={th} underlyingPrice={d.spxPrice} />)}
                 </>
               )}
 
@@ -2939,7 +2966,7 @@ export default function EnginePage() {
                     <div className={`w-16 text-[8px] ${th.textFaint} tracking-widest uppercase text-center`}>Qty</div>
                     <div className="flex-1 text-right text-[8px] text-slate-500 uppercase tracking-widest">Status</div>
                   </div>
-                  {d.spyPositions.map((pos, i) => <SpxPositionRow key={`spy-${i}`} pos={pos} th={th} />)}
+                  {d.spyPositions.map((pos, i) => <SpxPositionRow key={`spy-${i}`} pos={pos} th={th} underlyingPrice={d.spyPrice} />)}
                 </>
               )}
 
@@ -3022,6 +3049,14 @@ export default function EnginePage() {
                           <p className="text-xs font-bold text-emerald-400">{d.spxSuggestedEntry.pop.toFixed(0)}%</p>
                           <p className={`text-[9px] ${th.textFaint}`}>POP</p>
                         </div>
+                        {d.spxPrice && d.spxPrice > 0 && (
+                          <div className="text-center">
+                            {(() => { const otm = ((d.spxPrice - d.spxSuggestedEntry.shortStrike) / d.spxPrice) * 100; return <>
+                              <p className={`text-xs font-bold ${otm >= 8 ? 'text-emerald-400' : otm >= 5 ? 'text-amber-400' : 'text-red-400'}`}>{otm.toFixed(1)}%</p>
+                              <p className={`text-[9px] ${th.textFaint}`}>OTM</p>
+                            </>; })()}
+                          </div>
+                        )}
                         <div className="text-center">
                           <p className={`text-xs font-bold ${th.text}`}>${d.spxSuggestedEntry.credit.toFixed(2)}</p>
                           <p className={`text-[9px] ${th.textFaint}`}>credit</p>
@@ -3065,6 +3100,19 @@ export default function EnginePage() {
                           <p className="text-xs font-bold text-emerald-400">{d.spySuggestedEntry.pop.toFixed(0)}%</p>
                           <p className={`text-[9px] ${th.textFaint}`}>POP</p>
                         </div>
+                        {d.spyPrice && d.spyPrice > 0 && (
+                          <div className="text-center">
+                            {(() => {
+                              const otm = d.spySuggestedEntry.strategy === 'BCS'
+                                ? ((d.spySuggestedEntry.shortStrike - d.spyPrice) / d.spyPrice) * 100
+                                : ((d.spyPrice - d.spySuggestedEntry.shortStrike) / d.spyPrice) * 100;
+                              return <>
+                                <p className={`text-xs font-bold ${otm >= 8 ? 'text-emerald-400' : otm >= 5 ? 'text-amber-400' : 'text-red-400'}`}>{otm.toFixed(1)}%</p>
+                                <p className={`text-[9px] ${th.textFaint}`}>OTM</p>
+                              </>;
+                            })()}
+                          </div>
+                        )}
                         <div className="text-center">
                           <p className={`text-xs font-bold ${th.text}`}>${d.spySuggestedEntry.credit.toFixed(2)}</p>
                           <p className={`text-[9px] ${th.textFaint}`}>credit</p>
