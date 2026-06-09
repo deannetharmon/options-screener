@@ -1470,7 +1470,8 @@ export default function RinseRepeatPage() {
       </div>
 
       {/* Sticky controls */}
-      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40`}>        <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className={`${th.header} border-b ${th.border} px-6 py-3 sticky top-[85px] z-40`}>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
             {/* Range */}
             <div className="flex items-center gap-1">
