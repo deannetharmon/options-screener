@@ -5492,11 +5492,7 @@ export default function Home() {
           <a href="/help"        className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">HELP</a>
         </div>
         
-        <div className="flex items-center gap-3">
-          <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
-          <ThemeToggle theme={theme} setTheme={setTheme} accent={accent} setAccent={setAccent} />
         </div>
-      </div>
 
       <div className="flex h-[calc(100vh-57px)]">
         {/* Sidebar */}
