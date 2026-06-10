@@ -4070,11 +4070,12 @@ async function runTrendDetection(
       try {
         const trendResult = await getTrend(symbol);
         entries.push({ symbol, result: trendResult });
-        if (trendResult.strategy === 'BPS') {
+        const route = routeTrendResult(symbol, trendResult);
+        if (route === 'BPS') {
           distributions.bps.push(symbol);
-        } else if (trendResult.strategy === 'BCS') {
+        } else if (route === 'BCS') {
           distributions.bcs.push(symbol);
-        } else if (trendResult.strategy === 'IC') {
+        } else if (route === 'IC') {
           distributions.ic.push(symbol);
         } else {
           distributions.broken.push(symbol);
@@ -4104,7 +4105,7 @@ async function runTrendDetection(
     entries.sort((a, b) => order.indexOf(a.result.strategy) - order.indexOf(b.result.strategy));
     setAutoTrendEntries(entries);
 
-    const statusMsg = `✅ Trend detection complete: ${distributions.bps.length} BPS, ${distributions.bcs.length} BCS, ${distributions.ic.length} IC, ${distributions.broken.length} broken/unknown.`;
+    const statusMsg = `✅ Trend detection complete: ${distributions.bps.length} BPS, ${distributions.bcs.length} BCS, ${distributions.ic.length} IC, ${distributions.broken.length} true review/error.`;
 
     const applyDistributions = (doMerge: boolean) => {
       if (doMerge) {
@@ -5822,7 +5823,7 @@ export default function Home() {
             <StrategyBox label="IC" badge="NEUTRAL" badgeColor="bg-blue-500/15 text-blue-500 border-blue-500" borderFocus="ac-focus" value={icTickers} onChange={handleIcChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox label="PMCC" badge="BULLISH+" badgeColor="bg-purple-500/15 text-purple-400 border-purple-500" borderFocus="focus:border-purple-500" value={pmccTickers} onChange={handlePmccChange} strategy="IC" disabled={loading} onLoadPrompt={showLoadPrompt} th={th} />
             <StrategyBox
-              label="Broken (Review)"
+              label="Review / Error"
               badge="REVIEW"
               badgeColor="bg-amber-500/15 text-amber-500 border-amber-500"
               borderFocus="focus:border-amber-500"
