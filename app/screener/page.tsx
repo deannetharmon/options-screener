@@ -4032,6 +4032,61 @@ function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
 }
 
 // ── Trend Detection with Yahoo Finance ──────────────────────────────────────
+type AutoRoute = 'BPS' | 'BCS' | 'IC' | 'broken';
+
+function routeTrendResult(symbol: string, trendResult: TrendResult): AutoRoute {
+  const reason = trendResult.reason ?? '';
+  const score = trendResult.scores?.total ?? 0;
+  const m = trendResult.metrics as any;
+
+  if (trendResult.strategy === 'BPS') return 'BPS';
+  if (trendResult.strategy === 'BCS') return 'BCS';
+  if (trendResult.strategy === 'IC') return 'IC';
+
+  // True broken / bad-data only
+  if (
+    reason.includes('catastrophic drop') ||
+    reason.includes('not yet tradeable') ||
+    reason.includes('no bars') ||
+    reason.includes('Not enough valid')
+  ) {
+    return 'broken';
+  }
+
+  // Extended bullish = not broken. Professional handling: BPS/CSP review.
+  if (
+    reason.includes('REVIEW EXTENDED') &&
+    trendResult.trend === 'uptrend' &&
+    score > 0
+  ) {
+    return 'BPS';
+  }
+
+  // Extended bearish = not broken. Professional handling: BCS/CC review.
+  if (
+    reason.includes('REVIEW EXTENDED') &&
+    trendResult.trend === 'downtrend' &&
+    score < 0
+  ) {
+    return 'BCS';
+  }
+
+  // Chop/range = IC review, not broken.
+  if (
+    reason.includes('NO_TRADE CHOP') ||
+    trendResult.subtype === 'CHOP' ||
+    trendResult.trend === 'sideways'
+  ) {
+    return 'IC';
+  }
+
+  // Conflicting but biased
+  if (score >= 10 || (m?.momentum60 ?? 0) > 0.04 || (m?.distFromMa50 ?? 0) > 0.03) return 'BPS';
+  if (score <= -10 || (m?.momentum60 ?? 0) < -0.04 || (m?.distFromMa50 ?? 0) < -0.03) return 'BCS';
+
+  return 'broken';
+}
+
 async function runTrendDetection(
   autoTickers: string,
   bpsTickers: string,
