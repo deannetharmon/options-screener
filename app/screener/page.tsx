@@ -1301,7 +1301,7 @@ async function getMarketMetrics(symbols: string[], token: string) {
       ? parseFloat(item['implied-volatility-index-rank']) * 100
       : null,
     earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
-    hv30: item['hv-30'] != null ? parseFloat(item['hv-30']) * 100 : null
+    hv30: item['hv-30'] != null ? parseFloat(item['hv-30']) * 100 : null,
   }));
 }
 
