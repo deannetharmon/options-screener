@@ -3600,17 +3600,6 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
       pop: 'POP',
       earnings: 'Earnings',
     };
-    const keyLabel: Record<string, string> = {
-      iv: 'Strike IV vs HV',
-      emClearance: 'EM Clearance',
-      ivr: 'IVR',
-      oi: 'OI',
-      delta: 'Delta',
-      credit: 'Credit',
-      roc: 'ROC',
-      pop: 'POP',
-      earnings: 'Earnings',
-    };
     const postDate = isEarnings && result.earningsDate && daysUntil(result.earningsDate) < 0
       ? getPostEarningsRescreenDate(result.earningsDate)
       : null;
