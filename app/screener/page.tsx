@@ -444,6 +444,16 @@ function findRankModeCandidatesForSymbol(
       screenResult: {
         ...result,
         qualified: true,
+        bestCandidate: {
+          ...candidate,
+          shortIv: normalizeIv(candidate.shortIv),
+        },
+        checks: {
+          ...result.checks,
+          iv: candidate.shortIv == null
+            ? { status: 'pending', value: '—', reason: 'Strike IV unavailable' }
+            : { status: 'pass', value: `${normalizeIv(candidate.shortIv)?.toFixed(0)}%`, reason: 'Strike IV available' },
+        },
         failReasons: result.failReasons.filter(
           r =>
             !r.includes('qualifying strikes') &&
