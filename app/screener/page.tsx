@@ -1294,6 +1294,16 @@ async function loadExistingPositions(): Promise<ExistingPosition[]> {
 
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
+  
+  if (symbol.toUpperCase() === 'INTC') {
+  const sample = data.data?.items?.[0];
+
+//console log for IV troubleshooting
+  console.log('INTC option chain raw sample:', sample);
+  console.log('INTC option chain raw sample keys:', sample ? Object.keys(sample) : []);
+  console.log('INTC option chain raw sample JSON:', JSON.stringify(sample, null, 2));
+}
+  
   return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null, hv30: item['hv-30'] != null ? parseFloat(item['hv-30']) * 100 : null }));
 }
 async function getQuote(symbol: string, token: string): Promise<number | null> {
