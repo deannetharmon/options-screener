@@ -1459,26 +1459,34 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
     const credit = parseFloat((shortLeg.mid - longLeg.mid).toFixed(2)); if (credit <= 0) continue;
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
     const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_SPREAD) continue;
-    const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
-    candidates.push({
-      strategy,
-      expiration: expDate,
-      dte: daysUntil(expDate),
-      shortStrike: shortLeg.strikePrice,
-      longStrike,
-      shortDelta: absDelta,
-      shortOI: shortLeg.openInterest,
-      longOI: longLeg.openInterest,
-      credit,
-      spreadWidth: width,
-      creditRatio,
-      roc,
-      pop,
-      optimized: true,
-      shortOccSymbol: shortLeg.occSymbol,
-      longOccSymbol: longLeg.occSymbol,
-      shortIv: normalizeIv(shortLeg.iv)
+    const pop = (1 - absDelta) * 100;
+    if (pop < RULES.POP_MIN) continue;
+    
+    console.log('Spread candidate IV debug', {
+      symbol: shortLeg.occSymbol,
+      strike: shortLeg.strikePrice,
+      iv: shortLeg.iv,
     });
+
+    candidates.push({
+          strategy,
+          expiration: expDate,
+          dte: daysUntil(expDate),
+          shortStrike: shortLeg.strikePrice,
+          longStrike,
+          shortDelta: absDelta,
+          shortOI: shortLeg.openInterest,
+          longOI: longLeg.openInterest,
+          credit,
+          spreadWidth: width,
+          creditRatio,
+          roc,
+          pop,
+          optimized: true,
+          shortOccSymbol: shortLeg.occSymbol,
+          longOccSymbol: longLeg.occSymbol,
+          shortIv: normalizeIv(shortLeg.iv)
+        });
   }
   if (candidates.length === 0) return null;
   // Pick best POP; use ROC as tiebreaker when POP difference is < 5%
