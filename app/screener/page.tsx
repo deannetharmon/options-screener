@@ -1951,10 +1951,10 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   const ivCheck: CheckResult = strikeIv == null || hv30 == null
     ? { status: 'pending', value: '—', reason: 'Strike IV unavailable for this expiration' }
     : strikeIv >= hv30 * 1.1
-      ? { status: 'pass', value: `IV ${strikeIv.toFixed(0)}% vs HV ${hv30.toFixed(0)}%`, reason: `Options priced ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized vol — sell edge confirmed` }
+      ? { status: 'pass', value: `IV (${strikeIv.toFixed(0)}%) vs HV (${hv30.toFixed(0)}%)`, reason: `Options priced ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized vol — sell edge confirmed` }
       : strikeIv >= hv30 * 0.90
-        ? { status: 'warn', value: `IV ${strikeIv.toFixed(0)}% vs HV ${hv30.toFixed(0)}%`, reason: `Options near realized vol — thin edge, consider sizing down` }
-        : { status: 'warn', value: `IV ${strikeIv.toFixed(0)}% vs HV ${hv30.toFixed(0)}%`, reason: `Options priced below realized vol — no statistical sell edge` };
+        ? { status: 'warn', value: `IV (${strikeIv.toFixed(0)}%) vs HV (${hv30.toFixed(0)}%)`, reason: `Options near realized vol — thin edge, consider sizing down` }
+        : { status: 'warn', value: `IV (${strikeIv.toFixed(0)}%) vs HV (${hv30.toFixed(0)}%)`, reason: `Options priced below realized vol — no statistical sell edge` };
 
   // ── Expected Move Clearance check ─────────────────────────────────────────
   const emClearanceCheck: CheckResult = (() => {
@@ -1992,7 +1992,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     liquidityRating: metrics.liquidityRating ?? null,
     qualified, bestCandidate, failReasons, earningsDate, trendResult,
     isEtf: isIndex, underlyingType: classifyUnderlying(symbol), ruleSetApplied: appliedLabel,
-    checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck, emClearance: emClearanceCheck },
+    checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, emClearance: emClearanceCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck },
   };
 }
 
