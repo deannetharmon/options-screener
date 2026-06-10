@@ -480,9 +480,6 @@ function findRankModeCandidatesForSymbol(
         },
         checks: {
           ...result.checks,
-          iv: candidate.shortIv == null
-            ? { status: 'pending', value: '—', reason: 'Strike IV unavailable' }
-            : { status: 'pass', value: `${normalizeIv(candidate.shortIv)?.toFixed(0)}%`, reason: 'Strike IV available' },
         },
         failReasons: result.failReasons.filter(
           r =>
