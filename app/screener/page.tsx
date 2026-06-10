@@ -478,8 +478,7 @@ function findRankModeCandidatesForSymbol(
           ...candidate,
           shortIv: normalizeIv(candidate.shortIv),
         },
-        checks: {
-          ...result.checks,
+        checks: result.checks,
         },
         failReasons: result.failReasons.filter(
           r =>
