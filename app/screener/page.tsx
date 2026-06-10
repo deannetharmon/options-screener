@@ -2407,7 +2407,7 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
 
 // ── Result Card ────────────────────────────────────────────────────────────
 function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme] }) {
-  const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>·${w}·</span>;
+  const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>{`·${w}·`}</span>;
   if (c.strategy === 'PMCC') {
     return (
       <div className="text-xs shrink-0">
