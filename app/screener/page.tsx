@@ -1950,23 +1950,25 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
         value: '—',
         reason: 'Strike IV unavailable for this expiration'
       }
-    : strikeIv >= hv30 * 1.1
-      ? {
-          status: 'pass',
-          value: `IV (${strikeIv.toFixed(0)}%) VS HV (${hv30.toFixed(0)}%)`,
-          reason: `Strike IV ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized - edge confirmed`
-        }
-      : strikeIv >= hv30 * 0.9
-        ? {
-            status: 'warn',
-            value: `IV (${strikeIv.toFixed(0)}%) VS HV (${hv30.toFixed(0)}%)`,
-            reason: `Strike IV only ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized - thin edge, consider sizing down`
-          }
-        : {
-            status: 'warn',
-            value: `IV (${strikeIv.toFixed(0)}%) VS HV (${hv30.toFixed(0)}%)`,
-            reason: `Strike IV ${Math.abs(((strikeIv / hv30 - 1) * 100)).toFixed(0)}% below realized - no statistical sell edge`
-          };
+    : (() => {
+        const edgePct = ((strikeIv / hv30 - 1) * 100);
+
+        return {
+          status:
+            strikeIv >= hv30 * 1.1
+              ? 'pass'
+              : 'warn',
+
+          value: `${strikeIv.toFixed(0)}% IV vs ${hv30.toFixed(0)}% HV`,
+
+          reason:
+            edgePct >= 10
+              ? `${edgePct.toFixed(0)}% volatility edge`
+              : edgePct >= 0
+                ? `${edgePct.toFixed(0)}% volatility edge (thin)`
+                : `${Math.abs(edgePct).toFixed(0)}% below HV`
+        };
+      })();
   
   // ── Expected Move Clearance check ─────────────────────────────────────────
   const emClearanceCheck: CheckResult = (() => {
