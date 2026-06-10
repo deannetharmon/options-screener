@@ -1972,6 +1972,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
             value: `IV (${strikeIv.toFixed(0)}%) VS HV (${hv30.toFixed(0)}%)`,
             reason: `Strike IV ${Math.abs(((strikeIv / hv30 - 1) * 100)).toFixed(0)}% below realized - no statistical sell edge`
           };
+  
   // ── Expected Move Clearance check ─────────────────────────────────────────
   const emClearanceCheck: CheckResult = (() => {
     if (!bestCandidate || bestCandidate.expectedMove == null || price == null) {
