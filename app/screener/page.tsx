@@ -3241,9 +3241,6 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               </div>
               <div className="text-xs shrink-0 w-20">
                 <div>
-                  <span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
-              <div className="text-xs shrink-0 w-20">
-                <div>
                   <span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span>
                 </div>
                 <div>
