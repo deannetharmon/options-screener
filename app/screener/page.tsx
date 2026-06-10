@@ -1948,14 +1948,30 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     }
   }
 
-  const ivCheck: CheckResult = strikeIv == null || hv30 == null
-    ? { status: 'pending', value: '—', reason: 'Strike IV unavailable for this expiration' }
+  const ivCheck: CheckResult =
+  strikeIv == null || hv30 == null
+    ? {
+        status: 'pending',
+        value: '—',
+        reason: 'Strike IV unavailable for this expiration'
+      }
     : strikeIv >= hv30 * 1.1
-      ? { status: 'pass', value: `IV (${strikeIv.toFixed(0)}%) vs HV (${hv30.toFixed(0)}%)`, reason: `Options priced ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized vol — sell edge confirmed` }
-      : strikeIv >= hv30 * 0.90
-        ? { status: 'warn', value: `IV (${strikeIv.toFixed(0)}%) vs HV (${hv30.toFixed(0)}%)`, reason: `Options near realized vol — thin edge, consider sizing down` }
-        : { status: 'warn', value: `IV (${strikeIv.toFixed(0)}%) vs HV (${hv30.toFixed(0)}%)`, reason: `Options priced below realized vol — no statistical sell edge` };
-
+      ? {
+          status: 'pass',
+          value: `IV (${strikeIv.toFixed(0)}%) VS HV (${hv30.toFixed(0)}%)`,
+          reason: `Strike IV ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized - edge confirmed`
+        }
+      : strikeIv >= hv30 * 0.9
+        ? {
+            status: 'warn',
+            value: `IV (${strikeIv.toFixed(0)}%) VS HV (${hv30.toFixed(0)}%)`,
+            reason: `Strike IV only ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized - thin edge, consider sizing down`
+          }
+        : {
+            status: 'warn',
+            value: `IV (${strikeIv.toFixed(0)}%) VS HV (${hv30.toFixed(0)}%)`,
+            reason: `Strike IV ${Math.abs(((strikeIv / hv30 - 1) * 100)).toFixed(0)}% below realized - no statistical sell edge`
+          };
   // ── Expected Move Clearance check ─────────────────────────────────────────
   const emClearanceCheck: CheckResult = (() => {
     if (!bestCandidate || bestCandidate.expectedMove == null || price == null) {
