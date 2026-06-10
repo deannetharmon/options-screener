@@ -322,20 +322,28 @@ function daysUntil(dateStr: string): number {
 }
 
 function getCreditColor(candidate: SpreadCandidate, isEtfOrIndex: boolean): string {
-  const target = isEtfOrIndex ? 0.25 : 0.33;
+  // Visual quality standard: green = ideal, yellow = acceptable, red = weak.
+  // Equity best practice: ideal 33%, acceptable 25%.
+  // ETF/Index best practice: ideal 25%, acceptable 20%.
+  const ideal = isEtfOrIndex ? 0.25 : 0.33;
+  const acceptable = isEtfOrIndex ? 0.20 : 0.25;
   const ratio = candidate.creditRatio;
 
-  if (ratio >= target) return 'text-emerald-400';
-  if (ratio >= target * 0.8) return 'text-yellow-400';
+  if (ratio >= ideal) return 'text-emerald-400';
+  if (ratio >= acceptable) return 'text-yellow-400';
   return 'text-red-400';
 }
 
 function getRocColor(candidate: SpreadCandidate, isEtfOrIndex: boolean): string {
-  const target = isEtfOrIndex ? 25 : 33;
+  // Visual quality standard: green = ideal, yellow = acceptable, red = weak.
+  // Equity best practice: ideal 33%, acceptable 25%.
+  // ETF/Index best practice: ideal 25%, acceptable 20%.
+  const ideal = isEtfOrIndex ? 25 : 33;
+  const acceptable = isEtfOrIndex ? 20 : 25;
   const roc = candidate.roc;
 
-  if (roc >= target) return 'text-emerald-400';
-  if (roc >= target * 0.8) return 'text-yellow-400';
+  if (roc >= ideal) return 'text-emerald-400';
+  if (roc >= acceptable) return 'text-yellow-400';
   return 'text-red-400';
 }
 
@@ -1327,7 +1335,18 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
       const bid = parseFloat(item.bid ?? '0'), ask = parseFloat(item.ask ?? '0');
       const delta = item.delta != null ? parseFloat(item.delta) : null;
       const oi = parseInt(item['open-interest'] ?? '0', 10);
-      const iv = item['implied-volatility'] != null ? parseFloat(item['implied-volatility']) * 100 : null;
+      const rawIv =
+        item['implied-volatility'] ??
+        item['implied-volatility-index'] ??
+        item.iv ??
+        item.volatility ??
+        null;
+      const parsedIv = rawIv != null ? parseFloat(rawIv) : null;
+      const iv = parsedIv == null || Number.isNaN(parsedIv)
+        ? null
+        : parsedIv <= 1
+          ? parsedIv * 100
+          : parsedIv;
       if (!expirations.includes(meta.expDate)) expirations.push(meta.expDate);
       if (!chains[meta.expDate]) chains[meta.expDate] = [];
       chains[meta.expDate].push({ strikePrice: meta.strike, expirationDate: meta.expDate, optionType: meta.optionType, delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2, occSymbol: item.symbol, iv });
@@ -1736,13 +1755,15 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
   const hv30 = metrics.hv30 ?? null;
   const strikeIv = bestCandidate?.shortIv ?? null;
-  const ivCheck: CheckResult = strikeIv == null || hv30 == null
+  const ivProxy = strikeIv ?? ivrValue ?? null;
+  const ivLabel = strikeIv != null ? 'Strike IV' : ivrValue != null ? 'IVR proxy' : 'IV';
+  const ivCheck: CheckResult = ivProxy == null || hv30 == null
     ? { status: 'pending', value: '—', reason: 'Data unavailable' }
-    : strikeIv >= hv30 * 1.1
-      ? { status: 'pass', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `IV ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized — edge confirmed` }
-      : strikeIv >= hv30 * 0.90
-        ? { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'IV near realized vol — thin edge, size down' }
-        : { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'IV below realized — premium not elevated at this strike' };
+    : ivProxy >= hv30 * 1.1
+      ? { status: 'pass', value: `${ivProxy.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `${ivLabel} ${((ivProxy / hv30 - 1) * 100).toFixed(0)}% above realized — edge confirmed` }
+      : ivProxy >= hv30 * 0.90
+        ? { status: 'warn', value: `${ivProxy.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `${ivLabel} near realized vol — thin edge, size down` }
+        : { status: 'warn', value: `${ivProxy.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `${ivLabel} below realized — premium not elevated` };
 
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
   return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, underlyingType: classifyUnderlying(symbol), ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck } };
@@ -3029,7 +3050,10 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
       && result.earningsDate
       && daysUntil(result.earningsDate) >= 0;
   const hasPastEarnings = result.earningsDate && daysUntil(result.earningsDate) < 0;
-  const rsi14 = result.trendResult?.metrics?.rsi14 ?? null;
+  const rsi14 =
+    result.trendResult?.metrics?.rsi14 ??
+    cachedEntry?.trendResult?.metrics?.rsi14 ??
+    null;
 
   const scoreBorderL = light
     ? light.emoji === '🟢' ? 'border-l-4 border-l-emerald-500'
