@@ -3242,13 +3242,17 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               <div className="text-xs shrink-0 w-20">
                 <div>
                   <span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span></div>
-              <div className="text-xs shrink-0 w-16">
+              <div className="text-xs shrink-0 w-20">
                 <div>
-                  <span className={th.label}>RSI </span> 
+                  <span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span>
+                </div>
+                <div>
+                  <span className={th.label}>RSI </span>
                   <span className={`${getRsiColor(rsi14)} font-medium`}>
                     {rsi14 != null ? rsi14.toFixed(0) : '—'}
                   </span>
-                </div> 
+                </div>
+              </div>
             </>}
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
             {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
