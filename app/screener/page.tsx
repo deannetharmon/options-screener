@@ -479,11 +479,10 @@ function findRankModeCandidatesForSymbol(
           shortIv: normalizeIv(candidate.shortIv),
         },
         checks: result.checks,
-        },
         failReasons: result.failReasons.filter(
           r =>
             !r.includes('qualifying strikes') &&
-            !r.includes('No 30-45 DTE')
+            !r.includes('No 30–45 DTE')
         ),
       },
       pop: candidate.pop ?? 0,
