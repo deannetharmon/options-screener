@@ -89,6 +89,7 @@ interface SpreadCandidate {
   shortStrike: number; longStrike: number; shortDelta: number;
   credit: number; spreadWidth: number; creditRatio: number;
   roc: number; pop: number | null; shortOI: number; longOI: number; shortIv?: number | null;
+  expirationIvx?: number | null; expectedMove?: number | null;
   shortCallStrike?: number; longCallStrike?: number;
   callCredit?: number; callWidth?: number; totalCredit?: number; optimized?: boolean;
   shortOccSymbol?: string; longOccSymbol?: string;
@@ -145,12 +146,13 @@ interface AutoTrendEntry {
 
 interface ScreenResult {
   symbol: string; strategy: string; price: number | null; ivr: number | null;
+  ivx?: number | null; ivx30?: number | null; ivHv30Diff?: number | null; liquidityRating?: number | null;
   qualified: boolean; bestCandidate: SpreadCandidate | null;
   failReasons: string[]; earningsDate?: string | null; trendResult?: TrendResult;
   isEtf?: boolean;
   underlyingType?: 'index' | 'etf' | 'stock';
   ruleSetApplied?: string;
-  checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; iv: CheckResult; };
+  checks: { ivr: CheckResult; earnings: CheckResult; oi: CheckResult; delta: CheckResult; credit: CheckResult; roc: CheckResult; pop: CheckResult; iv: CheckResult; emClearance: CheckResult; };
 }
 
 interface ExistingPosition {
@@ -364,6 +366,34 @@ function getRsiColor(rsi: number | null | undefined): string {
   if (rsi >= 70) return 'text-red-400';
   if (rsi <= 30) return 'text-emerald-400';
   return 'text-slate-300';
+}
+
+function getIvxColor(ivx: number | null | undefined): string {
+  if (ivx == null) return 'text-slate-500';
+  if (ivx > 100) return 'text-red-400';       // extreme — likely binary event
+  if (ivx > 70)  return 'text-yellow-400';    // elevated — verify no event
+  if (ivx >= 40) return 'text-emerald-400';   // sweet spot for premium selling
+  if (ivx >= 20) return 'text-slate-300';     // moderate
+  return 'text-slate-500';                     // quiet — thin premium
+}
+
+function getEmClearanceColor(clearancePct: number | null): string {
+  if (clearancePct == null) return 'text-slate-500';
+  if (clearancePct >= 15) return 'text-emerald-400';   // well outside EM
+  if (clearancePct >= 5)  return 'text-yellow-400';    // outside but close
+  if (clearancePct >= 0)  return 'text-orange-400';    // barely outside
+  return 'text-red-400';                                // inside EM — danger
+}
+
+function calcEmClearancePct(result: { price: number | null; bestCandidate: SpreadCandidate | null }): number | null {
+  const c = result.bestCandidate;
+  if (!c || c.expectedMove == null || result.price == null || result.price <= 0) return null;
+  const em = c.expectedMove;
+  const price = result.price;
+  const emBoundary = c.strategy === 'BPS' ? price - em : price + em;
+  return c.strategy === 'BPS'
+    ? (emBoundary - c.shortStrike) / price * 100
+    : (c.shortStrike - emBoundary) / price * 100;
 }
 
 function normalizeIv(value: any): number | null {
@@ -995,12 +1025,13 @@ const LS_RESULTS_CACHE_AT = 'hunter-results-cache-at';
 const LS_DISMISSED_WARNINGS = 'hunter-dismissed-portfolio-warnings';
 
 interface RankConfig {
-  weightMomentum: number;  // 0–25
-  weightIvr: number;       // 0–20
-  weightRange: number;     // 0–15
-  weightTechnical: number; // 0–10
-  weightLiquidity: number; // 0–5
-  weightBuffer: number;    // 0–25
+  weightMomentum: number;     // 0–25
+  weightIvr: number;          // 0–15
+  weightEmClearance: number;  // 0–15
+  weightRange: number;        // 0–15
+  weightTechnical: number;    // 0–10
+  weightLiquidity: number;    // 0–10
+  weightBuffer: number;       // 0–10
   dteSweetSpot: number;
   dteRange: number;
   thresholdGreen: number;
@@ -1010,7 +1041,7 @@ interface RankConfig {
 }
 
 const DEFAULT_RANK_CONFIG: RankConfig = {
-  weightMomentum: 25, weightIvr: 20, weightRange: 15, weightTechnical: 10, weightLiquidity: 5, weightBuffer: 25,
+  weightMomentum: 25, weightIvr: 15, weightEmClearance: 15, weightRange: 15, weightTechnical: 10, weightLiquidity: 10, weightBuffer: 10,
   dteSweetSpot: 38, dteRange: 7,
   thresholdGreen: 75, thresholdYellow: 55, thresholdOrange: 35,
   weightCredit: 25, weightRoc: 20, weightPop: 15, weightDte: 15,
@@ -1022,7 +1053,7 @@ function getSavedRankConfig(): RankConfig {
 }
 
 interface DimensionScore {
-  momentum: number; ivr: number; range: number; technical: number; liquidity: number; buffer: number; total: number;
+  momentum: number; ivr: number; emClearance: number; range: number; technical: number; liquidity: number; buffer: number; total: number;
 }
 
 function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number; dims: DimensionScore } | null {
@@ -1055,14 +1086,33 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
   }
   const momentumScore = clamp(momentumRaw) * cfg.weightMomentum;
 
-  // ── IV Quality (25pts) ────────────────────────────────────────────────────
-  // When momentum is very strong, reduce effective IVR weight so it doesn't
-  // dominate over a clear directional signal (WFC: 39% IVR but -135 momentum)
+  // ── IVR Quality (15pts) ───────────────────────────────────────────────────
+  // IVR answers "should I be selling at all?" — bell curve peaking at 50-65
   const ivr = result.ivr ?? 0;
   const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
   const momentumStrength = t?.scores?.total != null ? clamp(Math.abs(t.scores.total) / 150) : 0;
-  const effectiveIvrWeight = cfg.weightIvr * (1 - momentumStrength * 0.35);
+  const effectiveIvrWeight = (cfg.weightIvr ?? 15) * (1 - momentumStrength * 0.35);
   const ivrScore = clamp(ivrRaw) * effectiveIvrWeight;
+
+  // ── EM Clearance (15pts) ──────────────────────────────────────────────────
+  // How far outside the expected move is the short strike?
+  // >15% beyond EM = full score; inside EM = zero
+  let emClearanceRaw = 0.5; // neutral default when EM unavailable
+  if (c?.expectedMove != null && c.expectedMove > 0 && result.price != null && result.price > 0) {
+    const shortStrike = c.shortStrike;
+    const price = result.price;
+    const em = c.expectedMove;
+    // Distance from short strike to the EM boundary
+    const emBoundary = c.strategy === 'BPS' ? price - em : price + em;
+    const clearancePct = c.strategy === 'BPS'
+      ? (emBoundary - shortStrike) / price * 100   // positive = outside EM
+      : (shortStrike - emBoundary) / price * 100;
+    // Score: inside EM = 0, 5% outside = 0.5, 15%+ outside = 1.0
+    emClearanceRaw = clearancePct <= 0 ? 0
+      : clearancePct >= 15 ? 1.0
+      : clearancePct / 15;
+  }
+  const emClearanceScore = clamp(emClearanceRaw) * (cfg.weightEmClearance ?? 15);
 
   // ── 52W Range Position (20pts) ────────────────────────────────────────────
   // BPS near 52W highs (r60 > 0.85) gets penalized — stock is stretched
@@ -1145,12 +1195,13 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
     bufferScore = scoreBuffer(bufferPct, c.dte, uType) * (cfg.weightBuffer ?? 25);
   }
 
-  const total = Math.round(momentumScore + ivrScore + rangeScore + technicalScore + liquidityScore + bufferScore);
+  const total = Math.round(momentumScore + ivrScore + emClearanceScore + rangeScore + technicalScore + liquidityScore + bufferScore);
   return {
     score: Math.min(100, total),
     dims: {
       momentum: Math.round(momentumScore),
       ivr: Math.round(ivrScore),
+      emClearance: Math.round(emClearanceScore),
       range: Math.round(rangeScore),
       technical: Math.round(technicalScore),
       liquidity: Math.round(liquidityScore),
@@ -1337,21 +1388,38 @@ async function loadExistingPositions(): Promise<ExistingPosition[]> {
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
 
-// IVX_DISCOVERY: log first item to find IVx field name
-  if (data.data?.items?.[0]) {
-    const item = data.data.items[0];
-    console.warn('IVX_DISCOVERY keys:', Object.keys(item).join(', '));
-    console.warn('IVX_DISCOVERY full:', JSON.stringify(item, null, 2));
-  }
+  return (data.data?.items || []).map((item: any) => {
+    // Build per-expiration IVx lookup map from option-expiration-implied-volatilities
+    const expirationIvxMap: Record<string, number> = {};
+    for (const e of item['option-expiration-implied-volatilities'] ?? []) {
+      if (e['expiration-date'] && e['implied-volatility'] != null) {
+        const raw = parseFloat(e['implied-volatility']);
+        expirationIvxMap[e['expiration-date']] = raw <= 1 ? raw * 100 : raw;
+      }
+    }
 
-  return (data.data?.items || []).map((item: any) => ({
-    symbol: item.symbol,
-    ivRank: item['implied-volatility-index-rank'] != null
-      ? parseFloat(item['implied-volatility-index-rank']) * 100
-      : null,
-    earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
-    hv30: item['hv-30'] != null ? parseFloat(item['hv-30']) * 100 : null,
-  }));
+    return {
+      symbol: item.symbol,
+      ivRank: item['implied-volatility-index-rank'] != null
+        ? parseFloat(item['implied-volatility-index-rank']) * 100
+        : null,
+      ivx: item['implied-volatility-index'] != null
+        ? parseFloat(item['implied-volatility-index']) * 100
+        : null,
+      ivx30: item['implied-volatility-30-day'] != null
+        ? parseFloat(item['implied-volatility-30-day'])
+        : null,
+      ivHv30Diff: item['iv-hv-30-day-difference'] != null
+        ? parseFloat(item['iv-hv-30-day-difference'])
+        : null,
+      liquidityRating: item['liquidity-rating'] ?? null,
+      earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
+      hv30: item['historical-volatility-30-day'] != null
+        ? parseFloat(item['historical-volatility-30-day'])
+        : null,
+      expirationIvxMap,
+    };
+  });
 }
 
 async function getQuote(symbol: string, token: string): Promise<number | null> {
@@ -1517,7 +1585,9 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
           optimized: true,
           shortOccSymbol: shortLeg.occSymbol,
           longOccSymbol: longLeg.occSymbol,
-          shortIv: normalizeIv(shortLeg.iv)
+          shortIv: normalizeIv(shortLeg.iv),
+          expirationIvx: null,   // populated in runChecklist after candidate selected
+          expectedMove: null,    // populated in runChecklist after candidate selected
         });
   }
   if (candidates.length === 0) return null;
@@ -1781,9 +1851,11 @@ function runPMCCChecklist(
     && trendOk;
 
   return {
-    symbol, strategy: 'PMCC', price, ivr: ivrValue, qualified, bestCandidate, failReasons,
+    symbol, strategy: 'PMCC', price, ivr: ivrValue,
+    ivx: null, ivx30: null, ivHv30Diff: null, liquidityRating: null,
+    qualified, bestCandidate, failReasons,
     earningsDate, trendResult, isEtf: false, underlyingType: classifyUnderlying(symbol), ruleSetApplied: 'PMCC',
-    checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: { status: 'pending' as const, value: '—', reason: 'N/A for PMCC' } },
+    checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: { status: 'pending' as const, value: '—', reason: 'N/A for PMCC' }, emClearance: { status: 'pending' as const, value: '—', reason: 'N/A for PMCC' } },
   };
 }
 
@@ -1862,17 +1934,66 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
   const hv30 = metrics.hv30 ?? null;
   const strikeIv = bestCandidate?.shortIv ?? null;
-  
+
+  // ── Populate expirationIvx and expectedMove on bestCandidate ──────────────
+  if (bestCandidate) {
+    const expIvxMap: Record<string, number> = metrics.expirationIvxMap ?? {};
+    const expIvx = expIvxMap[bestCandidate.expiration] ?? null;
+    bestCandidate.expirationIvx = expIvx;
+    if (expIvx != null && price != null && price > 0) {
+      // Expected move = price × (ivx/100) × sqrt(dte/365)
+      bestCandidate.expectedMove = parseFloat(
+        (price * (expIvx / 100) * Math.sqrt(bestCandidate.dte / 365)).toFixed(2)
+      );
+    }
+  }
+
   const ivCheck: CheckResult = strikeIv == null || hv30 == null
     ? { status: 'pending', value: '—', reason: 'Strike IV unavailable' }
     : strikeIv >= hv30 * 1.1
-      ? { status: 'pass', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `Strike IV ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized — edge confirmed` }
+      ? { status: 'pass', value: `${strikeIv.toFixed(0)}% vs HV ${hv30.toFixed(0)}%`, reason: `Strike IV ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized — edge confirmed` }
       : strikeIv >= hv30 * 0.90
-        ? { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'Strike IV near realized vol — thin edge, size down' }
-        : { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'Strike IV below realized — premium not elevated' };
+        ? { status: 'warn', value: `${strikeIv.toFixed(0)}% vs HV ${hv30.toFixed(0)}%`, reason: 'Strike IV near realized vol — thin edge, size down' }
+        : { status: 'warn', value: `${strikeIv.toFixed(0)}% vs HV ${hv30.toFixed(0)}%`, reason: 'Strike IV below realized — no statistical edge' };
+
+  // ── Expected Move Clearance check ─────────────────────────────────────────
+  const emClearanceCheck: CheckResult = (() => {
+    if (!bestCandidate || bestCandidate.expectedMove == null || price == null) {
+      return { status: 'pending' as const, value: '—', reason: 'IVx unavailable for this expiration' };
+    }
+    const em = bestCandidate.expectedMove;
+    const shortStrike = bestCandidate.shortStrike;
+    const emBoundary = bestCandidate.strategy === 'BPS' ? price - em : price + em;
+    const clearancePct = bestCandidate.strategy === 'BPS'
+      ? (emBoundary - shortStrike) / price * 100
+      : (shortStrike - emBoundary) / price * 100;
+    const clearanceDollar = Math.abs(emBoundary - shortStrike).toFixed(2);
+    const emSign = bestCandidate.strategy === 'BPS' ? '-' : '+';
+    const emLabel = `EM ${emSign}$${em.toFixed(2)} → boundary ${emBoundary.toFixed(2)}`;
+
+    if (clearancePct >= 15) {
+      return { status: 'pass' as const, value: `+$${clearanceDollar} beyond EM`, reason: `${emLabel} — strike well outside expected move` };
+    } else if (clearancePct >= 5) {
+      return { status: 'warn' as const, value: `+$${clearanceDollar} beyond EM`, reason: `${emLabel} — outside but close, one bad day tests this strike` };
+    } else if (clearancePct >= 0) {
+      return { status: 'warn' as const, value: `+$${clearanceDollar} beyond EM`, reason: `${emLabel} — barely outside expected move, high risk` };
+    } else {
+      return { status: 'fail' as const, value: `$${Math.abs(parseFloat(clearanceDollar)).toFixed(2)} INSIDE EM`, reason: `${emLabel} — strike is within the expected move, POP below 68%` };
+    }
+  })();
 
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
-  return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, underlyingType: classifyUnderlying(symbol), ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck } };
+
+  return {
+    symbol, strategy, price, ivr: ivrValue,
+    ivx: metrics.ivx ?? null,
+    ivx30: metrics.ivx30 ?? null,
+    ivHv30Diff: metrics.ivHv30Diff ?? null,
+    liquidityRating: metrics.liquidityRating ?? null,
+    qualified, bestCandidate, failReasons, earningsDate, trendResult,
+    isEtf: isIndex, underlyingType: classifyUnderlying(symbol), ruleSetApplied: appliedLabel,
+    checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck, emClearance: emClearanceCheck },
+  };
 }
 
 // ── UI Helpers ─────────────────────────────────────────────────────────────
@@ -3383,14 +3504,36 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                   </span>
                 </div>
               </div>
-              <div className="text-xs shrink-0 w-20">
+              <div className="text-xs shrink-0 w-16">
                 <div>
                   <span className={th.label}>OTM </span>
-                  <span className={`${otmPct != null ? getOtmColor(otmPct, result.ivr, result.isEtf ?? false) : th.textFaint} font-bold`}>
+                  <span className={`font-bold ${otmPct != null ? getOtmColor(otmPct, result.ivr, result.isEtf ?? false) : th.textFaint}`}>
                     {otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}
                   </span>
                 </div>
               </div>
+              {result.ivx != null && (
+                <div className="text-xs shrink-0 w-28">
+                  <div>
+                    <span className={th.label}>IVx </span>
+                    <span className={`${getIvxColor(result.ivx)} font-medium`}>{result.ivx.toFixed(1)}%</span>
+                  </div>
+                  <div>
+                    <span className={th.label}>EM </span>
+                    <span className={`${th.text} font-medium`}>
+                      {c.expectedMove != null ? `±$${c.expectedMove.toFixed(2)}` : '—'}
+                    </span>
+                    {(() => {
+                      const cp = calcEmClearancePct({ price: result.price, bestCandidate: c });
+                      return cp != null ? (
+                        <span className={`ml-1 text-[10px] font-bold ${getEmClearanceColor(cp)}`}>
+                          {cp >= 0 ? `+${cp.toFixed(1)}%` : `${cp.toFixed(1)}%`}
+                        </span>
+                      ) : null;
+                    })()}
+                  </div>
+                </div>
+              )}
             </>}
             <span className={`text-[9px] ${th.textFaint} border ${th.borderLight} rounded px-1 py-0.5 shrink-0`}>opt</span>
             {result.qualified && <span onClick={e => e.stopPropagation()} className="shrink-0"><EntryCalendarButton result={result} th={th} rules={rules} /></span>}
@@ -3420,14 +3563,15 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
               <div className="flex items-center justify-between mb-2">
                 <p className={`text-[10px] font-bold ${light.color}`}>{light.emoji} Score {scored.score}/100 — {light.label}</p>
               </div>
-              <div className="grid grid-cols-6 gap-2">
+              <div className="grid grid-cols-7 gap-2">
                 {[
                   { label: 'Momentum', val: scored.dims.momentum, max: rankConfig!.weightMomentum },
-                  { label: 'IV', val: scored.dims.ivr, max: rankConfig!.weightIvr },
+                  { label: 'IVR', val: scored.dims.ivr, max: rankConfig!.weightIvr ?? 15 },
+                  { label: 'EM Clear', val: scored.dims.emClearance, max: rankConfig!.weightEmClearance ?? 15 },
                   { label: 'Range', val: scored.dims.range, max: rankConfig!.weightRange },
                   { label: 'Technical', val: scored.dims.technical, max: rankConfig!.weightTechnical },
-                  { label: 'Liquidity', val: scored.dims.liquidity, max: rankConfig!.weightLiquidity },
-                  { label: 'Buffer', val: scored.dims.buffer, max: rankConfig!.weightBuffer },
+                  { label: 'Liquidity', val: scored.dims.liquidity, max: rankConfig!.weightLiquidity ?? 10 },
+                  { label: 'Buffer', val: scored.dims.buffer, max: rankConfig!.weightBuffer ?? 10 },
                 ].map(d => (
                   <div key={d.label} className="text-center">
                     <p className={`text-[8px] ${th.textFaint} mb-1`}>{d.label}</p>
@@ -3445,6 +3589,28 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
   {Object.entries(result.checks).map(([key, check]) => {
     const isEarnings = key === 'earnings';
+    const keyLabel: Record<string, string> = {
+      iv: 'Strike IV vs HV',
+      emClearance: 'EM Clearance',
+      ivr: 'IVR',
+      oi: 'OI',
+      delta: 'Delta',
+      credit: 'Credit',
+      roc: 'ROC',
+      pop: 'POP',
+      earnings: 'Earnings',
+    };
+    const keyLabel: Record<string, string> = {
+      iv: 'Strike IV vs HV',
+      emClearance: 'EM Clearance',
+      ivr: 'IVR',
+      oi: 'OI',
+      delta: 'Delta',
+      credit: 'Credit',
+      roc: 'ROC',
+      pop: 'POP',
+      earnings: 'Earnings',
+    };
     const postDate = isEarnings && result.earningsDate && daysUntil(result.earningsDate) < 0
       ? getPostEarningsRescreenDate(result.earningsDate)
       : null;
@@ -3456,7 +3622,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
       <div key={key} className={`flex items-start gap-2 ${isEarnings ? 'md:col-span-2' : ''}`}>
         <span className={`text-xs mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
         <div>
-          <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{key}</p>
+          <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{keyLabel[key] ?? key}</p>
 
           {isEarnings && result.earningsDate && daysUntil(result.earningsDate) < 0 ? (
             <>
