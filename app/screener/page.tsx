@@ -3623,6 +3623,18 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
 
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
   {Object.entries(result.checks).map(([key, check]) => {
+      if (key === 'iv') {
+        console.log('IV_RENDER_DEBUG', {
+          symbol: result.symbol,
+          strategy: result.strategy,
+          valueRendered: check.value,
+          reasonRendered: check.reason,
+          fullIvCheck: check,
+          resultChecksIv: result.checks.iv,
+          shortIv: result.bestCandidate?.shortIv,
+          hv30FromResult: (result as any)?.hv30,
+        });
+      }
     const isEarnings = key === 'earnings';
     const keyLabel: Record<string, string> = {
       iv: 'Strike Volatility',
