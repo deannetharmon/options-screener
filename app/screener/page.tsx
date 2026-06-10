@@ -1368,6 +1368,13 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
   for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
     const expDate: string = expGroup['expiration-date']; if (!expDate) continue;
     const dte = daysUntil(expDate); if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
+
+    // IVX_DISCOVERY: log the full expiration group object to find IVx field name
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('IVX_DISCOVERY expGroup keys:', Object.keys(expGroup));
+      console.log('IVX_DISCOVERY expGroup (no strikes):', JSON.stringify({ ...expGroup, strikes: `[${expGroup.strikes?.length ?? 0} strikes hidden]` }, null, 2));
+    }
+
     for (const strike of expGroup.strikes ?? []) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
       const callSym: string = strike['call'], putSym: string = strike['put'];
@@ -3145,6 +3152,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   const rsi14 =
     result.trendResult?.metrics?.rsi14 ??
     cachedEntry?.trendResult?.metrics?.rsi14 ??
+    (cachedEntry as any)?.metrics?.rsi14 ??
     null;
 
   const scoreBorderL = light
@@ -3356,9 +3364,15 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                     </span>
                   </div>
               </div>
-              <div className="text-xs shrink-0 w-20">
+              <div className="text-xs shrink-0 w-24">
                 <div>
-                  <span className={th.label}>Delta </span><span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span>
+                  <span className={th.label}>Delta </span>
+                  <span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span>
+                  {otmPct != null && (
+                    <span className={`ml-1.5 text-[10px] ${getOtmColor(otmPct, result.ivr, result.isEtf ?? false)} font-medium`}>
+                      {otmPct.toFixed(1)}% OTM
+                    </span>
+                  )}
                 </div>
                 <div>
                   <span className={th.label}>RSI </span>
