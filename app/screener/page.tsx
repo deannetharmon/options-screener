@@ -1468,6 +1468,14 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
       iv: shortLeg.iv,
     });
 
+    console.log('IV_DEBUG_SHORT_LEG', shortLeg);
+    console.log('IV_DEBUG_SHORT_LEG_VALUES', {
+      occSymbol: shortLeg.occSymbol,
+      strike: shortLeg.strikePrice,
+      iv: shortLeg.iv,
+      keys: Object.keys(shortLeg),
+    });
+    
     candidates.push({
           strategy,
           expiration: expDate,
