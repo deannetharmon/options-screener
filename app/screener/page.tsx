@@ -140,6 +140,7 @@ interface TrendResult {
 interface AutoTrendEntry {
   symbol: string;
   result: TrendResult;
+  route: AutoRoute;
 }
 
 interface ScreenResult {
@@ -3508,10 +3509,10 @@ function AutoTrendDebugPanel({ entries, th }: { entries: AutoTrendEntry[]; th: t
         <span className={`text-[9px] ${th.textFaint}`}>{entries.length} tickers</span>
       </div>
       <div className="divide-y divide-slate-800">
-        {entries.map(({ symbol, result }) => {
-          const s = result.scores;
-          const isOpen = expanded === symbol;
-          const label = result.strategy === 'NO_TRADE' ? 'REVIEW' : result.strategy;
+        {entries.map(({ symbol, result, route }) => {
+            const s = result.scores;
+            const isOpen = expanded === symbol;
+            const label = route === 'REVIEW' ? 'REVIEW' : route;
           return (
             <div key={symbol}>
               <button
@@ -4032,59 +4033,61 @@ function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
 }
 
 // ── Trend Detection with Yahoo Finance ──────────────────────────────────────
-type AutoRoute = 'BPS' | 'BCS' | 'IC' | 'broken';
+type AutoRoute = 'BPS' | 'BCS' | 'IC' | 'REVIEW';
 
 function routeTrendResult(symbol: string, trendResult: TrendResult): AutoRoute {
   const reason = trendResult.reason ?? '';
   const score = trendResult.scores?.total ?? 0;
+  const rangeScore = trendResult.scores?.structure ?? 0;
+  const chopPenalty = trendResult.scores?.chop ?? 0;
   const m = trendResult.metrics as any;
 
   if (trendResult.strategy === 'BPS') return 'BPS';
   if (trendResult.strategy === 'BCS') return 'BCS';
   if (trendResult.strategy === 'IC') return 'IC';
 
-  // True broken / bad-data only
+  // True bad-data / untradeable still goes to manual review, not bullish/bearish.
   if (
     reason.includes('catastrophic drop') ||
     reason.includes('not yet tradeable') ||
     reason.includes('no bars') ||
     reason.includes('Not enough valid')
   ) {
-    return 'broken';
+    return 'REVIEW';
   }
 
-  // Extended bullish = not broken. Professional handling: BPS/CSP review.
-  if (
-    reason.includes('REVIEW EXTENDED') &&
-    trendResult.trend === 'uptrend' &&
-    score > 0
-  ) {
-    return 'BPS';
+  // Conflicting signal = REVIEW. Do not force into BPS just because score is positive.
+  if (reason.includes('conflicting signals')) {
+    return 'REVIEW';
   }
 
-  // Extended bearish = not broken. Professional handling: BCS/CC review.
-  if (
-    reason.includes('REVIEW EXTENDED') &&
-    trendResult.trend === 'downtrend' &&
-    score < 0
-  ) {
-    return 'BCS';
+  // Extended bullish: review for possible CSP/BPS on pullback, but don't auto-place in BPS.
+  if (reason.includes('REVIEW EXTENDED') && trendResult.trend === 'uptrend') {
+    return 'REVIEW';
   }
 
-  // Chop/range = IC review, not broken.
+  // Extended bearish: review for possible BCS/CC, but don't auto-place in BCS.
+  if (reason.includes('REVIEW EXTENDED') && trendResult.trend === 'downtrend') {
+    return 'REVIEW';
+  }
+
+  // True range/chop can go to IC only when directional strength is weak.
   if (
     reason.includes('NO_TRADE CHOP') ||
     trendResult.subtype === 'CHOP' ||
     trendResult.trend === 'sideways'
   ) {
-    return 'IC';
+    const directionalScore = Math.abs(score);
+    const chopRatio = m?.chopRatio ?? 0;
+
+    if (directionalScore <= 20 && (rangeScore >= 35 || chopRatio >= 2.5 || chopPenalty >= 10)) {
+      return 'IC';
+    }
+
+    return 'REVIEW';
   }
 
-  // Conflicting but biased
-  if (score >= 10 || (m?.momentum60 ?? 0) > 0.04 || (m?.distFromMa50 ?? 0) > 0.03) return 'BPS';
-  if (score <= -10 || (m?.momentum60 ?? 0) < -0.04 || (m?.distFromMa50 ?? 0) < -0.03) return 'BCS';
-
-  return 'broken';
+  return 'REVIEW';
 }
 
 async function runTrendDetection(
@@ -4124,8 +4127,8 @@ async function runTrendDetection(
     const analyzeSymbol = async (symbol: string) => {
       try {
         const trendResult = await getTrend(symbol);
-        entries.push({ symbol, result: trendResult });
         const route = routeTrendResult(symbol, trendResult);
+        entries.push({ symbol, result: trendResult, route });
         if (route === 'BPS') {
           distributions.bps.push(symbol);
         } else if (route === 'BCS') {
@@ -4156,8 +4159,8 @@ async function runTrendDetection(
     }
 
     // Sort entries to match strategy grouping order: BPS, BCS, IC, Review
-    const order = ['BPS', 'BCS', 'IC', 'NO_TRADE'];
-    entries.sort((a, b) => order.indexOf(a.result.strategy) - order.indexOf(b.result.strategy));
+    const order = ['BPS', 'BCS', 'IC', 'REVIEW'];
+    entries.sort((a, b) => order.indexOf(a.route) - order.indexOf(b.route));
     setAutoTrendEntries(entries);
 
     const statusMsg = `✅ Trend detection complete: ${distributions.bps.length} BPS, ${distributions.bcs.length} BCS, ${distributions.ic.length} IC, ${distributions.broken.length} true review/error.`;
