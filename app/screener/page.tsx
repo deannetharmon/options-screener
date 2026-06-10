@@ -3611,7 +3611,25 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
       <div key={key} className={`flex items-start gap-2 ${isEarnings ? 'md:col-span-2' : ''}`}>
         <span className={`text-xs mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
         <div>
-          <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{keyLabel[key] ?? key}</p>
+          {(() => {
+            const keyLabel: Record<string, string> = {
+              iv: 'Strike Volatility',
+              emClearance: 'EM Clearance',
+              ivr: 'IVR', oi: 'OI', delta: 'Delta',
+              credit: 'Credit', roc: 'ROC', pop: 'POP', earnings: 'Earnings',
+            };
+            return (
+              <div className="flex items-center gap-0.5">
+                <p className={`text-[10px] ${th.textFaint} uppercase tracking-wider`}>{keyLabel[key] ?? key}</p>
+                {key === 'iv' && (
+                  <InfoTooltip th={th} text="Compares Implied Volatility (what the market prices in) vs Historical Volatility (what the stock actually moved). When IV > HV you have statistical edge — you are being paid more than the stock historically moves. The bigger the gap, the stronger the sell edge." />
+                )}
+                {key === 'emClearance' && (
+                  <InfoTooltip th={th} text="How far your short strike sits outside the market's expected move. Formula: Price × (IVx/100) × √(DTE/365). Strikes inside the EM have less than 68% POP by definition. Green = 15%+ beyond EM. Yellow = 5–15%. Orange = barely outside. Red = inside EM." />
+                )}
+              </div>
+            );
+          })()}
 
           {isEarnings && result.earningsDate && daysUntil(result.earningsDate) < 0 ? (
             <>
