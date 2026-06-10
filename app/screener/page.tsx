@@ -366,6 +366,16 @@ function getRsiColor(rsi: number | null | undefined): string {
   return 'text-slate-300';
 }
 
+function normalizeIv(value: any): number | null {
+  if (value == null) return null;
+
+  const n = Number(value);
+
+  if (Number.isNaN(n)) return null;
+
+  return n <= 1 ? n * 100 : n;
+}
+
 function formatGreek(
   value: number | null | undefined,
   greek: 'delta' | 'gamma' | 'theta' | 'vega' | 'rho' | 'iv' = 'delta'
@@ -1467,7 +1477,7 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
       optimized: true,
       shortOccSymbol: shortLeg.occSymbol,
       longOccSymbol: longLeg.occSymbol,
-      shortIv: shortLeg.iv ?? null
+      shortIv: normalizeIv(shortLeg.iv)
     });
   }
   if (candidates.length === 0) return null;
