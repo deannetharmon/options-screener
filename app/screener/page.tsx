@@ -3371,21 +3371,23 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                     </span>
                   </div>
               </div>
-              <div className="text-xs shrink-0 w-24">
+              <div className="text-xs shrink-0 w-16">
                 <div>
                   <span className={th.label}>Delta </span>
                   <span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span>
                 </div>
                 <div>
-                  <span className={th.label}>OTM </span>
-                  <span className={`${otmPct != null ? getOtmColor(otmPct, result.ivr, result.isEtf ?? false) : th.textFaint} font-medium`}>
-                    {otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}
-                  </span>
-                </div>
-                <div>
                   <span className={th.label}>RSI </span>
                   <span className={`${getRsiColor(rsi14)} font-medium`}>
                     {rsi14 != null ? rsi14.toFixed(0) : '—'}
+                  </span>
+                </div>
+              </div>
+              <div className="text-xs shrink-0 w-20">
+                <div>
+                  <span className={th.label}>OTM </span>
+                  <span className={`${otmPct != null ? getOtmColor(otmPct, result.ivr, result.isEtf ?? false) : th.textFaint} font-bold`}>
+                    {otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}
                   </span>
                 </div>
               </div>
