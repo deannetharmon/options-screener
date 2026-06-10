@@ -1,5 +1,4 @@
 // path: app/screener/page.tsx
-// v3
 
 'use client';
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
@@ -2444,18 +2443,19 @@ async function getAccountNumber(): Promise<string> {
 }
 
 function buildOrderLegs(result: ScreenResult, c: SpreadCandidate): any[] {
+  const instrType = result.underlyingType === 'index' ? 'Index Option' : 'Equity Option';
   const legs: any[] = [];
   if (c.strategy === 'BPS') {
-    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
-    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+    legs.push({ 'instrument-type': instrType, symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': instrType, symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
   } else if (c.strategy === 'BCS') {
-    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
-    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+    legs.push({ 'instrument-type': instrType, symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': instrType, symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
   } else if (c.strategy === 'IC') {
-    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
-    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
-    legs.push({ 'instrument-type': 'Equity Option', symbol: c.shortCallOccSymbol!, quantity: 1, action: 'Sell to Open' });
-    legs.push({ 'instrument-type': 'Equity Option', symbol: c.longCallOccSymbol!, quantity: 1, action: 'Buy to Open' });
+    legs.push({ 'instrument-type': instrType, symbol: c.shortOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': instrType, symbol: c.longOccSymbol!, quantity: 1, action: 'Buy to Open' });
+    legs.push({ 'instrument-type': instrType, symbol: c.shortCallOccSymbol!, quantity: 1, action: 'Sell to Open' });
+    legs.push({ 'instrument-type': instrType, symbol: c.longCallOccSymbol!, quantity: 1, action: 'Buy to Open' });
   }
   return legs;
 }
@@ -2525,7 +2525,8 @@ function TradeModal({ result, th, onClose }: {
         },
         {
           'time-in-force': 'GTC',
-          'order-type': 'Stop',
+          'order-type': 'Stop Limit',
+          price: '0.01',
           'stop-trigger': stopPrice.toFixed(2),
           'price-effect': 'Debit',
           legs: closingLegs,
