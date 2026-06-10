@@ -366,6 +366,28 @@ function getRsiColor(rsi: number | null | undefined): string {
   return 'text-slate-300';
 }
 
+function formatGreek(
+  value: number | null | undefined,
+  greek: 'delta' | 'gamma' | 'theta' | 'vega' | 'rho' | 'iv' = 'delta'
+): string {
+  if (value == null || Number.isNaN(value)) return '—';
+
+  switch (greek) {
+    case 'gamma':
+      return value.toFixed(3);
+
+    case 'iv':
+      return value.toFixed(1);
+
+    case 'delta':
+    case 'theta':
+    case 'vega':
+    case 'rho':
+    default:
+      return value.toFixed(2);
+  }
+}
+
 function findRankModeCandidatesForSymbol(
   symbol: string,
   strategy: 'BPS' | 'BCS' | 'IC',
@@ -1351,10 +1373,11 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
       const delta = item.delta != null ? parseFloat(item.delta) : null;
       const oi = parseInt(item['open-interest'] ?? '0', 10);
       const rawIv =
+        item.volatility ??
         item['implied-volatility'] ??
+        item['mark-volatility'] ??
         item['implied-volatility-index'] ??
         item.iv ??
-        item.volatility ??
         null;
       const parsedIv = rawIv != null ? parseFloat(rawIv) : null;
       const iv = parsedIv == null || Number.isNaN(parsedIv)
@@ -1427,7 +1450,25 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
     const creditRatio = credit / width; if (creditRatio < RULES.CREDIT_RATIO_MIN) continue;
     const maxLoss = width - credit; const roc = maxLoss > 0 ? (credit / maxLoss) * 100 : 0; if (roc < RULES.ROC_MIN_SPREAD) continue;
     const pop = (1 - absDelta) * 100; if (pop < RULES.POP_MIN) continue;
-    candidates.push({ strategy, expiration: expDate, dte: daysUntil(expDate), shortStrike: shortLeg.strikePrice, longStrike, shortDelta: absDelta, shortOI: shortLeg.openInterest, longOI: longLeg.openInterest, credit, spreadWidth: width, creditRatio, roc, pop, optimized: true, shortOccSymbol: shortLeg.occSymbol, longOccSymbol: longLeg.occSymbol, shortIv: shortLeg.iv ?? null });
+    candidates.push({
+      strategy,
+      expiration: expDate,
+      dte: daysUntil(expDate),
+      shortStrike: shortLeg.strikePrice,
+      longStrike,
+      shortDelta: absDelta,
+      shortOI: shortLeg.openInterest,
+      longOI: longLeg.openInterest,
+      credit,
+      spreadWidth: width,
+      creditRatio,
+      roc,
+      pop,
+      optimized: true,
+      shortOccSymbol: shortLeg.occSymbol,
+      longOccSymbol: longLeg.occSymbol,
+      shortIv: shortLeg.iv ?? null
+    });
   }
   if (candidates.length === 0) return null;
   // Pick best POP; use ROC as tiebreaker when POP difference is < 5%
@@ -1437,6 +1478,7 @@ function trySpreadAtWidth(legs: any[], strategy: 'BPS' | 'BCS', expDate: string,
     return b.roc - a.roc;
   })[0];
 }
+
 function findBestSpread(chain: any[], strategy: 'BPS' | 'BCS', expDate: string, price: number | null, RULES: RulesType): SpreadCandidate | null {
   const legs = chain.filter(o => o.expirationDate === expDate && o.optionType === (strategy === 'BPS' ? 'P' : 'C'));
   const allCandidates: SpreadCandidate[] = [];
