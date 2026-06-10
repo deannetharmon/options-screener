@@ -1337,6 +1337,12 @@ async function loadExistingPositions(): Promise<ExistingPosition[]> {
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
 
+  // IVX_DISCOVERY: log first item to find IVx field name
+  if (data.data?.items?.[0]) {
+    console.log('IVX_DISCOVERY market-metrics keys:', Object.keys(data.data.items[0]));
+    console.log('IVX_DISCOVERY market-metrics first item:', JSON.stringify(data.data.items[0], null, 2));
+  }
+
   return (data.data?.items || []).map((item: any) => ({
     symbol: item.symbol,
     ivRank: item['implied-volatility-index-rank'] != null
