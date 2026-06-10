@@ -2655,6 +2655,27 @@ function StrategyBox({ label, badge, badgeColor, borderFocus, value, onChange, s
 }
 
 // ── Result Card ────────────────────────────────────────────────────────────
+
+function InfoTooltip({ th, text }: { th: typeof THEMES[Theme]; text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex items-center" onClick={e => e.stopPropagation()}>
+      <button
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onClick={() => setOpen(v => !v)}
+        className={`text-[9px] ${th.textFaint} hover:text-blue-400 ml-0.5 leading-none`}
+      >ⓘ</button>
+      {open && (
+        <div className={`absolute bottom-full left-0 mb-1 z-50 ${th.sidebar} border ${th.border} rounded-lg p-2 shadow-xl`}
+          style={{ width: '220px' }}>
+          <p className={`text-[10px] ${th.textMuted} leading-relaxed`}>{text}</p>
+        </div>
+      )}
+    </span>
+  );
+}
+
 function StrikesDisplay({ c, th }: { c: SpreadCandidate; th: typeof THEMES[Theme] }) {
   const widthTag = (w: number) => <span className={`${th.textFaint} mx-0.5`}>{`·${w}·`}</span>;
   if (c.strategy === 'PMCC') {
