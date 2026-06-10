@@ -3375,11 +3375,12 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                 <div>
                   <span className={th.label}>Delta </span>
                   <span className={`${th.text} font-medium`}>{c.shortDelta.toFixed(2)}</span>
-                  {otmPct != null && (
-                    <span className={`ml-1.5 text-[10px] ${getOtmColor(otmPct, result.ivr, result.isEtf ?? false)} font-medium`}>
-                      {otmPct.toFixed(1)}% OTM
-                    </span>
-                  )}
+                </div>
+                <div>
+                  <span className={th.label}>OTM </span>
+                  <span className={`${otmPct != null ? getOtmColor(otmPct, result.ivr, result.isEtf ?? false) : th.textFaint} font-medium`}>
+                    {otmPct != null ? `${otmPct.toFixed(1)}%` : '—'}
+                  </span>
                 </div>
                 <div>
                   <span className={th.label}>RSI </span>
