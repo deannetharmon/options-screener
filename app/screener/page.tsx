@@ -1294,18 +1294,17 @@ async function loadExistingPositions(): Promise<ExistingPosition[]> {
 
 async function getMarketMetrics(symbols: string[], token: string) {
   const data = await ttFetch(`/market-metrics?symbols=${symbols.join(',')}`, token);
-  
-  if (symbol.toUpperCase() === 'INTC') {
-  const sample = data.data?.items?.[0];
 
-//console log for IV troubleshooting
-  console.log('INTC option chain raw sample:', sample);
-  console.log('INTC option chain raw sample keys:', sample ? Object.keys(sample) : []);
-  console.log('INTC option chain raw sample JSON:', JSON.stringify(sample, null, 2));
+  return (data.data?.items || []).map((item: any) => ({
+    symbol: item.symbol,
+    ivRank: item['implied-volatility-index-rank'] != null
+      ? parseFloat(item['implied-volatility-index-rank']) * 100
+      : null,
+    earningsExpectedDate: item['earnings']?.['expected-report-date'] || null,
+    hv30: item['hv-30'] != null ? parseFloat(item['hv-30']) * 100 : null
+  }));
 }
-  
-  return (data.data?.items || []).map((item: any) => ({ symbol: item.symbol, ivRank: item['implied-volatility-index-rank'] != null ? parseFloat(item['implied-volatility-index-rank']) * 100 : null, earningsExpectedDate: item['earnings']?.['expected-report-date'] || null, hv30: item['hv-30'] != null ? parseFloat(item['hv-30']) * 100 : null }));
-}
+
 async function getQuote(symbol: string, token: string): Promise<number | null> {
   try {
     const data = await ttFetch(`/market-data/by-type?equity=${encodeURIComponent(symbol)}`, token);
@@ -1341,8 +1340,14 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
     let greeksData: any;
     try { greeksData = await ttFetch(`/market-data/by-type?${qs}`, token); } catch { continue; }
     for (const item of greeksData?.data?.items ?? []) {
-      const meta = symbolMeta[item.symbol]; if (!meta) continue;
-      const bid = parseFloat(item.bid ?? '0'), ask = parseFloat(item.ask ?? '0');
+      if (symbol.toUpperCase() === 'INTC') {
+        console.log('INTC option market-data raw item:', item);
+        console.log('INTC option market-data raw keys:', Object.keys(item));
+        console.log('INTC option market-data raw JSON:', JSON.stringify(item, null, 2));
+      }
+
+  const meta = symbolMeta[item.symbol]; if (!meta) continue;
+  const bid = parseFloat(item.bid ?? '0'), ask = parseFloat(item.ask ?? '0');
       const delta = item.delta != null ? parseFloat(item.delta) : null;
       const oi = parseInt(item['open-interest'] ?? '0', 10);
       const rawIv =
@@ -1765,9 +1770,14 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
   if (bestCandidate && candidatePop < popMin) { failReasons.push(`POP ${candidatePop.toFixed(0)}% < ${popMin}%`); }
   const hv30 = metrics.hv30 ?? null;
   const strikeIv = bestCandidate?.shortIv ?? null;
-  const ivProxy = strikeIv ?? ivrValue ?? null;
-  const ivLabel = strikeIv != null ? 'Strike IV' : ivrValue != null ? 'IVR proxy' : 'IV';
-  const ivCheck: CheckResult = ivProxy == null || hv30 == null
+  
+  const ivCheck: CheckResult = strikeIv == null || hv30 == null
+    ? { status: 'pending', value: '—', reason: 'Strike IV unavailable' }
+    : strikeIv >= hv30 * 1.1
+      ? { status: 'pass', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `Strike IV ${((strikeIv / hv30 - 1) * 100).toFixed(0)}% above realized — edge confirmed` }
+      : strikeIv >= hv30 * 0.90
+        ? { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'Strike IV near realized vol — thin edge, size down' }
+        : { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'Strike IV below realized — premium not elevated' };
     ? { status: 'pending', value: '—', reason: 'Data unavailable' }
     : ivProxy >= hv30 * 1.1
       ? { status: 'pass', value: `${ivProxy.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `${ivLabel} ${((ivProxy / hv30 - 1) * 100).toFixed(0)}% above realized — edge confirmed` }
