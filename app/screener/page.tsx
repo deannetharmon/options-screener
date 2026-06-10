@@ -5843,9 +5843,9 @@ export default function Home() {
         return runChecklist(entry.symbol, entry.strategy, entry.metrics, entry.chainData, entry.price, sRules, entry.trendResult, sLabel, eRules, eLabel);
       } catch (e: any) {
         return {
-          symbol: entry.symbol, strategy: entry.strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+          symbol: entry.symbol, strategy: entry.strategy, price: null, ivr: null, ivx: null, ivx30: null, ivHv30Diff: null, liquidityRating: null, qualified: false, bestCandidate: null,
           failReasons: [e.message], trendResult: entry.trendResult,
-          checks: { ivr: { status: 'fail' as const, value: 'Error', reason: e.message }, earnings: { status: 'pending' as const, value: '—', reason: '—' }, oi: { status: 'pending' as const, value: '—', reason: '—' }, delta: { status: 'pending' as const, value: '—', reason: '—' }, credit: { status: 'pending' as const, value: '—', reason: '—' }, roc: { status: 'pending' as const, value: '—', reason: '—' }, pop: { status: 'pending' as const, value: '—', reason: '—' }, iv: { status: 'pending' as const, value: '—', reason: '—' } }
+          checks: { ivr: { status: 'fail' as const, value: 'Error', reason: e.message }, earnings: { status: 'pending' as const, value: '—', reason: '—' }, oi: { status: 'pending' as const, value: '—', reason: '—' }, delta: { status: 'pending' as const, value: '—', reason: '—' }, credit: { status: 'pending' as const, value: '—', reason: '—' }, roc: { status: 'pending' as const, value: '—', reason: '—' }, pop: { status: 'pending' as const, value: '—', reason: '—' }, iv: { status: 'pending' as const, value: '—', reason: '—' }, emClearance: { status: 'pending' as const, value: '—', reason: '—' } }
         };
       }
     });
@@ -5906,9 +5906,10 @@ export default function Home() {
       const scanCache: RawScanEntry[] = [];
 
       const errResult = (symbol: string, strategy: string, msg: string, trendResult?: TrendResult): ScreenResult => ({
-        symbol, strategy, price: null, ivr: null, qualified: false, bestCandidate: null,
+        symbol, strategy, price: null, ivr: null, ivx: null, ivx30: null, ivHv30Diff: null, liquidityRating: null,
+        qualified: false, bestCandidate: null,
         failReasons: [msg], trendResult,
-        checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' }, pop: { status: 'pending', value: '—', reason: '—' }, iv: { status: 'pending', value: '—', reason: '—' } }
+        checks: { ivr: { status: 'fail', value: 'Error', reason: msg }, earnings: { status: 'pending', value: '—', reason: '—' }, oi: { status: 'pending', value: '—', reason: '—' }, delta: { status: 'pending', value: '—', reason: '—' }, credit: { status: 'pending', value: '—', reason: '—' }, roc: { status: 'pending', value: '—', reason: '—' }, pop: { status: 'pending', value: '—', reason: '—' }, iv: { status: 'pending', value: '—', reason: '—' }, emClearance: { status: 'pending', value: '—', reason: '—' } }
       });
 
       // getChain uses the appropriate rule set for DTE filtering — pass stock rules as base,
