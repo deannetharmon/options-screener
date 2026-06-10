@@ -1778,12 +1778,6 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
       : strikeIv >= hv30 * 0.90
         ? { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'Strike IV near realized vol — thin edge, size down' }
         : { status: 'warn', value: `${strikeIv.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: 'Strike IV below realized — premium not elevated' };
-    ? { status: 'pending', value: '—', reason: 'Data unavailable' }
-    : ivProxy >= hv30 * 1.1
-      ? { status: 'pass', value: `${ivProxy.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `${ivLabel} ${((ivProxy / hv30 - 1) * 100).toFixed(0)}% above realized — edge confirmed` }
-      : ivProxy >= hv30 * 0.90
-        ? { status: 'warn', value: `${ivProxy.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `${ivLabel} near realized vol — thin edge, size down` }
-        : { status: 'warn', value: `${ivProxy.toFixed(0)}% / HV ${hv30.toFixed(0)}%`, reason: `${ivLabel} below realized — premium not elevated` };
 
   const qualified = ivrCheck.status === 'pass' && earningsCheck.status === 'pass' && oiCheck.status === 'pass' && deltaCheck.status === 'pass' && creditCheck.status === 'pass' && rocCheck.status === 'pass' && popCheck.status === 'pass' && bestCandidate !== null;
   return { symbol, strategy, price, ivr: ivrValue, qualified, bestCandidate, failReasons, earningsDate, trendResult, isEtf: isIndex, underlyingType: classifyUnderlying(symbol), ruleSetApplied: appliedLabel, checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck } };
