@@ -1,13 +1,5 @@
 // lib/portfolio/positionLifecycle.ts
 
-import {
-  PositionLifecycleType,
-  LifecycleLeg,
-  LifecycleStockPosition,
-  LifecycleClassification,
-  LifecycleClassificationInput,
-} from './types';
-
 export type OptionType = 'P' | 'C';
 export type LegDirection = 'Short' | 'Long';
 
