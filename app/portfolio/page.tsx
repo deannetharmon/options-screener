@@ -6356,7 +6356,23 @@ function PositionSection({ title, titleColor, positions, th, checked, onToggle, 
   groupAction: ActionType; onGroupAction: (positions: Position[], action: ActionType) => void;
   onExecute: (pos: Position, action: ActionType) => void;
 }) {
-  const keys = positions.map(p => p.key);
+    const lifecycleRank: Record<string, number> = {
+    CSP: 1,
+    ASSIGNED_STOCK: 2,
+    COVERED_CALL: 3,
+    SPREAD: 4,
+    PMCC: 5,
+    UNKNOWN: 9,
+  };
+
+  const sortedPositions = [...positions].sort((a, b) => {
+    const aType = getPositionLifecycle(a).type;
+    const bType = getPositionLifecycle(b).type;
+
+    return (lifecycleRank[aType] ?? 9) - (lifecycleRank[bType] ?? 9);
+  });
+
+  const keys = sortedPositions.map(p => p.key);
   const allChecked = keys.length > 0 && keys.every(k => checked.has(k));
   const someChecked = keys.some(k => checked.has(k));
   const meta = ACTION_META[groupAction];
@@ -6379,7 +6395,7 @@ function PositionSection({ title, titleColor, positions, th, checked, onToggle, 
         )}
       </div>
       <div className="space-y-2">
-        {positions.map(p => (
+        {sortedPositions.map(p => (
           <PositionCard key={p.key} pos={p} th={th} checked={checked.has(p.key)} onToggle={onToggle} onProfitTargetChange={onProfitTargetChange} onExecute={onExecute} />
         ))}
       </div>
