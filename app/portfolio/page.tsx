@@ -6229,26 +6229,29 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   ))}
                 </div>
                 <div className="relative h-4 rounded-full overflow-visible" style={{ background: 'rgba(255,255,255,0.06)' }}>
-                  {pct != null && (
-                    <div className="absolute top-0 left-0 h-full rounded-full transition-all duration-500"
-                      style={{ width: `${pct}%`, background: `linear-gradient(to right, #ef4444, ${barColor})` }} />
-                  )}
-                  <div className="absolute top-0 h-full w-px bg-yellow-400/70" style={{ left: `${breakevenPct}%` }}>
-                    <span className="absolute -top-4 text-[8px] text-yellow-400 -translate-x-1/2 whitespace-nowrap">B/E</span>
-                  </div>
-                  <div className="absolute top-0 h-full w-px bg-blue-400/70" style={{ left: `${targetPct}%` }}>
-                    <span className="absolute -top-4 text-[8px] text-blue-400 -translate-x-1/2 whitespace-nowrap">{Math.round(pos.profitTarget * 100)}%</span>
-                  </div>
-                  {pct != null && (
-                    <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow-lg transition-all duration-500"
-                      style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
-                  )}
-                  <div className="relative mt-5 h-4">
+                    {pct != null && (
+                      <div className="absolute top-0 left-0 h-full rounded-full transition-all duration-500"
+                        style={{ width: `${pct}%`, background: `linear-gradient(to right, #ef4444, ${barColor})` }} />
+                    )}
+                  
+                    <div className="absolute top-0 h-full w-px bg-yellow-400/70" style={{ left: `${breakevenPct}%` }}>
+                      <span className="absolute -top-4 text-[8px] text-yellow-400 -translate-x-1/2 whitespace-nowrap">B/E</span>
+                    </div>
+                  
+                    <div className="absolute top-0 h-full w-px bg-blue-400/70" style={{ left: `${targetPct}%` }}>
+                      <span className="absolute -top-4 text-[8px] text-blue-400 -translate-x-1/2 whitespace-nowrap">{Math.round(pos.profitTarget * 100)}%</span>
+                    </div>
+                  
+                    {pct != null && (
+                      <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow-lg transition-all duration-500"
+                        style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
+                    )}
+                  
                     <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[8px] text-red-400 whitespace-nowrap leading-none">
                       STOP {stopPrice != null ? `$${stopPrice.toFixed(2)}` : '—'}
                     </span>
                   
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 text-[8px] text-emerald-400 whitespace-nowrap leading-none">
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] text-emerald-400 whitespace-nowrap leading-none">
                       MAX PROFIT ${pos.creditReceived.toFixed(0)}
                     </span>
                   </div>
