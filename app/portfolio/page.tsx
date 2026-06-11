@@ -107,26 +107,6 @@ function getPositionLifecycle(pos: Position) {
   });
 }
 
-function lifecycleSortWeight(pos: Position): number {
-  const type = String(getPositionLifecycle(pos).type);
-
-  if (type === 'CSP') return 10;
-  if (type === 'COVERED_CALL') return 20;
-  if (type === 'ASSIGNED_STOCK') return 25;
-  if (type === 'SPREAD') return 30;
-  if (type === 'PMCC') return 40;
-
-  return 99;
-}
-
-function sortPositionsByLifecycle(positions: Position[]): Position[] {
-  return [...positions].sort((a, b) => {
-    return lifecycleSortWeight(a) - lifecycleSortWeight(b)
-      || a.dte - b.dte
-      || a.symbol.localeCompare(b.symbol);
-  });
-}
-
 function startWheelCycle(pos: Position): WheelCycle {
   const cycles = readWheelCycles();
   const shortLeg = pos.legs.find(l => l.direction === 'Short');
@@ -178,9 +158,6 @@ function setDryRun(val: boolean) {
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
-// type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
-// type PortfolioSortMode = 'priority' | 'lifecycle' | 'dte' | 'symbol' | 'plPct';
-
 type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
 
 interface PositionLeg {
@@ -6892,7 +6869,7 @@ const result = await analyzePortfolio(positions, futures ?? undefined);
               {needsClose.length > 0 && (
                 <PositionSection
                   title="⚠ Close Now — 21 DTE or Less" titleColor="text-red-400"
-                  positions={hitTarget} th={th} checked={checked}
+                  positions={needsClose} th={th} checked={checked}
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="CLOSE_ROLL" onGroupAction={onGroupAction}
@@ -6925,7 +6902,7 @@ const result = await analyzePortfolio(positions, futures ?? undefined);
               {normal.length > 0 && (
                 <PositionSection
                   title="Active Positions" titleColor={th.textFaint}
-                  Sort portfolio positions by lifecycle th={th} checked={checked}
+                  positions={normal} th={th} checked={checked}
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="HOLD" onGroupAction={onGroupAction}
