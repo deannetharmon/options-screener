@@ -5613,7 +5613,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   const [trend, setTrend] = useState<TrendResult | null>(null);
   const [wheelCycle, setWheelCycle] = useState<WheelCycle | null>(() => getWheelCycleForPos(pos));
   const lifecycle = getPositionLifecycle(pos);
-  const isWheelCandidate = (pos.strategy === 'PUT' || pos.strategy === 'CALL') && !wheelCycle;
+  const isWheelCandidate = lifecycle.type === 'CSP' && !wheelCycle;
   const showWheelBanner  = isWheelCandidate && !readWheelCycles().find(c => c.symbol === pos.symbol && c.cspExpiry === pos.expDate && c.dismissedBanner);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
