@@ -5956,8 +5956,16 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
 
             {/* ── P&L ────────────────────────────────── */}
             <div className="border-t-2 border-emerald-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Buyback</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}</p>
+              <p className={`text-[9px] ${th.textFaint}`}>
+                {lifecycle.type === 'CSP' ? 'Cash Req' : 'Buyback'}
+              </p>
+              <p className={`text-xs font-bold ${lifecycle.type === 'CSP' ? 'text-amber-400' : th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {lifecycle.type === 'CSP' && cspCashRequired != null
+                  ? `$${cspCashRequired.toLocaleString()}`
+                  : pos.currentValue != null
+                    ? `$${pos.currentValue.toFixed(2)}`
+                    : '—'}
+              </p>
             </div>
 
             <div className="border-t-2 border-emerald-600/50 pt-1">
