@@ -107,49 +107,49 @@ function getPositionLifecycle(pos: Position) {
   });
 }
 
-function lifecycleSortWeight(pos: Position): number {
-  const type = String(getPositionLifecycle(pos).type);
+// function lifecycleSortWeight(pos: Position): number {
+//   const type = String(getPositionLifecycle(pos).type);
 
-  if (type === 'CSP') return 10;
-  if (type === 'COVERED_CALL') return 20;
-  if (type === 'ASSIGNED_STOCK') return 25;
-  if (type === 'SPREAD') return 30;
-  if (type === 'PMCC') return 40;
+//   if (type === 'CSP') return 10;
+//   if (type === 'COVERED_CALL') return 20;
+//   if (type === 'ASSIGNED_STOCK') return 25;
+//   if (type === 'SPREAD') return 30;
+//   if (type === 'PMCC') return 40;
 
-  return 99;
-}
+//   return 99;
+// }
 
-function sortPositions(positions: Position[], mode: PortfolioSortMode): Position[] {
-  return [...positions].sort((a, b) => {
-    if (mode === 'lifecycle') {
-      return lifecycleSortWeight(a) - lifecycleSortWeight(b)
-        || a.dte - b.dte
-        || a.symbol.localeCompare(b.symbol);
-    }
+// function sortPositions(positions: Position[], mode: PortfolioSortMode): Position[] {
+//   return [...positions].sort((a, b) => {
+//     if (mode === 'lifecycle') {
+//       return lifecycleSortWeight(a) - lifecycleSortWeight(b)
+//         || a.dte - b.dte
+//         || a.symbol.localeCompare(b.symbol);
+//     }
 
-    if (mode === 'dte') {
-      return a.dte - b.dte || a.symbol.localeCompare(b.symbol);
-    }
+//     if (mode === 'dte') {
+//       return a.dte - b.dte || a.symbol.localeCompare(b.symbol);
+//     }
 
-    if (mode === 'symbol') {
-      return a.symbol.localeCompare(b.symbol) || a.dte - b.dte;
-    }
+//     if (mode === 'symbol') {
+//       return a.symbol.localeCompare(b.symbol) || a.dte - b.dte;
+//     }
 
-    if (mode === 'plPct') {
-      return (a.pnlPct ?? -9999) - (b.pnlPct ?? -9999)
-        || a.dte - b.dte
-        || a.symbol.localeCompare(b.symbol);
-    }
+//     if (mode === 'plPct') {
+//       return (a.pnlPct ?? -9999) - (b.pnlPct ?? -9999)
+//         || a.dte - b.dte
+//         || a.symbol.localeCompare(b.symbol);
+//     }
 
-    return (
-      Number(b.stopLossStatus === 'bypassed') - Number(a.stopLossStatus === 'bypassed') ||
-      Number(b.hitTarget) - Number(a.hitTarget) ||
-      Number(b.needsClose) - Number(a.needsClose) ||
-      a.dte - b.dte ||
-      a.symbol.localeCompare(b.symbol)
-    );
-  });
-}
+//     return (
+//       Number(b.stopLossStatus === 'bypassed') - Number(a.stopLossStatus === 'bypassed') ||
+//       Number(b.hitTarget) - Number(a.hitTarget) ||
+//       Number(b.needsClose) - Number(a.needsClose) ||
+//       a.dte - b.dte ||
+//       a.symbol.localeCompare(b.symbol)
+//     );
+//   });
+// }
 
 function lifecycleSortWeight(pos: Position): number {
   const type = getPositionLifecycle(pos).type;
