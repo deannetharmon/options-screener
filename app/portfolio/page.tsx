@@ -5,6 +5,9 @@ import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, get
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import {
+  classifyPositionLifecycle,
+} from '@/lib/portfolio/positionLifecycle';
 
 // Inject accent CSS variable style
 if (typeof document !== 'undefined') {
@@ -88,6 +91,22 @@ function getWheelCycleForPos(pos: Position): WheelCycle | null {
     ['csp_open', 'assigned', 'cc_open'].includes(c.status)
   ) ?? null;
 }
+
+function getPositionLifecycle(pos: Position) {
+  return classifyPositionLifecycle({
+    symbol: pos.symbol,
+    legs: pos.legs.map(leg => ({
+      symbol: leg.symbol,
+      optionType: leg.optionType,
+      strikePrice: leg.strikePrice,
+      direction: leg.direction,
+      quantity: leg.quantity,
+      avgOpenPrice: leg.avgOpenPrice,
+      currentPrice: leg.currentPrice,
+    })),
+  });
+}
+
 function startWheelCycle(pos: Position): WheelCycle {
   const cycles = readWheelCycles();
   const shortLeg = pos.legs.find(l => l.direction === 'Short');
@@ -139,7 +158,7 @@ function setDryRun(val: boolean) {
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
-type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC'; type PortfolioSortMode = 'priority' | 'lifecycle' | 'dte' | 'symbol' | 'plPct';
+type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
 
 interface PositionLeg {
   symbol: string;
@@ -2393,9 +2412,6 @@ const INDEX_CHART_SYMBOLS: Record<string, string> = {
   'RUT': 'IWM',   // Use IWM as proxy for RUT
   'VIX': 'VIX',
   'DJX': 'DIA',
-};
-const TRADINGVIEW_SYMBOLS: Record<string, string> = {
-  'SPX': 'CBOE:SPX', 'SPXW': 'CBOE:SPX', 'NDX': 'NASDAQ:NDX', 'RUT': 'TVC:RUT', 'VIX': 'TVC:VIX',
 };
 
 async function getTrend(symbol: string): Promise<TrendResult> {
@@ -5596,7 +5612,8 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
   const [wheelCycle, setWheelCycle] = useState<WheelCycle | null>(() => getWheelCycleForPos(pos));
-  const isWheelCandidate = (pos.strategy === 'PUT' || pos.strategy === 'CALL') && !wheelCycle;
+  const lifecycle = getPositionLifecycle(pos);
+  const isWheelCandidate = lifecycle.type === 'CSP' && !wheelCycle;
   const showWheelBanner  = isWheelCandidate && !readWheelCycles().find(c => c.symbol === pos.symbol && c.cspExpiry === pos.expDate && c.dismissedBanner);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
@@ -5656,6 +5673,30 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
     if (pos.strategy === 'IC') return `${shortPuts[0]?.strikePrice}P/${longPuts[0]?.strikePrice}P · ${shortCalls[0]?.strikePrice}C/${longCalls[0]?.strikePrice}C`;
     return pos.legs.map(l => `${l.strikePrice}${l.optionType}`).join(' / ');
   };
+  const shortPut = lifecycle.shortPuts[0] ?? null;
+  const cspStrike = shortPut?.strikePrice ?? null;
+  const cspPremium = shortPut?.avgOpenPrice ?? pos.creditPerContract ?? 0;
+  const cspEffectiveBuyPrice =
+    cspStrike != null ? cspStrike - cspPremium : null;
+  const cspCashRequired =
+    cspStrike != null ? cspStrike * 100 * lifecycle.contracts : null;
+  const cspAssignmentBuffer =
+    cspStrike != null && pos.stockPrice != null && pos.stockPrice > 0
+      ? ((pos.stockPrice - cspStrike) / pos.stockPrice) * 100
+      : null;
+  const lifecycleType = String(lifecycle.type);
+  const lifecycleBadgeLabel =
+    lifecycleType === 'CSP'
+      ? 'CSP'
+      : lifecycleType === 'COVERED_CALL'
+        ? 'CC'
+        : pos.strategy;
+  const lifecycleBadgeClass =
+    lifecycleType === 'CSP'
+      ? 'border-amber-600/60 text-amber-400 bg-amber-500/10'
+      : lifecycleType === 'COVERED_CALL'
+        ? 'border-emerald-600/60 text-emerald-400 bg-emerald-500/10'
+        : 'border-sky-600/60 text-sky-400 bg-sky-500/10';
 
   const handleTargetSave = () => {
     const val = Math.min(100, Math.max(10, parseInt(targetInput) || 50)) / 100;
@@ -5745,26 +5786,17 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
         </button>
 
         {/* Data columns */}
-        <div className="overflow-x-auto flex-1" style={{ minWidth: 0 }}>
+        <div className="overflow-x-auto flex-1" style={{ minWidth: 0 }}>    
           <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1464px' }}>
 
             {/* ── POSITION ───────────────────────────── */}
             <div className="border-t-2 border-slate-600/60 pt-1">
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
-                <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
-                <span className={`ml-1 text-[9px] px-1 py-0.5 border rounded font-bold ${
-                  lifecycle.type === 'CSP'
-                    ? 'border-amber-600/60 text-amber-400'
-                    : lifecycle.type === 'COVERED_CALL'
-                      ? 'border-emerald-600/60 text-emerald-400'
-                      : 'border-sky-600/60 text-sky-400'
-                }`}>
-                  {lifecycle.type === 'CSP'
-                    ? 'CSP'
-                    : lifecycle.type === 'COVERED_CALL'
-                      ? 'CC'
-                      : pos.strategy}
-                </span>              {wheelCycle && (
+              <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
+              <span className={`ml-1 text-[9px] px-1 py-0.5 border rounded font-bold tracking-wider ${lifecycleBadgeClass}`}>
+                {lifecycleBadgeLabel}
+              </span>
+              {wheelCycle && (
                 <span className="ml-1 text-[9px] px-1 py-0.5 border border-amber-600/60 rounded text-amber-400 font-bold">WHEEL</span>
               )}
               {/* Chart button */}
@@ -5773,16 +5805,10 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   onClick={e => {
                     e.stopPropagation();
                     if (!showChart) {
-                      if (chartButtonRef.current) {
-                        const r = chartButtonRef.current.getBoundingClientRect();
-                        const top = Math.min(r.bottom + window.scrollY + 4, window.innerHeight - 250);
-                        const left = Math.min(r.left + window.scrollX, window.innerWidth - 290);
-                        setChartPopupPos({ top, left });
-                      }
                       setShowChart(true);
                       if (!sparkData) {
                         setSparkLoading(true);
-                        fetch(`/api/chart?symbol=${encodeURIComponent(INDEX_CHART_SYMBOLS[pos.symbol.toUpperCase()] ?? pos.symbol)}`)
+                        fetch(`/api/chart?symbol=${encodeURIComponent(pos.symbol)}`)
                           .then(r => r.json())
                           .then(d => {
                             const closes = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null).slice(-90);
@@ -5858,7 +5884,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                         <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
                       )}
                     <a
-                      href={`https://www.tradingview.com/chart/?symbol=${TRADINGVIEW_SYMBOLS[pos.symbol.toUpperCase()] ?? pos.symbol}`}
+                      href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={e => e.stopPropagation()}
@@ -5934,24 +5960,68 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             </div>
 
             <div className="border-t-2 border-sky-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
-              <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
+              <p className={`text-[9px] ${th.textFaint}`}>
+                {lifecycle.type === 'CSP' ? 'Eff Basis' : 'Strikes'}
+              </p>
+              <p className={`text-xs ${th.text}`} style={{ fontFamily: '"DM Mono", monospace' }}>
+                {lifecycle.type === 'CSP' && cspEffectiveBuyPrice != null
+                  ? `$${cspEffectiveBuyPrice.toFixed(2)}`
+                  : strikesSummary()}
+              </p>
+              {lifecycle.type === 'CSP' && cspStrike != null && (
+                <p className={`text-[9px] ${th.textFaint}`} style={{ fontFamily: '"DM Mono", monospace' }}>
+                  Strike {cspStrike}P
+                </p>
+              )}
             </div>
 
             {/* ── P&L ────────────────────────────────── */}
             <div className="border-t-2 border-emerald-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Buyback</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.currentValue != null ? `$${pos.currentValue.toFixed(2)}` : '—'}</p>
+              <p className={`text-[9px] ${th.textFaint}`}>
+                {lifecycle.type === 'CSP' ? 'Cash Req' : 'Buyback'}
+              </p>
+              <p className={`text-xs font-bold ${lifecycle.type === 'CSP' ? 'text-amber-400' : th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                {lifecycle.type === 'CSP' && cspCashRequired != null
+                  ? `$${cspCashRequired.toLocaleString()}`
+                  : pos.currentValue != null
+                    ? `$${pos.currentValue.toFixed(2)}`
+                    : '—'}
+              </p>
             </div>
 
             <div className="border-t-2 border-emerald-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>Credit</p>
+              <p className={`text-[9px] ${th.textFaint}`}>{lifecycle.type === 'CSP' ? 'Premium' : 'Credit'}</p>
               <p className="text-xs font-bold text-emerald-400" style={{ fontFamily: "'DM Mono', monospace" }}>${pos.creditReceived.toFixed(2)}</p>
             </div>
 
             <div onClick={e => e.stopPropagation()} className="border-t-2 border-emerald-600/50 pt-1">
-              <p className={`text-[9px] ${th.textFaint}`}>{Math.round(pos.profitTarget * 100)}% Target</p>
-              {editingTarget ? (
+              <p className={`text-[9px] ${th.textFaint}`}>
+                {lifecycle.type === 'CSP' ? 'Assign Risk' : `${Math.round(pos.profitTarget * 100)}% Target`}
+              </p>
+              {lifecycle.type === 'CSP' ? (
+                <>
+                  <p className={`text-xs font-bold ${
+                    cspAssignmentBuffer == null
+                      ? th.textFaint
+                      : cspAssignmentBuffer < 0
+                        ? 'text-red-400'
+                        : cspAssignmentBuffer < 2
+                          ? 'text-yellow-400'
+                          : 'text-emerald-400'
+                  }`} style={{ fontFamily: "'DM Mono', monospace" }}>
+                    {cspAssignmentBuffer != null ? `${cspAssignmentBuffer.toFixed(1)}%` : '—'}
+                  </p>
+                  <p className={`text-[8px] ${th.textFaint}`}>
+                    {cspAssignmentBuffer == null
+                      ? ''
+                      : cspAssignmentBuffer < 0
+                        ? 'ITM'
+                        : cspAssignmentBuffer < 2
+                          ? 'close'
+                          : 'buffer'}
+                  </p>
+                </>
+              ) : editingTarget ? (
                 <div className="flex items-center gap-1">
                   <input type="number" min="10" max="100" value={targetInput}
                     onChange={e => setTargetInput(e.target.value)}
@@ -6241,27 +6311,25 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   ))}
                 </div>
                 <div className="relative h-4 rounded-full overflow-visible" style={{ background: 'rgba(255,255,255,0.06)' }}>
-                    {pct != null && (
-                      <div className="absolute top-0 left-0 h-full rounded-full transition-all duration-500"
-                        style={{ width: `${pct}%`, background: `linear-gradient(to right, #ef4444, ${barColor})` }} />
-                    )}
-                  
-                    <div className="absolute top-0 h-full w-px bg-yellow-400/70" style={{ left: `${breakevenPct}%` }}>
-                      <span className="absolute -top-4 text-[8px] text-yellow-400 -translate-x-1/2 whitespace-nowrap">B/E</span>
-                    </div>
-                  
-                    <div className="absolute top-0 h-full w-px bg-blue-400/70" style={{ left: `${targetPct}%` }}>
-                      <span className="absolute -top-4 text-[8px] text-blue-400 -translate-x-1/2 whitespace-nowrap">{Math.round(pos.profitTarget * 100)}%</span>
-                    </div>
-                  
-                    {pct != null && (
-                      <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow-lg transition-all duration-500"
-                        style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
-                    )}     
+                  {pct != null && (
+                    <div className="absolute top-0 left-0 h-full rounded-full transition-all duration-500"
+                      style={{ width: `${pct}%`, background: `linear-gradient(to right, #ef4444, ${barColor})` }} />
+                  )}
+                  <div className="absolute top-0 h-full w-px bg-yellow-400/70" style={{ left: `${breakevenPct}%` }}>
+                    <span className="absolute -top-4 text-[8px] text-yellow-400 -translate-x-1/2 whitespace-nowrap">B/E</span>
+                  </div>
+                  <div className="absolute top-0 h-full w-px bg-blue-400/70" style={{ left: `${targetPct}%` }}>
+                    <span className="absolute -top-4 text-[8px] text-blue-400 -translate-x-1/2 whitespace-nowrap">{Math.round(pos.profitTarget * 100)}%</span>
+                  </div>
+                  {pct != null && (
+                    <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow-lg transition-all duration-500"
+                      style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
+                  )}
+                  <div className="relative mt-5 h-4">
                     <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[8px] text-red-400 whitespace-nowrap leading-none">
                       STOP {stopPrice != null ? `$${stopPrice.toFixed(2)}` : '—'}
                     </span>
-                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] text-emerald-400 whitespace-nowrap leading-none">
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 text-[8px] text-emerald-400 whitespace-nowrap leading-none">
                       {`MAX PROFIT $${pos.creditReceived.toFixed(0)}`}
                     </span>
                   </div>
@@ -6357,7 +6425,23 @@ function PositionSection({ title, titleColor, positions, th, checked, onToggle, 
   groupAction: ActionType; onGroupAction: (positions: Position[], action: ActionType) => void;
   onExecute: (pos: Position, action: ActionType) => void;
 }) {
-  const keys = positions.map(p => p.key);
+    const lifecycleRank: Record<string, number> = {
+    CSP: 1,
+    ASSIGNED_STOCK: 2,
+    COVERED_CALL: 3,
+    SPREAD: 4,
+    PMCC: 5,
+    UNKNOWN: 9,
+  };
+
+  const sortedPositions = [...positions].sort((a, b) => {
+    const aType = getPositionLifecycle(a).type;
+    const bType = getPositionLifecycle(b).type;
+
+    return (lifecycleRank[aType] ?? 9) - (lifecycleRank[bType] ?? 9);
+  });
+
+  const keys = sortedPositions.map(p => p.key);
   const allChecked = keys.length > 0 && keys.every(k => checked.has(k));
   const someChecked = keys.some(k => checked.has(k));
   const meta = ACTION_META[groupAction];
@@ -6380,7 +6464,7 @@ function PositionSection({ title, titleColor, positions, th, checked, onToggle, 
         )}
       </div>
       <div className="space-y-2">
-        {positions.map(p => (
+        {sortedPositions.map(p => (
           <PositionCard key={p.key} pos={p} th={th} checked={checked.has(p.key)} onToggle={onToggle} onProfitTargetChange={onProfitTargetChange} onExecute={onExecute} />
         ))}
       </div>
@@ -6638,7 +6722,6 @@ export default function PortfolioPage() {
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
   const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
   const [futures, setFutures] = useState<FuturesData | null>(null);
-  const [sortMode, setSortMode] = useState<PortfolioSortMode>('priority');
 
   // Trigger weekly behavior summarization silently on load
   useEffect(() => { summarizeBehaviorProfile().catch(() => {}); }, []);
