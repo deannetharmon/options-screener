@@ -5673,6 +5673,17 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
     if (pos.strategy === 'IC') return `${shortPuts[0]?.strikePrice}P/${longPuts[0]?.strikePrice}P · ${shortCalls[0]?.strikePrice}C/${longCalls[0]?.strikePrice}C`;
     return pos.legs.map(l => `${l.strikePrice}${l.optionType}`).join(' / ');
   };
+  const shortPut = lifecycle.shortPuts[0] ?? null;
+  const cspStrike = shortPut?.strikePrice ?? null;
+  const cspPremium = shortPut?.avgOpenPrice ?? pos.creditPerContract ?? 0;
+  const cspEffectiveBuyPrice =
+    cspStrike != null ? cspStrike - cspPremium : null;
+  const cspCashRequired =
+    cspStrike != null ? cspStrike * 100 * lifecycle.contracts : null;
+  const cspAssignmentBuffer =
+    cspStrike != null && pos.stockPrice != null && pos.stockPrice > 0
+      ? ((pos.stockPrice - cspStrike) / pos.stockPrice) * 100
+      : null;
 
   const handleTargetSave = () => {
     const val = Math.min(100, Math.max(10, parseInt(targetInput) || 50)) / 100;
