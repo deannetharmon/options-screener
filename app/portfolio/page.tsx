@@ -107,6 +107,31 @@ function getPositionLifecycle(pos: Position) {
   });
 }
 
+function lifecycleSortWeight(pos: Position): number {
+  const type = getPositionLifecycle(pos).type;
+
+  if (type === 'CSP') return 10;
+  if (type === 'COVERED_CALL') return 20;
+  if (type === 'BPS') return 30;
+  if (type === 'BCS') return 40;
+  if (type === 'IC') return 50;
+  if (type === 'SPREAD') return 60;
+
+  return 99;
+}
+
+function sortPositionsByLifecycle(positions: Position[]): Position[] {
+  return [...positions].sort((a, b) => {
+    const lifecycleDiff = lifecycleSortWeight(a) - lifecycleSortWeight(b);
+    if (lifecycleDiff !== 0) return lifecycleDiff;
+
+    const symbolDiff = a.symbol.localeCompare(b.symbol);
+    if (symbolDiff !== 0) return symbolDiff;
+
+    return a.dte - b.dte;
+  });
+}
+
 function startWheelCycle(pos: Position): WheelCycle {
   const cycles = readWheelCycles();
   const shortLeg = pos.legs.find(l => l.direction === 'Short');
@@ -6869,7 +6894,7 @@ const result = await analyzePortfolio(positions, futures ?? undefined);
               {needsClose.length > 0 && (
                 <PositionSection
                   title="⚠ Close Now — 21 DTE or Less" titleColor="text-red-400"
-                  positions={needsClose} th={th} checked={checked}
+                  positions={sortPositionsByLifecycle(needsClose)} th={th} checked={checked}
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="CLOSE_ROLL" onGroupAction={onGroupAction}
@@ -6880,7 +6905,7 @@ const result = await analyzePortfolio(positions, futures ?? undefined);
               {hitTarget.length > 0 && (
                 <PositionSection
                   title="✓ Profit Target Hit" titleColor="text-emerald-400"
-                  positions={hitTarget} th={th} checked={checked}
+                  positions={sortPositionsByLifecycle(hitTarget)} th={th} checked={checked}
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="TAKE_PROFIT" onGroupAction={onGroupAction}
@@ -6891,7 +6916,7 @@ const result = await analyzePortfolio(positions, futures ?? undefined);
               {noGtc.length > 0 && (
                 <PositionSection
                   title="⏱ Missing GTC Order" titleColor="text-blue-400"
-                  positions={noGtc} th={th} checked={checked}
+                  positions={sortPositionsByLifecycle(noGtc)} th={th} checked={checked}
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="PLACE_GTC" onGroupAction={onGroupAction}
@@ -6902,7 +6927,7 @@ const result = await analyzePortfolio(positions, futures ?? undefined);
               {normal.length > 0 && (
                 <PositionSection
                   title="Active Positions" titleColor={th.textFaint}
-                  positions={normal} th={th} checked={checked}
+                  Sort portfolio positions by lifecycle th={th} checked={checked}
                   onToggle={onToggle} onToggleAll={onToggleAll}
                   onProfitTargetChange={handleProfitTargetChange}
                   groupAction="HOLD" onGroupAction={onGroupAction}
