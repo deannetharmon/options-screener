@@ -5,6 +5,9 @@ import { THEMES, ACCENTS, Theme, Accent, LS_THEME, LS_ACCENT, getSavedTheme, get
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import {
+  classifyPositionLifecycle,
+} from '@/lib/portfolio/positionLifecycle';
 
 // Inject accent CSS variable style
 if (typeof document !== 'undefined') {
