@@ -6272,7 +6272,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                       style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
                   )}
                   <div className="flex justify-between mt-5">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[8px] text-red-400 whitespace-nowrap"> 
+                    <span className="text-[8px] text-red-400 ml-4 whitespace-nowrap">
                       STOP {stopPrice != null ? `$${stopPrice.toFixed(2)}` : '—'}
                     </span>
                     <span className="text-[8px] text-emerald-400">MAX PROFIT $0</span>
