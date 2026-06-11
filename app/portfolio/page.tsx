@@ -91,6 +91,22 @@ function getWheelCycleForPos(pos: Position): WheelCycle | null {
     ['csp_open', 'assigned', 'cc_open'].includes(c.status)
   ) ?? null;
 }
+
+function getPositionLifecycle(pos: Position) {
+  return classifyPositionLifecycle({
+    symbol: pos.symbol,
+    legs: pos.legs.map(leg => ({
+      symbol: leg.symbol,
+      optionType: leg.optionType,
+      strikePrice: leg.strikePrice,
+      direction: leg.direction,
+      quantity: leg.quantity,
+      avgOpenPrice: leg.avgOpenPrice,
+      currentPrice: leg.currentPrice,
+    })),
+  });
+}
+
 function startWheelCycle(pos: Position): WheelCycle {
   const cycles = readWheelCycles();
   const shortLeg = pos.legs.find(l => l.direction === 'Short');
