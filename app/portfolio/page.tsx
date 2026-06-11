@@ -5951,7 +5951,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
               </p>
               <p className={`text-xs ${th.text}`} style={{ fontFamily: '"DM Mono", monospace' }}>
                 {lifecycle.type === 'CSP' && cspEffectiveBuyPrice != null && cspStrike != null
-                  ? `$${cspEffectiveBuyPrice.toFixed(2)} / ${cspStrike}P`
+                  ? `$${cspEffectiveBuyPrice.toFixed(2)} ← ${cspStrike}P`
                   : strikesSummary()}
               </p>
             </div>
@@ -6274,7 +6274,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                       style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
                   )}
                   <div className="flex justify-between mt-5">
-                    <span className="text-[8px] text-red-400 pl-2 whitespace-nowrap">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[8px] text-red-400 whitespace-nowrap"> 
                       STOP {stopPrice != null ? `$${stopPrice.toFixed(2)}` : '—'}
                     </span>
                     <span className="text-[8px] text-emerald-400">MAX PROFIT $0</span>
