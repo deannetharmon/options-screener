@@ -5612,6 +5612,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
   const [expanded, setExpanded] = useState(false);
   const [trend, setTrend] = useState<TrendResult | null>(null);
   const [wheelCycle, setWheelCycle] = useState<WheelCycle | null>(() => getWheelCycleForPos(pos));
+  const lifecycle = getPositionLifecycle(pos);
   const isWheelCandidate = (pos.strategy === 'PUT' || pos.strategy === 'CALL') && !wheelCycle;
   const showWheelBanner  = isWheelCandidate && !readWheelCycles().find(c => c.symbol === pos.symbol && c.cspExpiry === pos.expDate && c.dismissedBanner);
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -5761,6 +5762,9 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
         </button>
 
         {/* Data columns */}
+        <div className="text-[10px] text-slate-500 px-3 py-2 border-r border-inherit min-w-[90px]">
+          {lifecycle.type}
+        </div>
         <div className="overflow-x-auto flex-1" style={{ minWidth: 0 }}>
           <div className="grid px-4 py-3" style={{ gridTemplateColumns: '72px 120px 80px 70px 110px 80px 80px 90px 70px 50px 45px 45px 45px 55px 60px 90px 130px', gap: '0 12px', alignItems: 'start', minWidth: '1464px' }}>
 
