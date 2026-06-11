@@ -6244,11 +6244,11 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                       style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
                   )}
                   <div className="relative mt-5 h-4">
-                    <span className="absolute left-4 top-0 text-[8px] text-red-400 whitespace-nowrap leading-none">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[8px] text-red-400 whitespace-nowrap leading-none">
                       STOP {stopPrice != null ? `$${stopPrice.toFixed(2)}` : '—'}
                     </span>
                   
-                    <span className="absolute right-0 top-0 text-[8px] text-emerald-400 whitespace-nowrap leading-none">
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 text-[8px] text-emerald-400 whitespace-nowrap leading-none">
                       MAX PROFIT ${pos.creditReceived.toFixed(0)}
                     </span>
                   </div>
