@@ -1959,7 +1959,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
               ? 'pass'
               : 'warn',
 
-          value: `${strikeIv.toFixed(0)}% IV vs ${hv30.toFixed(0)}% HV`,
+          value: value: `IV (${strikeIv.toFixed(0)}%) vs HV (${hv30.toFixed(0)}%)`,
 
           reason:
             edgePct >= 10
