@@ -2006,7 +2006,7 @@ function runChecklist(symbol: string, strategy: 'BPS' | 'BCS' | 'IC', metrics: a
     liquidityRating: metrics.liquidityRating ?? null,
     qualified, bestCandidate, failReasons, earningsDate, trendResult,
     isEtf: isIndex, underlyingType: classifyUnderlying(symbol), ruleSetApplied: appliedLabel,
-    checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, emClearance: emClearanceCheck, credit: creditCheck, roc: rocCheck, pop: popCheck, iv: ivCheck },
+    checks: { ivr: ivrCheck, earnings: earningsCheck, oi: oiCheck, delta: deltaCheck, iv: ivCheck, emClearance: emClearanceCheck, credit: creditCheck, roc: rocCheck, pop: popCheck },
   };
 }
 
