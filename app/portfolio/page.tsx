@@ -5766,7 +5766,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
           <div className="text-[10px] text-slate-500 px-3 py-2 border-r border-inherit w-24 shrink-0 overflow-hidden">
             <div className="font-semibold truncate">{lifecycle.type}</div>
             <div className="opacity-60 truncate" title={lifecycle.reason}>
-              {lifecycle.reason}
+              debug
             </div>
           </div>
         </div>
