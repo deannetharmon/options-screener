@@ -3655,7 +3655,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
       : null;
 
     return (
-      <div key={key} className={`flex items-start gap-2 ${isEarnings ? 'md:col-span-2' : ''}`}>
+      <div key={key} className={`flex items-start gap-2 ${isEarnings ? 'col-span-2 md:col-span-1' : ''}`}>
         <span className={`text-xs mt-0.5 font-bold ${statusColor(check.status)}`}>{statusIcon(check.status)}</span>
         <div>
           {(() => {
