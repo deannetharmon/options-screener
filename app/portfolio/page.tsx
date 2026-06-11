@@ -6245,14 +6245,12 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                     {pct != null && (
                       <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow-lg transition-all duration-500"
                         style={{ left: `calc(${pct}% - 6px)`, background: barColor }} />
-                    )}
-                  
+                    )}     
                     <span className="absolute left-4 top-1/2 -translate-y-1/2 text-[8px] text-red-400 whitespace-nowrap leading-none">
                       STOP {stopPrice != null ? `$${stopPrice.toFixed(2)}` : '—'}
                     </span>
-                  
                     <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] text-emerald-400 whitespace-nowrap leading-none">
-                      MAX PROFIT ${pos.creditReceived.toFixed(0)}
+                      {`MAX PROFIT $${pos.creditReceived.toFixed(0)}`}
                     </span>
                   </div>
                 </div>
