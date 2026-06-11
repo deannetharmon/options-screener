@@ -5751,8 +5751,20 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             {/* ── POSITION ───────────────────────────── */}
             <div className="border-t-2 border-slate-600/60 pt-1">
               <p className={`font-bold ${th.text} text-sm leading-tight`} style={{ fontFamily: "'DM Mono', monospace" }}>{pos.symbol}</p>
-              <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
-              {wheelCycle && (
+                <span className={`text-[10px] px-1.5 py-0.5 border rounded font-bold ${stratColor(pos.strategy)}`}>{pos.strategy}</span>
+                <span className={`ml-1 text-[9px] px-1 py-0.5 border rounded font-bold ${
+                  lifecycle.type === 'CSP'
+                    ? 'border-amber-600/60 text-amber-400'
+                    : lifecycle.type === 'COVERED_CALL'
+                      ? 'border-emerald-600/60 text-emerald-400'
+                      : 'border-sky-600/60 text-sky-400'
+                }`}>
+                  {lifecycle.type === 'CSP'
+                    ? 'CSP'
+                    : lifecycle.type === 'COVERED_CALL'
+                      ? 'CC'
+                      : pos.strategy}
+                </span>              {wheelCycle && (
                 <span className="ml-1 text-[9px] px-1 py-0.5 border border-amber-600/60 rounded text-amber-400 font-bold">WHEEL</span>
               )}
               {/* Chart button */}
