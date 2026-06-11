@@ -5946,8 +5946,14 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
             </div>
 
             <div className="border-t-2 border-sky-600/50 pt-1 border-r border-r-slate-700/40 pr-2">
-              <p className={`text-[9px] ${th.textFaint}`}>Strikes</p>
-              <p className={`text-xs ${th.text}`} style={{ fontFamily: "'DM Mono', monospace" }}>{strikesSummary()}</p>
+              <p className={`text-[9px] ${th.textFaint}`}>
+                {lifecycle.type === 'CSP' ? 'Eff Buy / Strike' : 'Strikes'}
+              </p>
+              <p className={`text-xs ${th.text}`} style={{ fontFamily: '"DM Mono", monospace' }}>
+                {lifecycle.type === 'CSP' && cspEffectiveBuyPrice != null && cspStrike != null
+                  ? `$${cspEffectiveBuyPrice.toFixed(2)} / ${cspStrike}P`
+                  : strikesSummary()}
+              </p>
             </div>
 
             {/* ── P&L ────────────────────────────────── */}
