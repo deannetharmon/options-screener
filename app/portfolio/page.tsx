@@ -108,14 +108,13 @@ function getPositionLifecycle(pos: Position) {
 }
 
 function lifecycleSortWeight(pos: Position): number {
-  const type = getPositionLifecycle(pos).type;
+  const type = String(getPositionLifecycle(pos).type);
 
   if (type === 'CSP') return 10;
   if (type === 'COVERED_CALL') return 20;
-  if (type === 'BPS') return 30;
-  if (type === 'BCS') return 40;
-  if (type === 'IC') return 50;
-  if (type === 'SPREAD') return 60;
+  if (type === 'ASSIGNED_STOCK') return 25;
+  if (type === 'SPREAD') return 30;
+  if (type === 'PMCC') return 40;
 
   return 99;
 }
@@ -123,25 +122,32 @@ function lifecycleSortWeight(pos: Position): number {
 function sortPositions(positions: Position[], mode: PortfolioSortMode): Position[] {
   return [...positions].sort((a, b) => {
     if (mode === 'lifecycle') {
-      const diff = lifecycleSortWeight(a) - lifecycleSortWeight(b);
-      if (diff !== 0) return diff;
+      return lifecycleSortWeight(a) - lifecycleSortWeight(b)
+        || a.dte - b.dte
+        || a.symbol.localeCompare(b.symbol);
     }
 
-    if (mode === 'dte') return a.dte - b.dte;
-    if (mode === 'symbol') return a.symbol.localeCompare(b.symbol);
+    if (mode === 'dte') {
+      return a.dte - b.dte || a.symbol.localeCompare(b.symbol);
+    }
+
+    if (mode === 'symbol') {
+      return a.symbol.localeCompare(b.symbol) || a.dte - b.dte;
+    }
 
     if (mode === 'plPct') {
-      return (a.pnlPct ?? -9999) - (b.pnlPct ?? -9999);
+      return (a.pnlPct ?? -9999) - (b.pnlPct ?? -9999)
+        || a.dte - b.dte
+        || a.symbol.localeCompare(b.symbol);
     }
 
-    const priorityDiff =
+    return (
       Number(b.stopLossStatus === 'bypassed') - Number(a.stopLossStatus === 'bypassed') ||
       Number(b.hitTarget) - Number(a.hitTarget) ||
-      Number(b.needsClose) - Number(a.needsClose);
-
-    if (priorityDiff !== 0) return priorityDiff;
-
-    return a.dte - b.dte || a.symbol.localeCompare(b.symbol);
+      Number(b.needsClose) - Number(a.needsClose) ||
+      a.dte - b.dte ||
+      a.symbol.localeCompare(b.symbol)
+    );
   });
 }
 
