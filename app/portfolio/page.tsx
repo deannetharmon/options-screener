@@ -227,8 +227,10 @@ function setDryRun(val: boolean) {
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
+// type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
+// type PortfolioSortMode = 'priority' | 'lifecycle' | 'dte' | 'symbol' | 'plPct';
+
 type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
-type PortfolioSortMode = 'priority' | 'lifecycle' | 'dte' | 'symbol' | 'plPct';
 
 interface PositionLeg {
   symbol: string;
