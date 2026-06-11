@@ -152,27 +152,22 @@ function getPositionLifecycle(pos: Position) {
 // }
 
 function lifecycleSortWeight(pos: Position): number {
-  const type = getPositionLifecycle(pos).type;
+  const type = String(getPositionLifecycle(pos).type);
 
   if (type === 'CSP') return 10;
   if (type === 'COVERED_CALL') return 20;
-  if (type === 'BPS') return 30;
-  if (type === 'BCS') return 40;
-  if (type === 'IC') return 50;
-  if (type === 'SPREAD') return 60;
+  if (type === 'ASSIGNED_STOCK') return 25;
+  if (type === 'SPREAD') return 30;
+  if (type === 'PMCC') return 40;
 
   return 99;
 }
 
 function sortPositionsByLifecycle(positions: Position[]): Position[] {
   return [...positions].sort((a, b) => {
-    const lifecycleDiff = lifecycleSortWeight(a) - lifecycleSortWeight(b);
-    if (lifecycleDiff !== 0) return lifecycleDiff;
-
-    const symbolDiff = a.symbol.localeCompare(b.symbol);
-    if (symbolDiff !== 0) return symbolDiff;
-
-    return a.dte - b.dte;
+    return lifecycleSortWeight(a) - lifecycleSortWeight(b)
+      || a.dte - b.dte
+      || a.symbol.localeCompare(b.symbol);
   });
 }
 
