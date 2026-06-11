@@ -139,7 +139,7 @@ function setDryRun(val: boolean) {
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
-type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC';
+type ActionType = 'HOLD' | 'WATCH' | 'MANAGE' | 'TAKE_PROFIT' | 'CUT_LOSSES' | 'CLOSE_ROLL' | 'PLACE_GTC'; type PortfolioSortMode = 'priority' | 'lifecycle' | 'dte' | 'symbol' | 'plPct';
 
 interface PositionLeg {
   symbol: string;
@@ -6626,6 +6626,7 @@ export default function PortfolioPage() {
   const [portfolioAnalysis, setPortfolioAnalysis] = useState<PortfolioAnalysis | null>(null);
   const [portfolioAnalysisLoading, setPortfolioAnalysisLoading] = useState(false);
   const [futures, setFutures] = useState<FuturesData | null>(null);
+  const [sortMode, setSortMode] = useState<PortfolioSortMode>('priority');
 
   // Trigger weekly behavior summarization silently on load
   useEffect(() => { summarizeBehaviorProfile().catch(() => {}); }, []);
