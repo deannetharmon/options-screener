@@ -2408,11 +2408,12 @@ async function analyzePortfolio(positions: Position[], futures?: FuturesData | n
 
 // Map index symbols to their chart-compatible equivalents
 const INDEX_CHART_SYMBOLS: Record<string, string> = {
-  'SPX': 'SPY',   // Use SPY as proxy for SPX trend — highly correlated, better data availability
-  'NDX': 'QQQ',   // Use QQQ as proxy for NDX
-  'RUT': 'IWM',   // Use IWM as proxy for RUT
-  'VIX': 'VIX',
-  'DJX': 'DIA',
+  'SPX':  '^GSPC',
+  'SPXW': '^GSPC',
+  'NDX':  '^NDX',
+  'RUT':  '^RUT',
+  'VIX':  '^VIX',
+  'DJX':  '^DJI',
 };
 
 async function getTrend(symbol: string): Promise<TrendResult> {
