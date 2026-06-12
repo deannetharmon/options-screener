@@ -2699,6 +2699,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState<number[] | null>(null);
   const [sparkLoading, setSparkLoading] = useState(false);
+  const chartBtnRef = useRef<HTMLButtonElement>(null);
+  const [chartPopupPos, setChartPopupPos] = useState<{ top: number; left: number } | null>(null);
   const [portfolioRisk, setPortfolioRisk] = useState<PortfolioRisk | null>(null);
 
   const c = result.bestCandidate;
@@ -2824,13 +2826,23 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
           )}
           <div className="relative mt-0.5">
             <button
+              ref={chartBtnRef}
               onClick={e => {
                 e.stopPropagation();
                 if (!showChart) {
+                  if (chartBtnRef.current) {
+                    const r = chartBtnRef.current.getBoundingClientRect();
+                    setChartPopupPos({
+                      top: Math.min(r.bottom + 6, window.innerHeight - 320),
+                      left: Math.min(r.left, window.innerWidth - 290),
+                    });
+                  }
                   setShowChart(true);
                   if (!sparkData) {
                     setSparkLoading(true);
-                    fetch(`/api/chart?symbol=${encodeURIComponent(result.symbol)}`)
+                    const YAHOO_INDEX_MAP: Record<string, string> = { SPX: '^GSPC', SPXW: '^GSPC', NDX: '^NDX', RUT: '^RUT', VIX: '^VIX', DJX: '^DJI' };
+                    const chartSym = YAHOO_INDEX_MAP[result.symbol.toUpperCase()] ?? result.symbol;
+                    fetch(`/api/chart?symbol=${encodeURIComponent(chartSym)}`)
                       .then(r => r.json())
                       .then(d => {
                         const allBars = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null);
@@ -2855,8 +2867,8 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
 
             {showChart && (
               <div
-                className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
-                style={{ width: '280px' }}
+                className={`fixed z-[9999] ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
+                style={{ width: '280px', top: chartPopupPos?.top ?? 0, left: chartPopupPos?.left ?? 0 }}
                 onClick={e => e.stopPropagation()}
               >
                 {/* Sparkline */}
@@ -2909,7 +2921,7 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
 
                 {/* Open in TradingView button */}
                 <a
-                  href={`https://www.tradingview.com/chart/?symbol=${result.symbol}`}
+                  href={`https://www.tradingview.com/chart/?symbol=${({ SPX: 'CBOE:SPX', SPXW: 'CBOE:SPX', NDX: 'NASDAQ:NDX', RUT: 'TVC:RUT', VIX: 'CBOE:VIX', DJX: 'TVC:DJI' } as Record<string,string>)[result.symbol.toUpperCase()] ?? result.symbol}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={e => e.stopPropagation()}
