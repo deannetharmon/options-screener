@@ -905,7 +905,7 @@ function EnterTradeModal({ result, th, onClose }: {
           {/* Summary */}
           {/* Summary */}
           {(() => {
-            const price = result.price;
+            const price = result.currentPrice;
             const otmPct = price != null && price > 0
               ? c.strategy === 'BPS' ? ((price - c.shortStrike) / price) * 100
               : c.strategy === 'BCS' ? ((c.shortStrike - price) / price) * 100
