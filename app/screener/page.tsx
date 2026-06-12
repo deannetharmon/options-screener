@@ -807,7 +807,10 @@ function scoreCandidate(result: ScreenResult, cfg: RankConfig): { score: number;
   // When momentum is very strong, reduce effective IVR weight so it doesn't
   // dominate over a clear directional signal (WFC: 39% IVR but -135 momentum)
   const ivr = result.ivr ?? 0;
-  const ivrRaw = ivr <= 65 ? ivr / 65 : 1 - (ivr - 65) / 100;
+  const ivrRaw =
+    ivr >= 50 && ivr <= 90 ? 1
+    : ivr < 50            ? ivr / 50
+    :                       1 - (ivr - 90) / 50;
   const momentumStrength = t?.scores?.total != null ? clamp(Math.abs(t.scores.total) / 150) : 0;
   const effectiveIvrWeight = cfg.weightIvr * (1 - momentumStrength * 0.35);
   const ivrScore = clamp(ivrRaw) * effectiveIvrWeight;
@@ -4716,7 +4719,7 @@ async function runTargetedScan(
                 const displayResult: ScreenResult = {
                   ...result,
                   bestCandidate: result.bestCandidate ?? candidate,
-                  qualified: true,
+                  qualified: result.checks.roc.status === 'pass' && result.checks.oi.status !== 'fail',
                   failReasons: result.failReasons.filter(r => !r.includes('qualifying strikes') && !r.includes('No 30-45 DTE')),
                 };
                 const scored = scoreCandidate(displayResult, rankConfig);
@@ -4783,7 +4786,7 @@ async function runTargetedScan(
                 const displayResult: ScreenResult = {
                   ...result,
                   bestCandidate: bestCandidate,  // always our specific strike, never runChecklist's pick
-                  qualified: true,
+                  qualified: result.checks.roc.status === 'pass' && result.checks.oi.status !== 'fail',
                   failReasons: result.failReasons.filter(r => !r.includes('qualifying strikes') && !r.includes('No 30-45 DTE')),
                   checks: {
                     ...result.checks,
