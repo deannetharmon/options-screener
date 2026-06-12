@@ -965,6 +965,8 @@ function RRCard({ result, th, existingPositions }: {
   const [showChart, setShowChart] = useState(false);
   const [sparkData, setSparkData] = useState<number[] | null>(null);
   const [sparkLoading, setSparkLoading] = useState(false);
+  const chartBtnRef = useRef<HTMLButtonElement>(null);
+  const [chartPopupPos, setChartPopupPos] = useState<{ top: number; left: number } | null>(null);
   const [showEnterModal, setShowEnterModal] = useState(false);
 
   useEffect(() => {
@@ -1000,15 +1002,23 @@ function RRCard({ result, th, existingPositions }: {
           {currentPrice && <p className={`text-[10px] ${th.textFaint}`}>${currentPrice.toFixed(2)}</p>}
           <div className="relative mt-0.5">
             <button
+              ref={chartBtnRef}
               onClick={e => {
                 e.stopPropagation();
                 if (!showChart) {
+                  if (chartBtnRef.current) {
+                    const r = chartBtnRef.current.getBoundingClientRect();
+                    setChartPopupPos({
+                      top: Math.min(r.bottom + 6, window.innerHeight - 320),
+                      left: Math.min(r.left, window.innerWidth - 290),
+                    });
+                  }
                   setShowChart(true);
                   if (!sparkData) {
                     setSparkLoading(true);
                     const YAHOO_INDEX_MAP: Record<string, string> = { SPX: '^GSPC', SPXW: '^GSPC', NDX: '^NDX', RUT: '^RUT', VIX: '^VIX', DJX: '^DJI' };
-                    const chartSym = YAHOO_INDEX_MAP[symbol.toUpperCase()] ?? symbol;
-                    fetch(`/api/chart?symbol=${encodeURIComponent(chartSym)}`)                      
+                    const chartSym = YAHOO_INDEX_MAP[profile.symbol.toUpperCase()] ?? profile.symbol;
+                    fetch(`/api/chart?symbol=${encodeURIComponent(chartSym)}`)
                       .then(r => r.json())
                       .then(d => {
                         const allBars = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null);
@@ -1028,9 +1038,9 @@ function RRCard({ result, th, existingPositions }: {
               <span className="tracking-wide">chart</span>
             </button>
 
-            {showChart && (
-              <div className={`absolute top-full left-0 mt-1 z-40 ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
-                style={{ width: '280px' }} onClick={e => e.stopPropagation()}>
+            {{showChart && (
+              <div className={`fixed z-[9999] ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
+                style={{ width: '280px', top: chartPopupPos?.top ?? 0, left: chartPopupPos?.left ?? 0 }} onClick={e => e.stopPropagation()}>
                 <div className="mb-2">
                   {sparkLoading && <div className="flex items-center justify-center h-16"><div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" /></div>}
                   {!sparkLoading && sparkData && sparkData.length > 1 && (() => {
@@ -1058,7 +1068,7 @@ function RRCard({ result, th, existingPositions }: {
                   })()}
                   {!sparkLoading && sparkData && sparkData.length === 0 && <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>}
                 </div>
-                <a href={`https://www.tradingview.com/chart/?symbol=${profile.symbol}`} target="_blank" rel="noopener noreferrer"
+                <a href={`https://www.tradingview.com/chart/?symbol=${({ SPX: 'CBOE:SPX', SPXW: 'CBOE:SPX', NDX: 'NASDAQ:NDX', RUT: 'TVC:RUT', VIX: 'CBOE:VIX', DJX: 'TVC:DJI' } as Record<string,string>)[profile.symbol.toUpperCase()] ?? profile.symbol}`} target="_blank" rel="noopener noreferrer"
                   onClick={e => e.stopPropagation()}
                   className="flex items-center justify-center gap-2 w-full py-2 ac-bg-20 ac-hover-bg/30 border ac-border/40 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
