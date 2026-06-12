@@ -2920,8 +2920,9 @@ function ResultCard({ result, th, rules, screenMode, rankConfig, onTrade, cached
                 </div>
 
                 {/* Open in TradingView button */}
+                
                 <a
-                  href={`https://www.tradingview.com/chart/?symbol=${({ SPX: 'CBOE:SPX', SPXW: 'CBOE:SPX', NDX: 'NASDAQ:NDX', RUT: 'TVC:RUT', VIX: 'CBOE:VIX', DJX: 'TVC:DJI' } as Record<string,string>)[result.symbol.toUpperCase()] ?? result.symbol}`}
+                  href={`https://www.tradingview.com/chart/?symbol=${({'SPX':'CBOE:SPX','SPXW':'CBOE:SPX','NDX':'NASDAQ:NDX','RUT':'TVC:RUT','VIX':'CBOE:VIX','DJX':'TVC:DJI'})[result.symbol.toUpperCase()] ?? result.symbol}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={e => e.stopPropagation()}
