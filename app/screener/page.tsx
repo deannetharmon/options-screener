@@ -1091,8 +1091,8 @@ async function getChain(symbol: string, token: string, RULES: RulesType, dteWind
   // Detect ETF/Index from TastyTrade instrument-type — no hardcoded list needed
   const instrumentType: string = nested?.data?.items?.[0]?.['instrument-type'] ?? '';
   const isEtfOrIndex = ['ETF', 'Index', 'Future'].some(t => instrumentType.toLowerCase().includes(t.toLowerCase()))
-  console.log(`[SPX-DEBUG] ${symbol}: instrumentType="${instrumentType}" isEtfOrIndex=${isEtfOrIndex} nestedExpirations=${nested?.data?.items?.[0]?.expirations?.length ?? 0} loDte=${loDte} hiDte=${hiDte}`);
     || INDEX_TICKERS.has(symbol.toUpperCase()); // fallback for known tickers
+  console.log(`[SPX-DEBUG] ${symbol}: instrumentType="${instrumentType}" isEtfOrIndex=${isEtfOrIndex} nestedExpirations=${nested?.data?.items?.[0]?.expirations?.length ?? 0} loDte=${loDte} hiDte=${hiDte}`);
   const expirations: string[] = [], chains: Record<string, any[]> = {}, allOCCSymbols: string[] = [];
   const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
   for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
