@@ -5158,19 +5158,12 @@ export default function Home() {
   setBpsTickers(v); 
   clearResultsCache(); 
   try { localStorage.setItem(LS_BPS, v); } catch {} 
-  // Force re-run if we have data
-  setTimeout(() => {
-    if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
-  }, 50);
   };
   
   const handleBcsChange = (v: string) => { 
     setBcsTickers(v); 
     clearResultsCache(); 
     try { localStorage.setItem(LS_BCS, v); } catch {} 
-    setTimeout(() => {
-      if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
-    }, 50);
   };
   
   const handleIcChange = (v: string) => { 
@@ -5178,8 +5171,6 @@ export default function Home() {
     clearResultsCache(); 
     try { localStorage.setItem(LS_IC, v); } catch {} 
     setTimeout(() => {
-      if (rawScanCache.length > 0) runScreen(runtimeStockRules, runtimeEtfRules, stockPresetLabel, etfPresetLabel);
-    }, 50);
   };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
   const handlePmccChange = (v: string) => { setPmccTickers(v); clearResultsCache(); try { localStorage.setItem(LS_PMCC, v); } catch {} };
@@ -5446,11 +5437,6 @@ export default function Home() {
           <a href="/trade-log"   className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">TRADE LOG</a>
           <a href="/performance" className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">PERFORMANCE</a>
           <a href="/help"        className="text-[10px] font-bold px-3 py-2 text-white/55 hover:text-white/80 transition-colors tracking-wider">HELP</a>
-        </div>
-        
-        <div className="flex items-center gap-3">
-          <a href="/help" target="_blank" className="text-white/50 hover:text-white/90 text-xs font-medium tracking-wider transition-colors" title="Help">?</a>
-          <ThemeToggle theme={theme} setTheme={setTheme} accent={accent} setAccent={setAccent} />
         </div>
       </div>
 
