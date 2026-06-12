@@ -1077,8 +1077,13 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
     return last ?? (bid && ask ? (bid + ask) / 2 : null);
   } catch { return null; }
 }
-async function getChain(symbol: string, token: string, RULES: RulesType): Promise<{ expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean }> {
-  const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
+async function getChain(symbol: string, token: string, RULES: RulesType, dteWindow?: { min: number; max: number }): Promise<{ expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean }> {
+  // dteWindow overrides the rule-set DTE gate when provided (rank mode passes a fixed wide window).
+  // Falls back to rule DTE with a ±5 cushion; guards against inverted/NaN rule values collapsing the fetch.
+  const gateMin = dteWindow ? dteWindow.min : ((Number.isFinite(RULES.DTE_MIN) ? RULES.DTE_MIN : 0) - 5);
+  const gateMax = dteWindow ? dteWindow.max : ((Number.isFinite(RULES.DTE_MAX) ? RULES.DTE_MAX : 60) + 5);
+  const [loDte, hiDte] = gateMin <= gateMax ? [gateMin, gateMax] : [gateMax, gateMin];
+const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
   // Detect ETF/Index from TastyTrade instrument-type — no hardcoded list needed
   const instrumentType: string = nested?.data?.items?.[0]?.['instrument-type'] ?? '';
   const isEtfOrIndex = ['ETF', 'Index', 'Future'].some(t => instrumentType.toLowerCase().includes(t.toLowerCase()))
@@ -1087,7 +1092,7 @@ async function getChain(symbol: string, token: string, RULES: RulesType): Promis
   const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
   for (const expGroup of nested?.data?.items?.[0]?.expirations ?? []) {
     const expDate: string = expGroup['expiration-date']; if (!expDate) continue;
-    const dte = daysUntil(expDate); if (dte < RULES.DTE_MIN - 5 || dte > RULES.DTE_MAX + 5) continue;
+    const dte = daysUntil(expDate); if (dte < loDte || dte > hiDte) continue;
     for (const strike of expGroup.strikes ?? []) {
       const strikePrice = parseFloat(strike['strike-price'] ?? '0');
       const callSym: string = strike['call'], putSym: string = strike['put'];
@@ -3573,11 +3578,23 @@ function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
   ) => ({
     onChange: (key: string, raw: string) => setRaw(prev => ({ ...prev, [key]: raw })),
     onBlur: (key: keyof RulesType, raw: string) => {
-      const val = parseFloat(raw);
+      const trimmed = raw.trim();
+      // Blank or "all"/"any" on a DTE Max field means "no upper bound" → store a wide sentinel instead of reverting.
+      const isAllToken = trimmed === '' || /^(all|any|max)$/i.test(trimmed);
+      if (key === 'DTE_MAX' && isAllToken) {
+        setEdited(prev => ({ ...prev, [key]: 365 }));
+        setRaw(prev => ({ ...prev, [key]: '365' }));
+        return;
+      }
+      if (key === 'DTE_MIN' && isAllToken) {
+        setEdited(prev => ({ ...prev, [key]: 0 }));
+        setRaw(prev => ({ ...prev, [key]: '0' }));
+        return;
+      }
+      const val = parseFloat(trimmed);
       if (!isNaN(val)) { setEdited(prev => ({ ...prev, [key]: val })); setRaw(prev => ({ ...prev, [key]: String(val) })); }
       else setRaw(prev => ({ ...prev, [key]: String(edited[key]) }));
     },
-  });
 
   const stockHandlers = makeHandlers(stockEdited, setStockEdited, setStockRaw);
   const etfHandlers = makeHandlers(etfEdited, setEtfEdited, setEtfRaw);
@@ -5269,8 +5286,9 @@ export default function Home() {
         try {
           const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
           const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
+          const rankDteWindow = (modeOverride ?? screenMode) === 'rank' ? { min: 7, max: 60 } : undefined;
           const [chainData, price] = await Promise.all([
-            getChain(symbol, token, getChainRules(isEtfTicker)),
+            getChain(symbol, token, getChainRules(isEtfTicker), rankDteWindow),
             getQuote(symbol, token),
           ]);
           for (const s of strategiesToScan) {
@@ -5299,7 +5317,8 @@ export default function Home() {
           try {
             const metrics = metricsMap[symbol] || { symbol, ivRank: null, earningsExpectedDate: null };
             const isEtfTicker = INDEX_TICKERS.has(symbol.toUpperCase());
-            const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker)), getQuote(symbol, token)]);
+            const rankDteWindow = (modeOverride ?? screenMode) === 'rank' ? { min: 7, max: 60 } : undefined;
+            const [chainData, price] = await Promise.all([getChain(symbol, token, getChainRules(isEtfTicker), rankDteWindow), getQuote(symbol, token)]);
             for (const s of strategiesToScan) {
               scanCache.push({ symbol, strategy: s, metrics, chainData, price });
               if (isRankMode) {
