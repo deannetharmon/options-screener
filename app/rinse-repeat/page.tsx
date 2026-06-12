@@ -1038,7 +1038,7 @@ function RRCard({ result, th, existingPositions }: {
               <span className="tracking-wide">chart</span>
             </button>
 
-            {{showChart && (
+            {showChart && (
               <div className={`fixed z-[9999] ${th.sidebar} border ${th.border} rounded-xl shadow-2xl p-3`}
                 style={{ width: '280px', top: chartPopupPos?.top ?? 0, left: chartPopupPos?.left ?? 0 }} onClick={e => e.stopPropagation()}>
                 <div className="mb-2">
