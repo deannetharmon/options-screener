@@ -1236,7 +1236,7 @@ async function loadMarketConditions(watchlist: string[], engineData: EngineData 
   // ── FOMC ──────────────────────────────────────────────────────────────
   const isFomcDay = FOMC_DATES_2026.includes(todayStr);
   const nextFomc = FOMC_DATES_2026.find(d => d >= todayStr);
-  const daysToFomc = nextFomc ? Math.round((new Date(Date.UTC(...nextFomc.split('-').map(Number) as [number,number,number])).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 999;
+  const fomcParts = nextFomc ? nextFomc.split('-').map(Number) : null;   const daysToFomc = fomcParts ? Math.round((new Date(Date.UTC(fomcParts[0], fomcParts[1] - 1, fomcParts[2])).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)) : 999;
   const fomcThisWeek = daysToFomc <= 3 && daysToFomc >= 0;
   if (isFomcDay) {
     score -= 25;
