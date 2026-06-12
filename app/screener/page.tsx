@@ -1077,8 +1077,9 @@ async function getQuote(symbol: string, token: string): Promise<number | null> {
     const last = item.last != null ? parseFloat(item.last) : null;
     const bid = item.bid != null ? parseFloat(item.bid) : null;
     const ask = item.ask != null ? parseFloat(item.ask) : null;
-    return last ?? (bid && ask ? (bid + ask) / 2 : null);
-  } catch { return null; }
+    const px = last ?? (bid && ask ? (bid + ask) / 2 : null);
+    console.log(`[SPX-DEBUG] getQuote ${symbol}: last=${last} bid=${bid} ask=${ask} -> price=${px}`);
+    return px;  } catch { return null; }
 }
 async function getChain(symbol: string, token: string, RULES: RulesType, dteWindow?: { min: number; max: number }): Promise<{ expirations: string[]; chains: Record<string, any[]>; isEtfOrIndex: boolean }> {
   // dteWindow overrides the rule-set DTE gate when provided (rank mode passes a fixed wide window).
@@ -1086,10 +1087,11 @@ async function getChain(symbol: string, token: string, RULES: RulesType, dteWind
   const gateMin = dteWindow ? dteWindow.min : ((Number.isFinite(RULES.DTE_MIN) ? RULES.DTE_MIN : 0) - 5);
   const gateMax = dteWindow ? dteWindow.max : ((Number.isFinite(RULES.DTE_MAX) ? RULES.DTE_MAX : 60) + 5);
   const [loDte, hiDte] = gateMin <= gateMax ? [gateMin, gateMax] : [gateMax, gateMin];
-const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
+  const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
   // Detect ETF/Index from TastyTrade instrument-type — no hardcoded list needed
   const instrumentType: string = nested?.data?.items?.[0]?.['instrument-type'] ?? '';
   const isEtfOrIndex = ['ETF', 'Index', 'Future'].some(t => instrumentType.toLowerCase().includes(t.toLowerCase()))
+  console.log(`[SPX-DEBUG] ${symbol}: instrumentType="${instrumentType}" isEtfOrIndex=${isEtfOrIndex} nestedExpirations=${nested?.data?.items?.[0]?.expirations?.length ?? 0} loDte=${loDte} hiDte=${hiDte}`);
     || INDEX_TICKERS.has(symbol.toUpperCase()); // fallback for known tickers
   const expirations: string[] = [], chains: Record<string, any[]> = {}, allOCCSymbols: string[] = [];
   const symbolMeta: Record<string, { expDate: string; strike: number; optionType: string }> = {};
@@ -1103,6 +1105,7 @@ const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
       if (putSym) { allOCCSymbols.push(putSym); symbolMeta[putSym] = { expDate, strike: strikePrice, optionType: 'P' }; }
     }
   }
+  console.log(`[SPX-DEBUG] ${symbol}: OCC symbols after DTE filter = ${allOCCSymbols.length}`);
   if (allOCCSymbols.length === 0) return { expirations, chains, isEtfOrIndex };
   for (let i = 0; i < allOCCSymbols.length; i += 100) {
     const chunk = allOCCSymbols.slice(i, i + 100);
@@ -1120,6 +1123,7 @@ const nested = await ttFetch(`/option-chains/${symbol}/nested`, token);
       chains[meta.expDate].push({ strikePrice: meta.strike, expirationDate: meta.expDate, optionType: meta.optionType, delta, openInterest: oi, bid, ask, mid: (bid + ask) / 2, occSymbol: item.symbol, iv });
     }
   }
+  console.log(`[SPX-DEBUG] ${symbol}: expirations=${expirations.length} totalLegsWithGreeks=${Object.values(chains).reduce((n, arr) => n + arr.length, 0)}`);
   expirations.sort(); return { expirations, chains, isEtfOrIndex };
 }
 
