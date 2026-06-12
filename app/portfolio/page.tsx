@@ -1591,6 +1591,7 @@ console.log(`LEG QTY DEBUG: symbol=${l.symbol} quantity=${l['quantity']} directi
       const qty = parseInt(leg['quantity'] ?? '1', 10);
       const price = currentPrices[leg.symbol?.replace(/\s+/g, '')];
       if (price == null) { hasCurrentPrices = false; break; }
+      console.log(`CURRENT PRICE DEBUG: symbol=${leg.symbol} price=${price} qty=${qty} dir=${leg['quantity-direction']}`);
       currentValue += leg['quantity-direction'] === 'Short' ? price * qty : -(price * qty);
     }
     currentValue = currentValue * 100;
