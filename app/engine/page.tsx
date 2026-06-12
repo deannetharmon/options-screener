@@ -1471,13 +1471,8 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
             {!sparkLoading && sparkData && sparkData.length === 0 && (
               <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
             )}
-          <a href={`https://www.tradingview.com/chart/?symbol=${({ SPX: 'CBOE:SPX', SPXW: 'CBOE:SPX', NDX: 'NASDAQ:NDX', RUT: 'TVC:RUT', VIX: 'CBOE:VIX', DJX: 'TVC:DJI' } as Record<string,string>)[symbol.toUpperCase()] ?? symbol}`}You said: quick question?
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()}
-            className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-[10px] text-blue-400 font-bold tracking-wider transition-colors border border-blue-500/30 hover:border-blue-500/60 hover:bg-blue-500/10"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <a href={`https://www.tradingview.com/chart/?symbol=${({ SPX: 'CBOE:SPX', SPXW: 'CBOE:SPX', NDX: 'NASDAQ:NDX', RUT: 'TVC:RUT', VIX: 'CBOE:VIX', DJX: 'TVC:DJI' } as Record<string,string>)[symbol.toUpperCase()] ?? symbol}`}
+            target="_blank"            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
               <polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
             </svg>
