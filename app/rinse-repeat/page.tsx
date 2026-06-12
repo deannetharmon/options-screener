@@ -1006,7 +1006,9 @@ function RRCard({ result, th, existingPositions }: {
                   setShowChart(true);
                   if (!sparkData) {
                     setSparkLoading(true);
-                    fetch(`/api/chart?symbol=${encodeURIComponent(profile.symbol)}`)
+                    const YAHOO_INDEX_MAP: Record<string, string> = { SPX: '^GSPC', SPXW: '^GSPC', NDX: '^NDX', RUT: '^RUT', VIX: '^VIX', DJX: '^DJI' };
+                    const chartSym = YAHOO_INDEX_MAP[symbol.toUpperCase()] ?? symbol;
+                    fetch(`/api/chart?symbol=${encodeURIComponent(chartSym)}`)                      
                       .then(r => r.json())
                       .then(d => {
                         const allBars = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null);
