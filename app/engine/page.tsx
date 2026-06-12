@@ -1385,12 +1385,17 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
           if (!showChart) {
             if (buttonRef.current) {
               const r = buttonRef.current.getBoundingClientRect();
-              setPopupPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX });
+              setPopupPos({
+                top: Math.min(r.bottom + 6, window.innerHeight - 320),
+                left: Math.min(r.left, window.innerWidth - 290),
+              });
             }
             setShowChart(true);
             if (!sparkData) {
               setSparkLoading(true);
-              fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}`)
+              const YAHOO_INDEX_MAP: Record<string, string> = { SPX: '^GSPC', SPXW: '^GSPC', NDX: '^NDX', RUT: '^RUT', VIX: '^VIX', DJX: '^DJI' };
+              const chartSym = YAHOO_INDEX_MAP[symbol.toUpperCase()] ?? symbol;
+              fetch(`/api/chart?symbol=${encodeURIComponent(chartSym)}`)
                 .then(r => r.json())
                 .then(d => {
                   const closes = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null).slice(-90);
@@ -1466,8 +1471,7 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
             {!sparkLoading && sparkData && sparkData.length === 0 && (
               <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
             )}
-          <a
-            href={`https://www.tradingview.com/chart/?symbol=${symbol}`}
+          <a href={`https://www.tradingview.com/chart/?symbol=${({ SPX: 'CBOE:SPX', SPXW: 'CBOE:SPX', NDX: 'NASDAQ:NDX', RUT: 'TVC:RUT', VIX: 'CBOE:VIX', DJX: 'TVC:DJI' } as Record<string,string>)[symbol.toUpperCase()] ?? symbol}`}You said: quick question?
             target="_blank"
             rel="noopener noreferrer"
             onClick={e => e.stopPropagation()}
