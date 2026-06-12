@@ -1473,7 +1473,7 @@ function ChartButton({ symbol, th }: { symbol: string; th: typeof THEMES[Theme] 
             {!sparkLoading && sparkData && sparkData.length === 0 && (
               <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
             )}
-            href={`https://www.tradingview.com/chart/?symbol=${TV_SYMBOL}`}
+            <a href={`https://www.tradingview.com/chart/?symbol=${TV_SYMBOL}`}
               target="_blank"
               rel="noopener noreferrer"
               onClick={e => e.stopPropagation()}
