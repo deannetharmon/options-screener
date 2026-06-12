@@ -5878,7 +5878,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                         <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
                       )}
                     <a
-                      href={`https://www.tradingview.com/chart/?symbol=${({ SPX: 'CBOE:SPX', SPXW: 'CBOE:SPX', NDX: 'NASDAQ:NDX', RUT: 'TVC:RUT', VIX: 'CBOE:VIX', DJX: 'TVC:DJI' } as Record<string,string>)[pos.symbol.toUpperCase()] ?? pos.symbol}`}
+                      href={`https://www.tradingview.com/chart/?symbol=${({'SPX':'CBOE:SPX','SPXW':'CBOE:SPX','NDX':'NASDAQ:NDX','RUT':'TVC:RUT','VIX':'CBOE:VIX','DJX':'TVC:DJI'})[pos.symbol.toUpperCase()] ?? pos.symbol}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={e => e.stopPropagation()}
