@@ -5170,7 +5170,7 @@ export default function Home() {
     setIcTickers(v); 
     clearResultsCache(); 
     try { localStorage.setItem(LS_IC, v); } catch {} 
-    setTimeout(() => {
+    
   };
   const handleBrokenChange = (v: string) => { setBrokenTickers(v); try { localStorage.setItem(LS_BROKEN, v); } catch {} };
   const handlePmccChange = (v: string) => { setPmccTickers(v); clearResultsCache(); try { localStorage.setItem(LS_PMCC, v); } catch {} };
