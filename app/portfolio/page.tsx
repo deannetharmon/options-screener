@@ -5791,10 +5791,18 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                   onClick={e => {
                     e.stopPropagation();
                     if (!showChart) {
+                      if (chartButtonRef.current) {
+                        const r = chartButtonRef.current.getBoundingClientRect();
+                        setChartPopupPos({
+                          top: Math.min(r.bottom + 6, window.innerHeight - 320),
+                          left: Math.min(r.left, window.innerWidth - 290),
+                        });
+                      }
                       setShowChart(true);
                       if (!sparkData) {
                         setSparkLoading(true);
-                        fetch(`/api/chart?symbol=${encodeURIComponent(pos.symbol)}`)
+                        const chartSym = INDEX_CHART_SYMBOLS[pos.symbol.toUpperCase()] ?? pos.symbol;
+                        fetch(`/api/chart?symbol=${encodeURIComponent(chartSym)}`)
                           .then(r => r.json())
                           .then(d => {
                             const closes = (d?.bars ?? []).map((b: any) => b?.c).filter((v: any) => v != null).slice(-90);
@@ -5870,7 +5878,7 @@ function PositionCard({ pos, th, checked, onToggle, onProfitTargetChange, onExec
                         <p className={`text-[9px] ${th.textFaint} text-center py-3`}>Chart data unavailable</p>
                       )}
                     <a
-                      href={`https://www.tradingview.com/chart/?symbol=${pos.symbol}`}
+                      href={`https://www.tradingview.com/chart/?symbol=${({ SPX: 'CBOE:SPX', SPXW: 'CBOE:SPX', NDX: 'NASDAQ:NDX', RUT: 'TVC:RUT', VIX: 'CBOE:VIX', DJX: 'TVC:DJI' } as Record<string,string>)[pos.symbol.toUpperCase()] ?? pos.symbol}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={e => e.stopPropagation()}
