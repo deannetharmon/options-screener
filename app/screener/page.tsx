@@ -3595,6 +3595,7 @@ function RulesModal({ stockRules, etfRules, rankConfig, onClose, onRun, th }: {
       if (!isNaN(val)) { setEdited(prev => ({ ...prev, [key]: val })); setRaw(prev => ({ ...prev, [key]: String(val) })); }
       else setRaw(prev => ({ ...prev, [key]: String(edited[key]) }));
     },
+  });
 
   const stockHandlers = makeHandlers(stockEdited, setStockEdited, setStockRaw);
   const etfHandlers = makeHandlers(etfEdited, setEtfEdited, setEtfRaw);
