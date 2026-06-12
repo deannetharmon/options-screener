@@ -903,18 +903,32 @@ function EnterTradeModal({ result, th, onClose }: {
           </div>
 
           {/* Summary */}
-          <div className={`grid grid-cols-3 gap-2 text-center`}>
-            {[
-              ['Max Risk', `$${maxRisk.toFixed(0)}`],
-              ['ROC', `${c.roc.toFixed(0)}%`],
-              ['POP', `${c.pop?.toFixed(0) ?? '—'}%`],
-            ].map(([label, val]) => (
-              <div key={label} className={`${th.card} border ${th.border} rounded p-2`}>
-                <p className={`text-[9px] ${th.textFaint}`}>{label}</p>
-                <p className={`text-xs font-bold ${th.text}`}>{val}</p>
+          {/* Summary */}
+          {(() => {
+            const price = result.price;
+            const otmPct = price != null && price > 0
+              ? c.strategy === 'BPS' ? ((price - c.shortStrike) / price) * 100
+              : c.strategy === 'BCS' ? ((c.shortStrike - price) / price) * 100
+              : c.strategy === 'IC' && c.shortCallStrike != null
+                ? Math.min(((price - c.shortStrike) / price) * 100, ((c.shortCallStrike - price) / price) * 100)
+              : null
+            : null;
+            return (
+              <div className={`grid grid-cols-4 gap-2 text-center`}>
+                {[
+                  ['Max Risk', `$${maxRisk.toFixed(0)}`, th.text],
+                  ['ROC', `${c.roc.toFixed(0)}%`, th.text],
+                  ['POP', `${c.pop?.toFixed(0) ?? '—'}%`, th.text],
+                  ['OTM', otmPct != null ? `${otmPct.toFixed(1)}%` : '—', otmPct == null ? th.textFaint : otmPct >= 7 ? 'text-emerald-400' : otmPct >= 4 ? 'text-yellow-400' : 'text-red-400'],
+                ].map(([label, val, color]) => (
+                  <div key={label} className={`${th.card} border ${th.border} rounded p-2`}>
+                    <p className={`text-[9px] ${th.textFaint}`}>{label}</p>
+                    <p className={`text-xs font-bold ${color}`}>{val}</p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            );
+          })()}
 
           {/* Status */}
           {phase && <p className={`text-[10px] text-blue-400 animate-pulse`}>{phase}</p>}
